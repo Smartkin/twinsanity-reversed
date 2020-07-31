@@ -1,5 +1,5 @@
 # Twinsanity reversed
-This repository holds a repository of the latest version of Crash Twinsanity's PS2 reverse engineered code. Updates happen at an irregular basis.
+This repository holds a Ghidra project of Crash Twinsanity's PS2 reverse engineered code. Updates happen at an irregular basis.
 # Install
 ## Prerequisites
 * Ghidra 9.1.2
