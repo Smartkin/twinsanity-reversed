@@ -1,0 +1,364 @@
+Animation structure:
+4 bytes bitfield
+4 bytes unkBlobSizePacked:
+	Unpack:
+		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + (unkBlobSizePacked >> 0xA & 0xFFE) + (unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2;
+2 bytes unkBlobSizeHelper
+blobSize bytes
+4 bytes unkBlobSizePacked
+
+Texture structure:
+4 bytes size (total_size is size + 4)
+96 bytes header data?
+32 bytes of metadata (goes completely unused)
+(size - 128) bytes of Texture data
+
+Materials structure:
+8 bytes header (long)
+4 bytes unkInt
+4 bytes NameSize
+NameSize bytes Material's name, completely unused by the game(unused completely)
+4 bytes for shadersAmount?
+if (shadersAmount? > 0)
+	while (counter < shadersAmount?)
+		4 bytes shaderType? - 22 total shader types (from the code's switch statement)
+		// Depending on shader type a different read can happen
+		// For type 23
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			ReadBaseShader()
+		// For type 26
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			4 bytes unkFloat3
+			4 bytes unkFloat4
+		// For types 16, 17
+			4 bytes unkFloat
+			ReadBaseShader()
+		// For types 1, 2, 4, 10, 11, 12, 13, 15, 18, 19, 20, 21, 22, 25, 27, 30, 31, 32
+			ReadBaseShader()
+		counter++
+
+// ReadBaseShader()
+{
+	30 bytes of 1 byte data stored in an 8 byte bitfield
+	2 bytes unkUshort
+	2 bytes unkUshort2
+	16 bytes unkData
+	16 bytes unkData2
+	4 bytes unkFloat
+	4 bytes unkFloat2
+	4 bytes unkFloat3
+	4 bytes unkFloat4
+	4 bytes unkInt
+	4 bytes unkInt2
+	if (bitfield & 0x2000000000000000 != 0)
+		// New structure is created in the code and is receiving the next data
+		4 bytes unknown (just raw 4 bytes data)
+		4 bytes unkBlobSizePacked
+		2 bytes unkBlobSizeHelper
+		if (unkBlobSizeHelper != 0) // blobSize is unpacked the same way as animation
+			blobSize bytes
+}
+
+
+
+OGI Structure:
+0x10 bytes Header data (byte 1 - Type1 struct amount, byte 2 - Type2 struct amount, byte 6 - Linked rigid models amount,
+						byte 7 - Skin flag, byte 8 - Blend skin flag, byte 9 - Type3 struct amount)
+0x20 bytes BoundingBox
+loop Header.byte_1 amount and store in Type1 struct:
+	4 bytes unkInt1 (only first byte is taken)
+	4 bytes unkInt2 (only first byte is taken)
+	4 bytes unkInt3 (only first byte is taken)
+	4 bytes unkInt4 (only first byte is taken)
+	4 bytes unkInt5 (only first byte is taken)
+	0x10 bytes unkVec1
+	0x10 bytes unkVec2
+	0x10 bytes unkVec3
+	0x10 bytes unkVec4
+	0x10 bytes unkVec5
+loop Header.byte_2 amount and store in Type2 struct:
+	4 bytes unkInt1 (only first byte is taken)
+	4 bytes unkInt2 (only first byte is taken)
+	0x40 bytes unkMatrix
+if (Header.byte_5 > 0) {
+	byte_5 bytes ModelAmtRelated
+	loop Header.byte_5 amount:
+		4 bytes RigidModelID
+}
+loop Header.byte_1 amount:
+	0x40 bytes unkMatrix
+4 bytes skinID
+4 bytes blendSkinID
+loop Header.byte_9 amount and store in Type3 struct:
+	0x16 bytes Header data
+	4 bytes blobSize
+	blobSize bytes unkBlob
+Header.byte_9 bytes type3Related
+
+
+Model structure:
+4 bytes subModelAmt
+loop subModelAmt:
+	4 bytes vertexAmount
+	4 bytes subModelSize
+	subModelSize bytes subModelData
+	4 bytes unusedBlobSize
+	if (unusedBlobSize > 0) {
+		unusedBlobSize bytes unusedBlob // Blob is discarded as soon as it's read
+	}
+
+
+Rigid model structure:
+4 bytes Header // Discarded
+4 bytes MaterialAmount
+loop MaterialAmount:
+	4 bytes MaterialID
+4 bytes ModelID
+
+
+Skin structure:
+4 bytes subSkinAmt
+loop subSkinAmt:
+	4 bytes MaterialID
+	4 bytes blobSize
+	4 bytes vertexAmount
+	blobSize bytes unkBlob
+
+
+Blend skin structure:
+4 bytes subBlendAmount
+4 bytes unkAmt
+loop subBlendAmount:
+	4 bytes type1Amount
+	4 bytes materialID
+	loop type1Amount and store in type1 struct:
+		4 bytes blobSize
+		4 bytes unkInt
+		blobSize bytes unkBlob
+		0xC bytes unkData
+		loop unkAmt: // Array for next blobs is created of size (unkAmt & 0xFF) so I doubt unkAmt more than 255 matters
+			4 bytes blobSize
+			4 bytes unkInt
+			(blobSize << 4) bytes unkBlob
+
+RigidModel2 structure:
+Same as for RigidModel
+
+LOD structure:
+4 bytes lodType // can be 0x1001 or 0x1002 else considered illegal LOD
+if (lodType == 0x1001) {
+	4 bytes rigidModels2Amount // only 1st byte is taken as the amount
+	4 bytes unkInt // squared after reading
+	4 bytes unkInt2 // squared after reading if not -1
+	loop 3:
+		4 bytes unkInt // squared after reading
+	4 bytes unused
+	loop rigidModels2Amount:
+		4 bytes rigidModel2ID
+}
+if (lodType == 0x1002) {
+	1 byte rigidModels2Amount
+	4 bytes unkInt
+	4 bytes unkInt2
+	0xC bytes unkInts // technically just 3 ints read into a 3 integer array
+	loop rigidModels2Amount:
+		4 bytes rigidModel2ID
+}
+
+
+Skydome structure:
+4 bytes unused
+4 bytes rigidModels2Amount
+loop rigidModels2Amount:
+	4 bytes rigidModel2ID
+
+
+Camera structure:
+ReadBaseTrigger()
+// Rest is read and stored in CameraRelated struct
+4 bytes Header
+2 bytes unkShort
+4 bytes unkFloat
+0x10 bytes unkVec
+0x10 bytes unkVec2
+4 bytes unkFloat2
+4 bytes unkFloat3
+4 bytes unkUInt
+4 bytes unkUInt2
+4 bytes unkUInt3
+4 bytes unkUInt4
+4 bytes unkUInt5
+4 bytes unkUInt6
+4 bytes unkFloat4
+4 bytes unkFloat5
+4 bytes unkFloat6
+4 bytes unkFloat7
+4 bytes unkUInt7
+4 bytes unkUInt8
+4 bytes unkUInt9
+4 bytes unkFloat8
+4 bytes subTypeIndex1 // 3 indicates no extra object is present
+4 bytes subTypeIndex2 // 3 indicates no extra object is present
+1 byte unkByte
+// Now this is where the fun begins
+if (subTypeIndex1 != 3) { // This is the same as for unkObjectIndex2
+	match subTypeIndex1:
+		0xA19:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x40 bytes unkMatrix
+		0x40 bytes unkMatrix2
+		0x10 bytes unkVec
+		1 byte unkByte
+		4 bytes unkFloat3
+		4 bytes unkFloat4
+		4 bytes unkFloat5
+		4 bytes unkFloat6
+		1 byte unkByte2
+		0x1C02:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x10 bytes unkVec
+		0x1C03:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x20 bytes unkBoundingBox
+		0x1C04:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		4 bytes vectorAmount
+		(vectorAmount * 0x10) bytes unkVectors
+		4 bytes unkUInt
+		(unkUInt * 0x8) bytes unkData
+		0x1C05:
+		// Can't be read because methods are set to NULL
+		0x1C06:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		4 bytes unkUInt
+		4 bytes unkFloat
+		(unkUInt * 2 * 0x10) bytes unkVecs
+		(unkUInt * 0x8) bytes unkData
+		2 bytes unkShort
+		0x1C09:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x1C0B:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x10 bytes unkVec
+		4 bytes unkFloat3
+		1 byte unkByte
+		0x1C0C:
+		4 bytes unkData // Raw bytes read
+		0x1C0D:
+		4 bytes unkInt
+		4 bytes unkFloat
+		4 bytes unkFloat2
+		0x20 bytes unkBoundingBox
+		4 bytes unkFloat3
+		4 bytes unkFloat4
+		0x1C0E:
+		// Nothing, method empty
+		0x1C0F:
+		0x50 bytes unkData
+		0x50 bytes unkData2
+}
+// Same for subTypeIndex2
+
+//ReadBaseTrigger()
+{
+	4 bytes Header
+	4 bytes Enabled
+	4 bytes unkFac1
+	0x10 bytes triggerRot
+	0x10 bytes triggerPos
+	0x10 bytes triggerSize
+	4 bytes instAmt
+	4 bytes instAmt2
+	4 bytes unkInt
+	loop instAmt:
+		2 bytes instID
+}
+
+Trigger structure:
+ReadBaseTrigger()
+2 bytes unkShort
+2 bytes unkShort2
+2 bytes unkShort3
+2 bytes unkShort4
+
+
+Instance structure:
+0x10 bytes Position
+4 bytes RotX
+4 bytes RotY
+4 bytes RotZ
+4 bytes instIdsAmt
+4 bytes instIdsAmt2
+4 bytes unkInt
+loop instIdsAmt:
+	2 bytes instanceID
+4 bytes positionsAmt
+4 bytes positionsAmt2
+4 bytes unkInt2
+loop positionsAmt:
+	2 bytes positionID
+4 bytes pathsAmt
+4 bytes pathsAmt2
+4 bytes unkInt3
+loop pathsAmt:
+	2 bytes pathID
+2 bytes objectID
+2 bytes unkShort
+2 bytes unkShort2
+// Rest is reading instance properties
+
+
+Particle data (in Default.rm2):
+loop 3:
+	4 bytes unkInt
+	4 bytes materialID
+// Read particles like normal
+4 bytes unkInt
+4 bytes materialID
+4 bytes unkData // Raw bytes
+0x420 bytes unkBlob
+0x40 bytes unkIntegerList
+loop 0x10:
+	if (unkIntegerList[i] != 0) {
+		0x890 bytes unkBlob2
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
