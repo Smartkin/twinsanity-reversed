@@ -1,0 +1,11 @@
+Twins clock settings:
+10 - 1/256 of BUCLK speed (147.456 MHz * (1/256)) (576 kHz)
+0 - Gate function not used
+0 - Gate selection H-BLNK
+00 - Gate mode (Counts while the gate signal is low)
+0 - Counter keeps counting ignoring the reference value
+1 - Enable counting
+0 - Compare-interrupt is not generated
+1 - Overflow-interrupt is generated
+1 - Clear equal flag
+1 - Clear overflow flag

@@ -2,22 +2,68 @@ Animation structure:
 4 bytes bitfield
 4 bytes unkBlobSizePacked:
 	Unpack:
-		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + (unkBlobSizePacked >> 0xA & 0xFFE) + (unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2;
+		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + // Bone settings?
+		(unkBlobSizePacked >> 0xA & 0xFFE) + // Transformations
+		(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2; // Timeline?
 2 bytes unkBlobSizeHelper
 blobSize bytes
 4 bytes unkBlobSizePacked
 
 Texture structure:
 4 bytes size (total_size is size + 4)
-96 bytes header data?
-32 bytes of metadata (goes completely unused)
-(size - 128) bytes of Texture data
+(0x60)96 bytes header data
+(0x20)32 bytes of metadata (goes completely unused)
+(size - 128) bytes of Texture data // VIF Code that tells to transfer GS Packet data
+Texture data VIF code structure:
+	UNPACK 0 S-32 into VU mem [addr] // Usually the size of the Texture, unpacks actually nothing
+	NOP
+	NOP
+	DIRECT amount // Dump next (amount * 0x10) bytes into GS through PATH2
+		GS Packet structure:
+			0x10 GIFTag (EOP = 0, PACKED mode, Ignore PRIM, 1 NREG descriptor, A+D Descriptor, 3 NLOOP)
+			0x10 TRXPOS Description // Coordinates of Source rectangle, coordinates of Destination rectangle, Pixel transmission order
+			0x10 TRXREG Description // Basically Texture dimensions (in raw pixels)
+			0x10 TRXDIR Description // Activates transmission between buffers
+			0x10 GIFTag (EOP = 1, n(in one texture's case 0x200) NLOOP, Ignore PRIM, IMAGE mode, NREG is disregarded due to IMAGE mode)
+			(NLOOP * 0x10) Graphics data
+
+// Texture header data
+0x0 2 bytes unkVal1
+0x2 2 bytes unkVal2
+0x4 2 bytes log2width // Always relevant
+0x6 2 bytes log2height // Always relevant
+0x8 1 byte mips // Always relevant
+0x9 1 byte unkVal3 // Likely metadata, always relevant
+0xA 1 byte unkFlag
+0xB 1 byte unkVal4 // Likely metadata, always relevant
+0xC 1 byte unkByte
+0xD 1 byte unkVal5 // Likely metadata, always relevant
+0xE 2 bytes unkBytes
+0x10 4 bytes unkVal6 // Likely metadata, always relevant
+0x14 4 bytes unkVal7 // Relevant if mips != 0x1 (masked against 0xFFFFFFFF)
+0x18 4 bytes unkVal8 // Relevant if mips != 0x1
+0x1C 4 bytes unkVal9 // Relevant if mips != 0x1
+0x20 4 bytes unkVal10 // Relevant if mips > 0x4 (masked against 0xFFFFFFFF)
+0x24 4 bytes unkVal11 // Relevant if mips > 0x4
+0x28 4 bytes unkVal12 // Relevant if mips > 0x4
+0x2C 4 bytes textureType? // Always relevant
+0x30 4 bytes unkValUnsigned1 // Relevant if mips != 0x1
+0x34 4 bytes unkValUnsigned2 // Relevant if mips != 0x1
+0x38 4 bytes unkValUnsigned3 // Relevant if mips != 0x1
+0x3C 4 bytes unkValUnsigned4 // Relevant if mips > 0x4
+0x40 4 bytes unkValUnsigned5 // Relevant if mips > 0x4
+0x44 4 bytes unkValUnsigned6 // Relevant if mips > 0x4
+0x48 4 bytes unkVal10 // Likely metadata, always relevant
+0x54 4 bytes vifCodeBlockIndex // Reserved, set by the game during code execution
+0x58 4 bytes unkPointer // Reserved, set by the game during code execution
+0x5C 2 bytes unkBytes
+0x5E 2 bytes unknown // Reserved, zeroed after reading by the code
 
 Materials structure:
 8 bytes header (long)
 4 bytes unkInt
 4 bytes NameSize
-NameSize bytes Material's name, completely unused by the game(unused completely)
+NameSize bytes MaterialName //Completely unused by the game, deleted right after reading
 4 bytes for shadersAmount?
 if (shadersAmount? > 0)
 	while (counter < shadersAmount?)
@@ -44,6 +90,40 @@ if (shadersAmount? > 0)
 // ReadBaseShader()
 {
 	30 bytes of 1 byte data stored in an 8 byte bitfield
+	/* Bitfield information:
+		0 - UnkFlag
+		1-4 - UnkHalfByte
+		5 - AlphaMaskFlag
+		6-8 - AlphaChannel? (0-7)
+		9-16 - AlphaTolerance? (0-255)
+		17-18 - BlendMode? (0-3)
+		19 - AlphaRelatedFlag
+		20 - AlphaRelatedFlag2
+		21-22 - AlphaRelatedValue
+		23-25 - UnkVal4
+		26 - UnkFlag5
+		27 - HasTextureBound? (When OFF turns texture fully white)
+		28 - UnkFlag7 (When OFF texture doesn't draw)
+		29 - UnkFlag8 (When ON turns alphamasked texture fully black)
+		30 - UnkFlag9 (When ON texture doesn't draw)
+		31 - Unused
+		32-34 - UnkVal5
+		35-37 - UnkVal6
+		38 - UnkFlag10
+		39-40 - UnkVal7
+		41-42 - UnkVal8
+		43-44 - UnkVal9
+		45-46 - UnkVal10
+		47-54 - UnkByte2
+		55 - TextureSmoothing (Smooths out pixel color transitions)
+		56 - UnkFlag12
+		57 - UnkFlag13
+		58 - UnkFlag14
+		59 - UnkFlag15
+		60 - UnkFlag16
+		61 - BlobFlag
+		62-63 - Unused
+	*/
 	2 bytes unkUshort
 	2 bytes unkUshort2
 	16 bytes unkData
@@ -52,8 +132,8 @@ if (shadersAmount? > 0)
 	4 bytes unkFloat2
 	4 bytes unkFloat3
 	4 bytes unkFloat4
-	4 bytes unkInt
-	4 bytes unkInt2
+	4 bytes textureID
+	4 bytes shaderType?
 	if (bitfield & 0x2000000000000000 != 0)
 		// New structure is created in the code and is receiving the next data
 		4 bytes unknown (just raw 4 bytes data)
@@ -84,9 +164,9 @@ loop Header.byte_2 amount and store in Type2 struct:
 	4 bytes unkInt1 (only first byte is taken)
 	4 bytes unkInt2 (only first byte is taken)
 	0x40 bytes unkMatrix
-if (Header.byte_5 > 0) {
-	byte_5 bytes ModelAmtRelated
-	loop Header.byte_5 amount:
+if (Header.byte_6 > 0) {
+	byte_6 bytes ModelAmtRelated
+	loop Header.byte_6 amount:
 		4 bytes RigidModelID
 }
 loop Header.byte_1 amount:
@@ -94,10 +174,15 @@ loop Header.byte_1 amount:
 4 bytes skinID
 4 bytes blendSkinID
 loop Header.byte_9 amount and store in Type3 struct:
+	ReadOGIType3();
+Header.byte_9 bytes type3Related
+
+//ReadOGIType3()
+{
 	0x16 bytes Header data
 	4 bytes blobSize
 	blobSize bytes unkBlob
-Header.byte_9 bytes type3Related
+}
 
 
 Model structure:
@@ -105,7 +190,7 @@ Model structure:
 loop subModelAmt:
 	4 bytes vertexAmount
 	4 bytes subModelSize
-	subModelSize bytes subModelData
+	subModelSize bytes vifCode
 	4 bytes unusedBlobSize
 	if (unusedBlobSize > 0) {
 		unusedBlobSize bytes unusedBlob // Blob is discarded as soon as it's read
@@ -119,14 +204,21 @@ loop MaterialAmount:
 	4 bytes MaterialID
 4 bytes ModelID
 
-
+// Skin is simple yet insanely complex structure due to using VIF packets as its BLOB
+// VIF packets consist of VIFCode and their Data
+// while sounding simple each VIFCode perfoms a certain action
+// on the VIF registers and data decompressing such as switching between decompression
+// modes, setting MODE register, CYCLE register and so on.
+// This makes it very hard just to even read the BLOB
+// as in reality it would require a VIF interpreter.
+// Even worse we need a VIF compiler if we want fully custom skins
 Skin structure:
 4 bytes subSkinAmt
 loop subSkinAmt:
 	4 bytes MaterialID
-	4 bytes blobSize
+	4 bytes vifBlockSize
 	4 bytes vertexAmount
-	blobSize bytes unkBlob
+	vifBlockSize bytes vifCode
 
 
 Blend skin structure:
@@ -136,45 +228,45 @@ loop subBlendAmount:
 	4 bytes type1Amount
 	4 bytes materialID
 	loop type1Amount and store in type1 struct:
-		4 bytes blobSize
+		4 bytes vifBlockSize
 		4 bytes unkInt
-		blobSize bytes unkBlob
+		vifBlockSize bytes vifCode
 		0xC bytes unkData
 		loop unkAmt: // Array for next blobs is created of size (unkAmt & 0xFF) so I doubt unkAmt more than 255 matters
 			4 bytes blobSize
 			4 bytes unkInt
 			(blobSize << 4) bytes unkBlob
 
-RigidModel2 structure:
+Mesh structure:
 Same as for RigidModel
 
 LOD structure:
 4 bytes lodType // can be 0x1001 or 0x1002 else considered illegal LOD
 if (lodType == 0x1001) {
-	4 bytes rigidModels2Amount // only 1st byte is taken as the amount
+	4 bytes meshAmount // only 1st byte is taken as the amount
 	4 bytes unkInt // squared after reading
-	4 bytes unkInt2 // squared after reading if not -1
+	4 bytes drawDistance // squared after reading if not -1
 	loop 3:
 		4 bytes unkInt // squared after reading
 	4 bytes unused
-	loop rigidModels2Amount:
-		4 bytes rigidModel2ID
+	loop meshAmount:
+		4 bytes meshID
 }
 if (lodType == 0x1002) {
-	1 byte rigidModels2Amount
+	1 byte meshAmount
 	4 bytes unkInt
-	4 bytes unkInt2
+	4 bytes drawDistance
 	0xC bytes unkInts // technically just 3 ints read into a 3 integer array
-	loop rigidModels2Amount:
-		4 bytes rigidModel2ID
+	loop meshAmount:
+		4 bytes meshID
 }
 
 
 Skydome structure:
 4 bytes unused
-4 bytes rigidModels2Amount
-loop rigidModels2Amount:
-	4 bytes rigidModel2ID
+4 bytes meshAmount
+loop meshAmount:
+	4 bytes meshID
 
 
 Camera structure:
@@ -208,72 +300,72 @@ ReadBaseTrigger()
 if (subTypeIndex1 != 3) { // This is the same as for unkObjectIndex2
 	match subTypeIndex1:
 		0xA19:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		0x40 bytes unkMatrix
-		0x40 bytes unkMatrix2
-		0x10 bytes unkVec
-		1 byte unkByte
-		4 bytes unkFloat3
-		4 bytes unkFloat4
-		4 bytes unkFloat5
-		4 bytes unkFloat6
-		1 byte unkByte2
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			0x40 bytes unkMatrix
+			0x40 bytes unkMatrix2
+			0x10 bytes unkVec
+			1 byte unkByte
+			4 bytes unkFloat3
+			4 bytes unkFloat4
+			4 bytes unkFloat5
+			4 bytes unkFloat6
+			1 byte unkByte2
 		0x1C02:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		0x10 bytes unkVec
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			0x10 bytes unkVec
 		0x1C03:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		0x20 bytes unkBoundingBox
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			0x20 bytes unkBoundingBox
 		0x1C04:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		4 bytes vectorAmount
-		(vectorAmount * 0x10) bytes unkVectors
-		4 bytes unkUInt
-		(unkUInt * 0x8) bytes unkData
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			4 bytes vectorAmount
+			(vectorAmount * 0x10) bytes unkVectors
+			4 bytes unkUInt
+			(unkUInt * 0x8) bytes unkData
 		0x1C05:
 		// Can't be read because methods are set to NULL
 		0x1C06:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		4 bytes unkUInt
-		4 bytes unkFloat
-		(unkUInt * 2 * 0x10) bytes unkVecs
-		(unkUInt * 0x8) bytes unkData
-		2 bytes unkShort
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			4 bytes unkUInt
+			4 bytes unkFloat
+			(unkUInt * 2 * 0x10) bytes unkVecs
+			(unkUInt * 0x8) bytes unkData
+			2 bytes unkShort
 		0x1C09:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
 		0x1C0B:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		0x10 bytes unkVec
-		4 bytes unkFloat3
-		1 byte unkByte
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			0x10 bytes unkVec
+			4 bytes unkFloat3
+			1 byte unkByte
 		0x1C0C:
-		4 bytes unkData // Raw bytes read
+			4 bytes unkData // Raw bytes read
 		0x1C0D:
-		4 bytes unkInt
-		4 bytes unkFloat
-		4 bytes unkFloat2
-		0x20 bytes unkBoundingBox
-		4 bytes unkFloat3
-		4 bytes unkFloat4
+			4 bytes unkInt
+			4 bytes unkFloat
+			4 bytes unkFloat2
+			0x20 bytes unkBoundingBox
+			4 bytes unkFloat3
+			4 bytes unkFloat4
 		0x1C0E:
 		// Nothing, method empty
 		0x1C0F:
-		0x50 bytes unkData
-		0x50 bytes unkData2
+			0x50 bytes unkData
+			0x50 bytes unkData2
 }
 // Same for subTypeIndex2
 
@@ -326,12 +418,16 @@ loop pathsAmt:
 // Rest is reading instance properties
 
 
-Particle data (in Default.rm2):
+Particle data:
+// Default RM2 exclusive
 loop 3:
-	4 bytes unkInt
+	4 bytes textureID
 	4 bytes materialID
-// Read particles like normal
-4 bytes unkInt
+// All chunks
+ReadParticles()
+// Default RM2 exclusive
+// This usually starts at 0x338E4 offset of Default.RM2
+4 bytes textureID
 4 bytes materialID
 4 bytes unkData // Raw bytes
 0x420 bytes unkBlob
@@ -340,6 +436,480 @@ loop 0x10:
 	if (unkIntegerList[i] != 0) {
 		0x890 bytes unkBlob2
 	}
+
+
+//ReadParticles()
+{
+	4 bytes particleDataSecType
+	if ((particleDataSecType < 0x5 || particleDataSecType > 0x1E) && particleDataSecType != 0x20) {
+		// Invalid Particle Data section
+		return;
+		// In reality the following read CAN happen if a certain global is set to 0
+		// but the global before ReadParticles call is set to 1, so this results in this
+		// dead code. Potentially TWoC engine leftovers?
+		/*
+			stream.ReturnToBeg();
+			blockSize = stream.GetBlockSize();
+			readAmt = stream.GetReadAmt();
+			do {
+				eof = stream.GetEOF();
+				if (eof) {
+					stream.SetPosition(readAmt);
+					return;
+				}
+				bytesToRead = 0x800;
+				if (blockSize < 0x800) {
+					bytesToRead = blockSize;
+				}
+				bytesToRead bytes unkBlob
+				blockSize -= bytesToRead;
+				
+			} while (true);
+		*/
+	}
+	4 bytes particleTypesAmount?
+	if (ParticlesLoaded + particleTypesAmount? > 0x12C) {
+		someInt = ParticlesLoaded + particleTypesAmount? - 0x12C;
+		particleTypesAmount? = 0x12C - ParticlesLoaded;
+	}
+	loop particleTypesAmount?:
+		ReadParticleType();
+		ParticlesLoaded++;
+	loop someInt:
+		ReadParticleType(); // Unused
+	if (!Default) { // This is not used when reading Default Particle Data
+		4 bytes particleInstAmt?
+		if (particleDataSecType == 0x20) {
+			return;
+		}
+		if (InstancesAmount + particleInstAmt? > 0x300) {
+			particleInstAmt? = 0x300 - InstancesAmount;
+		}
+		loop particleInstAmt?:
+			0xC bytes unkData
+			if (particleDataSecType >= 0x7) {
+				2 bytes unkShort1
+				2 bytes unkShort2
+				2 bytes unkShort3
+				2 bytes unkShort4
+			} else {
+				unkShort1 = 0;
+				unkShort2 = 0;
+				4 bytes unkShort3
+				4 bytes unkShort4
+			}
+			if (particleDataSecType >= 0x16) {
+				2 bytes unkShort5
+			}
+			if (particleDataSecType >= 0x8) {
+				4 bytes unkInt1
+			}
+			0x10 bytes InstanceName
+			if (particleDataSecType >= 0x9) {
+				4 bytes unkInt2
+				4 bytes unkInt3
+				4 bytes unkFloat1
+			}
+			if (particleDataSecType >= 0xC) {
+				2 bytes unkShort6
+				2 bytes unkShort7
+				4 bytes unkFloat2
+			}
+			if (particleDataSecType >= 0xD) {
+				4 bytes unkFloat3
+			} else {
+				unkFloat3 = 0.89999998;
+			}
+			if (particleDataSecType >= 0xF) {
+				2 bytes unkShort8
+			}
+	}
+}
+
+//ReadParticleType()
+{
+	0x10 bytes particleName
+	if (particleDataSecType == 0x20) {
+		1 byte pad
+		1 byte unkInt
+	}
+	2 bytes unkUShort1
+	2 bytes unkUShort2
+	2 bytes unkUShort3
+	2 bytes unkUShort4
+	2 bytes unkUShort5
+	2 bytes unkUShort6
+	2 bytes unkUShort7
+	1 byte unkByte2
+	1 byte unkByte3
+	1 byte unkByte4
+	1 byte unkByte5
+	4 bytes unkFloat1
+	if (particleDataSecType == 0x20) {
+		unkFloat1 = 25;
+	}
+	if (particleDataSecType >= 0x6) {
+		4 bytes unkFloat2
+		4 bytes unkFloat3
+	} else {
+		unkFloat2 = 0
+		unkFloat3 = 25
+	}
+	if (particleDataSecType >= 0xA) {
+		4 bytes unkFloat4
+		if (unkFloat4 <= 2) {
+			unkFloat4 = 999999.875
+		}
+	} else {
+		unkFloat4 = 0
+	}
+	if (particleDataSecType <= 0x16 || particleDataSecType == 0x20) {
+		unkFloat5 = 0
+	} else {
+		4 bytes unkFloat5
+	}
+	if (particleDataSecType < 0x18 || particleDataSecType == 0x20) {
+		unkFloat6 = 0.5
+	} else {
+		4 bytes unkFloat6
+	}
+	if (particleDataSecType < 0x7) {
+		4 bytes pad
+		4 bytes pad
+	}
+	4 bytes unkFloat7
+	0xC bytes unkData1
+	if (particleDataSecType < 0x12) {
+		0xC bytes pad
+	}
+	0xC bytes unkData2
+	if (particleDataSecType < 0x12) {
+		0xC bytes pad
+	}
+	4 bytes unkFloat8
+	4 bytes unkFloat9
+	4 bytes unkFloat10
+	4 bytes unkFloat11
+	4 bytes unkFloat12
+	4 bytes unkFloat13
+	4 bytes unkFloat14
+	4 bytes unkFloat15
+	4 bytes unkFloat16
+	4 bytes unkFloat17
+	4 bytes unkFloat18
+	4 bytes unkFloat19
+	4 bytes unkFloat20
+	4 bytes unkFloat21
+	2 bytes unkUShort8
+	1 byte unkByte6
+	1 byte unkByte7
+	4 bytes unkFloat22
+	4 bytes unkFloat23
+	4 bytes unkFloat24
+	4 bytes unkFloat25
+	4 bytes unkFloat26
+	loop 8:
+		0x10 bytes unkVec
+	loop 8:
+		8 bytes unkLong
+	if (particleDataSecType < 0x15) {
+		unkFloat27 = 0.125
+		unkFloat28 = 0.125
+	} else {
+		4 bytes unkFloat27
+		4 bytes unkFloat28
+	}
+	4 bytes unkFloat29
+	4 bytes unkFloat30
+	loop 8:
+		8 bytes unkLong
+	loop 8:
+		8 bytes unkLong
+	4 bytes unkFloat31
+	4 bytes unkFloat32
+	loop 8:
+		8 bytes unkLong
+	loop 8:
+		8 bytes unkLong
+	loop 8:
+		8 bytes unkLong
+	4 bytes unkFloat33
+	4 bytes unkFloat34
+	4 bytes unkFloat35
+	4 bytes unkFloat36
+	if (particleDataSecType == 0x20) {
+		4 bytes pad
+	}
+	if (particleDataSecType >= 0x3) {
+		loop 8:
+			8 bytes unkLong
+		1 byte unkByte8
+	}
+	if (particleDataSecType >= 0x11) {
+		1 byte unkByte9
+	}
+	if (unkByte4 == 0x7) {
+		unkByte9 = 2
+	}
+	if (particleDataSecType == 0x20) {
+		1 byte pad
+		1 byte pad
+		4 bytes pad
+	}
+	if (particleDataSecType > 0x16 && particleDataSecType != 0x20) {
+		if (particleDataSecType < 0x1D) {
+			4 bytes unkInt
+			if (unkInt > 0) {
+				loop unkInt:
+					0x10 bytes pad
+					4 bytes pad
+					4 bytes pad
+			}
+		}
+	} else {
+		loop 4:
+			if (particleDataSecType > 0xA && particleDataSecType == 0x20) {
+				if (i == 0) {
+					4 bytes unkFloat37
+					4 bytes pad
+					4 bytes pad
+				} else {
+					4 bytes pad
+					4 bytes pad
+					4 bytes pad
+				}
+			}
+	}
+	if (particleDataSecType >= 0x10) {
+		if (particleDataSecType == 0x20) {
+			2 bytes unkShort // Particle has a separate short[4] array(initialized to -1), this one is stored in index 1
+			1 byte pad
+			1 byte pad
+		} else {
+			4 bytes unkShort // Same as above
+		}
+		4 bytes unkFloat38
+	} else {
+		unkFloat38 = 0;
+		unkShorts[1] = 0;
+	}
+	if (particleDataSecType >= 0x19 && particleDataSecType != 0x20) {
+		4 bytes unkShort // Same as above short, except index is 2
+		4 bytes unkFloat39
+	} else {
+		unkShorts[2] = 5;
+		unkFloat39 = 0.5;
+	}
+	if (particleDataSecType >= 0x1A) {
+		if (particleDataSecType != 0x20) {
+			4 bytes unkFloat40
+		}
+	}
+	else {
+		unkFloat40 = 0;
+	}
+	if (particleDataSecType != 0x20) {
+		if (particleDataSecType > 0x1A) {
+			4 bytes unkInt
+		}
+		if (particleDataSecType > 0x1B) {
+			4 bytes unkFloat37
+		}
+	}
+	if (particleDataSecType >= 0x1E) {
+		0x10 bytes unkVec
+	} else {
+		if (unkByte2 == 0) {
+			// Too lazy to decipher these formulas
+				fVar1 = unkFloat7;
+				fVar4 = *(float *)(unkData1 + 0x4);
+				fVar2 = *(float *)(unkData1 + 0x8);
+				fVar5 = unkFloat21;
+				fVar6 = *(float *)(unkData2 + 0x4);
+				fVar7 = *(float *)(unkData2 + 0x8);
+				fVar3 = unkFloat30 * 0.00010000;
+				unkVec.x = ((fVar1 + *(float *)unkData1) * fVar5 + *(float *)unkData2 + fVar3) * 0.75000000;
+				unkVec.z = ((fVar1 + fVar2) * fVar5 + fVar7 + fVar3) * 0.75000000;
+				unkVec.y = ((fVar1 + fVar4) * fVar5 + fVar6 + fVar3) * 0.75000000;
+		} else {
+			unkVec.x = 10;
+			unkVec.y = 10;
+			unkVec.z = 10;
+		}
+		unkVec.w = 0;
+	}
+}
+
+
+Scenery data:
+4 bytes unkData (raw bytes)
+4 bytes nameLength
+nameLength bytes name
+4 bytes unkUInt
+4 bytes sceneryType
+1 byte unkByte
+if (unkData & 0x10000 != 0) {
+	4 bytes skydomeID
+}
+if (unkData & 0x20000 != 0) {
+// Stored in UnkStruct(Probably something like LightsRenderer or something Idk)
+	0x400 bytes unkBlob
+	4 bytes lightsAmount
+	4 bytes lightAmbientAmount
+	4 bytes lightDirectionalAmount
+	4 bytes lightPointAmount
+	4 bytes lightNegativeAmount
+	loop lightAmbientAmount:
+		ReadBaseLight();
+	loop lightDirectionalAmount:
+		ReadBaseLight();
+		0x10 bytes unkVec
+		2 bytes unkShort
+	loop lightPointAmount:
+		ReadBaseLight();
+		2 bytes unkShort
+	loop lightNegativeAmount:
+		ReadBaseLight();
+		0x10 bytes unkVec
+		4 bytes unkFloat1
+		4 bytes unkFloat2
+		4 bytes unkUInt1
+		4 bytes unkUInt2
+		2 bytes unkUShort1
+		2 bytes unkUShort2
+}
+// Root scenery type
+if (sceneryType == 0x160A) {
+	// Stored in separate unknown structure
+	4 bytes unkUInt
+	ReadScenery_0x1600();
+}
+
+//ReadBaseLight()
+{
+	4 bytes unkData (raw bytes)
+	4 bytes radius
+	0x10 bytes colorVec
+	0x10 bytes lightPos
+	0x10 bytes unkVec1
+	0x10 bytes unkVec2
+}
+
+//ReadScenery_0x1600()
+{
+	ReadBaseScenery();
+	0x20 bytes sceneryTypes (int[8])
+	loop 8:
+		match sceneryTypes[i]:
+			0x1600:
+				ReadScenery_0x1600();
+			0x1605:
+				ReadBaseScenery();
+}
+
+//ReadBaseScenery()
+{
+	4 bytes unkObjType
+	if (unkObjType == 0x1613) {
+		2 bytes meshAmount
+		2 bytes lodsAmount
+		sum = meshAmount + lodsAmount
+		if (sum != 0) {
+			(sum * 0x20) bytes unkBoundingBoxes
+			(sum * 0x4) bytes itemIDs // First meshes then LODs
+			(sum * 0x40) bytes unkMatrices
+		}
+	}
+	0x10 bytes unkVec1
+	0x10 bytes unkVec2
+	0x10 bytes unkVec3
+	0x10 bytes unkVec4
+	0x10 bytes unkVec5
+}
+
+
+Dynamic scenery:
+4 bytes unkInt
+2 bytes modelAmount
+if (modelAmount != 0) {
+	loop modelAmount:
+		4 bytes unkInt1
+		4 bytes ogiType3Amount
+		if (ogiType3Amount != 0) {
+			loop ogiType3Amount:
+				ReadOGIType3()
+		}
+		4 bytes unkInt2
+		4 bytes unkBlobSizePacked // Suddenly different blob packing!
+		2 bytes unkBlobSizeHelper
+		/*
+			Unpack:
+				blobSize = (unkBlobSizePacked & 0x7F) * 0x8 +
+					(unkBlobSizePacked >> 0x9 & 0x1FFC) +
+					(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x4
+		*/
+		blobSize bytes dynBlob
+		1 byte unkByte
+		4 bytes modelID?
+		0x10 bytes unkVec1
+		0x10 bytes unkVec2
+}
+
+
+Chunk links:
+4 bytes amount
+loop amount:
+	4 bytes unkData // raw bytes
+	4 bytes pathLength
+	pathLength bytes pathName
+	4 bytes unkData2 // raw bytes
+	0x40 bytes objectMat
+	0x40 bytes chunkMat
+	if (unkData2 & 0x80000 != 0) {
+		// Stored in UnkStruct
+		0x40 loadWall
+	}
+	ReadUnkStruct2();
+
+
+//ReadUnkStruct2()
+{
+	if (unkData & 0x1 != 0) {
+		// Stored in UnkStruct2
+		4 bytes unkData // raw bytes
+		ReadOGIType3();
+		ReadUnkStruct2();
+	}
+}
+
+// This one is quite special because this data type is read
+// unlike any other the game takes an approach of directly uploading
+// the data into VU memory instead of passing through some usual routine
+// reading a section. But thankfully the data structure is not complex
+// and was easily figured out by the team way before the reversing project commenced.
+Collision data:
+4 bytes unkInt
+4 bytes triggerAmt
+4 bytes grpAmt
+4 bytes triAmt
+4 bytes vertexAmt
+loop triggerAmt:
+	0xC bytes vec3_1
+	4 bytes unkFlag1
+	0xC bytes vec3_2
+	4 bytes unkFlag2
+loop grpAmt:
+	4 bytes groupSize
+	4 bytes groupOffset
+loop triAmt:
+	8 bytes packedTriangleInfo
+loop vertexAmt:
+	0x10 bytes vertex
+
+
+
+
+
 
 
 

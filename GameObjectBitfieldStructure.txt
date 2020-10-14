@@ -1,0 +1,46 @@
+Object bitfield structure:
+(bitfield >> 0x14 & 0xFF) - InstanceNode type // valid InstanceNode type is between 0 and 8
+// Same InstanceNode types are
+// 0,3,4,5
+// 2,6,7 (only difference is that these are missing a structure in a field)
+(bitfield >> 0xC & 0xFF) - Unknown // when InstanceNode type is 1 must be 0x10 or 0x11 else considered as InstanceNode type 2,6,7
+(bitfield >> 0x6 & 0x3F) - UnkArray size when it comes to OGI stuff
+(bitfield & 0x3F) - UnkArray size when it comes to OGI stuff
+
+Playable character max props:
+	Flags - 0x9
+	Floats - 0x38
+	Ints - 0x3
+Type 1:
+	Flags - 0x0
+	Floats - 0x1
+	Ints - 0x2
+Type 2:
+	Flags - 0x0
+	Floats - 0x3
+	Ints - 0x2
+Type 3:
+	Flags - 0x1
+	Floats - 0x6
+	Ints - 0x3
+Type 4:
+	Flags - 0x0
+	Floats - 0x1
+	Ints - 0x2
+Type 5:
+	Flags - 0x1
+	Floats - 0x4
+	Ints - 0x2
+Type 6:
+	Flags - 0x0
+	Floats - 0x1
+	Ints - 0x3
+Type 7:
+	Flags - 0x0
+	Floats - 0x12
+	Ints - 0x2
+Type 8:
+	Flags - 0x0
+	Floats - 0x1
+	Ints - 0x2
+

@@ -1,0 +1,22 @@
+Animation stuff(2nd Section "Transformations"):
+// Values are stored as a frame buffer value, so 4096 for translation and scale
+// For rotations stored as Int16 rotation
+Transformation 1 - Translate model X
+Transformation 2 - Translate model Z
+Transformation 3 - Translate model Y
+Transformation 4 - Rotate model X
+Transformation 5 - Rotate model Z
+Transformation 6 - Rotate model Y
+Transformation 7 - Scale model X
+Transformation 8 - Scale model Y
+Transformation 9 - Translate Bone 1 X
+Transformation 10 - Translate Bone 1 Z
+Transformation 11 - Translate Bone 1 Y
+Transformation 12 - Rotate Bone 1 X
+Transformation 13 - Rotate Bone 1 Z
+Transformation 14 - Rotate Bone 1 Y
+Transformation 15 - Scale Bone 1 X?
+Transformation 16 - Scale Bone 1 Y?
+Transformation 17 - Translate Bone 2 X
+Animation stuff(3rd Section "Timesline"):
+Helper variable during calculations is likely a timeline length(in frames?) and hardcoded 2 is Int16 timeline stamp
