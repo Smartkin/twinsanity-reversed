@@ -1,0 +1,37 @@
+0xC0D3A0 - ChunkData + 0x110
+0x309BE4 - *ChunkData
+0xC0D290 - ChunkData
+0x30A0C8 - *VeryBigBOI
+0xBF3260 - Likely load of Crash's icon texture
+
+offset 0x6C and 0x74 for some unknown methods, need research potential, renderer
+
+0x3D4780 - MainGifDMATag
+Unpacked default state:
+QWC - 0x54 (84 qwords transfered)
+PCE - 00 (Nothing performed)
+ID - 001 (cnt)
+IRQ - 0 (No interrupt request)
+ADDR - 0
+SPR - 0 (Memory address)
+
+0x3D4790 - MainGifTag
+Unpacked default state:
+NLOOP - 0x53 (83)
+EOP - 1 (End of GS packet)
+PRE - 1 (PRIM field enabled)
+PRIM - 00000000100 (Data to be set in PRIM register)
+	Unpacked:
+		100 - Triangle Strip
+		0 - Flat Shading
+		0 - Texture Mapping OFF
+		0 - Fogging OFF
+		0 - Alpha Blending OFF
+		0 - 1 Pass AA OFF
+		0 - STQ value is used
+		0 - Environment of Context 1 is used
+		0 - Unfixed (Normal) fragment value control
+FLG - 00 (PACKED)
+NREG - 1
+	Unpacked:
+		0 - 0x0E (A+D)

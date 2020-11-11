@@ -1,0 +1,28 @@
+// This document has some misc notes where I didn't know where else to put lmao
+
+Twinsanity object: Reading is mostly correct aside from the last bytes that need to be read in a specific way,
+using object's header/bitfield(first 4 bytes iirc)
+
+header & 0x20000000 != 0x0 - Object contains instance properties
+header & 0x40000000 != 0x0 - Object contains GameObjectLoadedResources
+
+Twinsanity's default scissoring area for Context 2:
+SCAX0 - 0
+SCAX1 - 0x400 (0d1024)
+SCAY0 - 0
+SCAY1 - 0x400 (0d1024)
+
+Twinsanity's default texture information setting (TEX0_2 register) for Context 2:
+Texture base pointer(TBP0) - 0x800 (Word address = 0x20000)
+Texture buffer width(TBW) - 0d8 (Width in units of texels = 512)
+Texture Pixel Storage Format(PSM) - 0b000001 (PSMCT24)
+Texture Width(TW) - 0b1010 (0d10) (Width = 2^10 = 1024)
+Texture Height(TH) - 0b1010 (0d10) (Height = 2^10 = 1024)
+Texture Color Component(TCC) - 1 (RGBA)
+Texture Function(TFX) - 0b00 (MODULATE)
+CLUT Buffer Base Pointer(CBP) - 0
+CLUT Pixel Storage Format(CPSM) - 0 (PSMCT32)
+CLUT Storage Mode(CSM) - 0 (CMS1)
+CLUT Entry Offset(CSA) - 0
+CLUT Buffer Load Control(CLD) - 0 (Temporary buffer contents are not changed)
+
