@@ -2,15 +2,22 @@ Animation structure:
 4 bytes bitfield
 /*
 	Bitfield information:
-		2 - unkFlag1
-		3 - unkFlag2
-		5-21 - unkShort
+		0 - Has anim data 1
+		1 - Has anim data 2
+		2-17 - unkBlobSizeHelper
+		18-22 - unkValue
 */
 4 bytes unkBlobSizePacked:
 	Unpack:
-		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + // Bone settings?
-		(unkBlobSizePacked >> 0xA & 0xFFE) + // Transformations
-		(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2; // Timelines?
+		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + // Bone settings, collection of short[4]
+													  // short[0] - bitfield, upper 4 bits store bone related value (basically unused),
+														(short[0] >> 0xD & 0x1) - unkFlag
+														(short[0] >> 0xC & 0x1) - unkFlag2
+													  // short[1] - Transformation choice bitfield (first 9 bits, rest unused)
+													  // short[2] - Transformation index
+													  // short[3] - Split transformation index
+		(unkBlobSizePacked >> 0xA & 0xFFE) + // Transformations, collection of shorts
+		(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2; // Transformations but split in 2 parts
 2 bytes unkBlobSizeHelper
 blobSize bytes
 4 bytes unkBlobSizePacked
@@ -21,10 +28,7 @@ Texture structure:
 (0x20)32 bytes of metadata (goes completely unused)
 (size - 128) bytes of Texture data // VIF Code that tells to transfer GS Packet data and the image data itself
 Texture data VIF code structure:
-	UNPACK 0 S-32 into VU mem [addr] // Usually the size of the Texture, unpacks actually nothing
-	NOP
-	NOP
-	DIRECT amount // Dump next (amount * 0x10) bytes into GS through PATH2
+	DMATag (Tag ID - ret, QWC - 5 + (QWC in texture data), Extra data - DIRECT VIF command)
 		GS Packet structure:
 			0x10 GIFTag (EOP = 0, PACKED mode, Ignore PRIM, 1 NREG descriptor, A+D Descriptor, 3 NLOOP)
 			0x10 TRXPOS Description // Coordinates of Source rectangle, coordinates of Destination rectangle, Pixel transmission order
@@ -68,7 +72,7 @@ Texture data VIF code structure:
 
 Materials structure:
 8 bytes header (long)
-4 bytes unkInt
+4 bytes dmaChainIndex
 4 bytes NameSize
 NameSize bytes MaterialName //Completely unused by the game, deleted right after reading
 4 bytes for shadersAmount?
@@ -109,15 +113,15 @@ if (shadersAmount? > 0)
 		19 - DestinationAlphaTest (0 - OFF, 1 - ON)
 		20 - DestinationAlphaTestMode (0 - PixelAlpha == 0 pass, 1 - PixelAlpha == 1 pass)
 		21-22 - DepthTestMethod (00 - NEVER, 01 - ALWAYS, 10 - GEQUAL, 11 - GREATER)
-		23-25 - UnkVal4
+		23-25 - UnkVal1
 		26 - ShadingMethod (0 - Flat Shading, 1 - Gourand Shading)
 		27 - TextureMapping (0 - OFF, 1 - ON)
 		28 - MethodOfSpecifyingTextureCoordinates (1 - STQ Value, 0 - UV Value) // It's the other way around in docs but Twins code uses XOR
 		29 - Fogging (0 - OFF, 1 - ON)
 		30 - Context (0 - Context 1, 1 - Context 2)
 		31 - Unused
-		32-34 - UnkVal5
-		35-37 - UnkVal6
+		32-34 - UnkVal2 - UnkVec3 related
+		35-37 - UnkVal3 - UnkVec3 related
 		38 - UsePresetAlphaRegSettings (0 - use the 4 values below, 1 - use preset, disregard the 4 values below)
 		39-40 - Spec of Input Color Value A (00 - Cs RGB value of the source is used, 01 - Cd RGB value in the frame buffer is used, 10 - 0, 11 - Reserved)
 		41-42 - Spec of Input Color Value B (00 - Cs RGB value of the source is used, 01 - Cd RGB value in the frame buffer is used, 10 - 0, 11 - Reserved)
@@ -127,10 +131,10 @@ if (shadersAmount? > 0)
 		55 - FilterWhenTextureIsReduced (0 - NEAREST, 1 - LINEAR) // Where are in fact 6 modes, but they are MIP related and Twins uses a hardcoded one when Texture has more than 1 mip level, when texture has more than 1 mip level a value of 0b100 is used meaning LINEAR_MIPMAP_NEAREST
 		// ^^^^ This is also TextureFilterWhenTextureIsExpanded (drawn normally) 0 - NEAREST, 1 - LINEAR, some shader types ignore this and always default to either NEAREST or LINEAR
 		56 - AlphaCorrectionValue (0 or 1) (Sets MSB of Alpha value for drawing to the frame buffer)
-		57 - UnkFlag13
-		58 - UnkFlag14
+		57 - UnkFlag1
+		58 - UnkFlag2
 		59 - Z_ValueDrawingMask (0 - Z Buffer is updated, 1 - Z buffer is not updated regardless of the result of the depth test)
-		60 - UnkFlag16
+		60 - UnkFlag3 - UnkVec2 related
 		61 - BlobFlag
 		62-63 - Unused
 	*/
@@ -157,22 +161,22 @@ if (shadersAmount? > 0)
 
 
 OGI Structure:
-0x10 bytes Header data (byte 1 - Type1 struct amount, byte 2 - Type2 struct amount, byte 6 - Linked rigid models amount,
-						byte 7 - Skin flag, byte 8 - Blend skin flag, byte 9 - Type3 struct amount)
+0x10 bytes Header data (byte 1 - Bone structs amount, byte 2 - Type2 struct amount, byte 3 - Unknown amount of OgiType1Rel]
+						byte 6 - Linked rigid models amount, byte 7 - Skin flag, byte 8 - Blend skin flag, byte 9 - Type3 struct amount)
 0x20 bytes BoundingBox
-loop Header.byte_1 amount and store in Type1 struct:
-	4 bytes unkInt1 (only first byte is taken)
-	4 bytes unkInt2 (only first byte is taken)
-	4 bytes unkInt3 (only first byte is taken)
-	4 bytes unkInt4 (only first byte is taken)
-	4 bytes unkInt5 (only first byte is taken)
+loop Header.byte_1 amount and store in Bone struct:
+	4 bytes unkInt1 (only first byte is taken) OgiType1RelIndex
+	4 bytes boneIndex (only first byte is taken) Used in animations
+	4 bytes unkInt3 (only first byte is taken) OgiType1RelIndex
+	4 bytes unkInt4 (only first byte is taken) (0 - 15)
+	4 bytes unkInt5 (only first byte is taken) (0 - 15)
 	0x10 bytes unkVec1
-	0x10 bytes unkVec2
+	0x10 bytes bonePosition?
 	0x10 bytes unkVec3
 	0x10 bytes unkVec4
 	0x10 bytes unkVec5
 loop Header.byte_2 amount and store in Type2 struct:
-	4 bytes unkInt1 (only first byte is taken)
+	4 bytes unkInt1 (only first byte is taken) OgiType1RelIndex
 	4 bytes unkInt2 (only first byte is taken)
 	0x40 bytes unkMatrix
 if (Header.byte_6 > 0) {
@@ -186,11 +190,12 @@ loop Header.byte_1 amount:
 4 bytes blendSkinID
 loop Header.byte_9 amount and store in Type3 struct:
 	ReadOGIType3();
-Header.byte_9 bytes type3Related
+Header.byte_9 bytes unkMatrixIndex
 
 //ReadOGIType3()
 {
-	0x16 bytes Header data
+	0x16 bytes Header data // 11 shorts
+	// Info on blob and shorts: https://discord.com/channels/380955743181864970/380955743181864974/797478328940363826
 	4 bytes blobSize
 	blobSize bytes unkBlob
 }
@@ -234,19 +239,19 @@ loop subSkinAmt:
 
 Blend skin structure:
 4 bytes subBlendAmount
-4 bytes unkAmt
+4 bytes subBlendsVectorPacks
 loop subBlendAmount:
-	4 bytes type1Amount
+	4 bytes vectorStructures
 	4 bytes materialID
-	loop type1Amount and store in type1 struct:
+	loop vectorStructures and store in VectorStructure struct:
 		4 bytes vifBlockSize
 		4 bytes unkInt
 		vifBlockSize bytes vifCode
 		0xC bytes unkData
-		loop unkAmt: // Array for next blobs is created of size (unkAmt & 0xFF) so I doubt unkAmt more than 255 matters
-			4 bytes blobSize
-			4 bytes unkInt
-			(blobSize << 4) bytes unkBlob
+		loop subBlendsVectorPacks: // Max 255
+			4 bytes vectorDataSize
+			4 bytes vectorAmount
+			(vectorDataSize << 4) bytes vectorData // Vector data in V4-8 format
 
 Mesh structure:
 Same as for RigidModel
@@ -265,9 +270,9 @@ if (lodType == 0x1001) {
 }
 if (lodType == 0x1002) {
 	1 byte meshAmount
-	4 bytes unkInt
-	4 bytes drawDistance
-	0xC bytes unkInts // technically just 3 ints read into a 3 integer array
+	4 bytes minDrawDistance
+	4 bytes maxDrawDistance
+	0xC bytes modelRenderDistances // technically just 3 ints read into a 3 integer array
 	loop meshAmount:
 		4 bytes meshID
 }
@@ -323,7 +328,7 @@ if (subTypeIndex1 != 3) { // This is the same as for subTypeIndex2
 			4 bytes unkFloat5
 			4 bytes unkFloat6
 			1 byte unkByte2
-		0x1C02: // Cameta point
+		0x1C02: // Camera point
 			4 bytes unkInt
 			4 bytes unkFloat
 			4 bytes unkFloat2
@@ -332,13 +337,14 @@ if (subTypeIndex1 != 3) { // This is the same as for subTypeIndex2
 			4 bytes unkInt
 			4 bytes unkFloat
 			4 bytes unkFloat2
-			0x20 bytes unkBoundingBox
+			0x10 bytes LineStart
+			0x10 bytes LineEnd
 		0x1C04: // Camera Path (polygonal chain)
 			4 bytes unkInt
 			4 bytes unkFloat
 			4 bytes unkFloat2
 			4 bytes vectorAmount
-			(vectorAmount * 0x10) bytes unkVectors
+			(vectorAmount * 0x10) bytes pathPoints
 			4 bytes unkUInt
 			(unkUInt * 0x8) bytes unkData
 		0x1C05: // Unused (NULL)
@@ -383,7 +389,7 @@ if (subTypeIndex1 != 3) { // This is the same as for subTypeIndex2
 //ReadBaseTrigger()
 {
 	4 bytes Header
-	4 bytes Enabled
+	4 bytes nodeActivators
 	4 bytes unkFac1
 	0x10 bytes triggerRot
 	0x10 bytes triggerPos
@@ -397,10 +403,15 @@ if (subTypeIndex1 != 3) { // This is the same as for subTypeIndex2
 
 Trigger structure:
 ReadBaseTrigger()
-2 bytes unkShort
-2 bytes unkShort2
-2 bytes unkShort3
-2 bytes unkShort4
+// In game's code base trigger's header is usually treated as an 8 byte header.
+	// bit 11 - argument 1 enabled
+	// bit 8 - argument 2 enabled
+	// bit 9 - argument 3 enabled
+	// bit 10 - argument 4 enabled
+2 bytes arg1
+2 bytes arg2
+2 bytes arg3
+2 bytes arg4
 
 
 Instance structure:
@@ -424,8 +435,8 @@ loop positionsAmt:
 loop pathsAmt:
 	2 bytes pathID
 2 bytes objectID
-2 bytes unkShort
-2 bytes unkShort2
+2 bytes RefListIndex
+2 bytes OnSpawnScriptID
 // Rest is reading instance properties
 
 
@@ -487,7 +498,7 @@ loop 0x10:
 		ReadParticleType();
 		ParticlesLoaded++;
 	loop typesOverflow:
-		ReadParticleType(); // Read through all the types that couldn't be filled into ParticleType buffer
+		ReadParticleType(); // Read through all the types that couldn't be filled into ParticleType buffer, discard them
 	if (!Default) { // This is not used when reading Default Particle Data
 		4 bytes particleInstAmt?
 		if (particleDataSecType == 0x20) {
@@ -497,7 +508,7 @@ loop 0x10:
 			particleInstAmt? = 0x300 - InstancesAmount;
 		}
 		loop particleInstAmt?:
-			0xC bytes unkData
+			0xC bytes Position?
 			if (particleDataSecType >= 0x7) {
 				2 bytes unkShort1
 				2 bytes unkShort2
@@ -542,7 +553,7 @@ loop 0x10:
 	0x10 bytes particleName
 	if (particleDataSecType == 0x20) {
 		1 byte pad
-		1 byte unkInt
+		1 byte unkByte1
 	}
 	2 bytes unkUShort1
 	2 bytes unkUShort2
@@ -678,7 +689,7 @@ loop 0x10:
 			}
 		}
 	} else {
-		loop 4:
+		loop 5:
 			if (particleDataSecType > 0xA && particleDataSecType == 0x20) {
 				if (i == 0) {
 					4 bytes unkFloat37
@@ -765,6 +776,13 @@ if (unkData & 0x10000 != 0) {
 if (unkData & 0x20000 != 0) {
 // Stored in UnkStruct(Probably something like LightsRenderer or something Idk)
 	0x400 bytes unkBlob
+	// (0x18(24) bytes allocated for 6 bool lighting flags)
+	// Flag 1 (Needs Flag 2 ON or else crashes the game)
+	// Flag 2 (Independent can be turned on or off)
+	// Flag 3 (Needs Flag 3 ON or else crashes the game)
+	// Flag 4 (Independent can be turned on or off)
+	// Flag 5 (Needs Flag 6 ON or else crashes the game)
+	// Flag 6 (Independent can be turned on or off)
 	4 bytes lightsAmount
 	4 bytes lightAmbientAmount
 	4 bytes lightDirectionalAmount
@@ -791,7 +809,6 @@ if (unkData & 0x20000 != 0) {
 }
 // Root scenery type
 if (sceneryType == 0x160A) {
-	// Stored in separate unknown structure
 	4 bytes unkUInt
 	ReadScenery_0x1600();
 }
@@ -806,15 +823,15 @@ if (sceneryType == 0x160A) {
 	0x10 bytes unkVec2
 }
 
-//ReadScenery_0x1600()
+//ReadScenery_0x1600() // Scenery node
 {
 	ReadBaseScenery();
 	0x20 bytes sceneryTypes (int[8])
 	loop 8:
 		match sceneryTypes[i]:
-			0x1600:
+			0x1600: // Scenery node
 				ReadScenery_0x1600();
-			0x1605:
+			0x1605: // Scenery leaf
 				ReadBaseScenery();
 }
 
@@ -860,10 +877,9 @@ if (modelAmount != 0) {
 					(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x4
 		*/
 		blobSize bytes dynBlob
-		1 byte unkByte
-		4 bytes modelID?
-		0x10 bytes unkVec1
-		0x10 bytes unkVec2
+		1 byte lodFlag
+		4 bytes modelID // Mesh or LOD depending on flag
+		0x20 bytes boundingBox
 }
 
 
@@ -892,6 +908,24 @@ loop amount:
 		ReadUnkStruct2();
 	}
 }
+
+Instance template:
+4 bytes nameLength
+nameLength bytes templateName
+2 bytes objectId
+1 byte unkByte1
+1 byte unkByte2
+4 bytes unkInt1
+4 bytes unkInt2
+4 bytes unkInt3
+if (unkInt1 != 0) {
+	loop unkInt1:
+		2 bytes unkShorts
+}
+1 byte unkByte3
+1 byte unkByte4
+// Rest is reading instance properties
+
 
 // This one is quite special because this data type is read
 // unlike any other the game takes an approach of directly uploading
@@ -933,14 +967,29 @@ loop vectors:
 	16 bytes vector
 
 
+PTC structure:
+4 bytes TextureID
+4 bytes MaterialID
+variable bytes TextureData // Look at texture structure
+variable bytes MaterialData // Look at material structure
 
 
+PSM structure:
+// List of PTC
 
 
-
-
-
-
+Save file? structure:
+loop 16:
+	4 byte unkInt[index]
+4 byte resourceAmount
+loop resourceAmount:
+	4 bytes resourceNameLength
+	resourceNameLength bytes resourceName
+	1 byte flag
+	if (flag != 0) {
+		32 bytes unkChunkRelatedBytes
+	}
+//Rest needs more research
 
 
 

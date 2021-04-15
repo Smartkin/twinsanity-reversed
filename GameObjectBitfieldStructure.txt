@@ -1,11 +1,17 @@
 Object bitfield structure:
-(bitfield >> 0x14 & 0xFF) - InstanceNode type // valid InstanceNode type is between 0 and 8
-// Same InstanceNode types are
-// 0,3,4,5
-// 2,6,7 (only difference is that these are missing a structure in a field)
-(bitfield >> 0xC & 0xFF) - Unknown // when InstanceNode type is 1 must be 0x10 or 0x11 else considered as InstanceNode type 2,6,7
+(bitfield >> 0x1F & 0x1) - Has valid instance properties pointer
+(bitfield >> 0x1E & 0x1) - Has resource references stored
+(bitfield >> 0x1D & 0x1) - Has instance properties stored
+(bitfield >> 0x1C & 0x1) - Instance properties loaded flag
+(bitfield >> 0x14 & 0xFF) - Object type // valid between 0 and 8
+// InstanceNode is created depending on object type
+// 0,3,4,5 - InstanceNode Type 0
+// 2,6,7 - InstanceNode Type 0 (Has a field nulled)
+// 1 - InstanceNode Type 1 (If UnkInstNodeVal != 0x10 OR UnkInstNodeVal != 0x11 THEN InstanceNode Type 0)
+// 8 - InstanceNode Type 8
+(bitfield >> 0xC & 0xFF) - UnkInstNodeVal // when InstanceNode type is 1 must be 0x10 or 0x11 else considered as InstanceNode type 2,6,7
 (bitfield >> 0x6 & 0x3F) - UnkArray size when it comes to OGI stuff
-(bitfield & 0x3F) - UnkArray size when it comes to OGI stuff
+(bitfield & 0x3F) - Amount of Type 2 OGI
 
 Playable character max props:
 	Flags - 0x9
@@ -43,4 +49,12 @@ Type 8:
 	Flags - 0x0
 	Floats - 0x1
 	Ints - 0x2
+
+
+Int[0] - Range 0-31, wrapped into instance node flags starting from 11th bit
+Int[1] - Range 0-65535
+
+
+
+
 

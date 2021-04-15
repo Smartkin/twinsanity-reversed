@@ -1,10 +1,22 @@
 // This document has some misc notes where I didn't know where else to put lmao
 
-Twinsanity object: Reading is mostly correct aside from the last bytes that need to be read in a specific way,
-using object's header/bitfield(first 4 bytes iirc)
+// Duplicate asset IDs
+Scripts:
+	Dupe: 3941: COM_TRIBESMAN_FALL / COM_DOOR_CORTEX_LAB_DEFAULT
+	Dupe: 3827: COM_TOTEM_HOKEM_FLIP_FLOP_ROOF_PLATFORM_DEFAULT / COM_DOCAMOK_BEAR_MOVE
+	Dupe: 3053: COM_PIRATE_MISSILE_INIT / COM_GENERIC_FURNITURE_WAKE_CONTACT_RESPONSE
 
-header & 0x20000000 != 0x0 - Object contains instance properties
-header & 0x40000000 != 0x0 - Object contains GameObjectLoadedResources
+UInt32 arrays in Objects structure:
+(uint & 0x3FF) - Unk trigger value
+(uint >> 0xA & 0x3FFF) - Trigger script
+(uint >> 0x18 & 0x1) - Script caller index
+
+Tigger bitfield:
+(bitfield >> 0x8 & 0x1) - Argument2 used
+(bitfield >> 0x9 & 0x1) - Argument3 used
+(bitfield >> 0xA & 0x1) - Argument4 used
+(bitfield >> 0xB & 0x1) - Argument1 used
+(bitfield >> 0x13 & 0x1) - Acts as disabled flag if Activators is 1
 
 Twinsanity's default scissoring area for Context 2:
 SCAX0 - 0
@@ -25,4 +37,64 @@ CLUT Pixel Storage Format(CPSM) - 0 (PSMCT32)
 CLUT Storage Mode(CSM) - 0 (CMS1)
 CLUT Entry Offset(CSA) - 0
 CLUT Buffer Load Control(CLD) - 0 (Temporary buffer contents are not changed)
+
+DMA chains information:
+Chain 0, 1, 2: 30000 qwords capacity
+Chain 0: Holds all the shader VU programs
+
+Header script UnkInt in the pair. I think it's appropriate to call it the "Script calling convention":
+0 - Context executing the script // Similar to "thiscall"
+2 - Checks upper 16 bits of UnkInt to not be -1. If so uses a special node 0x6 which has an array of contexes and uses the upper 16 bits as index // Other call Type 1?
+3 - Checks upper 16 bits of UnkInt to not be -1. If so uses lower 8 bits of the upper 16 bits as index in a global array of instance context references which is filled up based on the mentioned UnkShort in instance // Other call Type 2?
+4 - Grabs a context from some global variable // Chunk call?
+8 - Grabs unknown secondary context of the context executing script // Linked call?
+
+Script support struct 1 bitfield structure:
+(bitfield & 0x7) - Unk value
+(bitfield >> 0x3 & 0xF) - Unk value
+(bitfield & 0xFF) - Unk value
+(bitfield >> 0xB & 0x2) - Unk value
+(bitfield >> 0xD & 0x1) - Unk flag
+(bitfield >> 0xE & 0x1) - Unk flag
+(bitfield >> 0x12 & 0x1) - Unk flag
+Script support struct 1 valid byte slots:
+0x0 - Context receiver index?
+0x1 - Same as 0x0?
+0x2 - For float
+0x3 - For flag
+0x4, 0x5, 0x6, 0x7 - For Vector4
+0x7, 0x8, 0x9 - For Vector3
+0xA - For float
+0xB - For float
+0xF - For float
+0x10 - For float
+0x11 - For float
+0x13 - For float
+0x14 - For float
+0x15 - For ???
+0x16 - For int
+
+Twins controls button indices (system reference):
+0 - Up arrow
+1 - Down arrow
+2 - Left arrow
+3 - Right arrow
+4 - Triangle button
+5 - Cross button
+6 - Circle button
+7 - Square button
+16(0x10) - L1
+17(0x11) - L2
+19(0x13) - R1
+20(0x14) - R2
+Twins controls button indices (node reference) maps to system reference:
+0 - Cross button
+1 - Square button
+2 - Circle button
+3 - L1/L2
+4 - R1/R2
+5 - L2
+6 - Unknown button (0x16)
+
+
 
