@@ -7,7 +7,7 @@ Scripts:
 	Dupe: 3053: COM_PIRATE_MISSILE_INIT / COM_GENERIC_FURNITURE_WAKE_CONTACT_RESPONSE
 
 UInt32 arrays in Objects structure:
-(uint & 0x3FF) - Unk trigger value
+(uint & 0x3FF) - Trigger message number
 (uint >> 0xA & 0x3FFF) - Trigger script
 (uint >> 0x18 & 0x1) - Script caller index
 
@@ -42,14 +42,14 @@ DMA chains information:
 Chain 0, 1, 2: 30000 qwords capacity
 Chain 0: Holds all the shader VU programs
 
-Header script UnkInt in the pair. I think it's appropriate to call it the "Script calling convention":
-0 - Context executing the script // Similar to "thiscall"
-2 - Checks upper 16 bits of UnkInt to not be -1. If so uses a special node 0x6 which has an array of contexes and uses the upper 16 bits as index // Other call Type 1?
-3 - Checks upper 16 bits of UnkInt to not be -1. If so uses lower 8 bits of the upper 16 bits as index in a global array of instance context references which is filled up based on the mentioned UnkShort in instance // Other call Type 2?
-4 - Grabs a context from some global variable // Chunk call?
-8 - Grabs unknown secondary context of the context executing script // Linked call?
+Script state bitfield structure:
+(bitfield & 0x400) - If first state body should be skipped
+(bitfield & 0x800) - If loops?
+(bitfield & 0x1000) - If stored index is script reference or a slotted script in the object
+(bitfield & 0x4000) - If control packet is attached
+(bitfield & 0x8000) - If there is a next state
 
-Script support struct 1 bitfield structure:
+Script control packet bitfield structure:
 (bitfield & 0x7) - Unk value
 (bitfield >> 0x3 & 0xF) - Unk value
 (bitfield & 0xFF) - Unk value
@@ -57,7 +57,8 @@ Script support struct 1 bitfield structure:
 (bitfield >> 0xD & 0x1) - Unk flag
 (bitfield >> 0xE & 0x1) - Unk flag
 (bitfield >> 0x12 & 0x1) - Unk flag
-Script support struct 1 valid byte slots:
+
+Script control packet valid byte slots:
 0x0 - Context receiver index?
 0x1 - Same as 0x0?
 0x2 - For float

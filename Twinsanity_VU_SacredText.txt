@@ -4473,38 +4473,43 @@ UNKNOWN_LOOP:
   2e28b8:	3c 03 00 80 ff 02 00 00 	nop 	nop
   2e28c0:	3c 03 00 80 ff 02 00 40 	nop[e] 	nop
   2e28c8:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e28d0:	bc 06 08 80 ff 02 00 00 	nop 	xtop vi08
-  2e28d8:	02 40 8b 01 ff 02 00 00 	nop 	lq.xy vf11xy,2(vi08)
-  2e28e0:	ff 01 0c 10 ff 02 00 00 	nop 	iaddiu vi12,vi00,0x1ff
-  2e28e8:	03 00 0b 10 ff 02 00 00 	nop 	iaddiu vi11,vi00,3
-  2e28f0:	01 40 0a 09 ff 02 00 00 	nop 	ilw.x vi10,1(vi08)x
-  2e28f8:	03 40 09 10 ff 02 00 00 	nop 	iaddiu vi09,vi08,3
-  2e2900:	4e 70 e1 01 ff 02 00 00 	nop 	lq.xyzw vf01xyzw,78(vi14)
-  2e2908:	4f 70 e2 01 ff 02 00 00 	nop 	lq.xyzw vf02xyzw,79(vi14)
-  2e2910:	b0 4a 0a 80 ff 02 00 00 	nop 	iadd vi10,vi09,vi10
-  2e2918:	50 70 e3 01 ff 02 00 00 	nop 	lq.xyzw vf03xyzw,80(vi14)
-  2e2920:	51 70 e4 01 ff 02 00 00 	nop 	lq.xyzw vf04xyzw,81(vi14)
-  2e2928:	00 48 ec 01 ff 02 00 00 	nop 	lq.xyzw vf12xyzw,0(vi09)
-  2e2930:	01 48 ed 01 ff 02 00 00 	nop 	lq.xyzw vf13xyzw,1(vi09)
-  2e2938:	04 48 ee 01 ff 02 00 00 	nop 	lq.xyzw vf14xyzw,4(vi09)
-  2e2940:	05 48 ef 01 ff 02 00 00 	nop 	lq.xyzw vf15xyzw,5(vi09)
-  2e2948:	08 48 f0 01 3c 61 ec 01 	itof0.xyzw vf12xyzw,vf12xyzw 	lq.xyzw vf16xyzw,8(vi09)
-  2e2950:	09 48 f1 01 3c 69 ed 01 	itof0.xyzw vf13xyzw,vf13xyzw 	lq.xyzw vf17xyzw,9(vi09)
-  2e2958:	0c 48 f2 01 3c 71 ee 01 	itof0.xyzw vf14xyzw,vf14xyzw 	lq.xyzw vf18xyzw,12(vi09)
-  2e2960:	0d 48 f3 01 3c 79 ef 01 	itof0.xyzw vf15xyzw,vf15xyzw 	lq.xyzw vf19xyzw,13(vi09)
-  2e2968:	04 48 01 10 18 65 eb 01 	mulx.xyzw vf20xyzw,vf12xyzw,vf11x 	iaddiu vi01,vi09,4
-  2e2970:	08 48 02 10 59 6d eb 01 	muly.xyzw vf21xyzw,vf13xyzw,vf11y 	iaddiu vi02,vi09,8
-  2e2978:	0c 48 03 10 98 75 eb 01 	mulx.xyzw vf22xyzw,vf14xyzw,vf11x 	iaddiu vi03,vi09,12
-  2e2980:	0c 50 0a 10 ff 02 00 00 	nop 	iaddiu vi10,vi10,12
-  2e2988:	10 48 09 10 d9 7d eb 01 	muly.xyzw vf23xyzw,vf15xyzw,vf11y 	iaddiu vi09,vi09,0x10
+  // The magical skin calculations
+  // REG: vi08 - SKIN_DATA_POINTER
+  //	  vi09 - VECTOR_DATA_POINTER
+  //	  vi10 - UNKNOWN_SECTION_POINTER
+  //	  vf11xy - SCALE_VECTOR
+  2e28d0:	bc 06 08 80 ff 02 00 00 	nop 	xtop SKIN_DATA_POINTER // Load skin data pointer 
+  2e28d8:	02 40 8b 01 ff 02 00 00 	nop 	lq.xy SCALE_VECTOR.xy,2(SKIN_DATA_POINTER) // Load XY components of vector at offset 0x20
+  2e28e0:	ff 01 0c 10 ff 02 00 00 	nop 	iaddiu vi12,vi00,0x1ff // Set address to 0x1FF * 8s
+  2e28e8:	03 00 0b 10 ff 02 00 00 	nop 	iaddiu vi11,vi00,3 // Set address to 0x3 * 8
+  2e28f0:	01 40 0a 09 ff 02 00 00 	nop 	ilw.x vi10,1(SKIN_DATA_POINTER)x // Load address offset component at offset 0x10
+  2e28f8:	03 40 09 10 ff 02 00 00 	nop 	iaddiu VECTOR_DATA_POINTER,SKIN_DATA_POINTER,3 // Advance pointer by 3 Vector4s
+  2e2900:	4e 70 e1 01 ff 02 00 00 	nop 	lq.xyzw vf01xyzw,78(vi14) // Unknown Vector4 load
+  2e2908:	4f 70 e2 01 ff 02 00 00 	nop 	lq.xyzw vf02xyzw,79(vi14) // Unknown Vector4 load
+  2e2910:	b0 4a 0a 80 ff 02 00 00 	nop 	iadd UNKNOWN_SECTION_POINTER,VECTOR_DATA_POINTER,vi10			// Setup UNKNOWN_SECTION_POINTER
+  2e2918:	50 70 e3 01 ff 02 00 00 	nop 	lq.xyzw vf03xyzw,80(vi14) // Unknown Vector4 load
+  2e2920:	51 70 e4 01 ff 02 00 00 	nop 	lq.xyzw vf04xyzw,81(vi14) // Unknown Vector4 load
+  2e2928:	00 48 ec 01 ff 02 00 00 	nop 	lq.xyzw vf12xyzw,0(VECTOR_DATA_POINTER) // Load the first vector
+  2e2930:	01 48 ed 01 ff 02 00 00 	nop 	lq.xyzw vf13xyzw,1(VECTOR_DATA_POINTER) // Load the second vector
+  2e2938:	04 48 ee 01 ff 02 00 00 	nop 	lq.xyzw vf14xyzw,4(VECTOR_DATA_POINTER) // Load the fifth vector
+  2e2940:	05 48 ef 01 ff 02 00 00 	nop 	lq.xyzw vf15xyzw,5(VECTOR_DATA_POINTER) // Load the sixth vector
+  2e2948:	08 48 f0 01 3c 61 ec 01 	itof0.xyzw vf12xyzw,vf12xyzw 	lq.xyzw vf16xyzw,8(VECTOR_DATA_POINTER) // Convert integers to floats, Load the ninth vector
+  2e2950:	09 48 f1 01 3c 69 ed 01 	itof0.xyzw vf13xyzw,vf13xyzw 	lq.xyzw vf17xyzw,9(VECTOR_DATA_POINTER) // Convert integers to floats, Load the tenth vector
+  2e2958:	0c 48 f2 01 3c 71 ee 01 	itof0.xyzw vf14xyzw,vf14xyzw 	lq.xyzw vf18xyzw,12(VECTOR_DATA_POINTER) // Convert integers to floats, Load the 13th vector
+  2e2960:	0d 48 f3 01 3c 79 ef 01 	itof0.xyzw vf15xyzw,vf15xyzw 	lq.xyzw vf19xyzw,13(VECTOR_DATA_POINTER) // Convert integers to floats, Load the 14th vector
+  2e2968:	04 48 01 10 18 65 eb 01 	mulx.xyzw vf20xyzw,vf12xyzw,SCALE_VECTOR.X 	iaddiu vi01,VECTOR_DATA_POINTER,4 // Scale vectors, Setup UNKNOWN_POINTER
+  2e2970:	08 48 02 10 59 6d eb 01 	muly.xyzw vf21xyzw,vf13xyzw,SCALE_VECTOR.Y 	iaddiu vi02,VECTOR_DATA_POINTER,8 // Scale vectors, Setup UNKNOWN_POINTER
+  2e2978:	0c 48 03 10 98 75 eb 01 	mulx.xyzw vf22xyzw,vf14xyzw,SCALE_VECTOR.X 	iaddiu vi03,VECTOR_DATA_POINTER,12  // Scale vectors, Setup UNKNOWN_POINTER
+  2e2980:	0c 50 0a 10 ff 02 00 00 	nop 	iaddiu vi10,UNKNOWN_SECTION_POINTER,12 // Setup UNKNOWN_POINTER
+  2e2988:	10 48 09 10 d9 7d eb 01 	muly.xyzw vf23xyzw,vf15xyzw,SCALE_VECTOR.Y 	iaddiu vi09,vi09,0x10
   2e2990:	f0 a7 e9 03 3c 81 f0 01 	itof0.xyzw vf16xyzw,vf16xyzw 	sq.xyzw vf20xyzw,-16(vi09)
   2e2998:	15 48 0a 50 3c 89 f1 01 	itof0.xyzw vf17xyzw,vf17xyzw 	ibeq vi10,vi09,0x2e2a48
   2e29a0:	f1 af e9 03 3c 91 f2 01 	itof0.xyzw vf18xyzw,vf18xyzw 	sq.xyzw vf21xyzw,-15(vi09)
   2e29a8:	10 08 01 10 3c 99 f3 01 	itof0.xyzw vf19xyzw,vf19xyzw 	iaddiu vi01,vi01,0x10
-  2e29b0:	f0 b7 e1 03 18 86 eb 01 	mulx.xyzw vf24xyzw,vf16xyzw,vf11x 	sq.xyzw vf22xyzw,-16(vi01)
-  2e29b8:	11 08 0a 50 59 8e eb 01 	muly.xyzw vf25xyzw,vf17xyzw,vf11y 	ibeq vi10,vi01,0x2e2a48
-  2e29c0:	f1 bf e1 03 98 96 eb 01 	mulx.xyzw vf26xyzw,vf18xyzw,vf11x 	sq.xyzw vf23xyzw,-15(vi01)
-  2e29c8:	10 10 02 10 d9 9e eb 01 	muly.xyzw vf27xyzw,vf19xyzw,vf11y 	iaddiu vi02,vi02,0x10
+  2e29b0:	f0 b7 e1 03 18 86 eb 01 	mulx.xyzw vf24xyzw,vf16xyzw,SCALE_VECTOR.X 	sq.xyzw vf22xyzw,-16(vi01)
+  2e29b8:	11 08 0a 50 59 8e eb 01 	muly.xyzw vf25xyzw,vf17xyzw,SCALE_VECTOR.Y 	ibeq vi10,vi01,0x2e2a48
+  2e29c0:	f1 bf e1 03 98 96 eb 01 	mulx.xyzw vf26xyzw,vf18xyzw,SCALE_VECTOR.X 	sq.xyzw vf23xyzw,-15(vi01)
+  2e29c8:	10 10 02 10 d9 9e eb 01 	muly.xyzw vf27xyzw,vf19xyzw,SCALE_VECTOR.Y 	iaddiu vi02,vi02,0x10
   2e29d0:	f0 c7 e2 03 ff 02 00 00 	nop 	sq.xyzw vf24xyzw,-16(vi02)
   2e29d8:	0d 10 0a 50 ff 02 00 00 	nop 	ibeq vi10,vi02,0x2e2a48
   2e29e0:	f1 cf e2 03 ff 02 00 00 	nop 	sq.xyzw vf25xyzw,-15(vi02)
@@ -4517,9 +4522,9 @@ UNKNOWN_LOOP:
   2e2a18:	09 48 f1 01 3c 69 ed 01 	itof0.xyzw vf13xyzw,vf13xyzw 	lq.xyzw vf17xyzw,9(vi09)
   2e2a20:	0c 48 f2 01 3c 71 ee 01 	itof0.xyzw vf14xyzw,vf14xyzw 	lq.xyzw vf18xyzw,12(vi09)
   2e2a28:	0d 48 f3 01 3c 79 ef 01 	itof0.xyzw vf15xyzw,vf15xyzw 	lq.xyzw vf19xyzw,13(vi09)
-  2e2a30:	f0 d7 e3 03 18 65 eb 01 	mulx.xyzw vf20xyzw,vf12xyzw,vf11x 	sq.xyzw vf26xyzw,-16(vi03)
-  2e2a38:	e9 1f 0a 52 59 6d eb 01 	muly.xyzw vf21xyzw,vf13xyzw,vf11y 	ibne vi10,vi03,0x2e2988
-  2e2a40:	f1 df e3 03 98 75 eb 01 	mulx.xyzw vf22xyzw,vf14xyzw,vf11x 	sq.xyzw vf27xyzw,-15(vi03)
+  2e2a30:	f0 d7 e3 03 18 65 eb 01 	mulx.xyzw vf20xyzw,vf12xyzw,SCALE_VECTOR.X 	sq.xyzw vf26xyzw,-16(vi03)
+  2e2a38:	e9 1f 0a 52 59 6d eb 01 	muly.xyzw vf21xyzw,vf13xyzw,SCALE_VECTOR.Y 	ibne vi10,vi03,0x2e2988
+  2e2a40:	f1 df e3 03 98 75 eb 01 	mulx.xyzw vf22xyzw,vf14xyzw,SCALE_VECTOR.X 	sq.xyzw vf27xyzw,-15(vi03)
   2e2a48:	01 40 0a 09 ff 02 00 00 	nop 	ilw.x vi10,1(vi08)x
   2e2a50:	03 40 09 10 ff 02 00 00 	nop 	iaddiu vi09,vi08,3
   2e2a58:	3c 03 00 80 ff 02 00 00 	nop 	nop
@@ -4540,12 +4545,12 @@ UNKNOWN_LOOP:
   2e2ad0:	01 00 0d 10 bf 71 cc 01 	mulaw.xyz accxyz,vf14xyz,vf12w 	iaddiu vi13,vi00,1
   2e2ad8:	fc 6b 24 80 be 78 da 01 	maddaz.xyz accxyz,vf15xyz,vf26z 	mtir vi04,vf13y
   2e2ae0:	0f 30 0d 50 4b 85 da 01 	maddw.xyz vf21xyz,vf16xyz,vf26w 	ibeq vi13,vi06,0x2e2b60
-  2e2ae8:	34 21 0c 80 bc 89 cb 01 	mulax.xyz accxyz,vf17xyz,vf11x 	iand vi04,vi04,vi12
+  2e2ae8:	34 21 0c 80 bc 89 cb 01 	mulax.xyz accxyz,vf17xyz,SCALE_VECTOR.X 	iand vi04,vi04,vi12
   2e2af0:	10 20 f9 01 bc 70 d2 01 	maddax.xyz accxyz,vf14xyz,vf18x 	lq.xyzw vf25xyzw,16(vi04)
   2e2af8:	0d 20 f6 01 bd 78 d2 01 	madday.xyz accxyz,vf15xyz,vf18y 	lq.xyzw vf22xyzw,13(vi04)
   2e2b00:	01 68 0d 10 ca 87 d2 01 	maddz.xyz vf31xyz,vf16xyz,vf18z 	iaddiu vi13,vi13,1
   2e2b08:	0e 20 f7 01 9b e7 e0 01 	mulw.xyzw vf30xyzw,vf28xyzw,vf00w 	lq.xyzw vf23xyzw,14(vi04)
-  2e2b10:	0f 20 f8 01 bd c9 cb 01 	mulay.xyz accxyz,vf25xyz,vf11y 	lq.xyzw vf24xyzw,15(vi04)
+  2e2b10:	0f 20 f8 01 bd c9 cb 01 	mulay.xyz accxyz,vf25xyz,SCALE_VECTOR.Y 	lq.xyzw vf24xyzw,15(vi04)
   2e2b18:	18 30 0d 50 bc b0 dc 01 	maddax.xyz accxyz,vf22xyz,vf28x 	ibeq vi13,vi06,0x2e2be0
   2e2b20:	fc 6b 45 80 bf f8 c0 01 	maddaw.xyz accxyz,vf31xyz,vf00w 	mtir vi05,vf13z
   2e2b28:	74 29 0c 80 bd b8 dc 01 	madday.xyz accxyz,vf23xyz,vf28y 	iand vi05,vi05,vi12
@@ -4588,7 +4593,7 @@ UNKNOWN_LOOP:
   2e2c50:	00 78 00 48 ff 02 00 00 	nop 	jr vi15
   2e2c58:	3c 03 00 80 ff 02 00 00 	nop 	nop
   // MicroCode_Program_5 BEGIN
-  2e2c60:	bc 06 08 80 ff 02 00 00 	nop 	xtop vi08
+  2e2c60:	bc 06 08 80 ff 02 00 00 	nop 	xtop vi08				
   2e2c68:	03 00 0b 09 ff 02 00 00 	nop 	ilw.x vi11,3(vi00)x
   2e2c70:	01 40 0a 09 ff 02 00 00 	nop 	ilw.x vi10,1(vi08)x
   2e2c78:	03 40 09 10 ff 02 00 00 	nop 	iaddiu vi09,vi08,3
@@ -6334,6 +6339,7 @@ UNKNOWN_LOOP:
   2e62c8:	da 0f c9 40 bd 0a e2 81 	madda[i].xyzw accxyzw,vf01xyzw,vf02xyzw 	loi 6.28319
   2e62d0:	3c 03 00 80 3f fa e0 41 	maddai[e].xyzw accxyzw,vf31xyzw,i 	nop
   2e62d8:	3c 03 00 80 e9 1f e4 01 	madd.xyzw vf31xyzw,vf03xyzw,vf04xyzw 	nop
+Animation AnimateRotation(bindRotation(vf01), endRot(vf31), factor(vf29))
   2e62e0:	80 00 01 10 6a fa e1 01 	mul.xyzw vf09xyzw,vf31xyzw,vf01xyzw 	iaddiu vi01,vi00,0x80
   2e62e8:	00 00 80 bf 41 4a 09 81 	addy[i].x vf09x,vf09x,vf09y 	loi -1
   2e62f0:	3c 03 00 80 42 4a 09 01 	addz.x vf09x,vf09x,vf09z 	nop
@@ -6364,89 +6370,90 @@ UNKNOWN_LOOP:
   2e63b8:	3c 03 00 80 d3 02 00 01 	maxw.x vf11x,vf00x,vf00w 	nop
   2e63c0:	00 00 40 4b fe 61 00 81 	mulai[i].x accx,vf12x,i 	loi 1.25829e+007
   2e63c8:	3c 03 00 80 7f 5a 00 01 	msubai.x accx,vf11x,i 	nop
-  2e63d0:	87 f9 22 be 3f 5a 00 81 	maddai[i].x accx,vf11x,i 	loi -0.159155
-  2e63d8:	00 00 00 3f 7f 62 00 81 	msubai[i].x accx,vf12x,i 	loi 0.5
-  2e63e0:	00 00 80 3e e7 5a 00 81 	msubi[i].x vf11x,vf11x,i 	loi 0.25
-  2e63e8:	3c 03 00 80 fd 59 0b 01 	abs.x vf11x,vf11x 	nop
-  2e63f0:	3c 03 00 80 e6 5a 00 01 	subi.x vf11x,vf11x,i 	nop
-  2e63f8:	61 26 99 c2 ea 5b 0b 81 	mul[i].x vf15x,vf11x,vf11x 	loi -76.575
-  2e6400:	e0 5d 25 c2 1e 5c 00 81 	muli[i].x vf16x,vf11x,i 	loi -41.3417
-  2e6408:	57 34 a3 42 9e 5c 00 81 	muli[i].x vf18x,vf11x,i 	loi 81.6022
-  2e6410:	3c 03 00 80 1e 5b 00 01 	muli.x vf12x,vf11x,i 	nop
-  2e6418:	3c 03 00 80 6a 7b 0f 01 	mul.x vf13x,vf15x,vf15x 	nop
-  2e6420:	3c 03 00 80 2a 84 0f 01 	mul.x vf16x,vf16x,vf15x 	nop
-  2e6428:	b7 d7 1e 42 be 92 0f 81 	mula[i].x accx,vf18x,vf15x 	loi 39.7107
-  2e6430:	3c 03 00 80 de 5b 00 01 	muli.x vf15x,vf11x,i 	nop
-  2e6438:	3c 03 00 80 aa 6c 0d 01 	mul.x vf18x,vf13x,vf13x 	nop
-  2e6440:	3c 03 00 80 bd 82 0d 01 	madda.x accx,vf16x,vf13x 	nop
-  2e6448:	da 0f c9 40 bd 62 0d 81 	madda[i].x accx,vf12x,vf13x 	loi 6.28319
-  2e6450:	3c 03 00 80 3f 5a 00 01 	maddai.x accx,vf11x,i 	nop
-  2e6458:	db 0f c9 bf 29 7b 12 81 	madd[i].x vf12x,vf15x,vf18x 	loi -1.5708
-  2e6460:	3c 03 00 80 de 4a 00 01 	muli.x vf11x,vf09x,i 	nop
-  2e6468:	3c 03 00 80 5e 62 00 01 	muli.x vf09x,vf12x,i 	nop
-  2e6470:	3c 03 00 80 e6 5a 00 01 	subi.x vf11x,vf11x,i 	nop
-  2e6478:	3c 03 00 80 66 4a 00 01 	subi.x vf09x,vf09x,i 	nop
-  2e6480:	3c 03 00 80 e8 5a 0b 01 	add.x vf11x,vf11x,vf11x 	nop
-  2e6488:	3c 03 00 80 6c 5a 09 01 	sub.x vf09x,vf11x,vf09x 	nop
-  2e6490:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6498:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e64a0:	d8 0f c9 3f 44 4f 5d 80 	subx[i].z vf29z,vf09z,vf29x 	loi 1.5708
-  2e64a8:	d8 0f c9 3f e6 4a 00 81 	subi[i].x vf11x,vf09x,i 	loi 1.5708
-  2e64b0:	3c 03 00 80 58 ea 49 01 	mulx.xz vf09xz,vf29xz,vf09x 	nop
-  2e64b8:	3c 03 00 80 fd 59 1d 01 	abs.x vf29x,vf11x 	nop
-  2e64c0:	3c 03 00 80 13 03 00 01 	maxw.x vf12x,vf00x,vf00w 	nop
-  2e64c8:	87 f9 22 be e6 4a 40 81 	subi[i].xz vf11xz,vf09xz,i 	loi -0.159155
-  2e64d0:	00 00 40 4b fe e9 00 81 	mulai[i].x accx,vf29x,i 	loi 1.25829e+007
-  2e64d8:	3c 03 00 80 7f 62 00 01 	msubai.x accx,vf12x,i 	nop
-  2e64e0:	87 f9 22 be 3f 62 00 81 	maddai[i].x accx,vf12x,i 	loi -0.159155
-  2e64e8:	00 00 00 3f 7f ea 00 81 	msubai[i].x accx,vf29x,i 	loi 0.5
-  2e64f0:	3c 03 00 80 67 67 00 01 	msubi.x vf29x,vf12x,i 	nop
-  2e64f8:	3c 03 00 80 fd 59 4b 01 	abs.xz vf11xz,vf11xz 	nop
-  2e6500:	3c 03 00 80 53 02 40 01 	maxw.xz vf09xz,vf00xz,vf00w 	nop
-  2e6508:	87 f9 22 be fd e9 1d 81 	abs[i].x vf29x,vf29x 	loi -0.159155
-  2e6510:	00 00 40 4b fe 59 40 81 	mulai[i].xz accxz,vf11xz,i 	loi 1.25829e+007
-  2e6518:	3c 03 00 80 7f 4a 40 01 	msubai.xz accxz,vf09xz,i 	nop
-  2e6520:	00 00 80 3e 3f 4a 40 81 	maddai[i].xz accxz,vf09xz,i 	loi 0.25
-  2e6528:	87 f9 22 be 66 ef 00 81 	subi[i].x vf29x,vf29x,i 	loi -0.159155
-  2e6530:	00 00 00 3f 7f 5a 40 81 	msubai[i].xz accxz,vf11xz,i 	loi 0.5
-  2e6538:	3c 03 00 80 67 4a 40 01 	msubi.xz vf09xz,vf09xz,i 	nop
-  2e6540:	3c 03 00 80 2a eb 1d 01 	mul.x vf12x,vf29x,vf29x 	nop
-  2e6548:	3c 03 00 80 fd 49 49 01 	abs.xz vf09xz,vf09xz 	nop
-  2e6550:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6558:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6560:	00 00 80 3e 6a 63 0c 81 	mul[i].x vf13x,vf12x,vf12x 	loi 0.25
-  2e6568:	61 26 99 c2 66 4a 40 81 	subi[i].xz vf09xz,vf09xz,i 	loi -76.575
-  2e6570:	e0 5d 25 c2 9e ec 00 81 	muli[i].x vf18x,vf29x,i 	loi -41.3417
-  2e6578:	57 34 a3 42 1e ec 00 81 	muli[i].x vf16x,vf29x,i 	loi 81.6022
-  2e6580:	3c 03 00 80 de eb 00 01 	muli.x vf15x,vf29x,i 	nop
-  2e6588:	3c 03 00 80 ea 4a 49 01 	mul.xz vf11xz,vf09xz,vf09xz 	nop
-  2e6590:	b7 d7 1e 42 aa 94 0c 81 	mul[i].x vf18x,vf18x,vf12x 	loi 39.7107
-  2e6598:	3c 03 00 80 9e eb 00 01 	muli.x vf14x,vf29x,i 	nop
-  2e65a0:	3c 03 00 80 be 82 0c 01 	mula.x accx,vf16x,vf12x 	nop
-  2e65a8:	3c 03 00 80 2a 5b 4b 01 	mul.xz vf12xz,vf11xz,vf11xz 	nop
-  2e65b0:	61 26 99 c2 bd 92 0d 81 	madda[i].x accx,vf18x,vf13x 	loi -76.575
-  2e65b8:	e0 5d 25 c2 9e 4c 40 81 	muli[i].xz vf18xz,vf09xz,i 	loi -41.3417
-  2e65c0:	3c 03 00 80 1e 4c 40 01 	muli.xz vf16xz,vf09xz,i 	nop
-  2e65c8:	3c 03 00 80 6a 6c 0d 01 	mul.x vf17x,vf13x,vf13x 	nop
-  2e65d0:	3c 03 00 80 bd 7a 0d 01 	madda.x accx,vf15x,vf13x 	nop
-  2e65d8:	57 34 a3 42 ea 94 4b 81 	mul[i].xz vf19xz,vf18xz,vf11xz 	loi 81.6022
-  2e65e0:	b7 d7 1e 42 9e 4c 40 81 	muli[i].xz vf18xz,vf09xz,i 	loi 39.7107
-  2e65e8:	da 0f c9 40 de 4b 40 81 	muli[i].xz vf15xz,vf09xz,i 	loi 6.28319
-  2e65f0:	3c 03 00 80 3f ea 00 01 	maddai.x accx,vf29x,i 	nop
-  2e65f8:	3c 03 00 80 69 77 11 01 	madd.x vf29x,vf14x,vf17x 	nop
-  2e6600:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6608:	3c 03 00 80 6a 63 4c 01 	mul.xz vf13xz,vf12xz,vf12xz 	nop
-  2e6610:	3c 03 00 80 be 82 4b 01 	mula.xz accxz,vf16xz,vf11xz 	nop
-  2e6618:	bc 03 7d 80 bd 9a 4c 01 	madda.xz accxz,vf19xz,vf12xz 	div q,vf00w,vf00x
-  2e6620:	da 0f c9 40 bd 92 4c 81 	madda[i].xz accxz,vf18xz,vf12xz 	loi 6.28319
-  2e6628:	3c 03 00 80 3f 4a 40 01 	maddai.xz accxz,vf09xz,i 	nop
-  2e6630:	3c 03 00 80 69 7a 4d 01 	madd.xz vf09xz,vf15xz,vf13xz 	nop
-  2e6638:	bf 03 00 80 dc 4a 40 01 	mulq.xz vf11xz,vf09xz,q 	waitq
-  2e6640:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6648:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6650:	3c 03 00 80 ff 02 00 00 	nop 	nop
-  2e6658:	3c 03 00 80 be f9 eb 41 	mulaz[e].xyzw accxyzw,vf31xyzw,vf11z 	nop
-  2e6660:	3c 03 00 80 48 50 eb 01 	maddx.xyzw vf01xyzw,vf10xyzw,vf11x 	nop
+  2e63d0:	87 f9 22 be 3f 5a 00 81 	maddai[i].x accx,vf11x,i 	loi -0.159155 /
+  2e63d8:	00 00 00 3f 7f 62 00 81 	msubai[i].x accx,vf12x,i 	loi 0.5 /
+  2e63e0:	00 00 80 3e e7 5a 00 81 	msubi[i].x vf11x,vf11x,i 	loi 0.25 /
+  2e63e8:	3c 03 00 80 fd 59 0b 01 	abs.x vf11x,vf11x 	nop /
+  2e63f0:	3c 03 00 80 e6 5a 00 01 	subi.x vf11x,vf11x,i 	nop /
+  2e63f8:	61 26 99 c2 ea 5b 0b 81 	mul[i].x vf15x,vf11x,vf11x 	loi -76.575 /
+  2e6400:	e0 5d 25 c2 1e 5c 00 81 	muli[i].x vf16x,vf11x,i 	loi -41.3417 /
+  2e6408:	57 34 a3 42 9e 5c 00 81 	muli[i].x vf18x,vf11x,i 	loi 81.6022 /
+  2e6410:	3c 03 00 80 1e 5b 00 01 	muli.x vf12x,vf11x,i 	nop /
+  2e6418:	3c 03 00 80 6a 7b 0f 01 	mul.x vf13x,vf15x,vf15x 	nop /
+  2e6420:	3c 03 00 80 2a 84 0f 01 	mul.x vf16x,vf16x,vf15x 	nop /
+  2e6428:	b7 d7 1e 42 be 92 0f 81 	mula[i].x accx,vf18x,vf15x 	loi 39.7107 /
+  2e6430:	3c 03 00 80 de 5b 00 01 	muli.x vf15x,vf11x,i 	nop /
+  2e6438:	3c 03 00 80 aa 6c 0d 01 	mul.x vf18x,vf13x,vf13x 	nop /
+  2e6440:	3c 03 00 80 bd 82 0d 01 	madda.x accx,vf16x,vf13x 	nop /
+  2e6448:	da 0f c9 40 bd 62 0d 81 	madda[i].x accx,vf12x,vf13x 	loi 6.28319 /
+  2e6450:	3c 03 00 80 3f 5a 00 01 	maddai.x accx,vf11x,i 	nop /
+  2e6458:	db 0f c9 bf 29 7b 12 81 	madd[i].x vf12x,vf15x,vf18x 	loi -1.5708 /
+  2e6460:	3c 03 00 80 de 4a 00 01 	muli.x vf11x,vf09x,i 	nop /
+  2e6468:	3c 03 00 80 5e 62 00 01 	muli.x vf09x,vf12x,i 	nop /
+  2e6470:	3c 03 00 80 e6 5a 00 01 	subi.x vf11x,vf11x,i 	nop /
+  2e6478:	3c 03 00 80 66 4a 00 01 	subi.x vf09x,vf09x,i 	nop /
+  2e6480:	3c 03 00 80 e8 5a 0b 01 	add.x vf11x,vf11x,vf11x 	nop /
+  2e6488:	3c 03 00 80 6c 5a 09 01 	sub.x vf09x,vf11x,vf09x 	nop /
+  2e6490:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6498:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e64a0:	d8 0f c9 3f 44 4f 5d 80 	subx[i].z vf29z,vf09z,vf29x 	loi 1.5708 /
+  2e64a8:	d8 0f c9 3f e6 4a 00 81 	subi[i].x vf11x,vf09x,i 	loi 1.5708 /
+  2e64b0:	3c 03 00 80 58 ea 49 01 	mulx.xz vf09xz,vf29xz,vf09x 	nop /
+  2e64b8:	3c 03 00 80 fd 59 1d 01 	abs.x vf29x,vf11x 	nop /
+  2e64c0:	3c 03 00 80 13 03 00 01 	maxw.x vf12x,vf00x,vf00w 	nop /
+  2e64c8:	87 f9 22 be e6 4a 40 81 	subi[i].xz vf11xz,vf09xz,i 	loi -0.159155 /
+  2e64d0:	00 00 40 4b fe e9 00 81 	mulai[i].x accx,vf29x,i 	loi 1.25829e+007 /
+  2e64d8:	3c 03 00 80 7f 62 00 01 	msubai.x accx,vf12x,i 	nop /
+  2e64e0:	87 f9 22 be 3f 62 00 81 	maddai[i].x accx,vf12x,i 	loi -0.159155 /
+  2e64e8:	00 00 00 3f 7f ea 00 81 	msubai[i].x accx,vf29x,i 	loi 0.5 /
+  2e64f0:	3c 03 00 80 67 67 00 01 	msubi.x vf29x,vf12x,i 	nop /
+  2e64f8:	3c 03 00 80 fd 59 4b 01 	abs.xz vf11xz,vf11xz 	nop /
+  2e6500:	3c 03 00 80 53 02 40 01 	maxw.xz vf09xz,vf00xz,vf00w 	nop /
+  2e6508:	87 f9 22 be fd e9 1d 81 	abs[i].x vf29x,vf29x 	loi -0.159155 /
+  2e6510:	00 00 40 4b fe 59 40 81 	mulai[i].xz accxz,vf11xz,i 	loi 1.25829e+007 /
+  2e6518:	3c 03 00 80 7f 4a 40 01 	msubai.xz accxz,vf09xz,i 	nop /
+  2e6520:	00 00 80 3e 3f 4a 40 81 	maddai[i].xz accxz,vf09xz,i 	loi 0.25 /
+  2e6528:	87 f9 22 be 66 ef 00 81 	subi[i].x vf29x,vf29x,i 	loi -0.159155 /
+  2e6530:	00 00 00 3f 7f 5a 40 81 	msubai[i].xz accxz,vf11xz,i 	loi 0.5 /
+  2e6538:	3c 03 00 80 67 4a 40 01 	msubi.xz vf09xz,vf09xz,i 	nop /
+  2e6540:	3c 03 00 80 2a eb 1d 01 	mul.x vf12x,vf29x,vf29x 	nop /
+  2e6548:	3c 03 00 80 fd 49 49 01 	abs.xz vf09xz,vf09xz 	nop /
+  2e6550:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6558:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6560:	00 00 80 3e 6a 63 0c 81 	mul[i].x vf13x,vf12x,vf12x 	loi 0.25 /
+  2e6568:	61 26 99 c2 66 4a 40 81 	subi[i].xz vf09xz,vf09xz,i 	loi -76.575 /
+  2e6570:	e0 5d 25 c2 9e ec 00 81 	muli[i].x vf18x,vf29x,i 	loi -41.3417 /
+  2e6578:	57 34 a3 42 1e ec 00 81 	muli[i].x vf16x,vf29x,i 	loi 81.6022 /
+  2e6580:	3c 03 00 80 de eb 00 01 	muli.x vf15x,vf29x,i 	nop /
+  2e6588:	3c 03 00 80 ea 4a 49 01 	mul.xz vf11xz,vf09xz,vf09xz 	nop /
+  2e6590:	b7 d7 1e 42 aa 94 0c 81 	mul[i].x vf18x,vf18x,vf12x 	loi 39.7107 /
+  2e6598:	3c 03 00 80 9e eb 00 01 	muli.x vf14x,vf29x,i 	nop /
+  2e65a0:	3c 03 00 80 be 82 0c 01 	mula.x accx,vf16x,vf12x 	nop /
+  2e65a8:	3c 03 00 80 2a 5b 4b 01 	mul.xz vf12xz,vf11xz,vf11xz 	nop /
+  2e65b0:	61 26 99 c2 bd 92 0d 81 	madda[i].x accx,vf18x,vf13x 	loi -76.575 /
+  2e65b8:	e0 5d 25 c2 9e 4c 40 81 	muli[i].xz vf18xz,vf09xz,i 	loi -41.3417 /
+  2e65c0:	3c 03 00 80 1e 4c 40 01 	muli.xz vf16xz,vf09xz,i 	nop /
+  2e65c8:	3c 03 00 80 6a 6c 0d 01 	mul.x vf17x,vf13x,vf13x 	nop /
+  2e65d0:	3c 03 00 80 bd 7a 0d 01 	madda.x accx,vf15x,vf13x 	nop /
+  2e65d8:	57 34 a3 42 ea 94 4b 81 	mul[i].xz vf19xz,vf18xz,vf11xz 	loi 81.6022 /
+  2e65e0:	b7 d7 1e 42 9e 4c 40 81 	muli[i].xz vf18xz,vf09xz,i 	loi 39.7107 /
+  2e65e8:	da 0f c9 40 de 4b 40 81 	muli[i].xz vf15xz,vf09xz,i 	loi 6.28319 /
+  2e65f0:	3c 03 00 80 3f ea 00 01 	maddai.x accx,vf29x,i 	nop /
+  2e65f8:	3c 03 00 80 69 77 11 01 	madd.x vf29x,vf14x,vf17x 	nop  /
+  2e6600:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6608:	3c 03 00 80 6a 63 4c 01 	mul.xz vf13xz,vf12xz,vf12xz 	nop /
+  2e6610:	3c 03 00 80 be 82 4b 01 	mula.xz accxz,vf16xz,vf11xz 	nop /
+  2e6618:	bc 03 7d 80 bd 9a 4c 01 	madda.xz accxz,vf19xz,vf12xz 	div q,vf00w,vf29x /
+  2e6620:	da 0f c9 40 bd 92 4c 81 	madda[i].xz accxz,vf18xz,vf12xz 	loi 6.28319 /
+  2e6628:	3c 03 00 80 3f 4a 40 01 	maddai.xz accxz,vf09xz,i 	nop /
+  2e6630:	3c 03 00 80 69 7a 4d 01 	madd.xz vf09xz,vf15xz,vf13xz 	nop /
+  2e6638:	bf 03 00 80 dc 4a 40 01 	mulq.xz vf11xz,vf09xz,q 	waitq /
+  2e6640:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6648:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6650:	3c 03 00 80 ff 02 00 00 	nop 	nop /
+  2e6658:	3c 03 00 80 be f9 eb 41 	mulaz[e].xyzw accxyzw,vf31xyzw,vf11z 	nop /
+  2e6660:	3c 03 00 80 48 50 eb 01 	maddx.xyzw vf01xyzw,vf10xyzw,vf11x 	nop /
+Matrix ConstructLocalTransformMatrixWithoutScale(parentJointScale(vf29), jointRotation(vf30))
   2e6668:	f3 04 b5 3f be fa df 81 	mula[i].xyz accxyz,vf31xyz,vf31xyz 	loi 1.41421
   2e6670:	bc 03 7d 80 5e fa e0 01 	muli.xyzw vf09xyzw,vf31xyzw,i 	div q,vf00w,vf00x
   2e6678:	3c 03 00 80 ff 02 00 00 	nop 	nop
@@ -6483,23 +6490,24 @@ UNKNOWN_LOOP:
   2e6770:	3c 03 00 80 bd e8 eb 01 	madday.xyzw accxyzw,vf29xyzw,vf11y 	nop
   2e6778:	3c 03 00 80 be 68 eb 41 	maddaz[e].xyzw accxyzw,vf13xyzw,vf11z 	nop
   2e6780:	3c 03 00 80 cb 60 eb 01 	maddw.xyzw vf03xyzw,vf12xyzw,vf11w 	nop
+Matrix ConstructLocalTransformMatrix(parentJointScale(vf29), jointScale(vf30), jointRotation(vf31))
   2e6788:	f3 04 b5 3f be fa df 81 	mula[i].xyz accxyz,vf31xyz,vf31xyz 	loi 1.41421
   2e6790:	3c 03 00 80 1e fb e0 01 	muli.xyzw vf12xyzw,vf31xyzw,i 	nop
-  2e6798:	bc 03 7d 80 69 fa df 01 	madd.xyz vf09xyz,vf31xyz,vf31xyz 	div q,vf00w,vf00x
+  2e6798:	bc 03 7d 80 69 fa df 01 	madd.xyz vf09xyz,vf31xyz,vf31xyz 	div q,vf00w,vf29x
   2e67a0:	3c 03 00 80 83 02 c0 01 	addw.xyz vf10xyz,vf00xyz,vf00w 	nop
   2e67a8:	3c 03 00 80 ec 07 e0 00 	sub.yzw vf31yzw,vf00yzw,vf00yzw 	nop
   2e67b0:	3c 03 00 80 fe 62 cc 01 	opmula.xyz accxyz,vf12xyz,vf12xyz 	nop
   2e67b8:	3d 03 2a 80 cf 62 cc 01 	msubw.xyz vf11xyz,vf12xyz,vf12w 	mr32.w vf10w,vf00w
   2e67c0:	3d 03 2b 80 4b 63 cc 01 	maddw.xyz vf13xyz,vf12xyz,vf12w 	mr32.w vf11w,vf00w
   2e67c8:	3d 03 2c 80 3f 00 c0 01 	addaw.xyz accxyz,vf00xyz,vf00w 	mr32.w vf12w,vf00w
-  2e67d0:	bc 03 fd 80 fc 50 c9 00 	msubax.yz accyz,vf10yz,vf09x 	div q,vf00w,vf00x
+  2e67d0:	bc 03 fd 80 fc 50 c9 00 	msubax.yz accyz,vf10yz,vf09x 	div q,vf00w,vf29y
   2e67d8:	3d 5b 9d 80 fd 50 09 01 	msubay.x accx,vf10x,vf09y 	mr32.y vf29y,vf11y
   2e67e0:	3d 6b 3e 80 00 03 8b 00 	addx.y vf12y,vf00y,vf11x 	mr32.w vf30w,vf13w
-  2e67e8:	3d 6b 0c 81 c1 02 4b 00 	addy.z vf11z,vf00z,vf11y 	mr32.x vf12x,vf13x
+  2e67e8:	3d 6b 0c 81 c1 02 4b 00 	addy.z vf11z,vf00z,vf11y 	mr32.x vf12x,vf13z
   2e67f0:	3d 6b 8b 80 0d 53 49 00 	msuby.z vf12z,vf10z,vf09y 	mr32.y vf11y,vf13y
-  2e67f8:	3d eb 0a 81 ce 52 09 01 	msubz.x vf11x,vf10x,vf09z 	mr32.x vf10x,vf29x
+  2e67f8:	3d eb 0a 81 ce 52 09 01 	msubz.x vf11x,vf10x,vf09z 	mr32.x vf10x,vf29z
   2e6800:	3d f3 4a 80 e0 07 00 01 	addq.x vf31x,vf00x,q 	mr32.z vf10z,vf30z
-  2e6808:	bc 03 7d 81 8e 52 89 00 	msubz.y vf10y,vf10y,vf09z 	div q,vf00w,vf00x
+  2e6808:	bc 03 7d 81 8e 52 89 00 	msubz.y vf10y,vf10y,vf09z 	div q,vf00w,vf29z
   2e6810:	3c 03 00 80 5a 67 fe 01 	mulz.xyzw vf29xyzw,vf12xyzw,vf30z 	nop
   2e6818:	3c 03 00 80 58 5a fe 01 	mulx.xyzw vf09xyzw,vf11xyzw,vf30x 	nop
   2e6820:	3c 03 00 80 ac 07 60 01 	sub.xzw vf30xzw,vf00xzw,vf00xzw 	nop
@@ -6520,21 +6528,22 @@ UNKNOWN_LOOP:
   2e6898:	3c 03 00 80 bd f0 fd 01 	madday.xyzw accxyzw,vf30xyzw,vf29y 	nop
   2e68a0:	3c 03 00 80 be 50 fd 41 	maddaz[e].xyzw accxyzw,vf10xyzw,vf29z 	nop
   2e68a8:	3c 03 00 80 cb 58 fd 01 	maddw.xyzw vf03xyzw,vf11xyzw,vf29w 	nop
-  2e68b0:	3c 03 00 80 bc 29 e3 01 	mulax.xyzw accxyzw,vf05xyzw,vf03x 	nop
-  2e68b8:	3c 03 00 80 bd 30 e3 01 	madday.xyzw accxyzw,vf06xyzw,vf03y 	nop
-  2e68c0:	3c 03 00 80 be 38 e3 01 	maddaz.xyzw accxyzw,vf07xyzw,vf03z 	nop
-  2e68c8:	3c 03 00 80 cb 40 e3 01 	maddw.xyzw vf03xyzw,vf08xyzw,vf03w 	nop
-  2e68d0:	3c 03 00 80 bc 29 e2 01 	mulax.xyzw accxyzw,vf05xyzw,vf02x 	nop
-  2e68d8:	3c 03 00 80 bd 30 e2 01 	madday.xyzw accxyzw,vf06xyzw,vf02y 	nop
-  2e68e0:	3c 03 00 80 be 38 e2 01 	maddaz.xyzw accxyzw,vf07xyzw,vf02z 	nop
-  2e68e8:	3c 03 00 80 8b 40 e2 01 	maddw.xyzw vf02xyzw,vf08xyzw,vf02w 	nop
-  2e68f0:	3c 03 00 80 bc 29 e1 01 	mulax.xyzw accxyzw,vf05xyzw,vf01x 	nop
-  2e68f8:	3c 03 00 80 bd 30 e1 01 	madday.xyzw accxyzw,vf06xyzw,vf01y 	nop
-  2e6900:	3c 03 00 80 be 38 e1 01 	maddaz.xyzw accxyzw,vf07xyzw,vf01z 	nop
-  2e6908:	3c 03 00 80 4b 40 e1 01 	maddw.xyzw vf01xyzw,vf08xyzw,vf01w 	nop
-  2e6910:	3c 03 00 80 bc 29 c4 01 	mulax.xyz accxyz,vf05xyz,vf04x 	nop
-  2e6918:	3c 03 00 80 bd 30 c4 01 	madday.xyz accxyz,vf06xyz,vf04y 	nop
-  2e6920:	00 00 00 00 00 01 b3 4a 	*unknown* 	lq. vf00,0(vi00)
+Matrix GetTransformMatrix(Matrix1, Matrix2):
+  2e68b0:	3c 03 00 80 bc 29 e3 01 	mulax.xyzw accxyzw,vf05xyzw,vf03x 	nop/
+  2e68b8:	3c 03 00 80 bd 30 e3 01 	madday.xyzw accxyzw,vf06xyzw,vf03y 	nop/
+  2e68c0:	3c 03 00 80 be 38 e3 01 	maddaz.xyzw accxyzw,vf07xyzw,vf03z 	nop/
+  2e68c8:	3c 03 00 80 cb 40 e3 01 	maddw.xyzw vf03xyzw,vf08xyzw,vf03w 	nop/
+  2e68d0:	3c 03 00 80 bc 29 e2 01 	mulax.xyzw accxyzw,vf05xyzw,vf02x 	nop/
+  2e68d8:	3c 03 00 80 bd 30 e2 01 	madday.xyzw accxyzw,vf06xyzw,vf02y 	nop/
+  2e68e0:	3c 03 00 80 be 38 e2 01 	maddaz.xyzw accxyzw,vf07xyzw,vf02z 	nop/
+  2e68e8:	3c 03 00 80 8b 40 e2 01 	maddw.xyzw vf02xyzw,vf08xyzw,vf02w 	nop/
+  2e68f0:	3c 03 00 80 bc 29 e1 01 	mulax.xyzw accxyzw,vf05xyzw,vf01x 	nop/
+  2e68f8:	3c 03 00 80 bd 30 e1 01 	madday.xyzw accxyzw,vf06xyzw,vf01y 	nop/
+  2e6900:	3c 03 00 80 be 38 e1 01 	maddaz.xyzw accxyzw,vf07xyzw,vf01z 	nop/
+  2e6908:	3c 03 00 80 4b 40 e1 01 	maddw.xyzw vf01xyzw,vf08xyzw,vf01w 	nop/
+  2e6910:	3c 03 00 80 bc 29 c4 01 	mulax.xyz accxyz,vf05xyz,vf04x 	nop/
+  2e6918:	3c 03 00 80 bd 30 c4 01 	madday.xyz accxyz,vf06xyz,vf04y 	nop/
+  2e6920:	00 00 00 00 00 01 b3 4a 	*unknown* 	lq. vf00,0(vi00)/
   2e6928:	3c 03 24 80 be 38 c4 41 	maddaz[e].xyz accxyz,vf07xyz,vf04z 	move.w vf04w,vf00w
   2e6930:	3c 03 00 80 0b 41 c0 01 	maddw.xyz vf04xyz,vf08xyz,vf00w 	nop
 	...

@@ -2,30 +2,45 @@ Animation structure:
 4 bytes bitfield
 /*
 	Bitfield information:
-		0 - Has anim data 1
-		1 - Has anim data 2
-		2-17 - unkBlobSizeHelper
-		18-22 - unkValue
+		0 - Has animation data
+		1 - Has blend shape animation data
+		2-17 - totalFrames
+		18-22 - animation FPS
 */
-4 bytes unkBlobSizePacked:
+// Main animation
+4 bytes animationDataPacker:
 	Unpack:
-		blobSize = (unkBlobSizePacked & 0x7F) * 0x8 + // Bone settings, collection of short[4]
-													  // short[0] - bitfield, upper 4 bits store bone related value (basically unused),
-														(short[0] >> 0xD & 0x1) - unkFlag
-														(short[0] >> 0xC & 0x1) - unkFlag2
+		blobSize = (animationDataPacker & 0x7F) * 0x8 + // Joint settings, collection of short[4]
+													  // short[0] - bitfield,
+														(short[0] >> 0x8 & 0xf) - Amount of blend shapes (Only used with blend shape animation data)
+														(short[0] >> 0xD & 0x1) - Unused flag
+														(short[0] >> 0xC & 0x1) - Adds additional rotation set in OGI's joint
 													  // short[1] - Transformation choice bitfield (first 9 bits, rest unused)
+														// bit 1 - Translation X
+														// bit 2 - Translation Y
+														// bit 3 - Translation Z
+														// bit 4 - Rotation X
+														// bit 5 - Rotation Y
+														// bit 6 - Rotation Z
+														// bit 7 - Scale X
+														// bit 8 - Scale Y
+														// bit 9 - Scale Z
 													  // short[2] - Transformation index
 													  // short[3] - Split transformation index
-		(unkBlobSizePacked >> 0xA & 0xFFE) + // Transformations, collection of shorts
-		(unkBlobSizePacked >> 0x16) * unkBlobSizeHelper * 0x2; // Transformations but split in 2 parts
-2 bytes unkBlobSizeHelper
-blobSize bytes
-4 bytes unkBlobSizePacked
+		(animationDataPacker >> 0xA & 0xFFE) + // Transformations, collection of shorts
+		(animationDataPacker >> 0x16) * totalFrames * 0x2; // Transformations but split in 2 parts
+2 bytes totalFrames
+animationDataSize bytes
+// Blend shape animation
+4 bytes animationDataPacker
+	Unpack: facialAnimationData
+2 bytes totalFrames
+facialAnimationData bytes
 
 Texture structure:
 4 bytes size (total_size is size + 4)
 (0x60)96 bytes header data
-(0x20)32 bytes of metadata (goes completely unused)
+(0x20)32 bytes of metadata (goes completely unused) (used for XBox data)
 (size - 128) bytes of Texture data // VIF Code that tells to transfer GS Packet data and the image data itself
 Texture data VIF code structure:
 	DMATag (Tag ID - ret, QWC - 5 + (QWC in texture data), Extra data - DIRECT VIF command)
@@ -71,7 +86,7 @@ Texture data VIF code structure:
 0x5E 2 bytes unknown // Reserved, zeroed after reading by the code
 
 Materials structure:
-8 bytes header (long)
+8 bytes header (long) // First 4 bytes are allocated to the bitmask of what shaders are used in the material
 4 bytes dmaChainIndex
 4 bytes NameSize
 NameSize bytes MaterialName //Completely unused by the game, deleted right after reading
@@ -103,9 +118,52 @@ if (shadersAmount? > 0)
 // ReadBaseShader()
 {
 	30 bytes of 1 byte data stored in an 8 byte bitfield
+	/*
+		Byte 1 - UseAlphaBlending
+		Byte 2 - AlphaRegPresetIndex
+		Byte 3 - UseAlphaTest
+		Byte 4 - AlphaTestMethod
+		Byte 5 - AlphaValueToBeComparedTo
+		Byte 6 - ProcessMethodWhenAlphaTestFailed
+		Byte 7 - UseDestinationAlphaTest
+		Byte 8 - DestinationAlphaTestMode
+		Byte 9 - DepthTestMethod // Depth test is always performed
+		Byte 10 - UnkValue (3 bits)
+		Byte 11 - ShadingMethod
+		Byte 12 - UseTextureMapping
+		Byte 13 - MethodOfSpecifyingTextureCoordinates
+		Byte 14 - UseFogging
+		Byte 15 - ContextToUse (I assume for PS2 this is like buffers so draw to backbuffer or not)
+		Byte 16 - UnkValue2 (3 bits)
+		Byte 17 - UnkValue3
+		Byte 18 - UseCustomAlphaRegSettings
+		Byte 19 - SpecInputColorValueA
+		Byte 20 - SpecInputColorValueB
+		Byte 21 - SpecInputAlphaValueC
+		Byte 22 - SpecInputColorValueD
+		Byte 23 - FixedAlphaValue
+		Byte 24 - FilterWhenTextureIsReducedOrExpanded
+		Byte 25 - AlphaCorrectionValue (In RGBA32 Mode left-most is most significant, in RGBA16 Mode right-most is most significant)
+		Byte 26 - UnkFlag1
+		Byte 27 - UnkFlag2
+		Byte 28 - ZValueDrawingMask
+		Byte 29 - UnkFlag3
+		Byte 30 - HasAnimation
+	*/
 	/* Bitfield information:
 		0 - AlphaBlending (0 - OFF, 1 - ON)
 		1-4 - AlphaRegSettingsIndex (Index to an array of preset settings for ALPHA register) // Used only if 38th flag is set
+		/*
+			Presets (6 total): // Blending formula: OutputColor = (A - B) * C + D. Twins actually supports for 16 but the rest are all pretty much just 0s
+				0 - (Cs - Cd) * As + Cd // Blend mix
+				1 - (Cs - 0) * As + Cd // Blend add
+				2 - (0 - Cs) * As + Cd // Blend sub
+				3 - (Cd - 0) * As + Cd // Source alpha * destination
+				4 - (0 - Cd) * As + Cd // Zero
+				5 - (Cd - 0) * As + 0 // Destination
+				6-15 - (Cs - Cs) * As + Cs // Source
+		*/
+		
 		5 - AlphaTest (0 - OFF, 1 - ON)
 		6-8 - AlphaTestMethod (000 - NEVER, 001 - ALWAYS, 010 - LESS, 011 - LEQUAL, 100 - EQUAL, 101 - GEQUAL, 110 - GREATER, 111 - NOTEQUAL)
 		9-16 - AlphaValueToBeComparedTo
@@ -120,22 +178,22 @@ if (shadersAmount? > 0)
 		29 - Fogging (0 - OFF, 1 - ON)
 		30 - Context (0 - Context 1, 1 - Context 2)
 		31 - Unused
-		32-34 - UnkVal2 - UnkVec3 related
-		35-37 - UnkVal3 - UnkVec3 related
-		38 - UsePresetAlphaRegSettings (0 - use the 4 values below, 1 - use preset, disregard the 4 values below)
+		32-34 - UnkVal2 - UnkVec3 related (only values 2, 3 and 4 are supported so 0b100, 0b011 and 0b010)
+		35-37 - UnkVal3 - UnkVec3 related (only values 2, 3 and 4 are supported so 0b100, 0b011 and 0b010)
+		38 - UseCustomAlphaRegSettings (1 - use the 5 values below, 0 - use preset, disregard the 4 values below)
 		39-40 - Spec of Input Color Value A (00 - Cs RGB value of the source is used, 01 - Cd RGB value in the frame buffer is used, 10 - 0, 11 - Reserved)
 		41-42 - Spec of Input Color Value B (00 - Cs RGB value of the source is used, 01 - Cd RGB value in the frame buffer is used, 10 - 0, 11 - Reserved)
 		43-44 - Spec of Input Alpha Value C (00 - As Alpha value of the source is used, 01 - Ad Alpha value in the frame buffer is used, 10 - FIX FIX-Field value is used as Alpha, 11 - Reserved)
 		45-46 - Spec of Input Color Value D (00 - Cs RGB value of the source is used, 01 - Cd RGB value in the frame buffer is used, 10 - 0, 11 - Reserved)
 		47-54 - FixedAlphaValue (FIX)
-		55 - FilterWhenTextureIsReduced (0 - NEAREST, 1 - LINEAR) // Where are in fact 6 modes, but they are MIP related and Twins uses a hardcoded one when Texture has more than 1 mip level, when texture has more than 1 mip level a value of 0b100 is used meaning LINEAR_MIPMAP_NEAREST
+		55 - FilterWhenTextureIsReduced (0 - NEAREST, 1 - LINEAR) // There are in fact 6 modes, but they are MIP related and Twins uses a hardcoded one when Texture has more than 1 mip level, when texture has more than 1 mip level a value of 0b100 is used meaning LINEAR_MIPMAP_NEAREST
 		// ^^^^ This is also TextureFilterWhenTextureIsExpanded (drawn normally) 0 - NEAREST, 1 - LINEAR, some shader types ignore this and always default to either NEAREST or LINEAR
 		56 - AlphaCorrectionValue (0 or 1) (Sets MSB of Alpha value for drawing to the frame buffer)
 		57 - UnkFlag1
 		58 - UnkFlag2
 		59 - Z_ValueDrawingMask (0 - Z Buffer is updated, 1 - Z buffer is not updated regardless of the result of the depth test)
 		60 - UnkFlag3 - UnkVec2 related
-		61 - BlobFlag
+		61 - HasAnimation
 		62-63 - Unused
 	*/
 	// For LOD level calculation the following formula is used: LOD = (log2(1/Q)<<L)+K
@@ -151,7 +209,7 @@ if (shadersAmount? > 0)
 	4 bytes shaderType
 	if (bitfield & 0x2000000000000000 != 0)
 		// New structure is created in the code and is receiving the next data
-		4 bytes unknown (just raw 4 bytes data)
+		4 bytes header (just raw 4 bytes data)
 		4 bytes unkBlobSizePacked
 		2 bytes unkBlobSizeHelper
 		if (unkBlobSizeHelper != 0) // blobSize is unpacked the same way as animation
@@ -161,41 +219,55 @@ if (shadersAmount? > 0)
 
 
 OGI Structure:
-0x10 bytes Header data (byte 1 - Bone structs amount, byte 2 - Type2 struct amount, byte 3 - Unknown amount of OgiType1Rel]
-						byte 6 - Linked rigid models amount, byte 7 - Skin flag, byte 8 - Blend skin flag, byte 9 - Type3 struct amount)
+0x10 bytes Header data (byte 1 - Joint structs amount, byte 2 - ExitPoint struct amount, byte 3 - Amount of CameraJointStruct
+						byte 6 - Linked rigid models amount, byte 7 - Skin flag, byte 8 - Blend skin flag, byte 9 - CollisionData struct amount)
 0x20 bytes BoundingBox
-loop Header.byte_1 amount and store in Bone struct:
-	4 bytes unkInt1 (only first byte is taken) OgiType1RelIndex
-	4 bytes boneIndex (only first byte is taken) Used in animations
-	4 bytes unkInt3 (only first byte is taken) OgiType1RelIndex
-	4 bytes unkInt4 (only first byte is taken) (0 - 15)
-	4 bytes unkInt5 (only first byte is taken) (0 - 15)
+loop Header.byte_1 amount and store in Joint struct:
+	4 bytes jointId (only first byte is taken) OgiType1RelIndex
+	4 bytes jointIndex (only first byte is taken) Used in animations
+	4 bytes parentJoint (only first byte is taken) OgiType1RelIndex
+	4 bytes childJoint1 (only first byte is taken) (0 - 15)
+	4 bytes childJoint2 (only first byte is taken) (0 - 15)
 	0x10 bytes unkVec1
 	0x10 bytes bonePosition?
 	0x10 bytes unkVec3
 	0x10 bytes unkVec4
 	0x10 bytes unkVec5
-loop Header.byte_2 amount and store in Type2 struct:
-	4 bytes unkInt1 (only first byte is taken) OgiType1RelIndex
-	4 bytes unkInt2 (only first byte is taken)
-	0x40 bytes unkMatrix
+loop Header.byte_2 amount and store in ExitPoint struct:
+	4 bytes parentJoint (only first byte is taken) OgiType1RelIndex
+	4 bytes exitPointId (only first byte is taken)
+	0x40 bytes exitPointMatrix
 if (Header.byte_6 > 0) {
 	byte_6 bytes ModelAmtRelated
 	loop Header.byte_6 amount:
 		4 bytes RigidModelID
 }
 loop Header.byte_1 amount:
-	0x40 bytes unkMatrix
+	0x40 bytes JointRotationMatrix
 4 bytes skinID
 4 bytes blendSkinID
-loop Header.byte_9 amount and store in Type3 struct:
-	ReadOGIType3();
+loop Header.byte_9 amount and store in CollisionData struct:
+	ReadCollisionData();
 Header.byte_9 bytes unkMatrixIndex
 
-//ReadOGIType3()
+//ReadCollisionData()
 {
+	/*
+		First 5 shorts - Amounts of different stuff in the blob.
+			1st short - Amount of vectors in the BB collision to build from
+			2nd short - Amount of unknown shorts (offset determined by the 11th short)
+			3rd short - Amount of unknown vectors for comparison against something(position vector?) (their offset is determined by the 6th short)
+			4th short - Amount of unknown vectors(offset determined by the 7th short)
+			5th short - Amount of unknown vectors (offset determined by the 8th short)
+		6 shorts after - Offsets in the blob to the data
+			6th short - Offset to some unknown vectors.
+			7th short - Offset to some unknown vectors. Amount dictated by the 3rd short
+			8th short - Offset to some unknown vectors.
+			9th short - Offset to some unknown bytes. (indexes? Joints or Exit Points)
+			10th short - Offset to some unknown bytes. (indexes? Joints or Exit Points)
+			11th short - Offset to some unknown shorts.
+	*/
 	0x16 bytes Header data // 11 shorts
-	// Info on blob and shorts: https://discord.com/channels/380955743181864970/380955743181864974/797478328940363826
 	4 bytes blobSize
 	blobSize bytes unkBlob
 }
@@ -239,16 +311,16 @@ loop subSkinAmt:
 
 Blend skin structure:
 4 bytes subBlendAmount
-4 bytes subBlendsVectorPacks
+4 bytes facesAmount
 loop subBlendAmount:
 	4 bytes vectorStructures
 	4 bytes materialID
 	loop vectorStructures and store in VectorStructure struct:
 		4 bytes vifBlockSize
-		4 bytes unkInt
+		4 bytes vertexAmount
 		vifBlockSize bytes vifCode
-		0xC bytes unkData
-		loop subBlendsVectorPacks: // Max 255
+		0xC bytes BlendShape // Vector3
+		loop facesAmount: // Max 255
 			4 bytes vectorDataSize
 			4 bytes vectorAmount
 			(vectorDataSize << 4) bytes vectorData // Vector data in V4-8 format
@@ -764,6 +836,11 @@ loop 0x10:
 
 
 Scenery data:
+/*
+	0x10000 - Has Skydome
+	0x20000 - Has lighting
+	Rest are reserved DO NOT TOUCH THEM
+*/
 4 bytes unkData (raw bytes)
 4 bytes nameLength
 nameLength bytes name
@@ -775,14 +852,7 @@ if (unkData & 0x10000 != 0) {
 }
 if (unkData & 0x20000 != 0) {
 // Stored in UnkStruct(Probably something like LightsRenderer or something Idk)
-	0x400 bytes unkBlob
-	// (0x18(24) bytes allocated for 6 bool lighting flags)
-	// Flag 1 (Needs Flag 2 ON or else crashes the game)
-	// Flag 2 (Independent can be turned on or off)
-	// Flag 3 (Needs Flag 3 ON or else crashes the game)
-	// Flag 4 (Independent can be turned on or off)
-	// Flag 5 (Needs Flag 6 ON or else crashes the game)
-	// Flag 6 (Independent can be turned on or off)
+	0x400 bytes lightingArraysAccessor // Stores an array of all lights in the scenery which can be accessed by scenery nodes. Array is a structure of 8 bytes which is a pair of (light index + light id)
 	4 bytes lightsAmount
 	4 bytes lightAmbientAmount
 	4 bytes lightDirectionalAmount
@@ -852,7 +922,7 @@ if (sceneryType == 0x160A) {
 	0x10 bytes unkVec2
 	0x10 bytes unkVec3
 	0x10 bytes unkVec4
-	0x10 bytes unkVec5
+	0x10 bytes lightsEnabled
 }
 
 
@@ -865,7 +935,7 @@ if (modelAmount != 0) {
 		4 bytes ogiType3Amount
 		if (ogiType3Amount != 0) {
 			loop ogiType3Amount:
-				ReadOGIType3()
+				ReadCollisionData()
 		}
 		4 bytes unkInt2
 		4 bytes unkBlobSizePacked // Suddenly different blob packing!
@@ -886,15 +956,28 @@ if (modelAmount != 0) {
 Chunk links:
 4 bytes amount
 loop amount:
-	4 bytes unkData // raw bytes
+	/*
+		2 bit flag (why 4 bytes though??? Probably for more functionality that never came to be)
+		1st - bit determines if there are any bounding box triggers that make to when touched start loading the chunk
+		2nd - bit is unknown but it plays a role when loading the chunk
+	*/
+	4 bytes loadingFlags
 	4 bytes pathLength
 	pathLength bytes pathName
-	4 bytes unkData2 // raw bytes
-	0x40 bytes objectMat
-	0x40 bytes chunkMat
-	if (unkData2 & 0x80000 != 0) {
+	/*
+		1st bit - determines whether the chunk itself is rendered
+		2nd-7th bits - determine something
+		8th bit - determines if the chunk should be kept in memory or preloaded
+		9th bit - determines whether the load wall is active if it is not only the scenery part of the chunk is rendered
+		20th bit - MUST be set if a load wall is present
+		THE REST OF THE BITS SHOULD NOT BE TOUCHED
+	*/
+	4 bytes bitfield
+	0x40 bytes objectMat // How to transport objects relative to the linker
+	0x40 bytes chunkMat // How to render the chunk relative to the linker
+	if (bitfield & 0x80000 != 0) {
 		// Stored in UnkStruct
-		0x40 loadWall
+		0x40 loadWall // Where the linker's transfer point is
 	}
 	ReadUnkStruct2();
 
@@ -904,7 +987,7 @@ loop amount:
 	if (unkData & 0x1 != 0) {
 		// Stored in UnkStruct2
 		4 bytes unkData // raw bytes
-		ReadOGIType3();
+		ReadCollisionData();
 		ReadUnkStruct2();
 	}
 }
@@ -940,9 +1023,9 @@ Collision data:
 4 bytes vertexAmt
 loop triggerAmt:
 	0xC bytes vec3_1
-	4 bytes unkFlag1
+	4 bytes minTriggerIndex
 	0xC bytes vec3_2
-	4 bytes unkFlag2
+	4 bytes maxTrigerIndex
 loop grpAmt:
 	4 bytes groupSize
 	4 bytes groupOffset

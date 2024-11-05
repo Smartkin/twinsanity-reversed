@@ -6,46 +6,46 @@ Object bitfield structure:
 (bitfield >> 0x14 & 0xFF) - Object type // valid between 0 and 8
 // InstanceNode is created depending on object type
 // 0,3,4,5 - InstanceNode Type 0
-// 2,6,7 - InstanceNode Type 0 (Has a field nulled)
-// 1 - InstanceNode Type 1 (If UnkInstNodeVal != 0x10 OR UnkInstNodeVal != 0x11 THEN InstanceNode Type 0)
-// 8 - InstanceNode Type 8
+// 2,6,7 - InstanceNode Type 0 (Has no additional structure)
+// 1 - InstanceNode Type 1 (If NOT (UnkInstNodeVal > 0xF(15) AND UnkInstNodeVal < 0x12(18)) THEN InstanceNode Type 0)
+// 8 - InstanceNode Projectile
 (bitfield >> 0xC & 0xFF) - UnkInstNodeVal // when InstanceNode type is 1 must be 0x10 or 0x11 else considered as InstanceNode type 2,6,7
-(bitfield >> 0x6 & 0x3F) - UnkArray size when it comes to OGI stuff
-(bitfield & 0x3F) - Amount of Type 2 OGI
+(bitfield >> 0x6 & 0x3F) - Amount of camera/react joints
+(bitfield & 0x3F) - Amount of Exit points in OGI
 
-Playable character max props:
+Type 0 max props: // Playable character
 	Flags - 0x9
 	Floats - 0x38
 	Ints - 0x3
-Type 1:
+Type 1: // Pickup
 	Flags - 0x0
 	Floats - 0x1
 	Ints - 0x2
-Type 2:
+Type 2: // Crate
 	Flags - 0x0
 	Floats - 0x3
 	Ints - 0x2
-Type 3:
+Type 3: // Creature
 	Flags - 0x1
 	Floats - 0x6
 	Ints - 0x3
-Type 4:
+Type 4: // Furniture
 	Flags - 0x0
 	Floats - 0x1
 	Ints - 0x2
-Type 5:
+Type 5: // ChiChiGrass
 	Flags - 0x1
 	Floats - 0x4
 	Ints - 0x2
-Type 6:
+Type 6: // PayGate
 	Flags - 0x0
 	Floats - 0x1
 	Ints - 0x3
-Type 7:
+Type 7: // Foofie/Nina Hand
 	Flags - 0x0
 	Floats - 0x12
 	Ints - 0x2
-Type 8:
+Type 8: // Projectile
 	Flags - 0x0
 	Floats - 0x1
 	Ints - 0x2

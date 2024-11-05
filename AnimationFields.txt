@@ -1,22 +1,25 @@
-Animation stuff(2nd Section "Transformations"):
-// Values are stored as a frame buffer value, so 4096 for translation and scale
-// For rotations stored as Int16 rotation
-Transformation 1 - Translate model X
-Transformation 2 - Translate model Z
-Transformation 3 - Translate model Y
-Transformation 4 - Rotate model X
-Transformation 5 - Rotate model Z
-Transformation 6 - Rotate model Y
-Transformation 7 - Scale model X
-Transformation 8 - Scale model Y
-Transformation 9 - Translate Bone 1 X
-Transformation 10 - Translate Bone 1 Z
-Transformation 11 - Translate Bone 1 Y
-Transformation 12 - Rotate Bone 1 X
-Transformation 13 - Rotate Bone 1 Z
-Transformation 14 - Rotate Bone 1 Y
-Transformation 15 - Scale Bone 1 X?
-Transformation 16 - Scale Bone 1 Y?
-Transformation 17 - Translate Bone 2 X
-Animation stuff(3rd Section "Timesline"):
-Helper variable during calculations is likely a timeline length(in frames?) and hardcoded 2 is Int16 timeline stamp
+Animation algorithm:
+// Values are stored as a fixed point value for translation and scale vectors (to convert VALUE / 4096)
+// Rotations are stored as Int16 rotation units (to convert to radians do ROT / (65536 * 2 * PI))
+Step 1:
+* Set pointer to static transforms (frame and animation timeline independent, depends on joint chosen index)
+transformPointer = jointsSettingsPtr + jointSettings.Count * 8;
+* Set pointer to interpolate transforms (frame and animation timeline dependent, also depends on joint chosen index)
+currentFrameTransform = transformPointer + staticTransformSection.Length + currentFrame * 2 * componentsUsedPerFrame
+nextFrameTransform = transformPointer + staticTransformSection.Length + nextFrame * 2 * componentsUsedPerFrame
+// E.G.
+// Total length: 9 frames
+// Frame 4
+// Next frame 5
+// Joint settings are 0 index on static transform, 0 index on interpolate transform
+// componentsUsedPerFrame is 2
+// Joint total 1
+// Assume jointsSettingsPtr to be 0
+transformPointer = 0x8
+currentFrameTransform = 0x8 + 0xE + 0x4 * 2 * 2 = 0x26
+nextFrameTransform = 0x8 + 0xE + 0x5 * 0x4 = 0x2A
+// Frame 8
+// Next frame 9
+transformPointer = 0x8
+currentFrameTransform = 0x8 + 0xE + 0x8 * 0x4 = 0x36
+nextFrameTransform = 0x8 + 0xE + 0x9 * 0x4 = 0x3A
