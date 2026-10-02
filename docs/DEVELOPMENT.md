@@ -194,6 +194,10 @@ the retail game's, which is what the runs compare.
 - **PS2SDK isn't Sony's SDK**: what the asm passes Sony's functions can mean something else to PS2SDK's. libmc's `mcChdir` always
   copies the current directory where it's told, Sony's skipped a null pointer, which the retail code passes (`Platform::MemoryCard`
   gives it a buffer).
+- **PS2SDK's C library calls**: the link has no C library but the game's own, so `ps2sdk.txt` aliases the functions PS2SDK's
+  libraries call to the game's (`strcpy`, `printf`, `snprintf` to Sony's `sceSnprintf`) and `src/platform/ps2/libc.cpp` has the
+  ones the game lacks (`puts`, and `strlcpy`, which newer PS2SDKs copy paths and names with). A PS2SDK calling another
+  one stops the link with an undefined reference: alias it or add it there.
 - **Alignment in `.text`**: libmpeg reads a mask in `.text` with `lq` (`D_002BF5B0`, aligned to 16 by `fix_asm.py`; the movies
   came out striped). `.vutext` is placed on its own, not with the code.
 - **The R5900's floats**: GCC makes `1.0f / sqrt(x)` one `rsqrt.s`, which rounds unlike the retail `sqrt.s` and `div.s` (an

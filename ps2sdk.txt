@@ -282,6 +282,7 @@ kputchar
 # the game's own C library is its. "name = retail function" (their arguments are ints and pointers, which n32 and EABI pass alike)
 strcpy = CopyString
 printf = DebugPrint_
+snprintf = sceSnprintf
 
 # libscf: the console's ROM name and the clock's local time (PS2SDK's rom0_info, the platform layer's LocalTime)
 GetRomName

@@ -18,7 +18,9 @@ PYTHON = [sys.executable, "-X", "utf8"]
 
 def run(arguments, log=None):
     if log is None:
-        subprocess.run(PYTHON + arguments, cwd=HERE, check=True)
+        result = subprocess.run(PYTHON + arguments, cwd=HERE)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
         return
 
     with open(log, "w", encoding="utf-8") as output:

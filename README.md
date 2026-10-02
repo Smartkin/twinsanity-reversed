@@ -78,7 +78,16 @@ Run these in PowerShell, in the repository's folder.
    .venv\Scripts\python.exe -m pip install -r requirements.txt
    ```
 
-3. Take `SLES_525.68` out of your disc image into the repository's folder and check that it's the right one. Windows' `tar` reads
+3. Give the toolchain the DLLs it needs. ps2dev builds it in MSYS2 and leaves out MSYS2's DLLs its programs use
+   (`libwinpthread-1.dll`, `libiconv-2.dll`, GCC's and binutils' libraries), so without them Windows says they weren't found.
+   This downloads them from MSYS2's package repository and puts them next to the programs (again whenever you replace the
+   toolchain):
+
+   ```powershell
+   .venv\Scripts\python.exe tools\toolchain_dlls.py
+   ```
+
+4. Take `SLES_525.68` out of your disc image into the repository's folder and check that it's the right one. Windows' `tar` reads
    disc images, or open the image in Explorer, which mounts it as a drive, and copy the file.
 
    ```powershell
@@ -86,7 +95,7 @@ Run these in PowerShell, in the repository's folder.
    Get-FileHash -Algorithm SHA1 SLES_525.68    # D41B8D53F733F930CF03D8EA944BEC24429FE57C
    ```
 
-4. Split it into `asm\` (once) and build:
+5. Split it into `asm\` (once) and build:
 
    ```powershell
    .venv\Scripts\python.exe tools\split.py

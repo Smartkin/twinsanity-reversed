@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import toolchain_dlls
+
 HERE = Path(__file__).resolve().parent.parent
 PYTHON = [sys.executable, "-X", "utf8"]
 
@@ -60,6 +62,7 @@ def main():
             configure(False)
         sys.exit(run_ninja(["-t", "clean"]))
 
+    toolchain_dlls.check()
     if arguments[:1] == ["--matching"]:
         configure(True)
         try:

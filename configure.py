@@ -20,6 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "tools"))
 import local_config
+import toolchain_dlls
 
 WINDOWS = os.name == "nt"
 PS2SDK = local_config.ps2sdk()
@@ -75,6 +76,7 @@ def toolchain_includes():
 
 
 def main():
+    toolchain_dlls.check()
     matching = "--matching" in sys.argv[1:]
     asm = sorted((path.relative_to(HERE).as_posix() for path in (HERE / "asm").rglob("*.s")))
     # The platform layer's side for the platform built for (src/platform/<platform>/), and none of the others

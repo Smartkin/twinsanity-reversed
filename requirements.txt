@@ -4,3 +4,5 @@ splat64[mips]==0.50.0
 spimdisasm==1.42.4
 rabbitizer==1.16.2
 ninja
+# Reading MSYS2's packages for tools/toolchain_dlls.py on Windows (Python 3.14 has zstd itself)
+zstandard; sys_platform == "win32" and python_version < "3.14"
