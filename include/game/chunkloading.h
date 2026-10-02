@@ -1,0 +1,398 @@
+#pragma once
+
+#include "common.h"
+#include "gcc2.h"
+#include "game/chunkdata.h"
+#include "game/chunkfiles.h"
+#include "game/hull.h"
+#include "game/math.h"
+#include "game/place.h"
+#include "game/readers.h"
+#include "game/string.h"
+
+class Stream;
+struct AiNavigation;
+template <typename T>
+struct PointerArray;
+struct ChunkLoader;
+struct ChunkManager;
+struct InstanceContext;
+struct PersistentFlags;
+struct ReferencedObject;
+struct Reference;
+struct TimeClock;
+
+// A reference to a chunk loader, like the objects' (game/reference.h): the last owning one destroys the loader
+struct LoaderReference
+{
+    ChunkLoader* loader;
+    u32 value;
+};
+
+// What a chunk's file loader asks whether its file is wanted: the RM2's wants it within one keep link of the focus chunk (the
+// loader's bits 4-7), the SM2's within one link of any kind (bits 0-3)
+class ChunkLoadingUtil
+{
+public:
+    const GccVTableEntry* vtable;
+
+    void Destroy(u32 flags)
+    {
+        CallVirtual<void>(this, vtable, 1, flags);
+    }
+
+    bool Wants(ChunkLoader* loader)
+    {
+        return CallVirtual<u32>(this, vtable, 2, loader) != 0;
+    }
+
+    bool DoesNotWant(ChunkLoader* loader)
+    {
+        return CallVirtual<u32>(this, vtable, 3, loader) != 0;
+    }
+};
+
+class Sm2LoadingUtil : public ChunkLoadingUtil
+{
+public:
+    void Destroy(u32 flags) RETAIL(FUN_001f5800);
+    bool Wants(ChunkLoader* loader) RETAIL(FUN_001f5838);
+    bool DoesNotWant(ChunkLoader* loader) RETAIL(FUN_001f5848);
+    // Wanted at a depth of exactly 2
+    bool AtSecondDepth(ChunkLoader* loader) RETAIL(FUN_001f5860);
+};
+
+class Rm2LoadingUtil : public ChunkLoadingUtil
+{
+public:
+    void Destroy(u32 flags) RETAIL(FUN_00269440);
+    bool Wants(ChunkLoader* loader) RETAIL(FUN_00269478);
+    bool DoesNotWant(ChunkLoader* loader) RETAIL(FUN_00269490);
+    bool AtSecondDepth(ChunkLoader* loader) RETAIL(FUN_002694a8);
+};
+
+// The loader of a chunk's RM2 or SM2: a state machine (StepStates) that waits a second before loading a wanted file, waits 4
+// seconds (0.1 when the chunk isn't linked to at all) before unloading an unwanted one, and goes back when it's wanted again.
+// Its vtable follows 0x14 bytes of members
+class ChunkLoaderBase
+{
+public:
+    enum State : s32
+    {
+        None = 0,
+        Queued = 1,
+        WaitingToLoad = 2,
+        Loading = 3,
+        Loaded = 4,
+        WaitingToUnload = 5,
+        Unloading = 6,
+        Unloaded = 7,
+    };
+
+    ChunkLoader* loader;
+    // The loaders are made for any number of files, the game's have one: these are its
+    ChunkLoadingUtil* util;
+    // The clock's ticks when it got into its state, and the ticks it waits
+    s32 time;
+    s32 delay;
+    s32 state;
+    const GccVTableEntry* vtable;
+
+    void Destroy(u32 flags)
+    {
+        CallVirtual<void>(this, vtable, 1, flags);
+    }
+
+    // Start loading or unloading the file (the index of the util): false when it can't yet. Continuing returns false when done
+    bool StartLoading(s32 index, bool now)
+    {
+        return CallVirtual<u32>(this, vtable, 2, index, now) != 0;
+    }
+
+    bool ContinueLoading(s32 index, bool now)
+    {
+        return CallVirtual<u32>(this, vtable, 3, index, now) != 0;
+    }
+
+    bool StartUnloading(s32 index, bool now)
+    {
+        return CallVirtual<u32>(this, vtable, 4, index, now) != 0;
+    }
+
+    bool ContinueUnloading(s32 index, bool now)
+    {
+        return CallVirtual<u32>(this, vtable, 5, index, now) != 0;
+    }
+
+    // Whether the object is in the loader's chunk
+    bool Holds(ReferencedObject* object)
+    {
+        return CallVirtual<u32>(this, vtable, 6, object) != 0;
+    }
+
+    // Moves through the states. Returns whether it's busy (neither queued nor unloaded)
+    bool Step(bool now)
+    {
+        return (CallVirtual<u32>(this, vtable, 7, now) & 0xFF) != 0;
+    }
+
+    bool IsWanted()
+    {
+        return CallVirtual<u32>(this, vtable, 8) != 0;
+    }
+
+    bool IsUnwanted()
+    {
+        return CallVirtual<u32>(this, vtable, 9) != 0;
+    }
+
+    // The base's versions
+    static ChunkLoaderBase* Construct(ChunkLoaderBase* base, ChunkLoader* loader) RETAIL(FUN_002ad1b0);
+    void DestroyBase(u32 flags) RETAIL(FUN_002ad248);
+    bool StepStates(bool now) RETAIL(FUN_002aa8a0);
+    bool AnyUtilWants() RETAIL(FUN_002ad2a0);
+    bool NoUtilWants() RETAIL(FUN_002ad318);
+
+    // In the state (or the one before it too, for any)
+    bool IsQueued(bool any) RETAIL(FUN_002ad390);
+    bool IsLoading(bool any) RETAIL(FUN_002ad3b0);
+    bool IsLoaded(bool any) RETAIL(FUN_002ad3d0);
+};
+CHECK_SIZE(ChunkLoaderBase, 0x18);
+
+// What the chunk manager keeps of a chunk whose RM2 is loaded
+struct ChunkEntry
+{
+    String path;
+    u16 index;
+    u16 unknown0E;
+    ChunkManager* manager;
+    Reference* data;
+    // The object IDs the RM2 brought (a count, then the IDs)
+    u32* objects;
+    // The persistent flags of its instances: its own store (saved with the game) and the other one
+    PersistentFlags* flags;
+    PersistentFlags* otherFlags;
+    // The next persistent flag slot its instances that keep one get (their IDs in it)
+    u16 nextFlagSlot;
+    u16 unknown26;
+    // The AI navigation of its layouts' AI positions and paths, its layouts' positions (and how many the layouts made as the
+    // chunk's own have) and its layouts' paths
+    AiNavigation* navigation;
+    PointerArray<void>* positions;
+    u32 positionCount;
+    PointerArray<void>* paths;
+
+    // A position of a layout that isn't the chunk's own (they follow the chunk's own), nullptr when the chunk has none
+    void* OtherLayoutPosition(u32 index) RETAIL(FUN_00268788);
+    // The next persistent flag slot given out
+    u16 NextFlagSlot() RETAIL(NextPersistentFlagSlot);
+};
+CHECK_OFFSET(ChunkEntry, flags, 0x1C);
+CHECK_OFFSET(ChunkEntry, navigation, 0x28);
+CHECK_OFFSET(ChunkEntry, manager, 0x10);
+CHECK_SIZE(ChunkEntry, 0x38);
+
+// The chunk manager (G_ChunkManager_). Its vtable follows 0x1FB8 bytes of members
+struct ChunkManager
+{
+    u8 unknown0000[0x80C];
+    // The game's resources the chunks' objects go into, and the path finder (retail's MiniBigBoi, 0x1FC0 bytes in, still asm),
+    // which starts with every chunk's AI navigation by the chunk's index
+    struct GameResources* resources;
+    struct PathFinder* pathFinder;
+    u8 unknown0814[0x1FB8 - 0x814];
+    const GccVTableEntry* vtable;
+
+    ChunkEntry* AddChunk(const char* path, ChunkData* data)
+    {
+        return CallVirtual<ChunkEntry*>(this, vtable, 1, path, data);
+    }
+
+    void RemoveChunk(ChunkEntry* entry)
+    {
+        CallVirtual<void>(this, vtable, 2, entry);
+    }
+
+    // The default chunk read now (still asm)
+    void LoadDefault(const char* path) RETAIL(LoadDefault);
+};
+
+extern "C"
+{
+    extern ChunkManager* g_ChunkManager RETAIL(G_ChunkManager_);
+}
+
+extern "C"
+{
+    // The chunk of the path (nullptr for none, still asm)
+    ChunkEntry* FindChunkEntry(ChunkManager* chunks, const char* path) RETAIL(FindChunkInfoByName);
+    // The chunk's instance of the ID (nullptr for none and for the ID 0xFFFF, still asm)
+    InstanceContext* FindChunkInstance(ChunkEntry* chunk, u16 id) RETAIL(FUN_00264120);
+    // The chunks' persistent flags read (every chunk unloaded first, the chunks read added) and written: the count, then each
+    // chunk's path and whether its own store follows (still asm)
+    void ReadChunkStates(ChunkManager* chunks, Stream* stream) RETAIL(FUN_00264390);
+    void WriteChunkStates(ChunkManager* chunks, Stream* stream) RETAIL(FUN_00268f08);
+    // A persistent flag set or cleared, when the store has it (still asm)
+    void SetPersistentFlag(PersistentFlags* flags, u32 index, u32 value) RETAIL(SetPersistentFlag);
+}
+
+struct GameChunkLink;
+
+class Sm2Loader : public ChunkLoaderBase
+{
+public:
+    Sm2Reader* reader;
+    ChunkDataReference* data;
+
+    static Sm2Loader* Construct(Sm2Loader* loader, ChunkLoader* chunk) RETAIL(FUN_001f4560);
+    void Destroy(u32 flags) RETAIL(FUN_001f45c0);
+    // Makes the chunk's data and starts reading the SM2 into it
+    bool StartLoading(s32 index, bool now) RETAIL(StartLoadingSM2);
+    bool ContinueLoading(s32 index, bool now) RETAIL(FUN_001f5a18);
+    bool StartUnloading(s32 index, bool now) RETAIL(FUN_001f5a70);
+    bool ContinueUnloading(s32 index, bool now) RETAIL(FUN_001f4998);
+    bool Holds(ReferencedObject* object) RETAIL(FUN_001f5aa8);
+    // Gives the chunk's data its detail by the depth, then steps the states
+    bool Step(bool now) RETAIL(FUN_001f47e8);
+    // Points the link at the linked chunk's data (bit 17 of its flags while there's some)
+    void UpdateLink(GameChunkLink* link) RETAIL(FUN_001f4750);
+    void Unlink(GameChunkLink* link) RETAIL(FUN_001f59d0);
+};
+CHECK_SIZE(Sm2Loader, 0x20);
+
+class Rm2Loader : public ChunkLoaderBase
+{
+public:
+    Rm2Reader* reader;
+    ChunkEntry* entry;
+
+    static Rm2Loader* Construct(Rm2Loader* loader, ChunkLoader* chunk) RETAIL(FUN_002694c0);
+    void Destroy(u32 flags) RETAIL(FUN_00269520);
+    // Once the SM2 made the chunk's data: the chunk manager's entry, then the RM2 read into it
+    bool StartLoading(s32 index, bool now) RETAIL(FUN_002647e8);
+    bool ContinueLoading(s32 index, bool now) RETAIL(FUN_00269600);
+    bool StartUnloading(s32 index, bool now) RETAIL(FUN_002696f0);
+    bool ContinueUnloading(s32 index, bool now) RETAIL(FUN_00269780);
+    bool Holds(ReferencedObject* object) RETAIL(FUN_00269788);
+    // Bit 18 of the link's flags while the linked chunk's RM2 is loaded
+    void UpdateLink(GameChunkLink* link) RETAIL(FUN_00269588);
+    void Unlink(GameChunkLink* link) RETAIL(FUN_002695f8);
+};
+CHECK_SIZE(Rm2Loader, 0x20);
+
+// A link's hulls: the player loads the linked chunk while inside one of them
+struct LinkHullList
+{
+    // Bit 0: another hull follows
+    u32 flags;
+    LinkHullList* next;
+    CollisionHull hull;
+};
+CHECK_SIZE(LinkHullList, 0x28);
+
+// A chunk's link to another: the chunk's path, its loader while it's wanted, its matrices and hulls
+struct GameChunkLink
+{
+    // Bit 0: hulls follow the matrices, 1: the linked chunk loads while there's no player yet
+    u32 type;
+    String path;
+    LoaderReference* loader;
+    u8 unknown14[0x20 - 0x14];
+    ChunkLinkData data;
+    LinkHullList* hulls;
+    GameChunkLink* next;
+    GameChunkLink* previous;
+    u32 unknownCC;
+};
+CHECK_SIZE(GameChunkLink, 0xD0);
+
+struct ChunkLoadingManager;
+
+// A chunk being loaded or loaded: its two files' loaders and its links
+struct ChunkLoader
+{
+    LoaderReference* self;
+    // Bits 0-3 the depth of links it's wanted at for its scenery (15 not at all), 4-7 the depth of keep links, 8-9 the manager's
+    // bits 28-29, 10 every linked chunk loaded, 11 every linked chunk queued or loaded
+    u32 bits;
+    // The manager's frame it was last reached by the links in
+    s32 frame;
+    String path;
+    ChunkLoadingManager* manager;
+    TimeClock* clock;
+    Rm2Loader* rm2;
+    Sm2Loader* sm2;
+    GameChunkLink* links;
+    ChunkLoader* next;
+    ChunkLoader* previous;
+
+    // Destroys the links and the loaders
+    void Destroy(u32 flags) RETAIL(FUN_002a9df0);
+};
+CHECK_SIZE(ChunkLoader, 0x34);
+CHECK_OFFSET(ChunkLoader, next, 0x2C);
+
+// The chunks loading and loaded, and the object the loading follows
+struct ChunkLoadingManager
+{
+    // Bits 0-11 the loaders of chunks under its path, 12-23 how many of them are loaded (counted every update), 24-27 the state
+    // (1 doesn't queue linked chunks, 1-3 load at once, 5 unloads and forgets what isn't wanted), 28-29 given to new loaders, 30
+    // unloading everything
+    u32 bits;
+    String path;
+    s32 frame;
+    TimeClock* clock;
+    ChunkLoader* loaders;
+    // The chunk the links are followed from
+    ChunkLoader* focusLoader;
+    Reference* focus;
+};
+CHECK_SIZE(ChunkLoadingManager, 0x24);
+
+extern "C"
+{
+    ChunkLoadingManager* ConstructChunkLoadingManager(ChunkLoadingManager* manager, TimeClock* clock, u32 state) RETAIL(FUN_002ad3f0);
+    // The loader of the path (in either case), nullptr for none
+    ChunkLoader* FindChunkLoader(ChunkLoadingManager* manager, String* path) RETAIL(FUN_002ab078);
+    // The loader of the chunk the object is in
+    ChunkLoader* FindChunkLoaderOf(ChunkLoadingManager* manager, ReferencedObject* object) RETAIL(FUN_002ad578);
+    // The loading follows the object, unless everything's being unloaded
+    void SetChunkLoadingFocus(ChunkLoadingManager* manager, ReferencedObject* object) RETAIL(FUN_002ad478);
+    // The path's loader (made and queued when there's none) wanted at the depth for both files (depth 0 makes it the focus
+    // chunk)
+    ChunkLoader* QueueChunk(ChunkLoadingManager* manager, String* path, u32 depth) RETAIL(FUN_002aae10);
+    // Follows the links from the focus chunk, steps every loader, forgets the idle ones in state 5 and reads (all of it now, or a
+    // step: read is what the readers did). Now, while in states 1 and 2, it goes on until every chunk is loaded. Returns whether
+    // chunks are still loading and the readers did something
+    bool UpdateChunkLoading(ChunkLoadingManager* manager, bool now, u8* read) RETAIL(FUN_002ab150);
+    // Stops following the focus. Now, it also stops the sound, draws two empty frames and unloads every chunk
+    void UnloadEverything(ChunkLoadingManager* manager, bool now, ChunkManager* chunks) RETAIL(FUN_002aac68);
+
+    bool ChunkLoaderIsLoaded(ChunkLoader* loader, bool any) RETAIL(FUN_002ad130);
+    // Steps the loader's files if it's under the manager's path. Returns whether they're busy
+    bool ChunkLoaderStep(ChunkLoader* loader, s32 frame, bool now) RETAIL(FUN_002aa708);
+    // Whether every linked chunk is loaded or, failing that, unwanted by one file's loader while the other file's loaded
+    bool LinkedChunksLoaded(ChunkLoader* loader, bool any) RETAIL(FUN_002a9fc8);
+    void ChunkLoaderRemoveLinks(ChunkLoader* loader) RETAIL(FUN_002ad070);
+    // Follows the loader's links, loading the linked chunks at one more depth: through a link with hulls only while the focus
+    // object is inside one (or, without a focus object, when the link says so)
+    void LoadLinkedChunks(ChunkLoader* loader, s32 frame, u32 keepDepth, u32 depth);
+    // Reads the chunk's links: a count, then each link
+    void LoadChunkLinks(ChunkLoader* loader, Stream* reader);
+    void ReadChunkLink(GameChunkLink* link, Stream* reader);
+    void DestroyChunkLink(GameChunkLink* link, u32 flags) RETAIL(FUN_002a9c80);
+    LoaderReference** AssignLoaderReference(LoaderReference** to, LoaderReference** from) RETAIL(FUN_002ace40);
+
+    LinkHullList* InitLinkHullList(LinkHullList* list, Stream* reader);
+    void FreeLinkHullList(LinkHullList* list, u32 flags);
+    bool IsPositionInLinkHulls(LinkHullList* list, const Vector4* position);
+    void ReadLinkHullList(LinkHullList* list, Stream* reader);
+
+    // The intrusive lists (the last two arguments are GCC's pointers to the members, unused)
+    void LinkListRemove(GameChunkLink* link, GameChunkLink** head, s32 next, s32 previous) RETAIL(FUN_002ae3e8);
+    void LinkListPushFront(GameChunkLink* link, GameChunkLink** head, s32 next, s32 previous) RETAIL(FUN_002ae460);
+    bool LoaderListContains(ChunkLoader* loader, ChunkLoader** head, s32 next, s32 previous) RETAIL(FUN_002ae4a0);
+    void LoaderListPushFront(ChunkLoader* loader, ChunkLoader** head, s32 next, s32 previous) RETAIL(FUN_002ae4d8);
+    void LoaderListRemove(ChunkLoader* loader, ChunkLoader** head, s32 next, s32 previous) RETAIL(FUN_002ae518);
+}

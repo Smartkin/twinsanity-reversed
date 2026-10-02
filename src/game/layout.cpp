@@ -1,0 +1,426 @@
+#include "game/layout.h"
+
+#include "game/cameras.h"
+#include "game/instances.h"
+#include "game/memory.h"
+#include "game/stream.h"
+
+namespace
+{
+// The lists an element is made with have room for this many, and grow by as many
+constexpr u32 ListGrowth = 10;
+constexpr u16 UndefinedId = 0xFFFF;
+
+void ConstructIds(IdArray* ids)
+{
+    ids->growth = ListGrowth;
+    ids->capacity = ListGrowth;
+    ids->count = 0;
+    ids->data = static_cast<u16*>(MemoryAllocate2(ListGrowth * sizeof(u16)));
+}
+
+// An object instance's list read: its count, room and growth, then the count's IDs (what it had freed first)
+void ReadIds(IdArray* ids, Stream* stream)
+{
+    if (ids->data != nullptr)
+    {
+        MemoryDeallocate_(ids->data);
+    }
+
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->count));
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->capacity));
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->growth));
+    ids->data = ids->count != 0 ? static_cast<u16*>(MemoryAllocate2(ids->capacity * sizeof(u16))) : nullptr;
+    for (u32 index = 0; index < ids->count; index++)
+    {
+        stream->ReadS16(reinterpret_cast<s16*>(&ids->data[index]));
+    }
+}
+
+// A list of IDs made with new[] (each undefined)
+u16* NewIds(u32 count)
+{
+    u16* ids = NewArray<u16>(count);
+    for (u32 index = 0; index < count; index++)
+    {
+        SetUndefinedId(&ids[index]);
+    }
+
+    return ids;
+}
+
+void DestroyProperties(PropertyList* properties)
+{
+    CallVirtual<void>(properties, properties->vtable, 1, u32{DestroyAndFree});
+}
+}
+
+void SetUndefinedId(u16* id)
+{
+    *id = UndefinedId;
+}
+
+void ReadNewedIds(IdArray* ids, Stream* stream)
+{
+    if (ids->data != nullptr)
+    {
+        DeleteArray(ids->data);
+    }
+
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->count));
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->capacity));
+    stream->ReadS32(reinterpret_cast<s32*>(&ids->growth));
+    ids->data = ids->count != 0 ? NewIds(ids->capacity) : nullptr;
+    for (u32 index = 0; index < ids->count; index++)
+    {
+        stream->ReadS16(reinterpret_cast<s16*>(&ids->data[index]));
+    }
+}
+
+ObjectInstance* ObjectInstance::ConstructEmpty(ObjectInstance* instance)
+{
+    ConstructIds(&instance->instances);
+    ConstructIds(&instance->positions);
+    ConstructIds(&instance->paths);
+    instance->properties = nullptr;
+    SetUndefinedId(reinterpret_cast<u16*>(&instance->objectId));
+    SetUndefinedId(reinterpret_cast<u16*>(&instance->refListIndex));
+    SetUndefinedId(reinterpret_cast<u16*>(&instance->spawnScript));
+    instance->ownsProperties = 0;
+    return instance;
+}
+
+ObjectInstance* ObjectInstance::Construct(ObjectInstance* instance, Stream* stream)
+{
+    ConstructEmpty(instance);
+    instance->Read(stream);
+    return instance;
+}
+
+void ObjectInstance::Destroy(u32 destroyFlags)
+{
+    if (ownsProperties != 0 && properties != nullptr)
+    {
+        DestroyProperties(properties);
+    }
+
+    if (paths.data != nullptr)
+    {
+        MemoryDeallocate_(paths.data);
+    }
+
+    if (positions.data != nullptr)
+    {
+        MemoryDeallocate_(positions.data);
+    }
+
+    if (instances.data != nullptr)
+    {
+        MemoryDeallocate_(instances.data);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void ObjectInstance::Read(Stream* stream)
+{
+    stream->Read(&position, sizeof(position), 1);
+    for (TaggedValue& angle : rotation)
+    {
+        angle.Read(stream);
+    }
+
+    ReadIds(&instances, stream);
+    ReadIds(&positions, stream);
+    ReadIds(&paths, stream);
+    stream->ReadS16(&objectId);
+    stream->ReadS16(&refListIndex);
+    stream->ReadS16(&spawnScript);
+    if (ownsProperties != 0 && properties != nullptr)
+    {
+        DestroyProperties(properties);
+    }
+
+    properties = PropertyList::Construct(static_cast<PropertyList*>(MemoryAllocate(sizeof(PropertyList))), stream);
+    ownsProperties = 1;
+}
+
+InstanceTemplate* InstanceTemplate::Construct(InstanceTemplate* instanceTemplate, Stream* stream)
+{
+    instanceTemplate->name.string = nullptr;
+    instanceTemplate->name.length = 0;
+    instanceTemplate->name.capacity = 0;
+    SetUndefinedId(reinterpret_cast<u16*>(&instanceTemplate->objectId));
+    IdArray& starters = instanceTemplate->starters;
+    starters.capacity = ListGrowth;
+    starters.growth = ListGrowth;
+    starters.count = 0;
+    starters.data = NewIds(ListGrowth);
+    PropertyList& properties = instanceTemplate->properties;
+    properties.vtable = g_PropertyListVTable;
+    properties.state = 0;
+    properties.taggedCount = 0;
+    properties.tagged = nullptr;
+    properties.floatCount = 0;
+    properties.floats = nullptr;
+    properties.intCount = 0;
+    properties.ints = nullptr;
+    for (u8& count : properties.counts)
+    {
+        count = 0;
+    }
+
+    instanceTemplate->Read(stream);
+    return instanceTemplate;
+}
+
+void InstanceTemplate::Read(Stream* stream)
+{
+    StringRead(&name, stream);
+    stream->ReadS16(&objectId);
+    stream->ReadS8(&objectSubType);
+    stream->ReadS8(&objectType);
+    ReadNewedIds(&starters, stream);
+    stream->ReadS8(&exitPoints);
+    stream->ReadS8(&reactJoints);
+    properties.Read(stream);
+}
+
+LayoutTrigger* LayoutTrigger::Construct(LayoutTrigger* trigger)
+{
+    trigger->vtable = g_LayoutTriggerVTable;
+    trigger->activators = 0;
+    ConstructIds(&trigger->instances);
+    trigger->header = 0;
+    return trigger;
+}
+
+void LayoutTrigger::Destroy(u32 destroyFlags)
+{
+    vtable = g_LayoutTriggerVTable;
+    if (instances.data != nullptr)
+    {
+        MemoryDeallocate_(instances.data);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void LayoutTrigger::Read(Stream* stream)
+{
+    stream->Read(&header, sizeof(header), 1);
+    stream->ReadS32(reinterpret_cast<s32*>(&activators));
+    stream->ReadF32(&checkInterval);
+    stream->Read(&rotation, sizeof(rotation), 1);
+    stream->Read(&position, sizeof(position), 1);
+    stream->Read(&scale, sizeof(scale), 1);
+    ReadIds(&instances, stream);
+}
+
+void MessageTrigger::Destroy(u32 destroyFlags)
+{
+    vtable = g_MessageTriggerVTable;
+    LayoutTrigger::Destroy(destroyFlags);
+}
+
+void MessageTrigger::Read(Stream* stream)
+{
+    LayoutTrigger::Read(stream);
+    for (s16& message : messages)
+    {
+        stream->ReadS16(&message);
+    }
+}
+
+u32 MessageTrigger::ItemType()
+{
+    return 0x1813;
+}
+
+void CameraTrigger::Destroy(u32 destroyFlags)
+{
+    vtable = g_CameraTriggerVTable;
+    LayoutTrigger::Destroy(destroyFlags);
+}
+
+void CameraTrigger::Read(Stream* stream)
+{
+    LayoutTrigger::Read(stream);
+    auto* made = static_cast<MainCamera*>(MemoryAllocate(sizeof(MainCamera)));
+    made->Read(stream);
+    camera = made;
+}
+
+u32 CameraTrigger::ItemType()
+{
+    return 0x1C00;
+}
+
+void LayoutPosition::Read(Stream* stream)
+{
+    stream->Read(&position, sizeof(position), 1);
+}
+
+void LayoutPosition::Destroy(u32 destroyFlags)
+{
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PointList::Destroy(u32 destroyFlags)
+{
+    vtable = g_PointListVTable;
+    if (points != nullptr)
+    {
+        MemoryDeallocate_(points);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PointList::Transform(const Matrix4x4* matrix)
+{
+    for (s32 index = 0; index < count; index++)
+    {
+        VuTransformPoint(matrix, &points[index], &points[index]);
+    }
+}
+
+void PointList::Read(Stream* stream)
+{
+    stream->ReadU32(reinterpret_cast<u32*>(&count));
+    auto* read = static_cast<Vector4*>(MemoryAllocate2(count * sizeof(Vector4)));
+    points = read;
+    stream->Read(read, count * sizeof(Vector4), 1);
+}
+
+u32 PointList::ItemType()
+{
+    return 0x1511;
+}
+
+void LayoutPath::Destroy(u32 destroyFlags)
+{
+    vtable = g_LayoutPathVTable;
+    if (lengths != nullptr)
+    {
+        MemoryDeallocate_(lengths);
+    }
+
+    PointList::Destroy(destroyFlags);
+}
+
+void LayoutPath::Read(Stream* stream)
+{
+    PointList::Read(stream);
+    u32 parameters;
+    stream->ReadU32(&parameters);
+    lengths = static_cast<f32*>(MemoryAllocate2(parameters * 2 * sizeof(f32)));
+    stream->Read(lengths, parameters * 2 * sizeof(f32), 1);
+    steps = lengths + parameters;
+}
+
+u32 LayoutPath::ItemType()
+{
+    return 0x1512;
+}
+
+ContactMessage* ContactMessage::Construct(ContactMessage* message)
+{
+    message->word = 0;
+    message->byte = 0;
+    message->point = g_DefaultBox.min;
+    return message;
+}
+
+void CollisionSurface::Read(Stream* stream)
+{
+    // The ten physics parameters in the tools' order and the ID nothing keeps
+    f32* const Physics[10] = {&volumeScales[0], &volumeScales[1], &volumeScales[2], &volumeScales[3], &volumeScales[4], &physics5,
+                              &friction, &physics7, &physics8, &physics9};
+    u16* const Ids[10] = {&surfaceId, &stepSound1, &stepSound2, &impactParticles, &hardImpactParticles, &impactSound, &hardImpactSound,
+                          &stepParticles, &landSound, &scrapeSound};
+    unknown1C = 1.0f;
+    unknown18 = 1.0f;
+    stream->ReadS32(reinterpret_cast<s32*>(&collisionMask));
+    for (u16* id : Ids)
+    {
+        stream->ReadS16(reinterpret_cast<s16*>(id));
+    }
+
+    s16 unused;
+    stream->ReadS16(&unused);
+    for (f32* value : Physics)
+    {
+        stream->ReadF32(value);
+    }
+
+    stream->Read(&unusedVector, sizeof(unusedVector), 1);
+    stream->Read(&contact, sizeof(contact), 1);
+}
+
+void SurfaceTable::Add(const CollisionSurface* surface)
+{
+    CollisionSurface& entry = surfaces[count];
+    entry.collisionMask = surface->collisionMask;
+    entry.physics5 = surface->physics5;
+    entry.friction = surface->friction;
+    entry.physics7 = surface->physics7;
+    entry.physics8 = surface->physics8;
+    entry.physics9 = surface->physics9;
+    entry.unusedVector = surface->unusedVector;
+    entry.contact.point = surface->contact.point;
+    entry.contact.word = surface->contact.word;
+    entry.contact.byte = surface->contact.byte;
+    entry.surfaceId = surface->surfaceId;
+    entry.impactSound = surface->impactSound;
+    entry.hardImpactSound = surface->hardImpactSound;
+    entry.scrapeSound = surface->scrapeSound;
+    entry.stepSound1 = surface->stepSound1;
+    entry.stepSound2 = surface->stepSound2;
+    entry.landSound = surface->landSound;
+    entry.impactParticles = surface->impactParticles;
+    entry.hardImpactParticles = surface->hardImpactParticles;
+    entry.stepParticles = surface->stepParticles;
+    for (u32 index = 0; index < 5; index++)
+    {
+        entry.volumeScales[index] = surface->volumeScales[index];
+    }
+
+    entry.unknown18 = surface->unknown18;
+    entry.unknown1C = surface->unknown1C;
+    count++;
+}
+
+SoundBox* SoundBox::Construct(SoundBox* box, const LayoutTrigger* trigger)
+{
+    Vector4 size = trigger->scale;
+    box->min = size;
+    box->max = size;
+    box->min.x = -box->min.x;
+    box->min.y = -box->min.y;
+    box->min.z = -box->min.z;
+    box->position = trigger->position;
+    InitIdentityMatrix(&box->matrix);
+    MatrixFromRotation(&box->matrix, &trigger->rotation);
+    *reinterpret_cast<Vector4*>(box->matrix.m[3]) = box->position;
+    box->inverse = box->matrix;
+    VuInvertRigidInPlace(&box->inverse);
+    f32 x = (box->min.x - box->max.x) * 0.5f;
+    f32 y = (box->min.y - box->max.y) * 0.5f;
+    f32 z = (box->min.z - box->max.z) * 0.5f;
+    f32 radius = __builtin_sqrtf(x * x + y * y + z * z);
+    box->radiusSquared = radius * radius;
+    return box;
+}

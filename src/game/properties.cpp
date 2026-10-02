@@ -1,0 +1,1213 @@
+#include "game/properties.h"
+
+#include "game/math.h"
+#include "game/memory.h"
+#include "game/stream.h"
+
+namespace
+{
+// 65536ths of a turn in radians, and the unit of radians
+constexpr f32 RadiansPerUnit = 0x1.921fb6p-14f;
+constexpr u32 FromRadians = 0;
+// The holders' vtable functions: the places to read and to write each kind of value
+constexpr u32 TaggedReadSlot = 1;
+constexpr u32 FloatReadSlot = 2;
+constexpr u32 IntReadSlot = 3;
+constexpr u32 TaggedWriteSlot = 4;
+constexpr u32 FloatWriteSlot = 5;
+constexpr u32 IntWriteSlot = 6;
+// The extras' kinds: tagged values, floats, integers
+constexpr u32 ExtraTagged = 0;
+constexpr u32 ExtraFloat = 1;
+constexpr u32 ExtraInt = 2;
+
+// The extras' values (beyond the 0x20 bytes allocated when there are more of them, in retail)
+u32* ValuesOf(PropertyExtras* extras)
+{
+    return reinterpret_cast<u32*>(extras->counts + 4);
+}
+
+// Where the extras of a kind start
+u32 FirstOf(const PropertyExtras* extras, u32 kind)
+{
+    u32 first = 0;
+    for (u32 before = 0; before < kind; before++)
+    {
+        first += extras->counts[before];
+    }
+
+    return first;
+}
+}
+
+TaggedValue* TaggedValue::FromFloat(TaggedValue* value, u32 kind, f32 number)
+{
+    AngleFrom(&value->raw, number, kind);
+    return value;
+}
+
+void TaggedValue::Read(Stream* stream)
+{
+    stream->ReadU32(reinterpret_cast<u32*>(&raw));
+}
+
+PropertyList* PropertyList::Construct(PropertyList* list, Stream* stream)
+{
+    list->vtable = g_PropertyListVTable;
+    list->taggedCount = 0;
+    list->tagged = nullptr;
+    list->floatCount = 0;
+    list->floats = nullptr;
+    list->intCount = 0;
+    list->ints = nullptr;
+    list->Read(stream);
+    return list;
+}
+
+void PropertyList::Destroy(u32 destroyFlags)
+{
+    vtable = g_PropertyListVTable;
+    if (ints != nullptr)
+    {
+        MemoryDeallocate_(ints);
+    }
+
+    if (floats != nullptr)
+    {
+        MemoryDeallocate_(floats);
+    }
+
+    if (tagged != nullptr)
+    {
+        MemoryDeallocate_(tagged);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PropertyList::Read(Stream* stream)
+{
+    stream->ReadS32(reinterpret_cast<s32*>(counts));
+    stream->ReadS32(reinterpret_cast<s32*>(&state));
+    if (tagged != nullptr)
+    {
+        MemoryDeallocate_(tagged);
+    }
+
+    stream->ReadS32(reinterpret_cast<s32*>(&taggedCount));
+    tagged = taggedCount != 0 ? static_cast<TaggedValue*>(MemoryAllocate2(taggedCount * sizeof(TaggedValue))) : nullptr;
+    for (u32 index = 0; index < taggedCount; index++)
+    {
+        stream->ReadU32(reinterpret_cast<u32*>(&tagged[index].raw));
+    }
+
+    if (floats != nullptr)
+    {
+        MemoryDeallocate_(floats);
+    }
+
+    stream->ReadS32(reinterpret_cast<s32*>(&floatCount));
+    floats = floatCount != 0 ? static_cast<f32*>(MemoryAllocate2(floatCount * sizeof(f32))) : nullptr;
+    for (u32 index = 0; index < floatCount; index++)
+    {
+        stream->ReadF32(&floats[index]);
+    }
+
+    if (ints != nullptr)
+    {
+        MemoryDeallocate_(ints);
+    }
+
+    stream->ReadS32(reinterpret_cast<s32*>(&intCount));
+    ints = intCount != 0 ? static_cast<s32*>(MemoryAllocate2(intCount * sizeof(s32))) : nullptr;
+    for (u32 index = 0; index < intCount; index++)
+    {
+        stream->ReadU32(reinterpret_cast<u32*>(&ints[index]));
+    }
+}
+
+TaggedValue* PropertyList::TaggedAt(TaggedValue* value, const PropertyList* list, u32 index)
+{
+    *value = list->tagged[index];
+    return value;
+}
+
+f32 PropertyList::FloatAt(u32 index)
+{
+    return floats[index];
+}
+
+s32 PropertyList::IntAt(u32 index)
+{
+    return ints[index];
+}
+
+PropertyExtras* PropertyExtras::Construct(PropertyExtras* extras, PropertyList* list, PropertyHolder* holder)
+{
+    u32 holderTagged = holder->TaggedCount();
+    u32 holderFloats = holder->FloatCount();
+    u32 holderInts = holder->IntCount();
+    extras->counts[ExtraTagged] = static_cast<u8>(list->counts[ExtraTagged] - holderTagged);
+    extras->counts[ExtraFloat] = static_cast<u8>(list->counts[ExtraFloat] - holderFloats);
+    extras->counts[ExtraInt] = static_cast<u8>(list->counts[ExtraInt] - holderInts);
+    for (u32 index = 0; index < extras->counts[ExtraTagged]; index++)
+    {
+        TaggedValue value = list->tagged[holderTagged + index];
+        extras->SetTagged(index, &value);
+    }
+
+    for (u32 index = 0; index < extras->counts[ExtraFloat]; index++)
+    {
+        extras->SetFloat(index, list->floats[holderFloats + index]);
+    }
+
+    for (u32 index = 0; index < extras->counts[ExtraInt]; index++)
+    {
+        extras->SetInt(index, list->ints[holderInts + index]);
+    }
+
+    return extras;
+}
+
+void PropertyExtras::Destroy(u32 destroyFlags)
+{
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PropertyExtras::SetTagged(u32 index, const TaggedValue* value)
+{
+    f32 radians = static_cast<f32>(value->raw) * RadiansPerUnit;
+    ValuesOf(this)[index] = __builtin_bit_cast(u32, radians);
+}
+
+void PropertyExtras::SetFloat(u32 index, f32 value)
+{
+    ValuesOf(this)[FirstOf(this, ExtraFloat) + index] = __builtin_bit_cast(u32, value);
+}
+
+EABI_EXPORT(AddExtraFloat, &PropertyExtras::SetFloat);
+
+void PropertyExtras::SetInt(u32 index, s32 value)
+{
+    ValuesOf(this)[FirstOf(this, ExtraInt) + index] = static_cast<u32>(value);
+}
+
+TaggedValue* PropertyExtras::TaggedAt(TaggedValue* value, PropertyExtras* extras, u32 index)
+{
+    TaggedValue made;
+    TaggedValue::FromFloat(&made, FromRadians, __builtin_bit_cast(f32, ValuesOf(extras)[index]));
+    *value = made;
+    return value;
+}
+
+f32 PropertyExtras::FloatAt(u32 index)
+{
+    return __builtin_bit_cast(f32, ValuesOf(this)[FirstOf(this, ExtraFloat) + index]);
+}
+
+s32 PropertyExtras::IntAt(u32 index)
+{
+    return static_cast<s32>(ValuesOf(this)[FirstOf(this, ExtraInt) + index]);
+}
+
+PropertyHolder* PropertyHolder::Construct(PropertyHolder* holder)
+{
+    holder->state = 0;
+    holder->vtable = g_PropertyHolderVTable;
+    holder->extras = nullptr;
+    return holder;
+}
+
+void PropertyHolder::Destroy(u32 destroyFlags)
+{
+    vtable = g_PropertyHolderVTable;
+    if (extras != nullptr)
+    {
+        extras->Destroy(DestroyAndFree);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+TaggedValue* PropertyHolder::GetTagged(TaggedValue* value, PropertyHolder* holder, u32 index)
+{
+    u32 count = holder->TaggedCount();
+    if (index < count)
+    {
+        *value = *CallVirtual<TaggedValue*>(holder, holder->vtable, TaggedReadSlot, index);
+        return value;
+    }
+
+    if (holder->extras == nullptr)
+    {
+        return TaggedValue::FromFloat(value, FromRadians, 0.0f);
+    }
+
+    PropertyExtras::TaggedAt(value, holder->extras, index - count);
+    return value;
+}
+
+f32 PropertyHolder::GetFloat(u32 index)
+{
+    u32 count = FloatCount();
+    if (index < count)
+    {
+        return *CallVirtual<f32*>(this, vtable, FloatReadSlot, index);
+    }
+
+    if (extras == nullptr)
+    {
+        return 0.0f;
+    }
+
+    return extras->FloatAt(index - count);
+}
+
+s32 PropertyHolder::GetInt(u32 index)
+{
+    u32 count = IntCount();
+    if (index < count)
+    {
+        return *CallVirtual<s32*>(this, vtable, IntReadSlot, index);
+    }
+
+    if (extras == nullptr)
+    {
+        return 0;
+    }
+
+    return extras->IntAt(index - count);
+}
+
+void PropertyHolder::SetTagged(u32 index, const TaggedValue* value)
+{
+    u32 count = TaggedCount();
+    if (index < count)
+    {
+        *CallVirtual<TaggedValue*>(this, vtable, TaggedWriteSlot, index) = *value;
+        return;
+    }
+
+    if (extras != nullptr)
+    {
+        TaggedValue copy = *value;
+        extras->SetTagged(index - count, &copy);
+    }
+}
+
+void PropertyHolder::SetFloat(u32 index, f32 value)
+{
+    u32 count = FloatCount();
+    if (index < count)
+    {
+        *CallVirtual<f32*>(this, vtable, FloatWriteSlot, index) = value;
+        return;
+    }
+
+    if (extras != nullptr)
+    {
+        extras->SetFloat(index - count, value);
+    }
+}
+
+EABI_EXPORT(StoreInstanceFloatInHolder, &PropertyHolder::SetFloat);
+EABI_EXPORT(FUN_002098d8, &TaggedValue::MakeFloat);
+EABI_EXPORT(SetTaggedFloatBits, &TaggedValue::SetFloat);
+
+void PropertyHolder::SetInt(u32 index, s32 value)
+{
+    u32 count = IntCount();
+    if (index < count)
+    {
+        *CallVirtual<s32*>(this, vtable, IntWriteSlot, index) = value;
+        return;
+    }
+
+    if (extras != nullptr)
+    {
+        extras->SetInt(index - count, value);
+    }
+}
+
+void PropertyHolder::CopyFrom(PropertyList* list)
+{
+    s32 listTagged = list->counts[ExtraTagged];
+    s32 listFloats = list->counts[ExtraFloat];
+    s32 listInts = list->counts[ExtraInt];
+    s32 holderTagged = static_cast<s32>(TaggedCount());
+    s32 holderFloats = static_cast<s32>(FloatCount());
+    s32 holderInts = static_cast<s32>(IntCount());
+    s32 taggedCopied = holderTagged < listTagged ? holderTagged : listTagged;
+    s32 floatsCopied = holderFloats < listFloats ? holderFloats : listFloats;
+    s32 intsCopied = holderInts < listInts ? holderInts : listInts;
+    for (s32 index = 0; index < taggedCopied; index++)
+    {
+        TaggedValue value;
+        PropertyList::TaggedAt(&value, list, static_cast<u32>(index));
+        SetTagged(static_cast<u32>(index), &value);
+    }
+
+    for (s32 index = 0; index < floatsCopied; index++)
+    {
+        SetFloat(static_cast<u32>(index), list->FloatAt(static_cast<u32>(index)));
+    }
+
+    for (s32 index = 0; index < intsCopied; index++)
+    {
+        SetInt(static_cast<u32>(index), list->IntAt(static_cast<u32>(index)));
+    }
+
+    state = list->state;
+    if (holderTagged < listTagged || holderFloats < listFloats || holderInts < listInts)
+    {
+        extras = PropertyExtras::Construct(static_cast<PropertyExtras*>(MemoryAllocate(sizeof(PropertyExtras))), list, this);
+    }
+}
+
+extern "C"
+{
+    // The typed holders' base (its vtable's destructor the only function), and the holders' vtable functions under their retail
+    // names: 1 to 3 the places of a tagged value, a float and an integer to read, 4 to 6 to write, 7 the destructor, 8 the type,
+    // 9 to 11 the counts, 12 the class's 0x12 or 0x13
+    extern const GccVTableEntry g_TypedPropertyHolderVTable[] RETAIL(D_002F2F70);
+    void TypedHolderDestroy(PropertyHolder* holder, u32 flags) RETAIL(FUN_00141bd0);
+    extern const GccVTableEntry g_CharacterHolderVTable[] RETAIL(InstancePropsHolderPlayableCharacter_Methods);
+    TaggedValue* CharacterHolderTaggedPlace(CharacterPropertyHolder* holder, u32 index) RETAIL(FUN_0013e5c0);
+    f32* CharacterHolderFloatPlace(CharacterPropertyHolder* holder, u32 index) RETAIL(FUN_0013e5d0);
+    s32* CharacterHolderIntPlace(CharacterPropertyHolder* holder, u32 index) RETAIL(FUN_0013e5e0);
+    TaggedValue* CharacterHolderTaggedToWrite(CharacterPropertyHolder* holder, u32 index) RETAIL(GetPlayableCharacterFlag);
+    f32* CharacterHolderFloatToWrite(CharacterPropertyHolder* holder, u32 index) RETAIL(GetPlayableCharacterFloat);
+    s32* CharacterHolderIntToWrite(CharacterPropertyHolder* holder, u32 index) RETAIL(GetPlayableCharacterInteger);
+    void CharacterHolderDestroy(CharacterPropertyHolder* holder, u32 flags) RETAIL(FUN_00140048);
+    u32 CharacterHolderType(CharacterPropertyHolder* holder) RETAIL(FUN_0013e620);
+    u32 CharacterHolderTaggedCount(CharacterPropertyHolder* holder) RETAIL(FUN_0013e628);
+    u32 CharacterHolderFloatCount(CharacterPropertyHolder* holder) RETAIL(FUN_0013e630);
+    u32 CharacterHolderIntCount(CharacterPropertyHolder* holder) RETAIL(FUN_0013e638);
+    u32 CharacterHolderClassId(CharacterPropertyHolder* holder) RETAIL(FUN_0013e640);
+
+    extern const GccVTableEntry g_PickupHolderVTable[] RETAIL(InstancePropsHolderType1_Methods);
+    TaggedValue* PickupHolderTaggedPlace(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013ee88);
+    f32* PickupHolderFloatPlace(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013ee98);
+    s32* PickupHolderIntPlace(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013eea8);
+    TaggedValue* PickupHolderTaggedToWrite(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013eeb8);
+    f32* PickupHolderFloatToWrite(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013eec8);
+    s32* PickupHolderIntToWrite(PickupPropertyHolder* holder, u32 index) RETAIL(FUN_0013eed8);
+    void PickupHolderDestroy(PickupPropertyHolder* holder, u32 flags) RETAIL(FUN_00141a88);
+    u32 PickupHolderType(PickupPropertyHolder* holder) RETAIL(FUN_0013eee8);
+    u32 PickupHolderTaggedCount(PickupPropertyHolder* holder) RETAIL(FUN_0013eef0);
+    u32 PickupHolderFloatCount(PickupPropertyHolder* holder) RETAIL(FUN_0013eef8);
+    u32 PickupHolderIntCount(PickupPropertyHolder* holder) RETAIL(FUN_0013ef00);
+    u32 PickupHolderClassId(PickupPropertyHolder* holder) RETAIL(FUN_0013ef08);
+
+    extern const GccVTableEntry g_CrateHolderVTable[] RETAIL(InstancePropsHolderType2_Methods);
+    TaggedValue* CrateHolderTaggedPlace(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eae0);
+    f32* CrateHolderFloatPlace(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eaf0);
+    s32* CrateHolderIntPlace(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eb00);
+    TaggedValue* CrateHolderTaggedToWrite(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eb10);
+    f32* CrateHolderFloatToWrite(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eb20);
+    s32* CrateHolderIntToWrite(CratePropertyHolder* holder, u32 index) RETAIL(FUN_0013eb30);
+    void CrateHolderDestroy(CratePropertyHolder* holder, u32 flags) RETAIL(FUN_00140778);
+    u32 CrateHolderType(CratePropertyHolder* holder) RETAIL(FUN_0013eb40);
+    u32 CrateHolderTaggedCount(CratePropertyHolder* holder) RETAIL(FUN_0013eb48);
+    u32 CrateHolderFloatCount(CratePropertyHolder* holder) RETAIL(FUN_0013eb50);
+    u32 CrateHolderIntCount(CratePropertyHolder* holder) RETAIL(FUN_0013eb58);
+    u32 CrateHolderClassId(CratePropertyHolder* holder) RETAIL(FUN_0013eb60);
+
+    extern const GccVTableEntry g_CreatureHolderVTable[] RETAIL(InstancePropsHolderType3_Methods);
+    TaggedValue* CreatureHolderTaggedPlace(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e538);
+    f32* CreatureHolderFloatPlace(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e548);
+    s32* CreatureHolderIntPlace(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e558);
+    TaggedValue* CreatureHolderTaggedToWrite(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e568);
+    f32* CreatureHolderFloatToWrite(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e578);
+    s32* CreatureHolderIntToWrite(CreaturePropertyHolder* holder, u32 index) RETAIL(FUN_0013e588);
+    void CreatureHolderDestroy(CreaturePropertyHolder* holder, u32 flags) RETAIL(FUN_00140d60);
+    u32 CreatureHolderType(CreaturePropertyHolder* holder) RETAIL(FUN_0013e598);
+    u32 CreatureHolderTaggedCount(CreaturePropertyHolder* holder) RETAIL(FUN_0013e5a0);
+    u32 CreatureHolderFloatCount(CreaturePropertyHolder* holder) RETAIL(FUN_0013e5a8);
+    u32 CreatureHolderIntCount(CreaturePropertyHolder* holder) RETAIL(FUN_0013e5b0);
+    u32 CreatureHolderClassId(CreaturePropertyHolder* holder) RETAIL(FUN_0013e5b8);
+
+    extern const GccVTableEntry g_GenericObjectHolderVTable[] RETAIL(InstancePropsHolderType4_Methods);
+    TaggedValue* GenericObjectHolderTaggedPlace(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ecb8);
+    f32* GenericObjectHolderFloatPlace(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ecc8);
+    s32* GenericObjectHolderIntPlace(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ecd8);
+    TaggedValue* GenericObjectHolderTaggedToWrite(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ece8);
+    f32* GenericObjectHolderFloatToWrite(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ecf8);
+    s32* GenericObjectHolderIntToWrite(GenericObjectPropertyHolder* holder, u32 index) RETAIL(FUN_0013ed08);
+    void GenericObjectHolderDestroy(GenericObjectPropertyHolder* holder, u32 flags) RETAIL(FUN_00141158);
+    u32 GenericObjectHolderType(GenericObjectPropertyHolder* holder) RETAIL(FUN_0013ed18);
+    u32 GenericObjectHolderTaggedCount(GenericObjectPropertyHolder* holder) RETAIL(FUN_0013ed20);
+    u32 GenericObjectHolderFloatCount(GenericObjectPropertyHolder* holder) RETAIL(FUN_0013ed28);
+    u32 GenericObjectHolderIntCount(GenericObjectPropertyHolder* holder) RETAIL(FUN_0013ed30);
+    u32 GenericObjectHolderClassId(GenericObjectPropertyHolder* holder) RETAIL(FUN_0013ed38);
+
+    extern const GccVTableEntry g_GrabbableHolderVTable[] RETAIL(InstancePropsHolderType5_Methods);
+    TaggedValue* GrabbableHolderTaggedPlace(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013e9b0);
+    f32* GrabbableHolderFloatPlace(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013e9c0);
+    s32* GrabbableHolderIntPlace(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013e9d0);
+    TaggedValue* GrabbableHolderTaggedToWrite(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013e9e0);
+    f32* GrabbableHolderFloatToWrite(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013e9f0);
+    s32* GrabbableHolderIntToWrite(GrabbablePropertyHolder* holder, u32 index) RETAIL(FUN_0013ea00);
+    void GrabbableHolderDestroy(GrabbablePropertyHolder* holder, u32 flags) RETAIL(FUN_001403f0);
+    u32 GrabbableHolderType(GrabbablePropertyHolder* holder) RETAIL(FUN_0013ea10);
+    u32 GrabbableHolderTaggedCount(GrabbablePropertyHolder* holder) RETAIL(FUN_0013ea18);
+    u32 GrabbableHolderFloatCount(GrabbablePropertyHolder* holder) RETAIL(FUN_0013ea20);
+    u32 GrabbableHolderIntCount(GrabbablePropertyHolder* holder) RETAIL(FUN_0013ea28);
+    u32 GrabbableHolderClassId(GrabbablePropertyHolder* holder) RETAIL(FUN_0013ea30);
+
+    extern const GccVTableEntry g_PayGateHolderVTable[] RETAIL(InstancePropsHolderType6_Methods);
+    TaggedValue* PayGateHolderTaggedPlace(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013edd8);
+    f32* PayGateHolderFloatPlace(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013ede8);
+    s32* PayGateHolderIntPlace(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013edf8);
+    TaggedValue* PayGateHolderTaggedToWrite(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013ee08);
+    f32* PayGateHolderFloatToWrite(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013ee18);
+    s32* PayGateHolderIntToWrite(PayGatePropertyHolder* holder, u32 index) RETAIL(FUN_0013ee28);
+    void PayGateHolderDestroy(PayGatePropertyHolder* holder, u32 flags) RETAIL(FUN_00141888);
+    u32 PayGateHolderType(PayGatePropertyHolder* holder) RETAIL(FUN_0013ee38);
+    u32 PayGateHolderTaggedCount(PayGatePropertyHolder* holder) RETAIL(FUN_0013ee40);
+    u32 PayGateHolderFloatCount(PayGatePropertyHolder* holder) RETAIL(FUN_0013ee48);
+    u32 PayGateHolderIntCount(PayGatePropertyHolder* holder) RETAIL(FUN_0013ee50);
+    u32 PayGateHolderClassId(PayGatePropertyHolder* holder) RETAIL(FUN_0013ee58);
+
+    extern const GccVTableEntry g_GrapleHolderVTable[] RETAIL(InstancePropsHolderType7_Methods);
+    TaggedValue* GrapleHolderTaggedPlace(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec28);
+    f32* GrapleHolderFloatPlace(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec38);
+    s32* GrapleHolderIntPlace(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec48);
+    TaggedValue* GrapleHolderTaggedToWrite(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec58);
+    f32* GrapleHolderFloatToWrite(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec68);
+    s32* GrapleHolderIntToWrite(GraplePropertyHolder* holder, u32 index) RETAIL(FUN_0013ec78);
+    void GrapleHolderDestroy(GraplePropertyHolder* holder, u32 flags) RETAIL(FUN_00140fb0);
+    u32 GrapleHolderType(GraplePropertyHolder* holder) RETAIL(FUN_0013ec88);
+    u32 GrapleHolderTaggedCount(GraplePropertyHolder* holder) RETAIL(FUN_0013ec90);
+    u32 GrapleHolderFloatCount(GraplePropertyHolder* holder) RETAIL(FUN_0013ec98);
+    u32 GrapleHolderIntCount(GraplePropertyHolder* holder) RETAIL(FUN_0013eca0);
+    u32 GrapleHolderClassId(GraplePropertyHolder* holder) RETAIL(FUN_0013eca8);
+
+    TaggedValue* ProjectileHolderTaggedPlace(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013efb0);
+    f32* ProjectileHolderFloatPlace(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013efc0);
+    s32* ProjectileHolderIntPlace(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013efd0);
+    TaggedValue* ProjectileHolderTaggedToWrite(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013efe0);
+    f32* ProjectileHolderFloatToWrite(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013eff0);
+    s32* ProjectileHolderIntToWrite(ProjectilePropertyHolder* holder, u32 index) RETAIL(FUN_0013f000);
+    void ProjectileHolderDestroy(ProjectilePropertyHolder* holder, u32 flags) RETAIL(FUN_0013f010);
+    u32 ProjectileHolderType(ProjectilePropertyHolder* holder) RETAIL(FUN_0013f038);
+    u32 ProjectileHolderTaggedCount(ProjectilePropertyHolder* holder) RETAIL(FUN_0013f040);
+    u32 ProjectileHolderFloatCount(ProjectilePropertyHolder* holder) RETAIL(FUN_0013f048);
+    u32 ProjectileHolderIntCount(ProjectilePropertyHolder* holder) RETAIL(FUN_0013f050);
+    u32 ProjectileHolderClassId(ProjectilePropertyHolder* holder) RETAIL(FUN_0013f058);
+}
+
+namespace
+{
+// The typed holders' destructors are their base's
+void DestroyTypedHolder(PropertyHolder* holder, u32 flags)
+{
+    holder->vtable = g_TypedPropertyHolderVTable;
+    holder->Destroy(flags);
+}
+
+// A typed holder made with its vtable (the arrays' elements have nothing to make), the list's values copied in when there's one
+template <typename Holder>
+Holder* ConstructTyped(Holder* holder, PropertyList* list, const GccVTableEntry* vtable)
+{
+    PropertyHolder::Construct(holder);
+    holder->vtable = vtable;
+    if (list != nullptr)
+    {
+        holder->CopyFrom(list);
+    }
+
+    return holder;
+}
+}
+
+void TypedHolderDestroy(PropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+// Made as type 3's first
+CharacterPropertyHolder* ConstructCharacterPropertyHolder(CharacterPropertyHolder* holder, PropertyList* list)
+{
+    PropertyHolder::Construct(holder);
+    holder->vtable = g_CreatureHolderVTable;
+    holder->vtable = g_CharacterHolderVTable;
+    if (list != nullptr)
+    {
+        holder->CopyFrom(list);
+    }
+
+    return holder;
+}
+
+PickupPropertyHolder* ConstructPickupPropertyHolder(PickupPropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_PickupHolderVTable);
+}
+
+CratePropertyHolder* ConstructCratePropertyHolder(CratePropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_CrateHolderVTable);
+}
+
+CreaturePropertyHolder* ConstructCreaturePropertyHolder(CreaturePropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_CreatureHolderVTable);
+}
+
+GenericObjectPropertyHolder* ConstructGenericObjectPropertyHolder(GenericObjectPropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_GenericObjectHolderVTable);
+}
+
+GrabbablePropertyHolder* ConstructGrabbablePropertyHolder(GrabbablePropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_GrabbableHolderVTable);
+}
+
+PayGatePropertyHolder* ConstructPayGatePropertyHolder(PayGatePropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_PayGateHolderVTable);
+}
+
+GraplePropertyHolder* ConstructGraplePropertyHolder(GraplePropertyHolder* holder, PropertyList* list)
+{
+    return ConstructTyped(holder, list, g_GrapleHolderVTable);
+}
+
+TaggedValue* CharacterHolderTaggedPlace(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterTagged + index;
+}
+
+f32* CharacterHolderFloatPlace(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterFloats + index;
+}
+
+s32* CharacterHolderIntPlace(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterInts + index;
+}
+
+TaggedValue* CharacterHolderTaggedToWrite(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterTagged + index;
+}
+
+f32* CharacterHolderFloatToWrite(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterFloats + index;
+}
+
+s32* CharacterHolderIntToWrite(CharacterPropertyHolder* holder, u32 index)
+{
+    return holder->characterInts + index;
+}
+
+void CharacterHolderDestroy(CharacterPropertyHolder* holder, u32 flags)
+{
+    holder->vtable = g_CharacterHolderVTable;
+    CreatureHolderDestroy(holder, flags);
+}
+
+u32 CharacterHolderType(CharacterPropertyHolder*)
+{
+    return 0;
+}
+
+u32 CharacterHolderTaggedCount(CharacterPropertyHolder*)
+{
+    return 9;
+}
+
+u32 CharacterHolderFloatCount(CharacterPropertyHolder*)
+{
+    return 0x38;
+}
+
+u32 CharacterHolderIntCount(CharacterPropertyHolder*)
+{
+    return 3;
+}
+
+u32 CharacterHolderClassId(CharacterPropertyHolder*)
+{
+    return 0x13;
+}
+
+TaggedValue* PickupHolderTaggedPlace(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* PickupHolderFloatPlace(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* PickupHolderIntPlace(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* PickupHolderTaggedToWrite(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* PickupHolderFloatToWrite(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* PickupHolderIntToWrite(PickupPropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void PickupHolderDestroy(PickupPropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 PickupHolderType(PickupPropertyHolder*)
+{
+    return 1;
+}
+
+u32 PickupHolderTaggedCount(PickupPropertyHolder*)
+{
+    return 0;
+}
+
+u32 PickupHolderFloatCount(PickupPropertyHolder*)
+{
+    return 1;
+}
+
+u32 PickupHolderIntCount(PickupPropertyHolder*)
+{
+    return 2;
+}
+
+u32 PickupHolderClassId(PickupPropertyHolder*)
+{
+    return 0x12;
+}
+
+TaggedValue* CrateHolderTaggedPlace(CratePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* CrateHolderFloatPlace(CratePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* CrateHolderIntPlace(CratePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* CrateHolderTaggedToWrite(CratePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* CrateHolderFloatToWrite(CratePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* CrateHolderIntToWrite(CratePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void CrateHolderDestroy(CratePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 CrateHolderType(CratePropertyHolder*)
+{
+    return 2;
+}
+
+u32 CrateHolderTaggedCount(CratePropertyHolder*)
+{
+    return 0;
+}
+
+u32 CrateHolderFloatCount(CratePropertyHolder*)
+{
+    return 3;
+}
+
+u32 CrateHolderIntCount(CratePropertyHolder*)
+{
+    return 2;
+}
+
+u32 CrateHolderClassId(CratePropertyHolder*)
+{
+    return 0x13;
+}
+
+TaggedValue* CreatureHolderTaggedPlace(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* CreatureHolderFloatPlace(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* CreatureHolderIntPlace(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* CreatureHolderTaggedToWrite(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* CreatureHolderFloatToWrite(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* CreatureHolderIntToWrite(CreaturePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void CreatureHolderDestroy(CreaturePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 CreatureHolderType(CreaturePropertyHolder*)
+{
+    return 3;
+}
+
+u32 CreatureHolderTaggedCount(CreaturePropertyHolder*)
+{
+    return 1;
+}
+
+u32 CreatureHolderFloatCount(CreaturePropertyHolder*)
+{
+    return 6;
+}
+
+u32 CreatureHolderIntCount(CreaturePropertyHolder*)
+{
+    return 3;
+}
+
+u32 CreatureHolderClassId(CreaturePropertyHolder*)
+{
+    return 0x13;
+}
+
+TaggedValue* GenericObjectHolderTaggedPlace(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GenericObjectHolderFloatPlace(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GenericObjectHolderIntPlace(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* GenericObjectHolderTaggedToWrite(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GenericObjectHolderFloatToWrite(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GenericObjectHolderIntToWrite(GenericObjectPropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void GenericObjectHolderDestroy(GenericObjectPropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 GenericObjectHolderType(GenericObjectPropertyHolder*)
+{
+    return 4;
+}
+
+u32 GenericObjectHolderTaggedCount(GenericObjectPropertyHolder*)
+{
+    return 0;
+}
+
+u32 GenericObjectHolderFloatCount(GenericObjectPropertyHolder*)
+{
+    return 1;
+}
+
+u32 GenericObjectHolderIntCount(GenericObjectPropertyHolder*)
+{
+    return 2;
+}
+
+u32 GenericObjectHolderClassId(GenericObjectPropertyHolder*)
+{
+    return 0x12;
+}
+
+TaggedValue* GrabbableHolderTaggedPlace(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GrabbableHolderFloatPlace(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GrabbableHolderIntPlace(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* GrabbableHolderTaggedToWrite(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GrabbableHolderFloatToWrite(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GrabbableHolderIntToWrite(GrabbablePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void GrabbableHolderDestroy(GrabbablePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 GrabbableHolderType(GrabbablePropertyHolder*)
+{
+    return 5;
+}
+
+u32 GrabbableHolderTaggedCount(GrabbablePropertyHolder*)
+{
+    return 1;
+}
+
+u32 GrabbableHolderFloatCount(GrabbablePropertyHolder*)
+{
+    return 4;
+}
+
+u32 GrabbableHolderIntCount(GrabbablePropertyHolder*)
+{
+    return 2;
+}
+
+u32 GrabbableHolderClassId(GrabbablePropertyHolder*)
+{
+    return 0x12;
+}
+
+TaggedValue* PayGateHolderTaggedPlace(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* PayGateHolderFloatPlace(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* PayGateHolderIntPlace(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* PayGateHolderTaggedToWrite(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* PayGateHolderFloatToWrite(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* PayGateHolderIntToWrite(PayGatePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void PayGateHolderDestroy(PayGatePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 PayGateHolderType(PayGatePropertyHolder*)
+{
+    return 6;
+}
+
+u32 PayGateHolderTaggedCount(PayGatePropertyHolder*)
+{
+    return 0;
+}
+
+u32 PayGateHolderFloatCount(PayGatePropertyHolder*)
+{
+    return 1;
+}
+
+u32 PayGateHolderIntCount(PayGatePropertyHolder*)
+{
+    return 3;
+}
+
+u32 PayGateHolderClassId(PayGatePropertyHolder*)
+{
+    return 0x12;
+}
+
+TaggedValue* GrapleHolderTaggedPlace(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GrapleHolderFloatPlace(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GrapleHolderIntPlace(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* GrapleHolderTaggedToWrite(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* GrapleHolderFloatToWrite(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* GrapleHolderIntToWrite(GraplePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void GrapleHolderDestroy(GraplePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 GrapleHolderType(GraplePropertyHolder*)
+{
+    return 7;
+}
+
+u32 GrapleHolderTaggedCount(GraplePropertyHolder*)
+{
+    return 0;
+}
+
+u32 GrapleHolderFloatCount(GraplePropertyHolder*)
+{
+    return 0x12;
+}
+
+u32 GrapleHolderIntCount(GraplePropertyHolder*)
+{
+    return 2;
+}
+
+u32 GrapleHolderClassId(GraplePropertyHolder*)
+{
+    return 0x12;
+}
+
+TaggedValue* ProjectileHolderTaggedPlace(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* ProjectileHolderFloatPlace(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* ProjectileHolderIntPlace(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+TaggedValue* ProjectileHolderTaggedToWrite(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->tagged + index;
+}
+
+f32* ProjectileHolderFloatToWrite(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->floats + index;
+}
+
+s32* ProjectileHolderIntToWrite(ProjectilePropertyHolder* holder, u32 index)
+{
+    return holder->ints + index;
+}
+
+void ProjectileHolderDestroy(ProjectilePropertyHolder* holder, u32 flags)
+{
+    DestroyTypedHolder(holder, flags);
+}
+
+u32 ProjectileHolderType(ProjectilePropertyHolder*)
+{
+    return 8;
+}
+
+u32 ProjectileHolderTaggedCount(ProjectilePropertyHolder*)
+{
+    return 0;
+}
+
+u32 ProjectileHolderFloatCount(ProjectilePropertyHolder*)
+{
+    return 1;
+}
+
+u32 ProjectileHolderIntCount(ProjectilePropertyHolder*)
+{
+    return 2;
+}
+
+u32 ProjectileHolderClassId(ProjectilePropertyHolder*)
+{
+    return 0x12;
+}
+
+s32 TaggedValue::IntWith(PropertyHolder* holder) const
+{
+    if (TypeOf() != TypeInt)
+    {
+        return 0;
+    }
+
+    if ((raw & PropertyBit) != 0)
+    {
+        return holder->GetInt(static_cast<u32>(raw) >> ValueShift);
+    }
+
+    return raw >> ValueShift;
+}
+
+f32 TaggedValue::FloatWith(PropertyHolder* holder) const
+{
+    if (TypeOf() != TypeFloat)
+    {
+        return 0.0f;
+    }
+
+    if ((raw & PropertyBit) != 0)
+    {
+        return holder->GetFloat(static_cast<u32>(raw) >> ValueShift);
+    }
+
+    s32 bits = raw & ValueMask;
+    return *reinterpret_cast<const f32*>(&bits);
+}
+
+TaggedValue* TaggedValue::AngleWith(TaggedValue* angle, const TaggedValue* value, PropertyHolder* holder)
+{
+    constexpr u32 FromRadians = 0;
+    if (value->TypeOf() != TypeAngle)
+    {
+        AngleFrom(&angle->raw, 0.0f, FromRadians);
+        return angle;
+    }
+
+    if ((value->raw & PropertyBit) != 0)
+    {
+        PropertyHolder::GetTagged(angle, holder, static_cast<u32>(value->raw) >> ValueShift);
+        return angle;
+    }
+
+    s32 bits = value->raw & ValueMask;
+    AngleFrom(&angle->raw, *reinterpret_cast<const f32*>(&bits), FromRadians);
+    return angle;
+}
+
+TaggedValue* TaggedValue::MakeFloat(TaggedValue* value, f32 number)
+{
+    value->raw = (*reinterpret_cast<const s32*>(&number) & ValueMask) | TypeFloat << TypeShift;
+    return value;
+}
+
+TaggedValue* TaggedValue::MakeInt(TaggedValue* value, s32 number)
+{
+    value->raw = number << ValueShift;
+    return value;
+}
+
+void TaggedValue::SetAngle(const s32* angle)
+{
+    constexpr f32 RadiansPerUnit = Rounded(6.283185307179586 / 65536.0);
+    s32 tag = raw;
+    raw = tag & ~PropertyBit;
+    f32 radians = static_cast<f32>(*angle) * RadiansPerUnit;
+    raw = (tag & TypeMask) | (*reinterpret_cast<const s32*>(&radians) & ValueMask);
+}
+
+void TaggedValue::SetFloat(f32 number)
+{
+    raw = (raw & TypeMask) | (*reinterpret_cast<const s32*>(&number) & ValueMask);
+}
+
+void TaggedValue::SetInt(s32 number)
+{
+    raw = (raw & TypeMask) | number << ValueShift;
+}
+
+void TaggedValue::SetProperty(u32, u32 index)
+{
+    raw = ((raw | PropertyBit) & 0x7) | index << ValueShift;
+}

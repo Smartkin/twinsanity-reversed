@@ -1,0 +1,659 @@
+#include "game/lights.h"
+
+#include "game/chunkdata.h"
+#include "game/instances.h"
+#include "game/memory.h"
+#include "game/properties.h"
+#include "game/stream.h"
+#include "game/view.h"
+
+namespace
+{
+// What point and spot lights fall off by: K / (d² + K)
+constexpr u32 FalloffConstant = 3;
+constexpr u32 AssignSlot = 7;
+
+// The box around the light's position, the extent each way
+void BoxAround(Light* light, f32 scale)
+{
+    f32 extent = light->intensity * scale;
+    f32 x = light->position.x;
+    f32 y = light->position.y;
+    f32 z = light->position.z;
+    light->boundsMax.w = 1.0f;
+    light->boundsMin.w = 1.0f;
+    light->boundsMax.z = z + extent;
+    light->boundsMax.x = x + extent;
+    light->boundsMax.y = y + extent;
+    light->boundsMin.x = x - extent;
+    light->boundsMin.y = y - extent;
+    light->boundsMin.z = z - extent;
+}
+
+// The way from the place to the light (its own position, or the one standing in) times the fall off, which it returns
+f32 FallOff(const Light* light, const Vector4* at, Vector4* direction, const Vector4* position)
+{
+    const Vector4* from = position != nullptr ? position : &light->position;
+    Vector4 towards;
+    towards.x = from->x - at->x;
+    towards.y = from->y - at->y;
+    towards.z = from->z - at->z;
+    towards.w = 1.0f;
+    f32 constant = g_LightingConstants[FalloffConstant];
+    f32 falloff = constant / (towards.x * towards.x + towards.y * towards.y + towards.z * towards.z + constant);
+    towards.x = towards.x * falloff;
+    towards.y = towards.y * falloff;
+    towards.z = towards.z * falloff;
+    *direction = towards;
+    return falloff;
+}
+
+// The intensity attenuated: times the fall off as many times as the power (none for 0 or less)
+f32 Attenuated(f32 intensity, s32 power, f32 falloff)
+{
+    for (; power > 0; power--)
+    {
+        intensity = intensity * falloff;
+    }
+
+    return intensity;
+}
+
+// The kind's values taken, then the base's through the vtable
+template <typename T>
+T* AssignLight(T* light, const T* other)
+{
+    CallVirtual<Light*>(static_cast<Light*>(light), light->vtable, AssignSlot, static_cast<const Light*>(other));
+    return light;
+}
+}
+
+void Light::Destroy(u32 destroyFlags)
+{
+    vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void Light::Enable()
+{
+    header |= Enabled;
+}
+
+void Light::Disable()
+{
+    header &= ~static_cast<u32>(Enabled);
+}
+
+void Light::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindNone;
+}
+
+void Light::SetKind(u32 kind)
+{
+    *reinterpret_cast<u8*>(&header) = kind;
+}
+
+u32 Light::GetKind() const
+{
+    return *reinterpret_cast<const u8*>(&header);
+}
+
+Light* Light::AssignBase(const Light* other)
+{
+    header = other->header;
+    intensity = other->intensity;
+    colour = other->colour;
+    position = other->position;
+    boundsMin = other->boundsMin;
+    boundsMax = other->boundsMax;
+    return this;
+}
+
+void Light::Read(Stream* stream)
+{
+    stream->Read(&header, sizeof(header), 1);
+    stream->ReadF32(&intensity);
+    stream->Read(&colour, sizeof(Vector4), 1);
+    stream->Read(&position, sizeof(Vector4), 1);
+    stream->Read(&boundsMin, sizeof(Vector4), 1);
+    stream->Read(&boundsMax, sizeof(Vector4), 1);
+}
+
+void Light::Nothing()
+{
+}
+
+void AmbientLight::Destroy(u32 destroyFlags)
+{
+    vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void AmbientLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindAmbient;
+}
+
+void AmbientLight::LightAt(const Vector4*, Vector4*, f32*, const Vector4*, const Vector4*) const
+{
+}
+
+void AmbientLight::ComputeBounds()
+{
+    constexpr f32 Scale = 100000.0f;
+    BoxAround(this, Scale);
+}
+
+AmbientLight* AmbientLight::Assign(const AmbientLight* other)
+{
+    return AssignLight(this, other);
+}
+
+void DirectionalLight::Destroy(u32 destroyFlags)
+{
+    vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void DirectionalLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindDirectional;
+}
+
+void DirectionalLight::LightAt(const Vector4*, Vector4* out, f32* strength, const Vector4*, const Vector4* towards) const
+{
+    *out = towards != nullptr ? *towards : direction;
+    *strength = intensity;
+}
+
+void DirectionalLight::ComputeBounds()
+{
+    constexpr f32 Scale = Rounded(99999.99);
+    BoxAround(this, Scale);
+}
+
+void DirectionalLight::Read(Stream* stream)
+{
+    Light::Read(stream);
+    stream->Read(&direction, sizeof(Vector4), 1);
+    stream->ReadU16(reinterpret_cast<u16*>(&leftover));
+}
+
+DirectionalLight* DirectionalLight::Assign(const DirectionalLight* other)
+{
+    direction = other->direction;
+    leftover = other->leftover;
+    return AssignLight(this, other);
+}
+
+void PointLight::Destroy(u32 destroyFlags)
+{
+    vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PointLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindPoint;
+}
+
+void PointLight::LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4*) const
+{
+    f32 falloff = FallOff(this, at, direction, position);
+    *strength = Attenuated(intensity, attenuationPower, falloff);
+}
+
+void PointLight::ComputeBounds()
+{
+    constexpr f32 Scale = 100.0f;
+    BoxAround(this, Scale);
+}
+
+void PointLight::Read(Stream* stream)
+{
+    Light::Read(stream);
+    stream->ReadU16(reinterpret_cast<u16*>(&attenuationPower));
+}
+
+PointLight* PointLight::Assign(const PointLight* other)
+{
+    attenuationPower = other->attenuationPower;
+    return AssignLight(this, other);
+}
+
+void SpotLight::Destroy(u32 destroyFlags)
+{
+    vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void SpotLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindSpot;
+}
+
+void SpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4* position, const Vector4*) const
+{
+    constexpr u32 HighestBit = 0x80;
+    f32 falloff = FallOff(this, at, out, position);
+    f32 lit = Attenuated(intensity, attenuationPower, falloff);
+    // How far into the cone: the (attenuated, not unit long) way to the light against its direction
+    f32 cosine = out->x * -direction.x + out->y * -direction.y + out->z * -direction.z;
+    if (cosine < outerConeCosine)
+    {
+        *strength = 0.0f;
+        return;
+    }
+
+    if (cosine < innerConeCosine)
+    {
+        f32 share = (cosine - outerConeCosine) / (innerConeCosine - outerConeCosine);
+        if (share < 0.0f)
+        {
+            share = 0.0f;
+        }
+
+        if (1.0f < share)
+        {
+            share = 1.0f;
+        }
+
+        lit = lit * share;
+    }
+
+    // The cosine to the power of the exponent's low byte, squaring from its top bit
+    s32 exponent = static_cast<s16>(spotExponent);
+    f32 power = 1.0f;
+    for (s32 bit = HighestBit; bit != 0; bit >>= 1)
+    {
+        if ((exponent & bit) != 0)
+        {
+            f32 times = power * cosine;
+            power = power * times;
+        }
+        else
+        {
+            power = power * power;
+        }
+    }
+
+    *strength = lit * power;
+}
+
+void SpotLight::Read(Stream* stream)
+{
+    Light::Read(stream);
+    stream->Read(&direction, sizeof(Vector4), 1);
+    stream->ReadF32(&innerConeCosine);
+    stream->ReadF32(&outerConeCosine);
+    reinterpret_cast<TaggedValue*>(&coneAngle)->Read(stream);
+    reinterpret_cast<TaggedValue*>(&falloffAngle)->Read(stream);
+    stream->ReadU16(reinterpret_cast<u16*>(&attenuationPower));
+    stream->ReadU16(&spotExponent);
+}
+
+SpotLight* SpotLight::Assign(const SpotLight* other)
+{
+    direction = other->direction;
+    coneAngle = other->coneAngle;
+    falloffAngle = other->falloffAngle;
+    attenuationPower = other->attenuationPower;
+    spotExponent = other->spotExponent;
+    innerConeCosine = other->innerConeCosine;
+    outerConeCosine = other->outerConeCosine;
+    return AssignLight(this, other);
+}
+
+void InitLightingConstants(u32 initialise, u32 priority)
+{
+    constexpr u32 AllPriorities = 0xFFFF;
+    static const f32 Values[36] = {
+        0.0f, 0.0f, 0.0f, 25.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f, 0.5f, 1.0f, 0.5f, 0.5f,
+        0.5f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, -1.0f, 0.0f, 1.0f,
+    };
+    if (priority != AllPriorities || initialise == 0)
+    {
+        return;
+    }
+
+    for (u32 index = 0; index < 36; index++)
+    {
+        g_LightingConstants[index] = Values[index];
+    }
+}
+
+ChunkLights* ConstructChunkLights(ChunkLights* lights, ChunkData* chunk)
+{
+    lights->chunk = chunk;
+    lights->ambientLights = nullptr;
+    lights->directionalLights = nullptr;
+    lights->pointLights = nullptr;
+    lights->spotLights = nullptr;
+    lights->lightCount = 0;
+    lights->ambientCount = 0;
+    lights->directionalCount = 0;
+    lights->pointCount = 0;
+    lights->spotCount = 0;
+    for (Light*& extra : lights->extraLights)
+    {
+        extra = nullptr;
+    }
+
+    for (Vector4& direction : lights->directions)
+    {
+        direction = g_DefaultBox.min;
+        direction.w = 1.0f;
+    }
+
+    return lights;
+}
+
+namespace
+{
+// A list's lights destroyed last to first through their vtables, then the list freed
+template <typename T>
+void DestroyList(T* list)
+{
+    constexpr u32 DestroySlot = 1;
+    if (list == nullptr)
+    {
+        return;
+    }
+
+    T* light = list + ArrayCount(list);
+    while (light != list)
+    {
+        light--;
+        CallVirtual<void>(static_cast<Light*>(light), light->vtable, DestroySlot, 0u);
+    }
+
+    DeleteArray(list);
+}
+
+// A list of lights of a kind, made enabled and of its kind (none for a count of 0)
+template <typename T>
+T* MakeList(s32 count, const GccVTableEntry* vtable)
+{
+    if (count == 0)
+    {
+        return nullptr;
+    }
+
+    T* list = NewArray<T>(count);
+    for (s32 index = 0; index < count; index++)
+    {
+        T* light = &list[index];
+        light->header = 0;
+        *reinterpret_cast<u8*>(&light->header) = Light::KindNone;
+        light->vtable = vtable;
+        light->header |= Light::Enabled;
+        light->SetOwnKind();
+    }
+
+    return list;
+}
+}
+
+void DestroyLights(ChunkLights* lights, u32 destroyFlags)
+{
+    DestroyList(lights->ambientLights);
+    DestroyList(lights->directionalLights);
+    DestroyList(lights->pointLights);
+    DestroyList(lights->spotLights);
+    for (Light* extra : lights->extraLights)
+    {
+        DestroyList(reinterpret_cast<AmbientLight*>(extra));
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(lights);
+    }
+}
+
+void MakeChunkLights(ChunkLights* lights)
+{
+    lights->ambientLights = MakeList<AmbientLight>(lights->ambientCount, g_AmbientLightVTable);
+    lights->directionalLights = MakeList<DirectionalLight>(lights->directionalCount, g_DirectionalLightVTable);
+    lights->pointLights = MakeList<PointLight>(lights->pointCount, g_PointLightVTable);
+    lights->spotLights = MakeList<SpotLight>(lights->spotCount, g_SpotLightVTable);
+}
+
+void ReadSceneryLights(ChunkLights* lights, Stream* stream)
+{
+    stream->Read(lights->references, sizeof(lights->references), 1);
+    stream->ReadS32(&lights->lightCount);
+    stream->ReadS32(&lights->ambientCount);
+    stream->ReadS32(&lights->directionalCount);
+    stream->ReadS32(&lights->pointCount);
+    stream->ReadS32(&lights->spotCount);
+    MakeChunkLights(lights);
+    for (u32 index = 0; index < static_cast<u32>(lights->ambientCount); index++)
+    {
+        lights->ambientLights[index].ReadVirtual(stream);
+    }
+
+    for (u32 index = 0; index < static_cast<u32>(lights->directionalCount); index++)
+    {
+        lights->directionalLights[index].ReadVirtual(stream);
+    }
+
+    for (u32 index = 0; index < static_cast<u32>(lights->pointCount); index++)
+    {
+        lights->pointLights[index].ReadVirtual(stream);
+    }
+
+    for (u32 index = 0; index < static_cast<u32>(lights->spotCount); index++)
+    {
+        lights->spotLights[index].ReadVirtual(stream);
+    }
+}
+
+void ClearGatheredLights(ChunkLights* lights)
+{
+    for (u32 index = 0; index < 3; index++)
+    {
+        lights->strengths[index] = -1.0f;
+        lights->colours[index] = g_DefaultBox.min;
+    }
+
+    lights->ambient = g_DefaultBox.min;
+}
+
+void FinishGatheredLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, u32 ownLight)
+{
+    // The object's own light keeps the third slot as it is but for its colour, halved by its strength
+    u32 gathered = ownLight == 0 ? 3 : 2;
+    for (u32 index = 0; index < gathered && 0.0f <= lights->strengths[index]; index++)
+    {
+        VuRotateVector(chunkMatrix, &lights->directions[index], &lights->directions[index]);
+        f32 half = lights->strengths[index] * 0.5f;
+        lights->colours[index].x = lights->colours[index].x * half;
+        lights->colours[index].z = lights->colours[index].z * half;
+        lights->colours[index].y = lights->colours[index].y * half;
+    }
+
+    if (ownLight != 0)
+    {
+        f32 half = lights->strengths[2] * 0.5f;
+        lights->colours[2].x = lights->colours[2].x * half;
+        lights->colours[2].y = lights->colours[2].y * half;
+        lights->colours[2].z = lights->colours[2].z * half;
+    }
+
+    lights->ambient.x = lights->ambient.x * 0.5f;
+    lights->ambient.y = lights->ambient.y * 0.5f;
+    lights->ambient.z = lights->ambient.z * 0.5f;
+}
+
+namespace
+{
+// The scenery's 16 bytes of light mask bits (128 lights: a bit per reference)
+constexpr u32 SceneryLightMask = 0x34;
+
+// A light's colour times a strength added to the ambient light, the product left in the scratch (the retail stack's)
+void AddAmbient(ChunkLights* lights, const Light* light, f32 strength, Vector4* scratch)
+{
+    scratch->x = light->colour.x * strength;
+    scratch->z = light->colour.z * strength;
+    scratch->w = 1.0f;
+    scratch->y = light->colour.y * strength;
+    lights->ambient.x = lights->ambient.x + scratch->x;
+    lights->ambient.y = lights->ambient.y + scratch->y;
+    lights->ambient.z = lights->ambient.z + scratch->z;
+}
+
+// A light put among the strongest: before the first weaker one, the ones after it moved down (the last one dropped). Without the
+// loop made into calls of memmove, which the game doesn't have
+__attribute__((optimize("no-tree-loop-distribute-patterns"))) void InsertStrongest(ChunkLights* lights, u32 slots, f32 strength, const Vector4* direction, const Light* light)
+{
+    for (u32 slot = 0; slot < slots; slot++)
+    {
+        if (!(lights->strengths[slot] < strength))
+        {
+            continue;
+        }
+
+        for (u32 moved = slots - 1; slot < moved; moved--)
+        {
+            lights->strengths[moved] = lights->strengths[moved - 1];
+            lights->colours[moved] = lights->colours[moved - 1];
+            lights->directions[moved] = lights->directions[moved - 1];
+        }
+
+        lights->strengths[slot] = strength;
+        lights->directions[slot] = *direction;
+        lights->colours[slot] = light->colour;
+        return;
+    }
+}
+
+Light* ReferencedLight(const ChunkLights* lights, const LightReference* reference)
+{
+    switch (reference->kind)
+    {
+    case Light::KindAmbient:
+        return &lights->ambientLights[reference->index];
+    case Light::KindDirectional:
+        return &lights->directionalLights[reference->index];
+    case Light::KindPoint:
+        return &lights->pointLights[reference->index];
+    case Light::KindSpot:
+        return &lights->spotLights[reference->index];
+    default:
+        // The retail code then reads a vtable at 0x50
+        return nullptr;
+    }
+}
+}
+
+void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Light* ownLight)
+{
+    constexpr f32 Epsilon = Rounded(2.4999998e-09);
+    constexpr u32 OwnSlot = 2;
+    // The retail stack's places, which some lights' LightAt leave as they were: the own light's position, then every direction
+    // and ambient product of the scenery's lights; the own light's direction, then the ambient product of the 16 more
+    Vector4 scratch;
+    Vector4 scratch2;
+    Vector4 ownDirection;
+    f32 ownStrength;
+    f32 strength;
+    f32 extraStrength;
+    g_LightGathers++;
+    u32 own = 0;
+    ClearGatheredLights(lights);
+    u32 slots = 2;
+    if (ownLight == nullptr)
+    {
+        slots = 3;
+    }
+    else if (ownLight->Kind() == Light::KindAmbient)
+    {
+        AddAmbient(lights, ownLight, ownLight->intensity, &scratch);
+    }
+    else
+    {
+        // The own light is placed in the camera's space
+        own = 1;
+        Matrix4x4 fromCamera;
+        VuInvertRigid(&fromCamera, &g_RenderView->toClip);
+        scratch = ownLight->position;
+        VuTransformPoint(&fromCamera, &scratch, &scratch);
+        if (ownLight->Kind() == own)
+        {
+            scratch2 = static_cast<DirectionalLight*>(ownLight)->direction;
+            VuRotateVector(&fromCamera, &scratch2, &scratch2);
+            f32 scale = InverseLength(&scratch2, Epsilon);
+            scratch2.x = scratch2.x * scale;
+            scratch2.y = scratch2.y * scale;
+            scratch2.z = scratch2.z * scale;
+        }
+
+        ownLight->LightAt(&lights->position, &ownDirection, &ownStrength, &scratch, &scratch2);
+        lights->strengths[OwnSlot] = ownStrength;
+        lights->directions[OwnSlot] = ownDirection;
+        lights->colours[OwnSlot] = ownLight->colour;
+    }
+
+    const u8* mask = lights->chunk->scenery + SceneryLightMask;
+    for (u32 group = 0; group < 16; group++, mask++)
+    {
+        if (*mask == 0)
+        {
+            continue;
+        }
+
+        for (u32 bit = 0; bit < 8; bit++)
+        {
+            if ((1u << bit & *mask) == 0)
+            {
+                continue;
+            }
+
+            Light* light = ReferencedLight(lights, &lights->references[group * 8 + bit]);
+            if (light->Kind() == Light::KindAmbient)
+            {
+                AddAmbient(lights, light, light->intensity, &scratch);
+                continue;
+            }
+
+            light->LightAt(&lights->position, &scratch, &strength, nullptr, nullptr);
+            InsertStrongest(lights, slots, strength, &scratch, light);
+        }
+    }
+
+    for (Light* light : lights->extraLights)
+    {
+        if (light == nullptr)
+        {
+            continue;
+        }
+
+        light->LightAt(&lights->position, &scratch, &extraStrength, nullptr, nullptr);
+        if (light->Kind() == Light::KindAmbient)
+        {
+            AddAmbient(lights, light, extraStrength, &scratch2);
+            continue;
+        }
+
+        InsertStrongest(lights, slots, extraStrength, &scratch, light);
+    }
+
+    FinishGatheredLights(lights, chunkMatrix, own);
+}

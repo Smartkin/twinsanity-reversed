@@ -1,0 +1,177 @@
+#pragma once
+
+#include "common.h"
+#include "gcc2.h"
+
+// The first 8 bytes of every resource the tables share: its references (the first word's low half), two bits, and its ID (none
+// for a resource made outside the tables, which is deleted rather than released)
+struct ResourceHeader
+{
+    enum Bits : u32
+    {
+        // Cleared when a table lets every resource go (still unknown)
+        Bit16 = 0x10000,
+        // Kept when its references run out: a reader sets it when it reads a resource its table already has, taking a
+        // reference clears it
+        Kept = 0x20000,
+    };
+
+    u32 bits;
+    u32 id;
+};
+
+constexpr u32 NoResourceId = 0xFFFFFFFF;
+
+inline ResourceHeader* HeaderOf(void* resource)
+{
+    return static_cast<ResourceHeader*>(resource);
+}
+
+inline u16& ReferencesOf(void* resource)
+{
+    return *static_cast<u16*>(resource);
+}
+
+// A resource's header: no references, bits 16 and 17 cleared, no ID
+inline void ConstructResourceHeader(void* resource)
+{
+    ReferencesOf(resource) = 0;
+    HeaderOf(resource)->bits &= ~(ResourceHeader::Bit16 | ResourceHeader::Kept);
+    HeaderOf(resource)->id = NoResourceId;
+}
+
+// A resource's header made with its ID
+inline void ConstructResourceHeader(void* resource, u32 id)
+{
+    ReferencesOf(resource) = 0;
+    HeaderOf(resource)->bits &= ~(ResourceHeader::Bit16 | ResourceHeader::Kept);
+    HeaderOf(resource)->id = id;
+}
+
+// A reference taken: the resource isn't kept any more
+inline void TakeReference(void* resource)
+{
+    HeaderOf(resource)->bits &= ~ResourceHeader::Kept;
+    ReferencesOf(resource)++;
+}
+
+// The resources a table let go of, waiting to be deleted (0xC00 bytes): a ring of 0x2FF that nothing checks has room.
+// ResourcesStep deletes the oldest of one queue a step, a graphics table that lets every resource go deletes all of its own
+struct DeletionQueue
+{
+    static constexpr u32 Size = 0x2FF;
+
+    u16 head;
+    u16 count;
+    void* items[Size];
+
+    void Push(void* item)
+    {
+        u32 at = head + count;
+        if (at >= Size)
+        {
+            at -= Size;
+        }
+
+        items[at] = item;
+        count++;
+    }
+
+    // The oldest deleted (none deletes nothing). Whether there was one
+    template <typename Delete>
+    bool DeleteFirst(Delete deleteItem)
+    {
+        if (count == 0)
+        {
+            return false;
+        }
+
+        void* item = items[head];
+        if (item != nullptr)
+        {
+            deleteItem(item);
+        }
+
+        count--;
+        head++;
+        if (head >= Size)
+        {
+            head -= Size;
+        }
+
+        return true;
+    }
+};
+CHECK_SIZE(DeletionQueue, 0xC00);
+
+// A table of the game's resources of a kind (0x18 bytes; vtable at 0x14: 1 the destructor, 2 every resource let go, 3 and 4 (a
+// count of resources added) nothing but in the scripts' and sounds'): its capacity (bits 0-13, bit 15 set in every table but the
+// objects'), the resources by the low 15 bits of their IDs, the order they were added in, and its deletion queue
+struct ResourceTable
+{
+    enum Bits : u32
+    {
+        CapacityMask = 0x3FFF,
+        Bit15 = 0x8000,
+    };
+
+    u32 bits;
+    void** items;
+    u16* order;
+    u32 unknown0C;
+    DeletionQueue* queue;
+    const GccVTableEntry* vtable;
+
+    u32 Capacity() const
+    {
+        return bits & CapacityMask;
+    }
+};
+CHECK_SIZE(ResourceTable, 0x18);
+
+// The game's resources (0x44 bytes, vtable at 0x40): the languages, the tables of the game objects, the scripts, the
+// animations, the models (OGIs), the code models, the sounds and each language's voices, and each table's deletion queue
+struct GameResources
+{
+    u32 languageCount;
+    const void* languages;
+    ResourceTable* objects;
+    ResourceTable* scripts;
+    ResourceTable* animations;
+    ResourceTable* models;
+    ResourceTable* codeModels;
+    ResourceTable* sounds;
+    ResourceTable** voices;
+    DeletionQueue* objectQueue;
+    DeletionQueue* scriptQueue;
+    DeletionQueue* animationQueue;
+    DeletionQueue* modelQueue;
+    DeletionQueue* codeModelQueue;
+    DeletionQueue* soundQueue;
+    DeletionQueue** voiceQueues;
+    const GccVTableEntry* vtable;
+
+    // The base made with the languages: the graphics tables given their static deletion queues, no tables of its own yet
+    static GameResources* ConstructBase(GameResources* resources, u32 languageCount, const void* languages) RETAIL(InitResources);
+    // Every table made (the game's capacities), and the game's resources it is
+    static GameResources* Construct(GameResources* resources) RETAIL(InitializeAllGameResources);
+    // Each table made with a capacity, its deletion queue with it (a table of each language for the voices). Each returns the
+    // table (the voices: the array of them)
+    ResourceTable* MakeObjectTable(u32 capacity) RETAIL(InitObjectTable);
+    ResourceTable* MakeScriptTable(u32 capacity) RETAIL(InitScriptTable);
+    ResourceTable* MakeAnimationTable(u32 capacity) RETAIL(InitAnimationTable);
+    ResourceTable* MakeCodeModelTable(u32 capacity) RETAIL(InitCodeModelTable);
+    ResourceTable* MakeModelTable(u32 capacity) RETAIL(InitOgiTable);
+    ResourceTable* MakeSoundTable(u32 capacity) RETAIL(InitSoundTable);
+    ResourceTable** MakeVoiceTables(u32 capacity) RETAIL(InitVoiceTables);
+};
+
+extern "C"
+{
+    // Every resource of every table let go of (their vtables' function 2)
+    void UnloadPendingResources(GameResources* resources) RETAIL(FUN_00265920);
+    // The scripts' table (the game's resources')
+    extern ResourceTable* g_ScriptTable RETAIL(G_ScriptTable);
+}
+CHECK_OFFSET(GameResources, voiceQueues, 0x3C);
+CHECK_SIZE(GameResources, 0x44);

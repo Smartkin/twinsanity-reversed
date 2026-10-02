@@ -1,0 +1,6 @@
+# The split (tools/split.py) and the build's tools: splat and the disassembler it uses, at the versions asm/ was made with, and
+# ninja (Windows has none of its own)
+splat64[mips]==0.50.0
+spimdisasm==1.42.4
+rabbitizer==1.16.2
+ninja

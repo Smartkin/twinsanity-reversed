@@ -1,0 +1,7 @@
+# clangd (the clangd extension in VS Code, or any editor's) reads build/compile_commands.json, which configure.py writes with
+# the toolchain's own include folders. The C++ is built by PS2SDK's GCC: clang takes it as the n32 little endian MIPS it is,
+# without the R5900 options it doesn't know
+CompileFlags:
+  CompilationDatabase: build
+  Add: [--target=mips64el-unknown-elf]
+  Remove: [-march=*, -fcall-saved-*]

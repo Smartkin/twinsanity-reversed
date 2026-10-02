@@ -1,0 +1,32 @@
+# Made from the retail executable, which isn't ours to share: the executable itself (SLES_525.68 from the PAL disc), what
+# tools/split.py splits it into, and the Ghidra project's export symbol_addrs.txt is made from (tools/make_symbols.py)
+/SLES_525.68
+/asm/
+/assets/
+/ghidra/
+# splat writes it with this machine's absolute paths (nothing includes it)
+/include/include_asm.h
+
+# Build output, test references and pictures (configure.py, tools/build.py, tools/render_check.py, tools/run_pcsx2.py)
+/build/
+/build.ninja
+/.ninja_log
+/.ninja_deps
+
+# This machine's paths (local.example.json shows them)
+/local.json
+
+# Python
+/.venv/
+__pycache__/
+*.py[cod]
+
+# Editors and systems: everyone's own editor settings, clangd's index
+/.vscode/
+.cache/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

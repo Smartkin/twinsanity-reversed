@@ -1,0 +1,53 @@
+# Crash Twinsanity PAL 1.01 (SLES_525.68). The ELF has one load segment at 0x100000; its sections, and the zero bytes the original
+# link left between them, are laid out again at their addresses. The VU microcode (.vutext) stays binary.
+name: SLES_525.68
+sha1: d41b8d53f733f930cf03d8ea944bec24429fe57c
+options:
+  basename: SLES_525.68
+  target_path: SLES_525.68
+  base_path: .
+  platform: ps2
+  compiler: EEGCC
+  gp_value: 0x311870
+  ld_gp_expression: ADDR(.sdata) + 0x7FF0
+  asm_path: asm
+  src_path: src
+  build_path: build
+  asset_path: assets
+  ld_script_path: build/SLES_525.68.ld
+  ld_bss_is_noload: True
+  ld_fill_value: 0
+  symbol_addrs_path: symbol_addrs.txt
+  undefined_funcs_auto_path: build/undefined_funcs_auto.txt
+  undefined_syms_auto_path: build/undefined_syms_auto.txt
+  find_file_boundaries: False
+  section_order: [".text", ".data", ".rodata", ".sdata", ".sbss", ".bss"]
+  use_gp_rel_macro: True
+  # n32's names ($8-$11 are a4-a7, $12-$15 t0-t3): the asm is assembled as n32 to link with C++ and PS2SDK
+  mips_abi_gpr: n32
+  string_encoding: ASCII
+  data_string_encoding: ASCII
+  rodata_string_guesser_level: 0
+  data_string_guesser_level: 0
+  migrate_rodata_to_functions: False
+  subalign: null
+  emit_subalign: False
+  asm_function_macro: glabel
+  asm_jtbl_label_macro: jlabel
+  asm_data_macro: dlabel
+segments:
+  - name: main
+    type: code
+    start: 0x1000
+    vram: 0x100000
+    bss_size: 0xD0DA0
+    subsegments:
+      - [0x1000, asm, text]
+      - [0x1DAD90, textbin, vutext]
+      - [0x1E7F00, data, data]
+      - [0x1ED348, data, vudata]
+      - [0x1ED400, rodata, rodata]
+      - [0x20A880, sdata, sdata]
+      - { start: 0x20B460, type: sbss, vram: 0x30A480, name: sbss }
+      - { start: 0x20B460, type: bss, vram: 0x30AD00, name: bss }
+  - [0x20B460]
