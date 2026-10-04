@@ -224,5 +224,7 @@ extern "C"
 
     // Makes the request its pad's
     void RequestVibration(const VibrationRequest* request) RETAIL(FUN_002b3f50);
+    // The module's statics (every pad's vibration request emptied) and its global constructor
     void InitialiseVibrationRequests(s32 initialise, s32 priority) RETAIL(FUN_002b3d50);
+    void ConstructPadsModule() RETAIL(FUN_002b4448);
 }

@@ -1,6 +1,7 @@
 #include "renderer.h"
 
 #include "game/disk.h"
+#include "platform/graphics.h"
 
 namespace
 {
@@ -215,4 +216,9 @@ extern "C"
     {
         return WriteSkyMatrices(packet, toScreen, toCamera, buffer);
     }
+}
+
+void Platform::Graphics::DrawChunkSky(Sky* sky, RenderView* view)
+{
+    DrawSky(sky, view);
 }

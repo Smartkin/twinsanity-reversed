@@ -3,12 +3,10 @@
 #include "renderer/renderer.h"
 
 #include <ee_regs.h>
+#include <gs_privileged.h>
 #include <kernel.h>
 #include <gif_registers.h>
 #include <vif_registers.h>
-
-// Sony's libgraph, still in the asm
-extern "C" int sceGsSyncV(int mode) asm("RenderVSync");
 
 // The resets of Sony's libdev, libgraph and libdma the game starts with, on PS2SDK's register definitions. PS2SDK's own (ResetEE,
 // dma_reset) reset the whole DMAC: this one leaves the SIF's channels (5 to 7), which the IOP's communication already runs on
@@ -123,6 +121,225 @@ void Platform::Graphics::ResetPath()
     GIF_REG_CTRL = 1;
 }
 
+// Sony's libgraph's settings, waits and vertical blank callback, and libdma's channels, on PS2SDK's kernel calls and register
+// definitions
+namespace
+{
+constexpr u32 VBlankStart = 1 << INTC_VBLANK_S; // I_STAT
+constexpr u64 GsReset = 0x200;                  // CSR.RESET
+constexpr u64 GsFlush = 0x100;                  // CSR.FLUSH
+constexpr u32 GsFieldShift = 13;                // CSR.FIELD: the field shown
+constexpr u32 GsRevisionShift = 16;             // CSR.REV
+constexpr u64 GsInterruptsMasked = 0xFF00;      // IMR
+constexpr s16 Interlaced = 1;
+constexpr u32 ChannelStarted = 0x100; // Dn_CHCR.STR
+constexpr u32 VifPathBusy = 0x3;      // VIF1_STAT.VPS
+constexpr u32 GifPathActive = 0xC00;  // GIF_STAT.APATH
+constexpr u32 DmaChannels = 10;
+
+enum ResetGraphMode : s16
+{
+    ResetGraphFull = 0,
+    ResetGraphFlush = 1,
+    ResetGraphModeOnly = 5,
+};
+}
+
+extern "C"
+{
+    // libgraph's parameters: the display's interlacing, video mode (2 NTSC, 3 PAL) and field mode (1 a frame per field), the GS's
+    // revision, and the vertical blank's callback and its interrupt handler
+    struct GsParameters
+    {
+        s16 interlace;
+        s16 videoMode;
+        s16 fieldMode;
+        s16 revision;
+        s32 (*vblankCallback)(s32 cause);
+        s32 vblankHandler;
+    };
+    extern GsParameters g_GsParameters RETAIL(D_002E83B0);
+    // libdma's channels' registers, by channel
+    extern volatile u32* g_DmaChannelRegisters[DmaChannels] RETAIL(DMA_N_CHANNELS);
+
+    GsParameters* sceGsGetGParam() RETAIL(sceGsGetGParam);
+    // Mode 0 resets the GS and sets the display's mode up (the interrupts masked, the vertical blank's callback dropped), 1 only
+    // flushes the GS, 5 only sets the mode up
+    void sceGsResetGraph(s32 mode, s32 interlace, s32 videoMode, s32 fieldMode) RETAIL(sceGsResetGraph);
+    // Waits for the next vertical blank: the field it starts when interlaced, else 1
+    s32 sceGsSyncV(s32 mode) RETAIL(RenderVSync);
+    // Waits until the path to the GS is idle (its DMA channels, VIF1, VU1 and the GIF), whatever the mode
+    s32 sceGsSyncPath(s32 mode, u16 timeout) RETAIL(WaitGraphicalDataTransferFinish);
+    // The vertical blank's callback set (nullptr: none): returns the one before
+    void* sceGsSyncVCallback(s32 (*callback)(s32 cause)) RETAIL(sceGsSyncVCallback);
+    volatile u32* sceDmaGetChan(u32 channel) RETAIL(sceDmaGetChan);
+
+    // The waits for the vertical blank start, polling I_STAT, or (while a callback has the interrupt) also the flag the kernel
+    // sets with the GS's CSR then, which it returns
+    void WaitForVBlank() RETAIL(WaitForVSync);
+    u64 WaitForVBlankFlag() RETAIL(WaitForVSyncSet);
+}
+
+namespace
+{
+void AcknowledgeVBlank()
+{
+    s32 enabled = DI();
+    *R_EE_I_STAT = VBlankStart;
+    asm volatile("sync.l");
+    if (enabled != 0)
+    {
+        EI();
+    }
+}
+
+void DropVBlankCallback(GsParameters* parameters)
+{
+    DisableIntc(INTC_VBLANK_S);
+    RemoveIntcHandler(INTC_VBLANK_S, parameters->vblankHandler);
+}
+}
+
+GsParameters* sceGsGetGParam()
+{
+    return &g_GsParameters;
+}
+
+void sceGsResetGraph(s32 mode, s32 interlace, s32 videoMode, s32 fieldMode)
+{
+    auto resetMode = static_cast<s16>(mode);
+    auto shortInterlace = static_cast<s16>(interlace);
+    auto shortVideoMode = static_cast<s16>(videoMode);
+    auto shortFieldMode = static_cast<s16>(fieldMode);
+    if (resetMode == ResetGraphFlush)
+    {
+        *GS_REG_CSR = GsFlush;
+        return;
+    }
+
+    if (resetMode != ResetGraphFull && resetMode != ResetGraphModeOnly)
+    {
+        return;
+    }
+
+    GsParameters* parameters = sceGsGetGParam();
+    if (resetMode == ResetGraphFull)
+    {
+        *GS_REG_CSR = GsReset;
+    }
+
+    parameters->interlace = shortInterlace;
+    parameters->videoMode = shortVideoMode;
+    parameters->revision = static_cast<s16>((*GS_REG_CSR >> GsRevisionShift) & 0xFF);
+    if (resetMode == ResetGraphFull)
+    {
+        GsPutIMR(GsInterruptsMasked);
+    }
+
+    parameters->fieldMode = shortFieldMode != 0 ? 1 : 0;
+    if (resetMode == ResetGraphFull && parameters->vblankCallback != nullptr)
+    {
+        DropVBlankCallback(parameters);
+        parameters->vblankHandler = 0;
+        parameters->vblankCallback = nullptr;
+    }
+
+    SetGsCrt(shortInterlace & 1, shortVideoMode & 0xFF, shortFieldMode & 1);
+}
+
+void WaitForVBlank()
+{
+    AcknowledgeVBlank();
+    while ((*R_EE_I_STAT & VBlankStart) == 0)
+    {
+        asm volatile("nop; nop; nop");
+    }
+
+    AcknowledgeVBlank();
+}
+
+u64 WaitForVBlankFlag()
+{
+    // What the kernel writes at the vertical blank: retail read the CSR off its stack even when I_STAT ended the wait first
+    alignas(8) volatile u32 flag = 0;
+    alignas(8) volatile u64 csr = 0;
+    SetVSyncFlag(const_cast<u32*>(&flag), const_cast<u64*>(&csr));
+    AcknowledgeVBlank();
+    while ((*R_EE_I_STAT & VBlankStart) == 0 && flag == 0)
+    {
+    }
+
+    AcknowledgeVBlank();
+    return csr;
+}
+
+s32 sceGsSyncV(s32)
+{
+    GsParameters* parameters = sceGsGetGParam();
+    if (parameters->vblankCallback == nullptr)
+    {
+        WaitForVBlank();
+        if (parameters->interlace != Interlaced)
+        {
+            return 1;
+        }
+
+        return static_cast<s32>((*GS_REG_CSR >> GsFieldShift) & 1);
+    }
+
+    u64 csr = WaitForVBlankFlag();
+    if (parameters->interlace != Interlaced)
+    {
+        return 1;
+    }
+
+    return static_cast<s32>((csr >> GsFieldShift) & 1);
+}
+
+s32 sceGsSyncPath(s32, u16)
+{
+    while ((*R_EE_D1_CHCR & ChannelStarted) != 0 || (*R_EE_D2_CHCR & ChannelStarted) != 0 || (*R_EE_VIF1_STAT & VifPathBusy) != 0 ||
+           (ReadVpuStat() & Vu1Busy) != 0 || (*R_EE_GIF_STAT & GifPathActive) != 0)
+    {
+    }
+
+    return 0;
+}
+
+void* sceGsSyncVCallback(s32 (*callback)(s32 cause))
+{
+    GsParameters* parameters = sceGsGetGParam();
+    auto* previous = reinterpret_cast<void*>(parameters->vblankCallback);
+    if (callback == nullptr)
+    {
+        DropVBlankCallback(parameters);
+        parameters->vblankCallback = nullptr;
+        parameters->vblankHandler = 0;
+        return previous;
+    }
+
+    if (previous != nullptr)
+    {
+        DropVBlankCallback(parameters);
+    }
+
+    parameters->vblankCallback = callback;
+    parameters->vblankHandler =
+        AddIntcHandler2(INTC_VBLANK_S, reinterpret_cast<s32 (*)(s32, void*, void*)>(callback), -1, nullptr);
+    EnableIntc(INTC_VBLANK_S);
+    return previous;
+}
+
+volatile u32* sceDmaGetChan(u32 channel)
+{
+    if (channel >= DmaChannels)
+    {
+        return nullptr;
+    }
+
+    return g_DmaChannelRegisters[channel];
+}
+
 void Platform::Graphics::ResetDevices()
 {
     ResetVif0();
@@ -140,8 +357,9 @@ void Platform::Graphics::WaitVSync()
 
 extern "C"
 {
-    // The GS's video mode the renderer set the display up in (sceGsResetGraph's: 2 NTSC, 3 PAL)
+    // The GS's video mode the renderer set the display up in (sceGsResetGraph's: 2 NTSC, 3 PAL) and its field mode (0)
     extern s32 g_VideoOutMode RETAIL(G_VideoOutMode);
+    extern s32 g_VideoFieldMode RETAIL(G_VideoFFMode);
 }
 
 bool Platform::Graphics::IsPalDisplay()
@@ -152,11 +370,6 @@ bool Platform::Graphics::IsPalDisplay()
 
 extern "C"
 {
-    // The renderer's waits for its DMA channels (still asm) and libgraph's for the path to the GS
-    void FinishDMATransferChannel1();
-    void FinishDMATransferAll();
-    void WaitGraphicalDataTransferFinish(s32 mode, s32 timeout);
-
     // The display's settings the renderer worked out at start-up (FUN_0019b570): the GS's PCRTC registers' fields
     struct DisplaySettings
     {
@@ -256,9 +469,9 @@ void SetUpDisplayUnlessSkipped()
 void Platform::Graphics::WaitIdle()
 {
     FlushCache(0);
-    FinishDMATransferChannel1();
+    WaitForVif1Dma();
     FinishDMATransferAll();
-    WaitGraphicalDataTransferFinish(0, 0);
+    sceGsSyncPath(0, 0);
 }
 
 // PerformRender
@@ -280,9 +493,9 @@ void Platform::Graphics::Present(const void* commands)
 void Platform::Graphics::PresentFromInterrupt(const void* commands)
 {
     iFlushCache(0);
-    FinishDMATransferChannel1();
+    WaitForVif1Dma();
     FinishDMATransferAll();
-    WaitGraphicalDataTransferFinish(0, 0);
+    sceGsSyncPath(0, 0);
     *R_EE_T1_MODE = 0;
     SendToGif(commands, true);
     SetUpDisplayUnlessSkipped();
@@ -316,17 +529,158 @@ void Platform::Graphics::WaitSent()
         }
     }
 
-    WaitGraphicalDataTransferFinish(0, 0);
+    sceGsSyncPath(0, 0);
 }
 
-extern "C"
-{
-    // The VU0 microcode sets and the one loaded (G_UnkDmaRelated), switched by a DMA to VIF0 (still asm)
-    extern u8 g_Vu0Programs[] RETAIL(G_UnkDmaRelated);
-    void SelectVu0Programs(u8* programs, u32 set, bool wait) RETAIL(FUN_002b20e0);
-}
-
+// The VU0 microcode sets and the one loaded (G_UnkDmaRelated), switched by a DMA to VIF0 (renderer/vu0programs.cpp)
 void Platform::Graphics::UseHelperPrograms(u32 set, bool wait)
 {
     SelectVu0Programs(g_Vu0Programs, set, wait);
+}
+
+// The renderer's start (InitRenderer_'s, FUN_0019b570's) and its display's place, on the GS's PCRTC registers' fields above
+extern "C"
+{
+    // The object the retail renderer kept its display in (nothing in it): its functions take it and don't read it
+    struct GsDisplay;
+    extern GsDisplay g_GsDisplay RETAIL(D_0030A818);
+    // The display set up for frames of a size in a video mode (2 NTSC, 3 PAL): the path to the GS reset, the GS reset into the
+    // mode, the display circuits' settings worked out from the size (the frame buffer 16 bits a pixel at page 0, magnified to the
+    // TV's width), the frame chain's head written, the pages of the buffers the frame is drawn in
+    void InitDisplay(GsDisplay* display, s32 width, s32 height, s32 videoMode) RETAIL(FUN_0019b570);
+    // The display's offset from the TV's corner (in its units across and in lines)
+    void SetDisplayPosition(GsDisplay* display, s32 x, s32 y) RETAIL(FUN_001a0848);
+
+    // The pages of the buffers the frame is drawn in (its colour, 32 bits a pixel, after the display's, then its depth)
+    extern u32 g_FrameBufferPage RETAIL(D_0030AAFC);
+    extern u32 g_DepthBufferPage RETAIL(D_0030AB00);
+    // The GS's offsets of the screen's middle across and down (2048), the frame's width and height (512 and the renderer's)
+    // and whether the game clock was stopped at the last step, none of which anything reads
+    extern s32 g_UnreadScreenMiddleX RETAIL(D_0030AAEC);
+    extern s32 g_UnreadScreenMiddleY RETAIL(D_0030AAF4);
+    extern s16 g_UnreadFrameWidth RETAIL(D_0030AB12);
+    extern s16 g_UnreadFrameHeight RETAIL(D_0030AB14);
+    extern u8 g_AnimationsStopped RETAIL(D_0030AB16);
+}
+
+namespace
+{
+constexpr s32 VideoNtsc = 2;
+constexpr s32 VideoPal = 3;
+constexpr u32 DmaMemorySize = 0x540000;
+constexpr s32 FrameWidth = 0x200;
+constexpr s32 ScreenMiddle = 0x800;
+// The display's settings: 16 bits a pixel (PSMCT16), PMODE's alpha 0x80 and its two circuits on, the alpha from ALP
+constexpr u32 DisplayPixelFormat = 2;
+constexpr u32 DisplayAlpha = 0x80;
+constexpr u32 DisplayUnknown3C = 2;
+// How far the display moves at the screen offset's ends
+constexpr f32 DisplayMoveAcross = 256.0f;
+constexpr f32 DisplayMoveDown = 32.0f;
+
+// The display's units across a pixel less one, by the frame's width (others keep what's there)
+u32 MagnifyX(u32 width, u32 current)
+{
+    switch (width)
+    {
+    case 0x100:
+        return 9;
+    case 0x140:
+        return 7;
+    case 0x180:
+        return 6;
+    case 0x200:
+        return 4;
+    case 0x280:
+        return 3;
+    default:
+        return current;
+    }
+}
+}
+
+void InitDisplay(GsDisplay*, s32 width, s32 height, s32 videoMode)
+{
+    g_UnreadScreenMiddleX = ScreenMiddle;
+    g_VideoOutMode = videoMode == VideoPal ? VideoPal : VideoNtsc;
+    g_UnreadScreenMiddleY = ScreenMiddle;
+    g_DisplayWidth = width;
+    g_DisplayHeight = height;
+    g_VideoFieldMode = 0;
+    Platform::Graphics::ResetPath();
+    sceGsResetGraph(ResetGraphFull, Interlaced, static_cast<s16>(g_VideoOutMode), static_cast<s16>(g_VideoFieldMode));
+
+    DisplaySettings& display = g_DisplaySettings;
+    u32 pixels = g_DisplayWidth * g_DisplayHeight;
+    display.frameWidth = g_DisplayWidth >> 6;
+    display.unknown3C = DisplayUnknown3C;
+    display.alpha = DisplayAlpha;
+    display.alphaFromRegister = 1;
+    display.frameBuffer = 0;
+    display.pixelFormat = DisplayPixelFormat;
+    display.unknown0C = 0;
+    display.unknown10 = (g_DrawPixelBytes + g_DisplayPixelBytes) * pixels >> 13;
+    display.unknown14 = 0;
+    display.unknown18 = 0;
+    display.unknown38 = 0;
+    display.enable1 = 1;
+    display.enable2 = 1;
+    display.blendWithBackground = 0;
+    display.crtMode = 0;
+    display.alphaOutput = 0;
+    display.magnifyX = MagnifyX(g_DisplayWidth, display.magnifyX);
+    display.y = 0;
+    display.height = g_DisplayHeight - 1;
+    display.magnifyY = 0;
+    display.x = 0;
+    display.width = (display.magnifyX + 1) * g_DisplayWidth;
+    WriteFrameHead();
+    pixels = g_DisplayWidth * g_DisplayHeight;
+    g_FrameBufferPage = pixels * g_DisplayPixelBytes >> 13;
+    g_DepthBufferPage = pixels * (g_DisplayPixelBytes + g_DrawPixelBytes) >> 13;
+}
+
+void SetDisplayPosition(GsDisplay*, s32 x, s32 y)
+{
+    g_DisplaySettings.y = y;
+    g_DisplaySettings.x = x;
+}
+
+void Platform::Graphics::StartRenderer(s32 height, bool pal)
+{
+    auto* memory = static_cast<u8*>(MemoryAllocate2(DmaMemorySize));
+    g_UnreadFrameWidth = FrameWidth;
+    g_RendererDmaNext = memory;
+    g_RendererDmaMemory = memory;
+    g_UnreadFrameHeight = static_cast<s16>(height);
+    InitDisplay(&g_GsDisplay, FrameWidth, static_cast<s16>(height), pal ? VideoPal : VideoNtsc);
+}
+
+void Platform::Graphics::FinishRendererStart()
+{
+    InitVuPrograms();
+    g_RendererDmaNext = CarveDmaMemory(g_RendererDmaNext);
+    InitialiseFrameBuckets(&g_FrameBuckets);
+    InitialiseSmallBucket(&g_SmallBucket);
+    InitialiseLargeBucket(&g_LargeBucket);
+    FUN_001bc8f0(D_0030A820);
+    InitShadersRenderedAmt();
+    g_RendererDmaNext = InitialiseInstanceBlocks(g_RendererDmaNext);
+    MakeDefaultMaterials();
+    InitAlphaPresets();
+    InitialiseScreenEffects();
+    MakeSharedGifPacket();
+}
+
+void Platform::Graphics::MoveDisplay(const Vector2* offset)
+{
+    s32 x = static_cast<s32>(offset->x * DisplayMoveAcross);
+    SetDisplayPosition(&g_GsDisplay, x, static_cast<s32>(offset->y * DisplayMoveDown));
+}
+
+void Platform::Graphics::StepAnimations(const TimeClock* clock)
+{
+    g_AnimationsStopped = (clock->flags & TimeClock::FlagRunning) ^ 1;
+    AnimateMaterials(clock);
+    UpdateParticleWaves(clock);
 }

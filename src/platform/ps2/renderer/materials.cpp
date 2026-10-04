@@ -569,6 +569,37 @@ void MakeDistortionMaterial(Material* material)
     shader->lodK = -200;
 }
 
+// The skid marks' (InitFreedMemory makes both): shader type 1 (no texture, the vertexes' colours) in bucket 3 with its key,
+// blended with preset 1 (adding) or 2 (taking away) where the destination alpha test passes (DATE, DATM 0), depth not written
+Material* MakeSkidMaterial(bool subtracting)
+{
+    constexpr u32 SkidBucket = 3;
+    constexpr u64 SkidKey = 8;
+    constexpr u64 AddingPreset = 1;
+    constexpr u64 SubtractingPreset = 2;
+    constexpr u64 PresetMask = 0xF;
+    auto* material = MaterialConstruct(static_cast<Material*>(MemoryAllocate(MaterialStorage)));
+    material->activatedShaders = SkidKey;
+    material->bucket = SkidBucket;
+    auto* shader = static_cast<Shader*>(MemoryAllocate(sizeof(Shader)));
+    ShaderConstruct(shader);
+    shader->vtable = g_ShaderType01VTable;
+    ShaderType01SetUp(shader);
+    u64 preset = subtracting ? SubtractingPreset : AddingPreset;
+    u64 settings = shader->settings | 1ull << SettingBlends;
+    settings &= ~(1ull << SettingOwnAlpha);
+    settings = (settings & ~(PresetMask << SettingPreset)) | preset << SettingPreset;
+    settings |= 1ull << SettingNoDepthWrites | 1ull << SettingDestinationTest;
+    shader->settings = settings & ~(1ull << SettingDestinationMode);
+    if (material->shaderCount < MaxShaders)
+    {
+        material->shaders[material->shaderCount++] = shader;
+    }
+
+    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    return material;
+}
+
 void ConstructMaterial(Material* material)
 {
     MaterialConstruct(material);
@@ -578,4 +609,57 @@ void DestroyMaterial(Material* material)
 {
     MaterialDestroy(material, 2);
 }
+}
+
+extern "C"
+{
+    void ShaderType00SetUp(Shader* shader) RETAIL(FUN_001d9400);
+    extern const GccVTableEntry g_ShaderType00VTable[] RETAIL(PrecompiledShader__Type_0x0_Methods);
+}
+
+namespace
+{
+constexpr u32 DefaultBucket = 2;
+constexpr u64 DefaultKey = 8;
+
+Material* MakeKeyedMaterial()
+{
+    auto* material = MaterialConstruct(static_cast<Material*>(MemoryAllocate(Platform::Graphics::MaterialStorage)));
+    material->bucket = DefaultBucket;
+    material->activatedShaders = DefaultKey;
+    return material;
+}
+
+Shader* MakeShader(const GccVTableEntry* vtable, void (*setUp)(Shader*))
+{
+    auto* shader = static_cast<Shader*>(MemoryAllocate(sizeof(Shader)));
+    ShaderConstruct(shader);
+    shader->vtable = vtable;
+    setUp(shader);
+    return shader;
+}
+
+void AddShader(Material* material, Shader* shader)
+{
+    if (material->shaderCount < MaxShaders)
+    {
+        material->shaders[material->shaderCount++] = shader;
+    }
+}
+}
+
+// The type 0 shader's settings bits 23-25 (read from files and never used) are made 4 before its packets are
+extern "C" void MakeDefaultMaterials()
+{
+    constexpr u64 UnusedBits = 7ull << 23;
+    constexpr u64 UnusedValue = 4ull << 23;
+    g_UnusedDefaultMaterial = MakeKeyedMaterial();
+    Shader* shader = MakeShader(g_ShaderType00VTable, ShaderType00SetUp);
+    AddShader(g_UnusedDefaultMaterial, shader);
+    shader->settings = (shader->settings & ~UnusedBits) | UnusedValue;
+    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    g_ScreenModelMaterial = MakeKeyedMaterial();
+    shader = MakeShader(g_ShaderType01VTable, ShaderType01SetUp);
+    AddShader(g_ScreenModelMaterial, shader);
+    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
 }

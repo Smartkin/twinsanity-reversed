@@ -133,6 +133,45 @@ public:
 };
 CHECK_SIZE(SubItemsReader, 0x30);
 
+// Two readers of a part of the stream's open file into memory given them, which nothing makes (their vtables follow the sub items
+// reader's, 0x38 and 0x70 bytes past it): the first waits for the bytes; the second polls the stream until they're there, its
+// part one of the current archive's last found file when asked to and the stream has a file of the disc open (nothing read
+// without a file found)
+class WaitingPartReader : public GenericItemReader
+{
+public:
+    u32 offset;
+    u32 size;
+    u8* data;
+
+    void Destroy(u32 flags) RETAIL(FUN_002ac200);
+    void Begin(FileStream* stream) RETAIL(FUN_002ac270);
+    bool IsDone() RETAIL(FUN_002ac2a8);
+    void Finish(ReaderStack* stack) RETAIL(FUN_002ac2b0);
+};
+CHECK_SIZE(WaitingPartReader, 0x14);
+
+class PolledPartReader : public GenericItemReader
+{
+public:
+    u32 offset;
+    u32 size;
+    u8* data;
+    u32 unknown14;
+    // The bytes were there at once; else the stream polled
+    u8 read;
+    FileStream* stream;
+    u8 inArchive;
+
+    void Destroy(u32 flags) RETAIL(FUN_002ac068);
+    void Begin(FileStream* stream) RETAIL(FUN_002ac0d8);
+    bool IsDone() RETAIL(FUN_002ac190);
+    void Finish(ReaderStack* stack) RETAIL(FUN_002ac1c0);
+};
+CHECK_OFFSET(PolledPartReader, read, 0x18);
+CHECK_OFFSET(PolledPartReader, stream, 0x1C);
+CHECK_OFFSET(PolledPartReader, inArchive, 0x20);
+
 // The sound bank a sound bank reader reads the samples of
 struct SoundBankEntry
 {
@@ -231,6 +270,11 @@ public:
     {
         CallVirtual<void>(this, vtable, 8, read, count, end);
     }
+
+    // The interface's own: its destructor, and the count and the end it's told of (it does nothing with them)
+    void BaseDestroy(u32 flags) RETAIL(DestroyItem);
+    void BaseSetCount(u32 count) RETAIL(FUN_00179528);
+    void BaseFinish(s32 read, u32 count, u32 end) RETAIL(FUN_00179530);
 };
 
 // An item of a section's table: its place after the section's start, its size and its ID

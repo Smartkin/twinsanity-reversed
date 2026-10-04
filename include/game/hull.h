@@ -1,11 +1,11 @@
 #pragma once
 
 #include "common.h"
+#include "gcc2.h"
 #include "game/math.h"
+#include "game/volumes.h"
 
 class Stream;
-// A box and the sphere around it, as the scenery's tree nodes keep them (still asm)
-struct BoundingVolume;
 
 // A convex hull (0x20 bytes, TT Lab's TwinCollisionHull, the game's ModelCollisionData): how many of each part its blob has, where
 // each part but the vertexes (first) starts in it, the collision surface (only the RM2's older layout gives one), the blob's size
@@ -55,11 +55,10 @@ extern "C"
     Vector4* HullPlane(const CollisionHull* hull, s32 index) RETAIL(FUN_00201060);
     Vector4* HullEdgeDirections(const CollisionHull* hull) RETAIL(FUN_00201078);
     Vector4* HullFaceNormals(const CollisionHull* hull) RETAIL(FUN_00201088);
-    // VU0's (still asm): the box of points moved by a matrix, the box of points
+    // VU0's macro mode (the platform's): the box of points moved by a matrix and the box of points, its corners' w the first
+    // point's (moved). The first point counts however few there are
     void GetBbox(const Vector4* points, s32 count, Box* box, const Matrix4x4* matrix);
     void PointsBox(const Vector4* points, s32 count, Box* box) RETAIL(FUN_00201bb8);
-    // A bounding volume made of a box (still asm)
-    void SetBoundingVolume(BoundingVolume* volume, const Vector4* min, const Vector4* max) RETAIL(FUN_001f6ad8);
     // The hull's box under a matrix (as a bounding volume, as a box), its own
     void GetHullBounds(const CollisionHull* hull, const Matrix4x4* matrix, BoundingVolume* volume);
     void GetHullBoundingBox(const CollisionHull* hull, const Matrix4x4* matrix, Box* box);
@@ -87,6 +86,11 @@ extern "C"
     // The same of two hulls with their places (a rigid matrix each), the second taken into the first's
     u8 HullsTouch(const CollisionHull* hull, const Matrix4x4* matrix, const CollisionHull* other, const Matrix4x4* otherMatrix)
         RETAIL(FUN_00200b00);
+    // Where a segment from start to end gets into a hull under a matrix, its start outside it (in front of a plane): the share of
+    // the way and, when wanted, a hit of the face it gets in through (its first three corners) with the hull's surface. 0 when it
+    // misses or starts inside
+    u32 HullRayCast(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* start, const Vector4* end, f32* share,
+                    void* hit) RETAIL(FUN_001fcc00);
 
     // The hull builder: points (merged within 0.0001) and faces (their points' indexes, none twice) added, then edges, edge
     // directions (merged within 0.001 either way), planes (each turned to face out, failing on faces with points on both sides),
@@ -131,4 +135,31 @@ extern "C"
     void BuildBoxHull(CollisionHull* hull, const Vector4* min, const Vector4* max);
     u32 BuildTriangleHull(CollisionHull* hull, const Vector4* triangle);
     u32 BuildPyramidHull(CollisionHull* hull, const Vector4* points);
+    // The hull builder's statics made at the start (GCC 2.9x's static initialisation: its arrays of vectors, whose constructor
+    // does nothing), and the static constructor that runs it
+    void InitHullBuilderStatics(s32 initialise, s32 priority) RETAIL(FUN_001ff110);
+    void HullStaticInit() RETAIL(FUN_00201b70);
+}
+
+// The box hulls of boxes the agents' code shares (0x130 bytes, made the first time: g_BoxHullCache): the boxes and their hulls,
+// and how many there are
+struct BoxHullCache
+{
+    static constexpr s32 Capacity = 8;
+
+    Box boxes[Capacity];
+    CollisionHull* hulls[Capacity];
+    s32 count;
+};
+CHECK_OFFSET(BoxHullCache, hulls, 0x100);
+CHECK_OFFSET(BoxHullCache, count, 0x120);
+CHECK_SIZE(BoxHullCache, 0x130);
+
+extern "C"
+{
+    extern BoxHullCache* g_BoxHullCache RETAIL(D_0030A05C);
+    // Made empty, and the hull of a box (its corners' x, y and z the same): the one made before, else a new one (retail never
+    // checks there's room for it)
+    BoxHullCache* ConstructBoxHullCache(BoxHullCache* cache) RETAIL(FUN_00201168);
+    CollisionHull* BoxHullOf(BoxHullCache* cache, const Vector4* min, const Vector4* max) RETAIL(FUN_001fdc30);
 }

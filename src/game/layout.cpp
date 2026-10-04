@@ -5,6 +5,11 @@
 #include "game/memory.h"
 #include "game/stream.h"
 
+extern "C"
+{
+    extern const GccVTableEntry g_IdArrayIteratorBaseVTable[] RETAIL(D_00303430);
+}
+
 namespace
 {
 // The lists an element is made with have room for this many, and grow by as many
@@ -75,6 +80,57 @@ void ReadNewedIds(IdArray* ids, Stream* stream)
     {
         stream->ReadS16(reinterpret_cast<s16*>(&ids->data[index]));
     }
+}
+
+void IdArrayIterator::Destroy(u32 destroyFlags)
+{
+    BaseDestroy(destroyFlags);
+}
+
+void IdArrayIterator::BaseDestroy(u32 destroyFlags)
+{
+    vtable = g_IdArrayIteratorBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void IdArrayIterator::First()
+{
+    index = 0;
+}
+
+u32 IdArrayIterator::IsDone()
+{
+    return index < 0 || static_cast<u32>(index) >= array->count;
+}
+
+u16* IdArrayIterator::Current()
+{
+    return &array->data[index];
+}
+
+void IdArrayIterator::Next()
+{
+    index++;
+}
+
+void IdArrayIterator::Previous()
+{
+    index--;
+}
+
+void IdArrayIterator::Last()
+{
+    index = static_cast<s32>(array->count) - 1;
+}
+
+IdArrayIterator* IdArrayIterator::Assign(const IdArrayIterator* other)
+{
+    array = other->array;
+    index = other->index;
+    return this;
 }
 
 ObjectInstance* ObjectInstance::ConstructEmpty(ObjectInstance* instance)
@@ -366,7 +422,7 @@ void CollisionSurface::Read(Stream* stream)
         stream->ReadF32(value);
     }
 
-    stream->Read(&unusedVector, sizeof(unusedVector), 1);
+    stream->Read(&flow, sizeof(flow), 1);
     stream->Read(&contact, sizeof(contact), 1);
 }
 
@@ -379,7 +435,7 @@ void SurfaceTable::Add(const CollisionSurface* surface)
     entry.physics7 = surface->physics7;
     entry.physics8 = surface->physics8;
     entry.physics9 = surface->physics9;
-    entry.unusedVector = surface->unusedVector;
+    entry.flow = surface->flow;
     entry.contact.point = surface->contact.point;
     entry.contact.word = surface->contact.word;
     entry.contact.byte = surface->contact.byte;

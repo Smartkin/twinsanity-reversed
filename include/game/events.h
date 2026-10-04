@@ -5,7 +5,7 @@
 #include "game/memory.h"
 #include "game/reference.h"
 
-// A message sent to instances (the retail TriggerEventCaller, 0x14 bytes, still asm): the block of its references first (a
+// A message sent to instances (the retail TriggerEventCaller, 0x14 bytes): the block of its references first (a
 // block made for it owns it), 0x103, its type, the kinds of nodes it goes to, a reference argument and its vtable (at 0x10: 1 the
 // destructor)
 struct GameEvent
@@ -20,6 +20,13 @@ struct GameEvent
 
     // The argument's handle is the constructor's, which lets it go (a reference passed by value)
     static GameEvent* Construct(GameEvent* event, u32 type, Reference** argument, u32 unknown) RETAIL(InitTriggerEvent);
+    // Its destructor (TriggerEventCaller_Methods_'s), and the same code under its base classes' vtables: the event with an argument's
+    // (D_002F0320) and the event caller's (EventCaller_interface_). Its argument let go, its reference block told it's gone
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00123068);
+    void ArgumentEventDestroy(u32 destroyFlags) RETAIL(FUN_00123008);
+    void EventCallerDestroy(u32 destroyFlags) RETAIL(FUN_00122fa0);
+    // Its and the event with an argument's slot 2 (applied to a node): nothing
+    void ApplyNothing() RETAIL(FUN_00123000);
 };
 CHECK_SIZE(GameEvent, 0x14);
 
@@ -41,13 +48,55 @@ struct CameraEvent : GameEvent
 };
 CHECK_SIZE(CameraEvent, 0x18);
 
+struct GameResources;
+struct InstanceContext;
+struct ObjectNodeBase;
+
+// A behaviour started on the object node it reaches (retail's ScriptEventCaller, 0x1C bytes, vtable ScriptEventCaller_Methods:
+// 1 the destructor, 2 applied): the index of the starter among the game's behaviours (0xFFFF none), the runner's slot, whether
+// it's forced (bit 0) and its originator
+struct ScriptEvent : GameEvent
+{
+    static constexpr u16 EventId = 0x100;
+    static constexpr u8 Forced = 0x1;
+
+    u16 starter;
+    u8 slot;
+    u8 bits;
+    InstanceContext* originator;
+
+    // The argument's handle is the constructor's (a reference passed by value)
+    static ScriptEvent* Construct(ScriptEvent* event, const u16* starter, u32 slot, u32 force, Reference** argument,
+                                  InstanceContext* originator, u32 kinds) RETAIL(FUN_0020a5a0);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0020ecd8);
+    // The starter started on the node in the runner of its slot
+    void Apply(ObjectNodeBase* node, GameResources* resources) RETAIL(FUN_0020ed38);
+};
+CHECK_SIZE(ScriptEvent, 0x1C);
+
+// A noise an instance made, which the object nodes around it hear (retail's vtable D_002FD268, 0x18 bytes): how loud it is
+struct NoiseEvent : GameEvent
+{
+    static constexpr u16 EventId = 0x101;
+
+    f32 loudness;
+
+    // The argument's handle is the constructor's (a reference passed by value)
+    static NoiseEvent* Construct(NoiseEvent* event, f32 loudness, Reference** argument, u32 kinds) RETAIL_N32(FUN_0020a090);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0020ec68);
+    // Heard by the object node it reaches (by its head tracking while that tracks and looks), and passed on to its instance as the
+    // message of the node's bits 42-57 (made of the noise's argument) when its bit 40 says so
+    void Apply(ObjectNodeBase* node, GameResources* resources) RETAIL(FUN_0020a1c0);
+};
+CHECK_SIZE(NoiseEvent, 0x18);
+
 extern "C"
 {
     extern const GccVTableEntry g_GameEventVTable[] RETAIL(EventCaller_interface_);
     extern const GccVTableEntry g_CameraEventBaseVTable[] RETAIL(D_003052F8);
     extern const GccVTableEntry g_CameraEventVTable[] RETAIL(D_003052E0);
 
-    // An event queued for an instance; the event's handle is the callee's, which lets it go (still asm)
+    // An event queued for an instance; the event's handle is the callee's, which lets it go
     void QueueEvent(ReferencedObject* instance, Reference** event) RETAIL(FUN_001981c0);
 }
 

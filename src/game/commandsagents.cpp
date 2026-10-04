@@ -3,6 +3,7 @@
 #include "game/agentparts.h"
 #include "game/agents.h"
 #include "game/animation.h"
+#include "game/attachments.h"
 #include "game/cameras.h"
 #include "game/chunkloading.h"
 #include "game/clock.h"
@@ -21,6 +22,7 @@
 #include "game/progress.h"
 #include "game/reference.h"
 #include "game/resources.h"
+#include "game/scenery.h"
 
 #include <cstdint>
 
@@ -28,43 +30,13 @@
 
 extern "C"
 {
-    // The chunk manager's chunk of an index (still asm)
-    ChunkEntry* ChunkOfIndex(void* manager, u16 index) RETAIL(FUN_00268e60);
+    // The chunk manager's chunk of an index
     extern void* G_ChunkManager;
-    // A place moved along its own axes unless the offset is (within 5e-05) none: whether it moved (still asm)
-    u32 MovePlaceLocally(ObjectPlace* place, const Vector4* offset) RETAIL(FUN_0019abc0);
-    // A motion block made (still asm)
-    MotionBlock* ConstructMotionBlock(void* memory, u32 first, u32 second) RETAIL(FUN_0023f2c0);
     // The object of a node's instance (the node it takes its object from)
-    GameObject* ObjectOfNode(GameNode* node) RETAIL(GetGameObjectAddress_FromInstance_);
-    // The node's velocity reset (still asm)
-    void ResetNodeVelocity(ObjectNode* node) RETAIL(FUN_0023ddd8);
-    // The attachments' linked objects (still asm): the first taken out of the list (forced) and returned, the index of an instance
-    // in the list (-1 none), an instance unlinked, every one unlinked
-    InstanceContext* TakeFirstLinked(void* attachments, u32 force) RETAIL(FUN_00196e50);
-    s32 IndexOfLinked(void* attachments, InstanceContext* instance) RETAIL(FUN_00195e98);
-    void UnlinkInstance(void* attachments, InstanceContext* instance, u32 first, u32 second, u32 third) RETAIL(FUN_00196cb0);
-    void UnlinkAll(void* attachments) RETAIL(FUN_00196e88);
-    // The instance of the attachments path's entry of a slot, and of the entry without one (none: nullptr; still asm)
-    InstanceContext* SlottedAttachment(void* path, u32 slot) RETAIL(FUN_00195600);
-    InstanceContext* UnslottedAttachment(void* path) RETAIL(FUN_001955a0);
-    // The character agent of an instance (none: nullptr), and the object node of an instance when it takes packets (still asm)
-    CharacterAgent* CharacterAgentOf(InstanceContext* instance) RETAIL(FUN_0013fce8);
-    ObjectNode* PacketNodeOf(InstanceContext* instance) RETAIL(FUN_0023e918);
-    // A character pushed back along a velocity (the float first; still asm)
-    void PushCharacterBack(f32 value, Agent* character, const Vector4* velocity, u32 kind, u32 unknown) RETAIL_N32(FUN_00137010);
-    // A character's vehicle left, and the controls' handler replaced (the old one destroyed; still asm)
+    // A character's vehicle left
     void LeaveVehicle(PlayerCharacter* character, u32 unknown) RETAIL(FUN_0013bc60);
-    void ReplaceControlsHandler(ControlsNode* controls, void* handler) RETAIL(FUN_0017b330);
-    // The follow camera's target set to an instance (still asm)
-    void SetFollowCameraTarget(void* camera, InstanceContext* instance) RETAIL(FUN_00143368);
-    // The chunk's instances with the flags (how many; still asm)
-    s32 QueryChunkInstancesByFlags(ChunkData* chunk, u32 flags, InstanceRayHit* query) RETAIL(FUN_001f1e40);
-    // An object node's sound given the object's (its ID; still asm)
-    void SetSoundObject(ObjectNodeBase* node, const GameObject* object) RETAIL(FUN_0023d390);
 }
 
-EABI_IMPORT(FUN_00137010, PushCharacterBack);
 
 namespace
 {
@@ -151,14 +123,14 @@ InstanceContext** LinkedInstances(void* attachments)
 }
 
 // The attachments' path (the entries with their slots)
-void* AttachmentsPath(void* attachments)
+void* PathOf(void* attachments)
 {
     return *reinterpret_cast<void**>(static_cast<u8*>(attachments) + 0x70);
 }
 
 GameObject* ObjectOf(ObjectNode* node)
 {
-    return node->sourceNode != nullptr ? ObjectOfNode(node->sourceNode) : node->object;
+    return node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
 }
 
 void SetFlag(ObjectNode* node, u32 flag, bool set)
@@ -191,7 +163,7 @@ void MakeQuery(InstanceRayHit* query, void** results, u16 most)
 
 void SetPartHitPoints(CreaturePart* part, u32 hitPoints)
 {
-    part->unknown14 = (part->unknown14 & ~(HitPointsMask << HitPointsShift)) | (hitPoints & HitPointsMask) << HitPointsShift;
+    part->flags = (part->flags & ~(HitPointsMask << HitPointsShift)) | (hitPoints & HitPointsMask) << HitPointsShift;
 }
 
 // The instance moved along its own axes (queued to be stepped when it moved)
@@ -282,7 +254,7 @@ void SetPlayerFlag57Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLeve
 {
     auto* node = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayerInstance()), CharacterNodeKind));
     auto* part = static_cast<CharacterPart*>(node->agent->part);
-    auto* bits = reinterpret_cast<u64*>(&part->unknown18);
+    u64* bits = &part->Bits();
     *bits = (*bits & ~(u64{1} << 57)) | u64{((value & 0xFF) ^ 1) & 1} << 57;
 }
 
@@ -358,7 +330,7 @@ void ClearAnimationCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
 {
     ObjectNode* node = NodeOf(runner);
     auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNodeKind));
-    auto* animator = static_cast<OgiAnimator*>(model->unknown24);
+    OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
         return;
@@ -462,12 +434,12 @@ void CameraNodeSetTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
     InstanceContext* played = PlayedInstance();
     InstanceContext* instance = NodeOf(runner)->owner;
     auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), Node16));
-    if (follow == nullptr || (follow->bits & KeepsTarget) != 0)
+    if (follow == nullptr || (follow->camera.Bits() & KeepsTarget) != 0)
     {
         return;
     }
 
-    SetFollowCameraTarget(follow->camera, instance);
+    follow->camera.rig.SetTarget(instance);
 }
 
 // The follow camera's positioner and target take their own cameras (cleared)
@@ -479,10 +451,10 @@ void CameraNodeEnableFlagsCommand::Execute(TimeClock*, BehaviourRunner*, Behavio
         return;
     }
 
-    auto* positioner = reinterpret_cast<FollowCameraPositioner*>(follow->positioner);
+    FollowCameraPositioner* positioner = &follow->camera.rig.ownPositioner;
     positioner->bits |= FollowCameraPositioner::BitOwnCamera;
     positioner->Clear();
-    auto* target = reinterpret_cast<FollowCameraTarget*>(follow->target);
+    FollowCameraTarget* target = &follow->camera.rig.ownTarget;
     target->bits |= FollowCameraTarget::BitOwnCamera;
     target->Clear();
 }
@@ -496,11 +468,11 @@ void CameraNodeClearFlagsCommand::Execute(TimeClock*, BehaviourRunner*, Behaviou
         return;
     }
 
-    auto* positioner = reinterpret_cast<FollowCameraPositioner*>(follow->positioner);
+    FollowCameraPositioner* positioner = &follow->camera.rig.ownPositioner;
     positioner->camera.flags = MainCamera::FlagSteers;
     positioner->bits &= ~u64{FollowCameraPositioner::BitOwnCamera};
     positioner->Clear();
-    auto* target = reinterpret_cast<FollowCameraTarget*>(follow->target);
+    FollowCameraTarget* target = &follow->camera.rig.ownTarget;
     target->camera.flags = MainCamera::FlagSteers;
     target->bits &= ~u64{FollowCameraTarget::BitOwnCamera};
     target->Clear();
@@ -515,7 +487,7 @@ void SetCameraNodeValueCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourL
         return;
     }
 
-    MainCamera* camera = &reinterpret_cast<FollowCameraPositioner*>(follow->positioner)->camera;
+    MainCamera* camera = &follow->camera.rig.ownPositioner.camera;
     u32 which = mode.raw & 7;
     if (which == 0)
     {
@@ -579,7 +551,7 @@ void SetHitPointsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
         SetPartHitPoints(static_cast<CreaturePart*>(agent->part), hitPoints);
         if (static_cast<s32>(hitPoints) > 0)
         {
-            *reinterpret_cast<u64*>(agent->unknown70) &= ~(u64{1} << 14);
+            agent->StateBits() &= ~u64{CharacterAgent::StateDead};
         }
 
         return;
@@ -755,7 +727,7 @@ void RequestAttachmentFocusCommand::Execute(TimeClock*, BehaviourRunner* runner,
     void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
     if (attachments != nullptr)
     {
-        void* path = AttachmentsPath(attachments);
+        void* path = PathOf(attachments);
         if (path != nullptr)
         {
             u8 slot = value1 & 0xFF;
@@ -794,7 +766,7 @@ void NowGoBackCollidableCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
     velocity.x = velocity.x * scale;
     velocity.y = velocity.y * scale;
     velocity.z = velocity.z * scale;
-    PushCharacterBack(second, agent, &velocity, PushBackKind, 0);
+    static_cast<CharacterAgent*>(agent)->PushBack(second, &velocity, PushBackKind, nullptr);
 }
 
 // The character's vehicle (kind 6) the focus instance's creature (an asleep focus forgotten)
@@ -1029,7 +1001,7 @@ void ApplyVelocityToHeldBodyCommand::Execute(TimeClock*, BehaviourRunner* runner
         return;
     }
 
-    Reference* held = character->handle200;
+    Reference* held = character->standingOn;
     auto* heldInstance = held != nullptr ? static_cast<InstanceContext*>(held->object) : nullptr;
     if (heldInstance == nullptr)
     {
@@ -1048,7 +1020,7 @@ void ApplyVelocityToHeldBodyCommand::Execute(TimeClock*, BehaviourRunner* runner
         return;
     }
 
-    ResetNodeVelocity(heldNode);
+    FollowOwnMotionBlock(heldNode);
     Vector4 impulse = {x, y, z, w};
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);

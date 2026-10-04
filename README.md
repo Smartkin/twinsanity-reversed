@@ -1,15 +1,17 @@
 # Crash Twinsanity decompilation (PAL, SLES-525.68)
 
-Crash Twinsanity's PAL release for the PlayStation 2, being rewritten in C++ a function at a time. The retail executable is split
-into one asm file per function, and every build links what's still asm and what's already C++ into a working executable that
-boots and plays in PCSX2. The C++ is built with the open source PS2SDK toolchain, PS2SDK takes the place of Sony's SDK, and the
-game's C++ reaches the hardware through a platform layer so it can be ported.
+Crash Twinsanity's PAL release for the PlayStation 2, rewritten in C++. Every function of the retail executable is C++ now, or
+PS2SDK's and the toolchain's where they do what Sony's SDK did, and the build boots and plays in PCSX2 the way the retail game does:
+the same heap and disk state at boot, the same pictures frame for frame, the same saves. The C++ is built with the open source
+PS2SDK toolchain, and the game's C++ reaches the hardware through a platform layer so it can be ported.
 
-The repository has none of the game's code or data. You need your own copy of the PAL game: building splits its executable into
-the asm on your machine.
+The retail executable is still split, into one asm file per function and its data: the build links the data (`.data`, `.rodata`,
+`.bss`, the VU microcode) from the split, and the functions' asm builds the matching executable (`tools/build.py --matching`) that
+the C++ was checked against. The repository has none of the game's code or data. You need your own copy of the PAL game: building
+splits its executable on your machine.
 
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains how the decomp is put together, the tools that test builds and what
-replacing the game's code has to look out for.
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains how the decomp is put together, the tools that test builds and what replacing
+the game's code had to look out for. [docs/RETAIL_BUGS.md](docs/RETAIL_BUGS.md) lists the bugs of the retail code the C++ keeps.
 
 ## What you need
 
@@ -158,13 +160,13 @@ folder.
 |---|---|
 | `src/game/` | The game's C++ |
 | `src/platform/` | The platform layer's side for each platform (`ps2/` on PS2SDK) |
-| `src/sce/` | Sony's SDK functions the asm still calls, on the platform layer |
 | `src/abi.cpp` | The calls between the retail code's convention and the C++'s |
 | `include/` | The game's types, the platform layer's interfaces and the asm's macros |
 | `tools/` | The split, the build, the checks and the PCSX2 runners |
 | `symbol_addrs.txt` | The executable's symbols, which name the asm, made from the Ghidra project |
 | `splat.yaml` | The split's settings |
-| `ps2sdk.txt`, `retired.txt` | Sony's and the game's functions left out of the link |
+| `ps2sdk.txt`, `retired.txt`, `fragments.txt` | Sony's and the game's functions left out of the link, and the bytes between functions nothing reaches |
 | `docs/DEVELOPMENT.md` | How it all works |
+| `docs/RETAIL_BUGS.md` | The retail code's bugs, verified in its asm and kept by the C++ |
 
 `asm/`, `assets/` and `build/` are made by the split and the build, and aren't committed.

@@ -192,4 +192,7 @@ extern "C"
     GraphData* ChildGraphOf(GraphState* state, void* object) RETAIL(GetChildScriptDataToCall);
     // The instance a call convention stands for: the agent's, one it links, a starter's receiver, the player, the originator
     struct InstanceContext* InstanceOfConvention(const CallConvention* convention, BehaviourRunner* runner) RETAIL(GetContextByCallConvention);
+    // The instance a starter's receiver index stands for set: a reference to it taken, the one before let go of
+    // (game/commandsattach.cpp)
+    void SetReceiverInstance(u32 index, struct InstanceContext* instance) RETAIL(FUN_00252af8);
 }

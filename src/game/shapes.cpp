@@ -525,3 +525,34 @@ void Ring::PointAt(const Vector2* place, const Vector2* scale, Vector2* out, f32
 }
 
 EABI_EXPORT(FUN_001a8b78, &Ring::PointAt);
+
+extern "C"
+{
+    // The retail copies of the sprites' corners, which the C++ draws with the constants above: made by GCC 2.9x's static
+    // initialisation (when initialise is 1 and the priority 0xFFFF), and the static constructor that runs it
+    extern Vector4 g_SquareStart RETAIL(D_00324040);
+    extern Vector4 g_SquareEnd RETAIL(D_00324050);
+    extern Vector4 g_TurnedCorners[4] RETAIL(D_00324060);
+    void InitSpriteCorners(s32 initialise, s32 priority) RETAIL(FUN_001ab420);
+    void SpritesStaticInit() RETAIL(FUN_001ad368);
+}
+
+void InitSpriteCorners(s32 initialise, s32 priority)
+{
+    if (priority != 0xFFFF || initialise == 0)
+    {
+        return;
+    }
+
+    g_SquareStart = SquareStart;
+    g_SquareEnd = SquareEnd;
+    for (u32 corner = 0; corner < 4; corner++)
+    {
+        g_TurnedCorners[corner] = TurnedCorners[corner];
+    }
+}
+
+void SpritesStaticInit()
+{
+    InitSpriteCorners(1, 0xFFFF);
+}

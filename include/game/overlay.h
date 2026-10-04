@@ -60,7 +60,8 @@ extern "C"
     // Every text deleted
     void FontTextsClear(FontTexts* texts) RETAIL(FUN_001aa338);
     void FontTextsAppend(FontTexts* texts, QueuedText* text) RETAIL(FUN_001acd10);
-    // A renderer's texts: destroyed, every font's cleared, a font's found, a font's found or added
+    // A renderer's texts: made, destroyed, every font's cleared, a font's found, a font's found or added
+    PointerArray<FontTexts>* TextQueueConstruct(PointerArray<FontTexts>* queue) RETAIL(FUN_001ac8f8);
     void TextQueueDestroy(PointerArray<FontTexts>* queue, u32 flags) RETAIL(FUN_001aa108);
     void TextQueueClear(PointerArray<FontTexts>* queue) RETAIL(FUN_001aa1e8);
     FontTexts* TextQueueFind(PointerArray<FontTexts>* queue, Font* font) RETAIL(FUN_001aa280);

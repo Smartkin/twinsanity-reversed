@@ -468,9 +468,10 @@ extern "C"
                           Vector4* push, Vector4* point, Vector4* normal) RETAIL(FUN_0028f158);
     // 1 over a vector's length (0 when it's within the epsilon of none), its length squared kept
     f32 InverseLengthKeepingSquare(const Vector4* vector, f32* lengthSquared) RETAIL(FUN_00291800);
-    // A word the module's static constructor clears (nothing reads it), and that constructor
+    // A word the module's static constructor clears (nothing reads it), that constructor and the module's global constructor
     extern u32 g_RigidBodyStatic RETAIL(D_0030AA68);
     void InitRigidBodyStatics(u32 initialise, u32 priority) RETAIL(FUN_002917d0);
+    void ConstructRigidBodyModule() RETAIL(FUN_00293320);
     // Whether two ellipsoids (radii along their matrices' axes, kept when none are given) meet: not when their largest radii
     // don't reach, else by the search (from the first's unit sphere): how far the first goes into the second and a point of the
     // first's surface toward it

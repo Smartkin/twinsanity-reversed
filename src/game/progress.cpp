@@ -642,3 +642,51 @@ bool Checkpoint::Release(u32 forget, ChunkManager* chunks, InstanceContext* keep
     bits &= ~BitUsed;
     return released;
 }
+
+u32 MarkGem(u8* level, u32 gem)
+{
+    u8 bit = static_cast<u8>(1u << gem);
+    if ((*level & bit) != 0)
+    {
+        return 0;
+    }
+
+    *level |= bit;
+    return 1;
+}
+
+u32 MarkCrystal(u32* level)
+{
+    constexpr u32 Crystal = 0x100;
+    if ((*level & Crystal) != 0)
+    {
+        return 0;
+    }
+
+    *level |= Crystal;
+    return 1;
+}
+
+u32* ConstructLevelWord(u32* level)
+{
+    RetailLibc::MemorySet(level, 0, sizeof(*level));
+    return level;
+}
+
+void ReadLevelWord(u32* level, Stream* stream)
+{
+    stream->Read(level, sizeof(*level), 1);
+}
+
+void WriteLevelWord(const u32* level, Stream* stream)
+{
+    stream->Write(level, sizeof(*level));
+}
+
+s32 TokenGem(u32 token)
+{
+    // The keywords 0x288 to 0x28D name the gems 0 to 5
+    constexpr u32 FirstGemToken = 0x288;
+    u32 gem = token - FirstGemToken;
+    return gem < GameProgress::Gems ? static_cast<s32>(gem) : -1;
+}

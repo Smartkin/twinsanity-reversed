@@ -1,5 +1,6 @@
 #pragma once
 
+#include "abi.h"
 #include "common.h"
 
 struct GamePad;
@@ -23,11 +24,13 @@ struct ButtonBinding
 };
 CHECK_SIZE(ButtonBinding, 8);
 
-// A binding of the second list's: buttons as an action's, and 8 bytes still unknown
+// A binding of the second list's (an axis): buttons as an action's (the pad's axes), its dead zone and the scale past it
+// (1 / (1 - deadZone))
 struct AxisBinding
 {
     ButtonBinding binding;
-    u8 unknown08[8];
+    f32 deadZone;
+    f32 scale;
 };
 CHECK_SIZE(AxisBinding, 0x10);
 
@@ -50,5 +53,9 @@ struct ButtonBindings
     u32 Has(const PadButtons* pad, u32 action, u32 onPress) RETAIL(FUN_002b3868);
     // How hard the action's buttons are pressed: the first of them that's pressed at all
     f32 Pressure(GamePad* pad, u32 action) RETAIL(FUN_002b39a8);
+    // An axis' value: the first of its pad axes past the dead zone, scaled (the modifier as Pressure's)
+    f32 AxisValue(GamePad* pad, u32 axis) RETAIL(FUN_002b3b40);
+    // A pad axis added to an axis' binding (which drops its modifier), with its dead zone
+    void AddAxis(f32 deadZone, u32 axis, u32 padAxis) RETAIL_N32(SetAnalogBind);
 };
 CHECK_SIZE(ButtonBindings, 0xC);

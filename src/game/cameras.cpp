@@ -25,10 +25,12 @@ EABI_EXPORT(FUN_0027dbf8, &Camera1C0E::AtParameter);
 EABI_EXPORT(FUN_0027ddb0, &CameraZone::AtParameter);
 EABI_EXPORT(FUN_0027e148, EaseInOut);
 EABI_EXPORT(FUN_0027a390, RotationAt);
-EABI_IMPORT(FUN_00189440, PathPointAt);
-EABI_IMPORT(FUN_0018f0e8, SplineSegmentAt);
-EABI_IMPORT(FUN_0018a7a8, SplinePointIn);
-EABI_IMPORT(BoxPointAtFractions, BoxPointAtFractions);
+
+extern "C"
+{
+    // The items' builders' base (BuilderBaseFunctions)
+    extern const GccVTableEntry g_ItemBuilderBaseVTable[] RETAIL(BuilderBaseFunctions);
+}
 
 namespace
 {
@@ -963,6 +965,15 @@ CameraSubtype* MakeCameraSubtype(void*, u32 type)
     }
 }
 
+void DestroyCameraItemBuilder(void* factory, u32 destroyFlags)
+{
+    *static_cast<const GccVTableEntry**>(factory) = g_ItemBuilderBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(factory);
+    }
+}
+
 f32 EaseInOut(f32 share, const f32* sharpness)
 {
     constexpr f32 QuarterTurn = 0x1.921fb6p+0f;
@@ -1186,6 +1197,18 @@ u32 CameraNode::Type()
 void CameraNode::ForgetEvent()
 {
     event = nullptr;
+}
+
+void CameraNode::Entered(InstanceContext*)
+{
+}
+
+void CameraNode::EnteredSecond(InstanceContext*)
+{
+}
+
+void CameraNode::Left(InstanceContext*)
+{
 }
 
 void CameraNode::Enter(InstanceContext* entering)

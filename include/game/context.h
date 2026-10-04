@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "gcc2.h"
+#include "game/archive.h"
 #include "game/string.h"
 
 struct GameController;
@@ -81,28 +82,61 @@ class GameContext : public GameContextPrototype
 public:
     enum Flags : u32
     {
+        // Set when it's made
+        Flag3 = 0x8,
         // "RB" was given
         FlagRb = 0x40,
     };
 
+    // The object builder's item builders (a vtable alone each), by the kinds of items they make
+    enum Builder : u32
+    {
+        BuilderObjects,
+        BuilderBehaviours,
+        BuilderCommands,
+        BuilderConditions,
+        BuilderMaths,
+        BuilderModels,
+        BuilderScenery,
+        Builders,
+    };
+
+    enum MoreBuilder : u32
+    {
+        BuilderCameras,
+        BuilderSounds,
+        BuilderChunkLinks,
+        MoreBuilders,
+    };
+
     // Bit 3 ..., 6 "RB", 7 ..., 8 the chunks' loading starts in the state of bits 9-12
     u32 flags;
-    // The chunk the game controller starts in
-    char* startChunk;
-    u8 unknown24[0x40 - 0x24];
+    // The chunk the game controller starts in (nothing sets it)
+    String startChunk;
+    // Chunks the start-up loads one at a time before the game starts, from the last (nothing adds any)
+    StringList preloadChunks;
+    // Made 10, nothing reads it
+    u32 unknown3C;
     String archivePath;
-    u8 resources[0xAC - 0x4C];
-    u8 resourceManager[0xE0 - 0xAC];
+    // The game's resources (GameResources), the item builders the object builder asks (but the factory's three), the instance
+    // factory (InstanceFactory) and the other three
+    u8 resources[0x90 - 0x4C];
+    const GccVTableEntry* builders[Builders];
+    u8 resourceManager[0xD4 - 0xAC];
+    const GccVTableEntry* moreBuilders[MoreBuilders];
     // When the game's first frame began (clock units)
     s32 firstFrameStamp;
     void* mainPad;
     u32 unknownE8;
     void* chunkManager;
     GameController* gameController;
-    // The start-up makes the two update rates of them (g_ObjectUpdateRate and D_0030A838)
+    // The start-up makes the two update rates of them (g_ObjectUpdateRate and g_ModelUpdateRate)
     u32 unknownF4;
     u32 unknownF8;
 
+    // Made empty: the game's resources, the instance factory and the item builders (the object builder made the first time and
+    // given them), the update rates' bytes 100, the module statics set (the AgentLab's, the projectiles' hull, the particles'
+    // emitters)
     static GameContext* Construct(GameContext* context) RETAIL(GameContextConstructor);
 
     // Its vtable's slot 1: the language changed, the video's texts and the save code's messages set (their texts the same in
@@ -117,8 +151,18 @@ public:
     void GameBeginFrame(bool playingMovie) RETAIL(FUN_001014e0);
     void GameUpdate(bool playingMovie) RETAIL(FUN_00100b98);
     void GameRender(bool playingMovie) RETAIL(FUN_00101500);
+    // Its vtable's slot 5: the game controller's view set and every renderer's scene drawn, then (unless a movie plays) the frame's
+    // particles and decals (aged with VU0's third set of microcode) and the game controller's drawing
+    void GameEndFrame(bool playingMovie) RETAIL(FUN_00100cc8);
+    // The chunks to preload, with the loading in state 1 (no linked chunks queued) and the game controller's global resources
+    // loaded: each made the start chunk, loaded and waited for, then forgotten. The characters enabled after
+    void PreloadChunks() RETAIL(FUN_00100100);
 };
 CHECK_SIZE(GameContext, 0xFC);
+CHECK_OFFSET(GameContext, startChunk, 0x20);
+CHECK_OFFSET(GameContext, preloadChunks, 0x2C);
+CHECK_OFFSET(GameContext, builders, 0x90);
+CHECK_OFFSET(GameContext, moreBuilders, 0xD4);
 CHECK_OFFSET(GameContext, archivePath, 0x40);
 CHECK_OFFSET(GameContext, firstFrameStamp, 0xE0);
 CHECK_OFFSET(GameContext, mainPad, 0xE4);
@@ -166,7 +210,14 @@ CHECK_SIZE(UpdateRate, 8);
 
 extern "C"
 {
-    // The object nodes' update rate, and another
+    // A rate of a grace and a cutoff given as their square roots (the grace's square, the cutoff's less it) and the steps
+    // spread over what's past the grace (the slope that many over the cutoff plus 1)
+    void MakeRate(UpdateRate* rate, u8 graceRoot, u8 cutoffRoot, u32 steps) RETAIL(FUN_001011d8);
+}
+
+extern "C"
+{
+    // The object nodes' update rate, and the model nodes'
     extern UpdateRate g_ObjectUpdateRate RETAIL(D_0030A948);
-    extern UpdateRate D_0030A838;
+    extern UpdateRate g_ModelUpdateRate RETAIL(D_0030A838);
 }

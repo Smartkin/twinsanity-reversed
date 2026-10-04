@@ -18,9 +18,9 @@ struct TimeClock;
 
 
 // The game controller (the retail GameController, 0x5140 bytes of the heap): the game's flow as a state machine stepped every
-// frame, the game's progress and OLEG among its members. Its state word: bit 31 the start button pressed this frame, bits 23-26
-// how a level is entered (the progress's reset), 32-37 the state a wait returns to, 38-43 the last state, 44-49 the state, 50-55
-// the next one (applied the next frame, 24 none), 60-63 the saving's step
+// frame, the game's progress and OLEG among its members. Its state word: bits 19-22 the camera shown (ShowCamera), bit 31 the
+// start button pressed this frame, bits 23-26 how a level is entered (the progress's reset), 32-37 the state a wait returns to,
+// 38-43 the last state, 44-49 the state, 50-55 the next one (applied the next frame, 24 none), 60-63 the saving's step
 struct GameController
 {
     enum State : u32
@@ -229,9 +229,12 @@ struct GameController
     u32 Autosave(Checkpoint* checkpoint) RETAIL(FUN_00177048);
     // Both characters let go of their controls
     void DisablePlayerControl(u32 unfollow) RETAIL(FUN_0017c310);
-    // The character's link to another undone (still asm, the unlinking)
+    // The character's link to another undone
     void UnlinkCharacter(InstanceContext* instance) RETAIL(FUN_0017b6b8);
-    // The player held for a cutscene, and let go after it (still asm)
+    // The player held for a cutscene (the character's held bit, its controls motion driven, its character set back unless it
+    // leads two tied together: what that loses of being tied and the hit points kept), and let go after it (its part and its
+    // character set back when asked, unless it leads; the hit points kept; every character's instance but the fifth's loses its
+    // flag 0x80000)
     void HoldPlayer() RETAIL(FUN_00178150);
     void ReleasePlayer(u32 resume) RETAIL(FUN_00178290);
 
@@ -312,7 +315,7 @@ struct GameController
     // the save controller's defaults (5 lives, the options as they are) and loading the level, otherwise the game reset and
     // play started once the chunk's loaded (loading the level until then)
     u32 Restarting(TimeClock* clock) RETAIL(FUN_00175658);
-    // The other states' (still asm)
+    // The other states'
 };
 CHECK_OFFSET(GameController, states, 0x8);
 CHECK_OFFSET(GameController, renderer, 0x2C);
@@ -351,7 +354,7 @@ extern "C"
     // The credits' music track playing (an index of their tracks) and the time since it started (seconds)
     extern u32 g_CreditsTrack RETAIL(D_00309A90);
     extern f32 g_CreditsTrackTime RETAIL(D_00309A94);
-    // The game font's size (fractions of the screen) and a smaller one's (set by the file's static initializer, still asm)
+    // The game font's size (fractions of the screen) and a smaller one's (set by OLEG's file's static initialiser)
     extern Vector2 g_FontSize RETAIL(D_0030A7A8);
     extern Vector2 g_SmallFontSize RETAIL(D_0030A7B0);
     // The game's movies: FMV\TTIdent, the story's (H01_a to H04_db), the attract movie, the bonus movies, FMV\Complete and
@@ -364,19 +367,36 @@ extern "C"
     extern GameController* G_GameController_00309914;
     extern GameController* G_GameController_00309950;
 
-    // The chunks' instances reset for a way into the game, filtered by three words (still asm)
-    void ResetChunkInstances(ChunkManager* chunks, u32 entry, const u32* filter) RETAIL(FUN_00268fe0);
-    // The chunk manager's chunks reset for a way into the game, their instances dropped too when asked (still asm)
-    void ResetChunks(ChunkManager* chunks, u32 entry, u32 dropInstances) RETAIL(FUN_00269038);
-    // The flat box hull (4 by 0.3 by 4 units, D_0030BB00) made, and the freed memory's pools made empty (still asm)
+    // The flat box hull (4 by 0.3 by 4 units, D_0030BB00) made
     void MakeFlatBoxHull() RETAIL(FUN_00141210);
+    // The camera the game shows (the state word's bits 19-22: 0 the played character's follow camera, 3 the game's rig, 4 the
+    // cutscenes' rig) at once, set back to its start or not: the follow camera's instance (the view's camera then, its bit 17
+    // cleared), the game's rig on the shown camera's lens (its target's end the player's position), the cutscenes' rig there
+    // without followers or a target. Returns the camera's instance (none for another camera)
+    InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset) RETAIL(FUN_001759e0);
+    // A blend to the follow camera's rig (set back first when asked) or the game's rig over a time (clock units) with a curve, on
+    // the camera's lens (nothing for another camera)
+    void BlendToCamera(GameController* controller, u32 camera, const s32* ticks, u32 reset, u32 curve) RETAIL(FUN_00175d10);
+    // The chooser of a crate's contents (0x5D4 bytes into the game controller, which neither reads): whether the second contents
+    // come out when the crate has both (never), and how many of the first (RandomFrom(least, most - least))
+    u32 CrateGivesSecondContents(void* chooser) RETAIL(FUN_00179690);
+    s32 CrateContentsCount(void* chooser, u32 least, u32 most) RETAIL(GetInstanceAmountSpawn);
+    // The delayed frees' lists made empty and the skid marks' two materials made
     void InitFreedMemory() RETAIL(FUN_0015b9d0);
     // How many instances have a value at 0x174 above 0 (the scripts' commands 648 and 649 count them, condition 169 reads it)
     extern s32 g_InstancesWithValue174 RETAIL(D_0030A0FC);
-    // A 0.8 second loop's frame (sixtieths) while the clock runs (still asm)
+    // A 0.8 second loop's frame (sixtieths) while the clock runs: the custom pickups' spin (game/pickups.cpp)
     void StepLoopFrame(TimeClock* clock) RETAIL(FUN_0011e428);
-    // The sound's listener: the object the sounds are heard from (still asm)
+    // The sound's listener: the object the sounds are heard from (game/sound.h's ListenerVoiceKind)
     void SetSoundListener(ReferencedObject* object) RETAIL(FUN_001e5fa8);
-    // The last frame's freed memory let go (still asm)
+    // The last frame's freed skid marks deleted, this frame's kept for the next
     void ReleaseFreedMemory() RETAIL(FUN_0015bc30);
+    // The skid marks (the platform's screen models) to delete after this frame and the last, their counts, and the skid marks'
+    // materials (adding where the shade is above 0, taking away otherwise; the platform's)
+    extern struct ScreenModel* g_FreedBlocks[1024] RETAIL(D_003D1EF0);
+    extern struct ScreenModel* g_LastFreedBlocks[1024] RETAIL(D_003D2EF0);
+    extern s32 g_FreedBlockCount RETAIL(D_0030AABC);
+    extern s32 g_LastFreedBlockCount RETAIL(D_0030AAC0);
+    extern struct Material* g_AddingSkidMaterial RETAIL(D_00309924);
+    extern struct Material* g_SubtractingSkidMaterial RETAIL(D_00309928);
 }

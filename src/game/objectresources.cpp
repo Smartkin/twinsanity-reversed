@@ -6,6 +6,7 @@
 #include "game/memory.h"
 #include "game/resources.h"
 #include "game/sound.h"
+#include "game/stream.h"
 #include "retail/libc.h"
 
 extern "C"
@@ -18,6 +19,25 @@ namespace
 {
 constexpr u16 NoId = 0xFFFF;
 constexpr u16 IndexMask = 0x7FFF;
+
+// A list made empty with new: every ID undefined, no count
+ResourceIdList* NewIdList()
+{
+    auto* list = static_cast<ResourceIdList*>(MemoryAllocate(sizeof(ResourceIdList)));
+    for (u16& id : list->ids)
+    {
+        id = NoId;
+    }
+
+    list->countOrMore = 0;
+    return list;
+}
+
+// The list a full one goes on in (none)
+ResourceIdList* MoreOf(const ResourceIdList* list)
+{
+    return list->countOrMore > ResourceIdList::BlockIds ? reinterpret_cast<ResourceIdList*>(list->countOrMore) : nullptr;
+}
 
 // Every ID of a list (none when it has none)
 template <typename Visit>
@@ -229,6 +249,105 @@ void ResourceIdIterator::DestroyBase(u32 destroyFlags)
     }
 }
 
+void ResourceIdList::Read(Stream* stream)
+{
+    ResourceIdList* more = MoreOf(this);
+    if (more != nullptr)
+    {
+        more->Destroy(DestroyAndFree);
+    }
+
+    countOrMore = 0;
+    u32 count;
+    stream->ReadS32(reinterpret_cast<s32*>(&count));
+    for (u32 index = 0; index < count; index++)
+    {
+        u16 id;
+        ReadResourceId(&id, stream);
+        Add(&id);
+    }
+}
+
+void ResourceIdList::Destroy(u32 destroyFlags)
+{
+    ResourceIdList* more = MoreOf(this);
+    if (more != nullptr)
+    {
+        more->Destroy(DestroyAndFree);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void ResourceIdList::Add(const u16* id)
+{
+    u32 count = countOrMore;
+    if (count < BlockIds)
+    {
+        countOrMore = count + 1;
+        ids[count] = *id;
+        return;
+    }
+
+    if (count == BlockIds)
+    {
+        countOrMore = reinterpret_cast<u32>(NewIdList());
+    }
+
+    reinterpret_cast<ResourceIdList*>(countOrMore)->Add(id);
+}
+
+void ReadResourceId(u16* id, Stream* stream)
+{
+    stream->ReadS16(reinterpret_cast<s16*>(id));
+}
+
+void ResourceReferences::Construct(ResourceReferences* references, Stream* stream)
+{
+    stream->ReadS32(reinterpret_cast<s32*>(&references->kinds));
+    for (u32 kind = 0; kind < KindCount; kind++)
+    {
+        ResourceIdList* list = nullptr;
+        if ((references->kinds & 1 << kind) != 0)
+        {
+            list = NewIdList();
+            list->Read(stream);
+        }
+
+        references->lists[kind] = list;
+    }
+}
+
+ResourceReferences* ResourceReferences::ConstructEmpty(ResourceReferences* references)
+{
+    references->kinds = 0;
+    for (ResourceIdList*& list : references->lists)
+    {
+        list = nullptr;
+    }
+
+    return references;
+}
+
+void ResourceReferences::Destroy(u32 destroyFlags)
+{
+    for (ResourceIdList* list : lists)
+    {
+        if (list != nullptr)
+        {
+            list->Destroy(DestroyAndFree);
+        }
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
 CodeModel* CodeModel::Construct(CodeModel* model)
 {
     ConstructResourceHeader(model);
@@ -242,12 +361,65 @@ CodeModel* CodeModel::Construct(CodeModel* model)
     return model;
 }
 
+void CodeModel::Destroy(u32 destroyFlags)
+{
+    if (packs != nullptr)
+    {
+        // The packs destroyed last to first, as GCC 2.9x's delete[] does (flags 0)
+        ScriptPack* pack = packs + ArrayCount(packs);
+        while (pack != packs)
+        {
+            pack--;
+            DestroyScriptPack(pack, 0);
+        }
+
+        DeleteArray(packs);
+    }
+
+    if (packIds != nullptr)
+    {
+        MemoryDeallocate_(packIds);
+    }
+
+    if (command != nullptr)
+    {
+        CallVirtual<void>(command, command->vtable, 1, u32{DestroyAndFree});
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void CodeModel::Read(Stream* stream)
+{
+    stream->ReadS32(reinterpret_cast<s32*>(&unknown08));
+    u8 count = packCount;
+    ScriptPack* made = NewArray<ScriptPack>(count);
+    for (u32 index = 0; index < count; index++)
+    {
+        ConstructScriptPack(&made[index]);
+    }
+
+    packCount = count;
+    packs = made;
+    packIds = static_cast<u16*>(MemoryAllocate2(count * sizeof(u16)));
+    for (u32 index = 0; index < packCount; index++)
+    {
+        ReadScriptPack(&packs[index], stream);
+        stream->ReadS16(reinterpret_cast<s16*>(&packIds[index]));
+    }
+
+    command = ReadCommand(stream);
+}
+
 GameSound* GameSound::ConstructEmpty(GameSound* sound)
 {
     ConstructResourceHeader(sound);
-    sound->unknown0C = 0;
-    sound->unknown14 = 0;
-    sound->unknown10 = 0;
+    sound->name.string = nullptr;
+    sound->name.capacity = 0;
+    sound->name.length = 0;
     sound->size = 0;
     sound->offset = 0;
     RetailLibc::MemorySet(&sound->flags, 0, 4);

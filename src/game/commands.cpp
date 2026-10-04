@@ -74,6 +74,11 @@ SpawnResidentAgentCommand* SpawnResidentAgentCommand::Construct(SpawnResidentAge
     return MakeCommand(command, g_SpawnResidentAgentCommandVTable);
 }
 
+void SpawnResidentAgentCommand::Destroy(u32 destroyFlags)
+{
+    ScriptCommand::Destroy(destroyFlags);
+}
+
 u32 SpawnResidentAgentCommand::Size()
 {
     return sizeof(SpawnResidentAgentCommand);
@@ -157,6 +162,16 @@ u32 NowStrafeRightCommand::Size()
 u32 NowTurnLeftCommand::Size()
 {
     return sizeof(NowTurnLeftCommand);
+}
+
+void NowTurnRightCommand::Destroy(u32 destroyFlags)
+{
+    ScriptCommand::Destroy(destroyFlags);
+}
+
+u32 NowTurnRightCommand::Size()
+{
+    return sizeof(NowTurnRightCommand);
 }
 
 void NowRotateJointCommand::Destroy(u32 destroyFlags)

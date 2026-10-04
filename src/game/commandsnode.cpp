@@ -1,37 +1,39 @@
 #include "game/commands.h"
 
 #include "game/agents.h"
+#include "game/animation.h"
+#include "game/attachments.h"
 #include "game/clock.h"
+#include "game/controllers.h"
+#include "game/chunkdata.h"
+#include "game/chunkloading.h"
+#include "game/decals.h"
+#include "game/events.h"
+#include "game/followcamera.h"
+#include "game/instancefactory.h"
 #include "game/gamecontroller.h"
+#include "game/instanceparticles.h"
 #include "game/objectcollision.h"
 #include "game/objectnode.h"
+#include "game/objects.h"
 #include "game/place.h"
 #include "game/player.h"
 #include "game/progress.h"
+#include "game/resources.h"
 #include "game/rigidbody.h"
+#include "game/shadows.h"
+#include "game/camerarig.h"
+#include "game/collision.h"
+#include "game/layout.h"
+#include "game/sound.h"
+
+#include <utility>
 
 // The commands that work on the agent's object node, its runner and its levels
 
 extern "C"
 {
-    // The node's motion stopped, a head tracking and a perception made from a command's arguments, a motion block's flag (still
-    // asm)
-    void StopNodeMotion(ObjectNode* node) RETAIL(FUN_0023e6d8);
-    void CreateHeadTracking(ObjectNode* node, const void* arguments, TimeClock* clock) RETAIL(FUN_0023e398);
-    void AddPerception(ObjectNode* node, const void* arguments) RETAIL(FUN_0023e178);
-    void SetMotionBlockFlag(MotionBlock* block, u32 set) RETAIL(FUN_0023fa10);
-    // The head tracking stopped, and started following the node's focus (still asm)
-    void StopHeadTracking(HeadTracking* tracking) RETAIL(FUN_0023fdd0);
-    void StartHeadTracking(HeadTracking* tracking, ObjectNode* node) RETAIL(FUN_00237cc0);
-    // A perception slot's weight set and added to (the float first), and the two other slot functions (still asm)
-    void SetPerceptionWeight(f32 weight, void* perception, u32 slot) RETAIL_N32(FUN_0023ff38);
-    void AddPerceptionWeight(f32 weight, void* perception, u32 slot) RETAIL_N32(FUN_00240010);
-    void PerceptionSlot141(void* perception, u32 slot) RETAIL(FUN_00240150);
-    void PerceptionSlot142(void* perception, u32 slot) RETAIL(FUN_002401c8);
-    // The springs of the instance's attachments node (kind 6) let go, a rigid body's motion put back (still asm)
-    void DetachAllSprings(void* attachments) RETAIL(FUN_00197140);
-    void RevertColliderMotion(ObjectRigidBody* body) RETAIL(FUN_002546a0);
-    // The velocity commands' work: a velocity given to an instance (from another's point of view; still asm)
+    // The velocity commands' work: a velocity given to an instance (from another's point of view)
     void ApplyVelocity(const ApplyVelocityToSelfCommand* command, InstanceContext* target, InstanceContext* source)
         RETAIL(FUN_0010c570);
 }
@@ -75,9 +77,6 @@ f32 FloatOf(const s32& value)
     return *reinterpret_cast<const f32*>(&value);
 }
 }
-
-EABI_IMPORT(FUN_0023ff38, SetPerceptionWeight);
-EABI_IMPORT(FUN_00240010, AddPerceptionWeight);
 
 void AddTrailCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
@@ -288,7 +287,7 @@ void PerceptionOp141Command::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     void* perception = NodeOf(runner)->perception;
     if (perception != nullptr)
     {
-        PerceptionSlot141(perception, LowByte(slot));
+        TurnSenseOff(perception, LowByte(slot));
     }
 }
 
@@ -297,7 +296,7 @@ void PerceptionOp142Command::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     void* perception = NodeOf(runner)->perception;
     if (perception != nullptr)
     {
-        PerceptionSlot142(perception, LowByte(slot));
+        TurnSenseOn(perception, LowByte(slot));
     }
 }
 
@@ -494,41 +493,26 @@ void SwitchPerceptions(u8* perception, u8 on)
 
 extern "C"
 {
-    // An instance turned to an angle about one of its axes (the float first; still asm)
-    void SetInstanceRotationX(f32 angle, InstanceContext* instance) RETAIL_N32(FUN_0022e410);
-    void SetInstanceRotationY(f32 angle, InstanceContext* instance) RETAIL_N32(FUN_0022e598);
-    void SetInstanceRotationZ(f32 angle, InstanceContext* instance) RETAIL_N32(FUN_0022e730);
-    // The node's velocity reset, the instance of the attachments' path's entry without a slot (none: nullptr), and the
-    // instances within a radius told (still asm)
-    void ResetNodeVelocity(ObjectNode* node) RETAIL(FUN_0023ddd8);
-    InstanceContext* UnslottedAttachment(void* path) RETAIL(FUN_001955a0);
-    void NotifyInstancesWithin(f32 radius, ObjectNode* node) RETAIL_N32(FUN_0022f018);
-    // A rigid body reset, and made active (still asm)
-    void ResetRigidBody(ObjectRigidBody* body) RETAIL(FUN_00254088);
+    // A rigid body made active (game/commandsphysics.cpp)
     void ActivateRigidBody(ObjectRigidBody* body) RETAIL(FUN_00246950);
 }
-
-EABI_IMPORT(FUN_0022e410, SetInstanceRotationX);
-EABI_IMPORT(FUN_0022e598, SetInstanceRotationY);
-EABI_IMPORT(FUN_0022e730, SetInstanceRotationZ);
-EABI_IMPORT(FUN_0022f018, NotifyInstancesWithin);
 
 void SetRotationComponentsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     InstanceContext* instance = NodeOf(runner)->owner;
     if ((components & 1) != 0)
     {
-        SetInstanceRotationX(x, instance);
+        SnapInstanceRotationX(x, instance);
     }
 
     if ((components & 2) != 0)
     {
-        SetInstanceRotationY(y, instance);
+        SnapInstanceRotationY(y, instance);
     }
 
     if ((components & 4) != 0)
     {
-        SetInstanceRotationZ(z, instance);
+        SnapInstanceRotationZ(z, instance);
     }
 }
 
@@ -540,7 +524,7 @@ void PhysicsResetVelocityCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         return;
     }
 
-    ResetNodeVelocity(node);
+    FollowOwnMotionBlock(node);
     node->flags |= ObjectNodeBase::FlagKeepsTrajectory;
 }
 
@@ -573,7 +557,7 @@ void PhysicsBodyResetCommand::Execute(TimeClock*, BehaviourRunner* runner, Behav
     ObjectNode* node = NodeOf(runner);
     if (TakesPackets(node) && node->rigidBody != nullptr)
     {
-        ResetRigidBody(node->rigidBody);
+        DeactivateRigidBody(node->rigidBody);
     }
 }
 
@@ -783,24 +767,14 @@ constexpr u32 FlagInChunkStore = 0x80;
 
 extern "C"
 {
-    // The node's bytes 0x168 and up and a value set (the float first), its sounds stopped (still asm)
-    void SetNodeBytes168(f32 value, ObjectNode* node, u32 first, u32 second) RETAIL_N32(FUN_0023e650);
-    void StopNodeSounds(ObjectNode* node) RETAIL(FUN_0023e2c0);
-    // A place for the runner's space of the request (still asm), and the node's stored place set to it
-    ObjectPlace* SpaceOfRequest(BehaviourRunner* runner, u32 space, u32 second, u32 first, u32 flag) RETAIL(FUN_0022e0b8);
-    void SetStoredPlace(ObjectNode* node, ObjectPlace* place) RETAIL(FUN_0023d8f8);
-    // The chunk manager's chunk of an index, and an ID's flag of a store toggled (still asm)
-    void* ChunkOfIndex(void* manager, u16 index) RETAIL(FUN_00268e60);
-    void TogglePersistentFlag(void* store, u16 id) RETAIL(FUN_00269330);
+    // The chunk manager's chunk of an index, and an ID's flag of a store toggled
     extern void* G_ChunkManager;
-    // A crate's contents made (still asm)
+    // A crate's contents made
     void CreateCrateContents(const CreateCrateContentsCommand* command, Agent* crate, InstanceContext* instance,
                              BehaviourRunner* runner) RETAIL(FUN_0010d358);
     // The byte command 209 sets
     extern u8 g_GlobalByte30A0E9 RETAIL(D_0030A0E9);
 }
-
-EABI_IMPORT(FUN_0023e650, SetNodeBytes168);
 
 void SetNodeBytes168Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
@@ -880,9 +854,9 @@ void ToggleStateCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourL
         return;
     }
 
-    auto* chunk = static_cast<u8*>(ChunkOfIndex(G_ChunkManager, agent->chunkIndex));
+    ChunkEntry* chunk = ChunkOfIndex(G_ChunkManager, agent->chunkIndex);
     u16 id = agent->id;
-    void* store = *reinterpret_cast<void**>(chunk + ((properties->state & FlagInChunkStore) != 0 ? 0x1C : 0x20));
+    PersistentFlags* store = (properties->state & FlagInChunkStore) != 0 ? chunk->flags : chunk->otherFlags;
     if (store != nullptr)
     {
         TogglePersistentFlag(store, id);
@@ -933,13 +907,13 @@ void ReduceHitPointsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
 {
     auto* node = static_cast<AgentNode*>(GetGameNode(&NodeOf(runner)->owner->nodes, CreatureNodeKind));
     auto* part = static_cast<CreaturePart*>(node->agent->part);
-    s32 left = static_cast<s32>(part->unknown14 >> HitPointsShift & HitPointsMask) - hitPoints;
+    s32 left = static_cast<s32>(part->flags >> HitPointsShift & HitPointsMask) - hitPoints;
     if (left < 0)
     {
         left = 0;
     }
 
-    part->unknown14 = (part->unknown14 & ~(HitPointsMask << HitPointsShift)) | (left & HitPointsMask) << HitPointsShift;
+    part->flags = (part->flags & ~(HitPointsMask << HitPointsShift)) | (left & HitPointsMask) << HitPointsShift;
 }
 
 namespace
@@ -995,20 +969,9 @@ AgentNode* CharacterNodeOf(InstanceContext* instance)
 
 extern "C"
 {
-    // The attachments node's linked agents attached (to one slot of theirs, or all), a motion block made normal, an agent
-    // restarted, the follow node's camera given its defaults, the character's hold released (still asm)
-    void AttachLinkedAgentsToSlot(void* attachments, InstanceContext* instance, u32 slot, u32 unknown) RETAIL(FUN_00196c08);
-    void AttachLinkedAgents(void* attachments, InstanceContext* instance, u32 unknown) RETAIL(FUN_00196b78);
-    void MakeMotionBlockNormal(MotionBlock* block) RETAIL(FUN_0023f9e0);
-    void RestartAgent(Agent* agent) RETAIL(FUN_002634c8);
-    void RestoreCameraDefaults(FollowNode* node) RETAIL(FUN_0017b5f0);
+    // The character's hold released
     void ReleaseCharacterHold(Agent* character) RETAIL(FUN_00132f20);
-    // An instance's places dismissed, and placed in a chunk (still asm)
-    void DismissPlaces(InstancePlaces* places) RETAIL(FUN_00198a18);
-    void PlacePlacesInChunk(InstancePlaces* places, InstanceContext* instance, ChunkData* chunk) RETAIL(FUN_00198a50);
-    // A chunk's sound set from a command's arguments, in one of two ways (still asm)
-    void SetChunkSoundA(ChunkData* chunk, const void* arguments) RETAIL(FUN_001f2560);
-    void SetChunkSoundB(ChunkData* chunk, const void* arguments) RETAIL(FUN_001f2500);
+    // A chunk's sound set from a command's arguments, in one of two ways
 }
 
 void AttachAllLinkedAgentsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
@@ -1108,7 +1071,7 @@ void DismissCharacterCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLev
     InstancePlaces* places = instance != nullptr ? instance->places : nullptr;
     if (places != nullptr)
     {
-        DismissPlaces(places);
+        DismissPlaces(places, instance);
     }
 }
 
@@ -1187,7 +1150,7 @@ void ClearPlayerFlag14Command::Execute(TimeClock*, BehaviourRunner* runner, Beha
 void ResetCameraCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     auto* node = static_cast<FollowNode*>(GetGameNode(&PlayedCharacter()->nodes, FollowNodeKind));
-    ResetFollowCamera(node->camera);
+    node->camera.rig.Restart();
 }
 
 void ClearContactResponseCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
@@ -1209,11 +1172,11 @@ void SetSoundCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLeve
 
     if ((value7 & 1) != 0)
     {
-        SetChunkSoundA(chunk, &value1);
+        SetChunkBoxReverb(chunk, &value1);
     }
     else
     {
-        SetChunkSoundB(chunk, &value1);
+        SetChunkReverb(chunk, &value1);
     }
 }
 
@@ -1229,4 +1192,893 @@ void DestroyMeCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLev
 
     CallVirtual<void>(node, node->vtable, NodeSlot11);
     CallVirtual<u32>(instance, instance->vtable, InstanceSleepSlot);
+}
+
+
+namespace
+{
+constexpr u32 MovementNodeKind = 0;
+constexpr u32 ModelNodeKindValue = 3;
+constexpr u32 RigidBodyNodeKind = 5;
+constexpr u32 ShadowNodeKind = 10;
+
+// A two bit switch of the arguments: 1 sets, 2 clears, 0 and 3 leave
+template <typename T>
+void Switch(u32 setting, T* word, T bit)
+{
+    if (setting == 1)
+    {
+        *word |= bit;
+    }
+    else if (setting == 2)
+    {
+        *word &= ~bit;
+    }
+}
+}
+
+// The physics body's flags 0x2000, 0x8000, 0x10000 and 0x1000 switched by the argument's two bit fields, 0x30 always set
+void SetNode5FlagsCommand::ExecuteOn(GameNode* node)
+{
+    auto* body = static_cast<RigidBody*>(GetGameNode(&node->owner->nodes, RigidBodyNodeKind));
+    if (body == nullptr)
+    {
+        return;
+    }
+
+    u32 bits = static_cast<u32>(flags.raw);
+    u32 bodyFlags = body->bodyFlags;
+    Switch(bits & 3, &bodyFlags, 0x2000u);
+    Switch(bits >> 2 & 3, &bodyFlags, 0x8000u);
+    Switch(bits >> 4 & 3, &bodyFlags, 0x10000u);
+    Switch(bits >> 6 & 3, &bodyFlags, 0x1000u);
+    body->bodyFlags = bodyFlags | 0x30;
+}
+
+// The shadow node's byte at 0x18
+void ShadowToggleCommand::ExecuteOn(GameNode* node)
+{
+    auto* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, ShadowNodeKind));
+    if (shadow != nullptr)
+    {
+        *(reinterpret_cast<u8*>(shadow) + 0x18) = static_cast<u8>(slot);
+    }
+}
+
+void SetNode10SlotCommand::ExecuteOn(GameNode* node)
+{
+    // The slot's shadow deleted
+    auto* shadow = static_cast<ShadowNode*>(GetGameNode(&node->owner->nodes, ShadowNodeKind));
+    if (shadow != nullptr)
+    {
+        shadow->ClearSlot(slot & 0xFF);
+    }
+}
+
+// Two bit switches of the instance and its nodes (1 on, 2 off): its flags 0x100, 0x400 and 0x10, its movement node's bit, its
+// physics body's flags 0x20 and 0x40, its model's collision bit; asleep or awake (1 woken, 2 its node's function 11 and the
+// instance put to sleep); the node's and the model's squared distances from the bytes at bits 21-28 and 13-20 (0xFF: none)
+void SetObjectCommand::ExecuteOn(GameNode* node)
+{
+    constexpr u32 WakeSlot = 2;
+    constexpr u32 SleepSlot = 3;
+    constexpr u32 NodeSleepSlot = 11;
+    InstanceContext* instance = node->owner;
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKindValue));
+    Switch(flags & 3, &instance->flags, 0x100u);
+    u32 setting = flags2 >> 2 & 3;
+    if (setting == 1 || setting == 2)
+    {
+        auto* movement = static_cast<MovementNode*>(GetGameNode(&instance->nodes, MovementNodeKind));
+        if (movement != nullptr)
+        {
+            Switch(setting, &movement->bits, 1u);
+        }
+    }
+
+    for (auto [field, bit] : {std::pair{flags >> 10 & 3, 0x20u}, std::pair{flags2 & 3, 0x40u}})
+    {
+        if (field == 1 || field == 2)
+        {
+            auto* body = static_cast<RigidBody*>(GetGameNode(&instance->nodes, RigidBodyNodeKind));
+            if (body != nullptr)
+            {
+                Switch(field, &body->bodyFlags, bit);
+            }
+        }
+    }
+
+    Switch(flags >> 2 & 3, &instance->flags, 0x400u);
+    Switch(flags >> 4 & 3, &instance->flags, 0x10u);
+    u32 sleep = (flags & 0xFF) >> 6;
+    if (sleep == 1)
+    {
+        CallVirtual<void>(instance, instance->vtable, WakeSlot);
+    }
+    else if (sleep == 2)
+    {
+        CallVirtual<void>(node, node->vtable, NodeSleepSlot);
+        CallVirtual<void>(instance, instance->vtable, SleepSlot);
+    }
+
+    u32 collision = flags2 >> 4 & 3;
+    if (collision == 1)
+    {
+        model->SetSolid(1);
+    }
+    else if (collision == 2)
+    {
+        model->SetSolid(0);
+    }
+
+    if ((flags & 0x40000000) != 0)
+    {
+        u32 distance = flags >> 21 & 0xFF;
+        node->unknown06 = static_cast<u16>(distance * distance);
+        if ((flags & 0x1FE00000) == 0x1FE00000)
+        {
+            node->unknown06 = 0xFFFF;
+        }
+    }
+
+    if ((flags & 0x20000000) != 0)
+    {
+        u32 distance = flags >> 13 & 0xFF;
+        model->unknown06 = static_cast<u16>(distance * distance);
+        if ((flags & 0x1FE000) == 0x1FE000)
+        {
+            model->unknown06 = 0xFFFF;
+        }
+    }
+}
+
+void DoAnimationCommand::Play(PropertyHolder* properties, GameAnimation* animation, OgiAnimator* animator)
+{
+    f32 blend = blendTime.FloatWith(properties);
+    if (animation == nullptr)
+    {
+        StopOgiAnimation(animator, static_cast<s32>(blend * g_ClockUnitsPerSecond), 0xFF);
+        return;
+    }
+
+    f32 rate = speed.FloatWith(properties);
+    if ((flags & 0x4000) != 0)
+    {
+        if ((flags & 0x10000) != 0)
+        {
+            rate += RandomSignedTimes(speedRandom.FloatWith(properties));
+        }
+    }
+    else if ((flags & 0x8000) != 0)
+    {
+        // The speed is how long it lasts: its frames at its rate divided by that
+        u32 bits = animation->bits;
+        rate = (static_cast<f32>(static_cast<s32>(bits >> GameAnimation::FramesShift & GameAnimation::FramesMask)) /
+                static_cast<f32>(static_cast<s32>(bits >> GameAnimation::RateShift & GameAnimation::RateMask))) / rate;
+    }
+    else
+    {
+        rate = 1.0f;
+    }
+
+    AnimationSettings settings;
+    ConstructAnimationSettings(rate, &settings, animation);
+    u32 bits = settings.bits;
+    bits = (bits & ~AnimationSettings::Loops) | (flags >> 12 & 1);
+    bits = (bits & ~AnimationSettings::Backward) | (flags >> 17 & AnimationSettings::Backward);
+    bits = (bits & ~AnimationSettings::QueuedAlways) | (flags >> 15 & AnimationSettings::QueuedAlways);
+    settings.bits = bits;
+    if ((flags & 0x2000) != 0)
+    {
+        s32 ticks = static_cast<s32>(blend * g_ClockUnitsPerSecond);
+        settings.blendTime = ticks;
+        settings.bits = (bits & ~AnimationSettings::Queued) | static_cast<u32>(ticks != 0) << 1;
+    }
+
+    if ((flags & 0x40000) != 0)
+    {
+        settings.bits = (settings.bits & ~AnimationSettings::StartsPartWay) | AnimationSettings::Continues;
+    }
+    else if ((flags & 0x20000) != 0)
+    {
+        settings.start = startPosition;
+        settings.bits = (settings.bits | AnimationSettings::StartsPartWay) & ~AnimationSettings::Continues;
+    }
+
+    PlayOgiAnimation(animator, &settings, static_cast<u32>(flags) >> 4 & 0xFF);
+    DestroyAnimationSettings(&settings, DestroyOnly);
+}
+
+void DoAnimationCommand::ExecuteOn(GameNode* node)
+{
+    auto* agent = static_cast<ObjectNode*>(node);
+    GameObject* object = agent->sourceNode != nullptr ? SourceObject(agent->sourceNode) : agent->object;
+    InstanceContext* instance = agent->owner;
+    const u8* slots = reinterpret_cast<const u8*>(&animSlots);
+    u32 slot = (flags & 0xF) == 1 ? slots[0] : slots[RandomBelow(flags & 0xF)];
+    u16 modelId;
+    GetObjectModelId(&modelId, object, slot);
+    if (modelId != 0xFFFF)
+    {
+        GameResources* resources = G_GameResourcesObjectPointer;
+        ResourceTable* models = resources->models;
+        u16 id = modelId;
+        auto* ogi = id != 0xFFFF ? static_cast<GameOGI*>(models->items[id & 0x7FFF]) : nullptr;
+        auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
+        PropertyHolder* properties = agent->sourceNode != nullptr ? GetPropsHolderFromInstanceNode(agent->sourceNode)
+                                                                  : agent->properties;
+        u16 animationId;
+        GetObjectAnimationId(&animationId, object, slot);
+        u32 header = object->header[0];
+        model->SetOgi(ogi, header >> 6 & 0x3F, header & 0x3F);
+        OgiAnimator* animator = model->animator;
+        if (animator != nullptr)
+        {
+            GameAnimation* animation = nullptr;
+            if (animationId != 0xFFFF)
+            {
+                ResourceTable* animations = resources->animations;
+                id = animationId;
+                animation = id != 0xFFFF ? static_cast<GameAnimation*>(animations->items[id & 0x7FFF]) : nullptr;
+            }
+
+            Play(properties, animation, animator);
+        }
+    }
+
+    if ((flags & 0x200000) != 0)
+    {
+        auto* shadow = static_cast<GameNode*>(GetGameNode(&instance->nodes, ShadowNodeKind));
+        if (shadow != nullptr)
+        {
+            *(reinterpret_cast<u8*>(shadow) + 0x18) = static_cast<u8>(flags >> 22 & 0xF);
+        }
+    }
+}
+
+void DoParticleCommand::ExecuteOn(GameNode* node)
+{
+    constexpr u32 GetDesignatorPositionSlot = 37;
+    auto* agent = static_cast<ObjectNode*>(node);
+    InstanceContext* instance = agent->owner;
+    s32 system = systemAndFlags & SystemMask;
+    auto* position = reinterpret_cast<Vector4*>(&posX);
+    if ((flags2 >> KeyShift & NoneByte) != NoneByte)
+    {
+        Waypoints* waypoints = agent->waypoints;
+        u32 index = flags2 >> KeyShift & NoneByte;
+        LayoutPosition* key = nullptr;
+        if (waypoints->keyCount != 0)
+        {
+            key = static_cast<s32>(index) < waypoints->keyCount ? waypoints->positions.data[index] : nullptr;
+        }
+
+        // A key past the last is read from address 0, as retail does
+        *position = key->position;
+        position->w = 1.0f;
+        systemAndFlags &= ~FromKeyPending;
+        flags2 |= HasPosition;
+    }
+
+    // The surface mode plays the system of the surface's index, the contact's (with a decal at its point) or the one under the
+    // node, as retail does (the mode's byte goes unread)
+    const Vector4* contact = nullptr;
+    if ((flags2 >> SurfaceShift & NoneByte) != NoneByte && CallVirtual<u32>(agent, agent->vtable, TakesPacketsSlot) != 0)
+    {
+        system = agent->unknown134;
+        if (agent->unknown134 == -1)
+        {
+            system = agent->surface;
+        }
+        else
+        {
+            contact = &agent->unknown140;
+        }
+    }
+
+    u32 value = systemAndFlags >> ValueShift & ValueMask;
+    if ((systemAndFlags & FromFrame) != 0)
+    {
+        s32 emitter = StartEmitterKeepingTranslation(instance, system, value, nullptr);
+        if (emitter < 0)
+        {
+            return;
+        }
+
+        Matrix4x4 frame = *ParticleFrame(instance, systemAndFlags >> ExitPointShift & ExitPointMask);
+        OrientParticleFrame(flags2 & Turned, flags2 >> AxesShift & AxesMask, (flags2 & HasPosition) != 0 ? position : nullptr,
+                            &frame);
+        if (contact != nullptr)
+        {
+            *RowOf(&frame, 3) = *contact;
+            AddDecalFromDescriptor(&frame, instance->chunk);
+        }
+
+        SetEmitterFrame(emitter, &frame);
+        return;
+    }
+
+    if ((flags2 >> DesignatorShift & NoneByte) != NoneByte)
+    {
+        u32 designator = flags2 >> DesignatorShift & NoneByte;
+        auto* target = CallVirtual<InstanceContext*>(agent, agent->vtable, GetDesignatorSlot, designator);
+        if (target != nullptr)
+        {
+            ObjectPlace* place = target->place;
+            place->SyncPosition();
+            *position = place->position;
+        }
+        else
+        {
+            CallVirtual<u32>(agent, agent->vtable, GetDesignatorPositionSlot, designator, position);
+        }
+    }
+
+    if (contact == nullptr)
+    {
+        StartEmitterKeepingTranslation(instance, system, value, (flags2 & HasPosition) != 0 ? position : nullptr);
+        return;
+    }
+
+    Matrix4x4 frame;
+    InitIdentityMatrix(&frame);
+    *RowOf(&frame, 3) = *contact;
+    AddDecalFromDescriptor(&frame, instance->chunk);
+    StartEmitterKeepingTranslation(instance, system, value, contact);
+}
+
+namespace
+{
+// The node's vtable function saying it has no tracked sound slot in use
+constexpr u32 NoTrackedSoundSlot = 40;
+// The agent's vtable functions told of a step on a surface: whether to be, and the surface with the up direction
+constexpr u32 AgentSurfaceStepsSlot = 12;
+constexpr u32 AgentSurfaceStepSlot = 18;
+// The surface whose landings the agent is told of
+constexpr u32 SteppedSurfaceId = 10;
+constexpr u32 LandKind = 3;
+// Sounds aren't played by instances whose stamp is this far along unless they're followed
+constexpr u32 FarStamp = 0x1FA4;
+
+u8& TrackedSound(ObjectNode* node)
+{
+    return node->unknown155[0x160 - 0x155];
+}
+}
+
+u16 SoundOfSlot(ObjectNode* node, u32 slot)
+{
+    slot &= 0xFFFF;
+    u16 id = 0xFFFF;
+    if (slot == 0xFFFF)
+    {
+        return id;
+    }
+
+    GameObject* object = node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
+    u16 found;
+    GetObjectSoundId(&found, object, slot);
+    if (found != 0xFFFF)
+    {
+        return found & 0x7FFF;
+    }
+
+    GameObject* own = node->OwnObject();
+    if (own != nullptr)
+    {
+        GetObjectSoundId(&found, own, slot);
+        if (found != 0xFFFF)
+        {
+            id = found & 0x7FFF;
+        }
+    }
+
+    return id;
+}
+
+void PlaySlotSound(ObjectNode* node, u32 slot, u32 tracked)
+{
+    InstanceContext* instance = node->owner;
+    ObjectPlace* place = instance->place;
+    place->SyncPosition();
+    Vector4 position = place->position;
+    u32 channel = 0xFF;
+    u16 sound = SoundOfSlot(node, slot);
+    if (sound == 0xFFFF)
+    {
+        return;
+    }
+
+    s32 kept = -1;
+    s32 voiceKind = ListenerVoiceKind();
+    if (tracked == 0 || CallVirtual<u32>(node, node->vtable, NoTrackedSoundSlot) == 0)
+    {
+        PlaySoundByIdAt(-1.0f, -1.0f, sound, 0, instance->chunk, &position, voiceKind, -1);
+    }
+    else
+    {
+        kept = 0;
+        channel = PlayInstanceSoundById(-1.0f, -1.0f, sound, 0, instance, voiceKind, 0);
+    }
+
+    if (channel != 0xFF && tracked != 0 && kept == 0)
+    {
+        TrackedSound(node) = static_cast<u8>(channel);
+    }
+}
+
+void DoSoundCommand::ExecuteOn(GameNode* node)
+{
+    constexpr f32 LoudestVolume = 5.0f;
+    constexpr f32 ShakeThreshold = Rounded(0.01);
+    auto* agent = static_cast<ObjectNode*>(node);
+    f32 volumeGiven = -1.0f;
+    if ((flags & HasVolume) != 0)
+    {
+        PropertyHolder* properties = agent->sourceNode != nullptr ? GetPropsHolderFromInstanceNode(agent->sourceNode)
+                                                                  : agent->properties;
+        volumeGiven = volume.FloatWith(properties);
+        if (LoudestVolume < volumeGiven)
+        {
+            volumeGiven = LoudestVolume;
+        }
+    }
+
+    InstanceContext* instance = agent->owner;
+    ObjectPlace* place = instance->place;
+    place->SyncPosition();
+    Vector4 position = place->position;
+    u32 sound = 0xFFFF;
+    u32 channel = 0xFF;
+    if ((flags & KindMask) == KindMask || CallVirtual<u32>(agent, agent->vtable, TakesPacketsSlot) == 0)
+    {
+        s32 slot = RandomBelow(static_cast<s32>(flags & SlotCountMask));
+        sound = SoundOfSlot(agent, soundSlots[slot]);
+    }
+    else
+    {
+        s32 surface = agent->unknown134;
+        if (surface == -1)
+        {
+            surface = agent->surface;
+        }
+
+        if (surface != -1)
+        {
+            CollisionSurface* contact = &g_CollisionSurfaces.surfaces[surface];
+            sound = GetSurfaceSound(contact, flags >> KindShift & 0xF, &volumeGiven);
+            if ((flags & KindMask) == LandKind << KindShift)
+            {
+                Agent* owner = agent->agent;
+                if (CallVirtual<u32>(owner, owner->vtable, AgentSurfaceStepsSlot) != 0 && contact->surfaceId == SteppedSurfaceId)
+                {
+                    Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
+                    CallVirtual<void>(owner, owner->vtable, AgentSurfaceStepSlot, contact, &up);
+                }
+            }
+        }
+    }
+
+    if (sound != 0xFFFF)
+    {
+        u32 stamp = instance->seen[0] | instance->seen[1] << 8 | instance->seen[2] << 16;
+        if (stamp < FarStamp || (flags & Followed) != 0)
+        {
+            f32 level = 1.0f;
+            bool hasLevel = false;
+            if (0.0f < volumeGiven)
+            {
+                level = volumeGiven;
+                hasLevel = true;
+            }
+
+            if ((flags & RandomVolume) != 0)
+            {
+                hasLevel = true;
+                level = level + RandomSignedTimes(volumeRandom);
+            }
+
+            f32 scale = 1.0f;
+            bool hasScale = false;
+            if ((flags & HasPitch) != 0)
+            {
+                scale = pitch;
+                hasScale = true;
+            }
+
+            if ((flags & RandomPitch) != 0)
+            {
+                hasScale = true;
+                scale = scale + RandomSignedTimes(pitchRandom);
+            }
+
+            s32 voiceKind = ListenerVoiceKind();
+            s32 kept = -1;
+            if ((flags & Tracked) != 0 && CallVirtual<u32>(agent, agent->vtable, NoTrackedSoundSlot) != 0)
+            {
+                kept = 0;
+            }
+
+            u32 group = flags >> GroupShift & GroupMask;
+            f32 played = hasLevel ? level : -1.0f;
+            f32 playedScale = hasScale ? scale : -1.0f;
+            if ((flags & Unplaced) != 0)
+            {
+                if (kept == 0)
+                {
+                    channel = PlayUnplacedSoundById(played, playedScale, sound, group, instance, voiceKind);
+                }
+                else
+                {
+                    PlaySoundById(played, playedScale, sound, static_cast<s32>(group), voiceKind, kept);
+                }
+            }
+            else if ((flags & Followed) != 0)
+            {
+                channel = PlayInstanceSoundById(played, playedScale, sound, group, instance, voiceKind, kept);
+            }
+            else
+            {
+                PlaySoundByIdAt(played, playedScale, static_cast<u16>(sound), static_cast<s32>(group), instance->chunk, &position,
+                                voiceKind, kept);
+            }
+
+            if (channel != 0xFF && (flags & Tracked) != 0 && kept == 0)
+            {
+                TrackedSound(agent) = static_cast<u8>(channel);
+            }
+        }
+    }
+
+    if ((flags & Shakes) == 0)
+    {
+        return;
+    }
+
+    if (ShakeThreshold < shakeAcross || ShakeThreshold < shakeUp)
+    {
+        PushCameraShakeAxes(&g_CameraShake, &position, shakeAcross, shakeUp, shakeAcross, shakeFalloff);
+    }
+    else
+    {
+        PushCameraShake(&g_CameraShake, &position, shakeStrength, shakeFalloff);
+    }
+}
+
+void BeginMusicCommand::ExecuteOn(GameNode* node)
+{
+    constexpr u32 SlotShift = 12;
+    constexpr u32 SlotMask = 0x7;
+    constexpr u32 EmitterSlot = 3;
+    auto* agent = static_cast<ObjectNode*>(node);
+    PropertyHolder* properties = agent->sourceNode != nullptr ? GetPropsHolderFromInstanceNode(agent->sourceNode)
+                                                              : agent->properties;
+    s32 number = track.IntWith(properties);
+    // Above its track the request's word is what the stack held, which nothing reads; group 2, at once, the loop
+    MusicRequest request;
+    request.bits = (static_cast<u32>(number) & 0xFFFF) | 0x80000 | 0x20000 | (flags >> 15 & 1) << 20;
+    request.left = volume;
+    request.right = volume;
+    request.fadeTime = fadeTime;
+    if ((flags & SlotMask << SlotShift) == 0)
+    {
+        // The main slot's tracks play at their own volume
+        f32 level;
+        if (static_cast<u32>(number - 0x1D) < 2 || number == 0x23 || number == 0x36 || number == 0x37 || number == 0x3D)
+        {
+            level = 1.0f;
+        }
+        else
+        {
+            level = number == 0x3B ? Rounded(0.8) : 0.75f;
+        }
+
+        request.left = level;
+        request.right = level;
+    }
+
+    u32 slot = flags >> SlotShift & SlotMask;
+    if (slot == 2)
+    {
+        request.bits &= ~0x70000u;
+    }
+    else if (slot > 1)
+    {
+        if (slot != EmitterSlot)
+        {
+            return;
+        }
+
+        request.bits &= ~0x70000u;
+        AddMusicEmitter(range, agent->owner, &request);
+        return;
+    }
+
+    PlayMusicRequest(slot, &request);
+}
+
+void CreateDamageCommand::ExecuteOn(GameNode* node)
+{
+    constexpr u32 ShapeHullShift = 4;
+    constexpr u32 NoHull = 0xF;
+    constexpr u32 NoJoint = 0xFF;
+    constexpr u32 MostHit = 0x40;
+    constexpr u32 ContactSlot = 9;
+    auto* agent = static_cast<ObjectNode*>(node);
+    u32 found = 0;
+    ContactMessage message;
+    ContactMessage::Construct(&message);
+    PropertyHolder* properties = agent->sourceNode != nullptr ? GetPropsHolderFromInstanceNode(agent->sourceNode)
+                                                              : agent->properties;
+    InstanceContext* instance = agent->owner;
+    ChunkData* chunk = instance->chunk;
+    u32 kinds = 0x5F000;
+    f32 radius = reach.FloatWith(properties);
+    if ((flags & SearchKinds5E) != 0)
+    {
+        kinds = 0x5E000;
+    }
+    else if ((flags & SearchKinds1000) != 0)
+    {
+        kinds = 0x1000;
+    }
+
+    void* results[MostHit];
+    InstanceRayHit query;
+    query.most = MostHit;
+    query.results = results;
+    query.count = 0;
+    query.distance = 1e30f;
+    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.wantedFlags = 0;
+    query.bits = (query.bits & ~InstanceRayHit::BitFull) | InstanceRayHit::BitAllWanted;
+    query.skipped[0] = nullptr;
+    query.instance = nullptr;
+    query.skipped[1] = nullptr;
+    SkipInQuery(&query, instance);
+    Vector4 position;
+    u32 joint = flags >> JointShift & 0xFF;
+    if (joint != NoJoint)
+    {
+        JointPosition(instance, joint, &position, nullptr);
+    }
+    else
+    {
+        ObjectPlace* place = instance->place;
+        place->SyncPosition();
+        position = place->position;
+        if ((flags & Offset) != 0)
+        {
+            place = instance->place;
+            RotateAndTranslate(place);
+            const Vector4* rowX = RowOf(&place->matrix, 0);
+            const Vector4* rowY = RowOf(&place->matrix, 1);
+            const Vector4* rowZ = RowOf(&place->matrix, 2);
+            position.z = position.z + ((rowX->z * x + rowY->z * y) + rowZ->z * z);
+            position.x = position.x + ((rowX->x * x + rowY->x * y) + rowZ->x * z);
+            position.y = position.y + ((rowX->y * x + rowY->y * y) + rowZ->y * z);
+        }
+    }
+
+    u32 hull = shape >> ShapeHullShift & 0xF;
+    if (hull != NoHull)
+    {
+        found = InstancesInDamageHull(instance, hull, kinds, &query);
+    }
+    else
+    {
+        switch (shape & 0xF)
+        {
+        case 1:
+            position.w = radius;
+            found = ChunkInstancesInSphere(chunk, &position, kinds, &query, 1);
+            break;
+        case 2:
+            position.w = radius;
+            found = ChunkInstancesInSphere(chunk, &position, kinds, &query, 0);
+            break;
+        case 3:
+        {
+            f32 tall = height.FloatWith(properties);
+            position.w = radius;
+            found = ChunkInstancesInCylinder(tall, chunk, &position, kinds, &query);
+            position.w = 1.0f;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    message.byte = static_cast<u8>(damage.IntWith(properties));
+    message.word = hitKinds;
+    if ((flags & Bit10Kind) != 0)
+    {
+        message.word = hitKinds | 0x400;
+    }
+
+    if ((flags & GivesW) != 0)
+    {
+        message.point.w = messageW.FloatWith(properties);
+    }
+
+    auto send = [&](void* hit) {
+        AgentNode* hitNode = AgentNodeOf(static_cast<InstanceContext*>(hit));
+        if (hitNode != nullptr)
+        {
+            CallVirtual<void>(hitNode->agent, hitNode->agent->vtable, ContactSlot, &message, instance, 1u);
+        }
+    };
+    if ((flags & NearestOnly) == 0)
+    {
+        for (u16 index = 0; index < found; index++)
+        {
+            send(results[index]);
+        }
+
+        return;
+    }
+
+    InstanceContext* nearest = nullptr;
+    f32 best = 1e30f;
+    for (u16 index = 0; index < found; index++)
+    {
+        auto* hit = static_cast<InstanceContext*>(results[index]);
+        const Box* box = hit->CollisionBox();
+        f32 dx = ((box->max.x - box->min.x) * 0.5f + box->min.x) - position.x;
+        f32 dy = ((box->max.y - box->min.y) * 0.5f + box->min.y) - position.y;
+        f32 dz = ((box->max.z - box->min.z) * 0.5f + box->min.z) - position.z;
+        f32 distance = (dx * dx + dy * dy) + dz * dz;
+        if (distance < best)
+        {
+            nearest = hit;
+            best = distance;
+        }
+    }
+
+    if (nearest != nullptr)
+    {
+        send(nearest);
+    }
+}
+
+namespace
+{
+// A projectile's node keeps its own state where an object node keeps its frame's move: its state bits, the trigger message it
+// sends, the references to its target and to who shot it
+struct ProjectileState
+{
+    u32 bits;
+    u16 message;
+    u16 unknown06;
+    Reference* target;
+    Reference* shooter;
+};
+
+ProjectileState* ProjectileOf(ObjectNodeBase* node)
+{
+    return reinterpret_cast<ProjectileState*>(&node->unknownC0);
+}
+}
+
+extern "C"
+{
+    // A projectile node's state changed
+    void SetProjectileState(ObjectNodeBase* node, TimeClock* clock, u32 state) RETAIL(FUN_0010a6e8);
+}
+
+void ShootCommand::ExecuteOn(GameNode* node)
+{
+    constexpr u32 NoExitPoint = 0xFF;
+    constexpr u32 SetVelocitySlot = 26;
+    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+    constexpr u32 FlyingState = 2;
+    constexpr u32 Targets = 0x100000;
+    constexpr u32 Bit21 = 0x200000;
+    auto* agent = static_cast<ObjectNode*>(node);
+    InstanceContext* instance = agent->owner;
+    ChunkEntry* chunk = ChunkOfInstance(G_ChunkManager, instance);
+    InstanceFactory* factory = g_InstanceFactory;
+    factory->SetFlag2();
+    factory->ClearFlag1();
+    factory->SetFlag0();
+    factory->ClearFlag3();
+    factory->ClearFlag4();
+    factory->creationFlags = 0;
+    Matrix4x4 frame;
+    u32 exitPoint = shot & ExitPointMask;
+    if (exitPoint == NoExitPoint)
+    {
+        ObjectPlace* place = instance->place;
+        RotateAndTranslate(place);
+        frame = place->matrix;
+    }
+    else
+    {
+        auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
+        ExitPointAnimation* point = nullptr;
+        if (model->animator != nullptr)
+        {
+            SizedArray<ExitPointAnimation*>* points = model->animator->exitPoints;
+            point = points != nullptr ? points->data[exitPoint] : nullptr;
+        }
+
+        if (point == nullptr)
+        {
+            InitIdentityMatrix(&frame);
+        }
+        else
+        {
+            frame = UpdateExitPointMatrix(point)->matrix;
+            for (u32 row = 0; row < 3; row++)
+            {
+                Vector4* axis = RowOf(&frame, row);
+                f32 inverse = InverseLength(axis, LengthEpsilon);
+                axis->x = axis->x * inverse;
+                axis->y = axis->y * inverse;
+                axis->z = axis->z * inverse;
+            }
+        }
+    }
+
+    Vector4 position = *RowOf(&frame, 3);
+    if ((shot & Offset) != 0)
+    {
+        const Vector4* rowX = RowOf(&frame, 0);
+        const Vector4* rowY = RowOf(&frame, 1);
+        const Vector4* rowZ = RowOf(&frame, 2);
+        position.z = position.z + ((rowX->z * x + rowY->z * y) + rowZ->z * z);
+        position.x = position.x + ((rowX->x * x + rowY->x * y) + rowZ->x * z);
+        position.y = position.y + ((rowX->y * x + rowY->y * y) + rowZ->y * z);
+    }
+
+    s32 angles[3];
+    AnglesOfMatrix(&frame, angles);
+    InstanceContext* made = CreateInstance(factory, chunk, objectAndMessage & 0x7FFF, &position, angles);
+    auto* madeNode = static_cast<ObjectNodeBase*>(GetGameNode(&made->nodes, ObjectNodeKind));
+    if ((shot & HasSpeed) != 0)
+    {
+        Vector4 velocity = *RowOf(&frame, 2);
+        velocity.x = velocity.x * speed;
+        velocity.y = velocity.y * speed;
+        velocity.z = velocity.z * speed;
+        CallVirtual<void>(madeNode, madeNode->vtable, SetVelocitySlot, -1.0f, &velocity);
+    }
+
+    madeNode->unknown06 = 0xFFFF;
+    u16 message = static_cast<u16>(objectAndMessage >> 16);
+    if (CallVirtual<u32>(madeNode, madeNode->vtable, TakesPacketsSlot) == 0)
+    {
+        ProjectileState* projectile = ProjectileOf(madeNode);
+        if ((shot & AtTarget) != 0)
+        {
+            if (agent->agentRef1 != nullptr && (agent->agentRef1->flags & ReferencedObject::FlagAsleep) != 0)
+            {
+                agent->agentRef1 = nullptr;
+            }
+
+            AssignReference(&projectile->target, agent->agentRef1);
+            projectile->bits |= Targets;
+        }
+
+        AssignReference(&projectile->shooter, instance);
+        made->collision.leftOut = instance;
+        projectile->message = message;
+        if ((shot & Bit15) != 0)
+        {
+            projectile->bits |= Bit21;
+        }
+
+        SetProjectileState(madeNode, GetContextClock(made), FlyingState);
+    }
+
+    if (made != nullptr && message != 0xFFFF)
+    {
+        Reference* sender = instance != nullptr ? AddReference(instance) : nullptr;
+        GameEvent* event = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))), message, &sender, 2);
+        Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
+        QueueEvent(made, &handle);
+    }
+
+    factory->SetFlag4();
 }

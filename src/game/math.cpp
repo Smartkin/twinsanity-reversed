@@ -4,6 +4,12 @@
 
 #include "platform/math.h"
 
+extern "C"
+{
+    // The C library's expf
+    f32 Exponential(f32 value) RETAIL(FUN_002c1e98);
+}
+
 namespace
 {
 constexpr f32 TurnStep = 0x1.921FB6p-14f;
@@ -425,8 +431,6 @@ EABI_EXPORT(FUN_0018dfa8, RotationFromAxisSine);
 EABI_EXPORT(FUN_0018e608, AreParallel);
 EABI_EXPORT(FUN_001830a8, AngleOfPoint);
 EABI_EXPORT(FUN_001857e8, MatrixAboutAxis);
-EABI_IMPORT(FUN_00187c48, SnapToYaw);
-EABI_IMPORT(FUN_00187890, SlerpRotations);
 EABI_EXPORT(FUN_0017c668, SampleVector2Curve);
 EABI_EXPORT(FUN_001ac110, SampleVector4Curve);
 
@@ -2005,4 +2009,29 @@ void LookAtMatrix(Matrix4x4* matrix, const Vector4* eye, const Vector4* target, 
     matrix->m[3][3] = 1.0f;
     matrix->m[0][3] = 0.0f;
     matrix->m[1][3] = 0.0f;
+}
+
+f32 ClampFloat(f32 value, f32 low, f32 high)
+{
+    if (value < low)
+    {
+        return low;
+    }
+
+    if (high < value)
+    {
+        return high;
+    }
+
+    return value;
+}
+
+f32 HalfLifeShare(f32 halfLife, f32 seconds)
+{
+    constexpr f32 MinusLn2 = -0x1.62e43p-1f;
+    return Exponential(seconds * MinusLn2 / halfLife);
+}
+
+void UnkDebugFunction3()
+{
 }

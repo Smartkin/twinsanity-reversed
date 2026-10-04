@@ -2,28 +2,32 @@
 
 #include "game/agentparts.h"
 #include "game/agents.h"
+#include "game/behaviours.h"
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/chunkloading.h"
+#include "game/controllers.h"
+#include "game/followcamera.h"
+#include "game/gamecontroller.h"
 #include "game/instances.h"
 #include "game/layout.h"
+#include "game/math.h"
 #include "game/memory.h"
+#include "game/objectcollision.h"
 #include "game/objectnode.h"
 #include "game/objects.h"
 #include "game/place.h"
+#include "game/progress.h"
 #include "game/properties.h"
 #include "game/reference.h"
 #include "game/resources.h"
 
+#include <cstddef>
+#include <cstdint>
+
 extern "C"
 {
-    // A model's node given its instance's collision (still asm)
-    void AttachModelCollision(GameNode* node) RETAIL(FUN_001a1960);
-    // The node keeping an instance's previous transform (0xA0 bytes, still asm)
-    GameNode* ConstructMovementNode(void* node) RETAIL(InitMovementNode);
-    // The instance a starter's receiver index stands for (still asm)
-    void SetReceiverInstance(u32 index, InstanceContext* instance) RETAIL(FUN_00252af8);
-    // A place's matrix made again from its position and rotation once they changed (still asm)
+    // A place's matrix made again from its position and rotation once they changed
     void RotateAndTranslate(ObjectPlace* place) RETAIL(RotateAndTranslate);
 }
 
@@ -59,6 +63,11 @@ GameObject* ObjectOf(InstanceFactory* factory, u16 id)
 
     return static_cast<GameObject*>(factory->resources->objects->items[id & 0x7FFF]);
 }
+}
+
+void InstanceFactory::SetFlag0()
+{
+    flags |= Flag0;
 }
 
 void InstanceFactory::ClearFlag0()
@@ -143,7 +152,7 @@ InstanceContext* CreateInstanceContext(InstanceFactory* factory, ChunkEntry* chu
     if (modelNode != nullptr)
     {
         RegisterNode(context, 1, modelNode);
-        AttachModelCollision(modelNode);
+        static_cast<ModelNode*>(modelNode)->AttachCollision();
     }
 
     GameNode* objectNode = MakeObjectNode(factory, chunk, instance, context, modelNode);
@@ -243,13 +252,9 @@ extern "C"
     extern const GccVTableEntry g_BaseFactoryVTable[] RETAIL(GameResourceManagerPrototype_Methods);
     extern const GccVTableEntry g_GameFactoryVTable[] RETAIL(GameResourceManager_Methods);
 
-    // The agent object nodes of pickups of subtypes 16 and 17 (0xD0 bytes) and of projectiles (0xF0 bytes), and a model's node
-    // from its object (still asm)
+    // The agent object nodes of pickups of subtypes 16 and 17 (0xD0 bytes) and of projectiles (0xF0 bytes)
     GameNode* ConstructPickupNode(void* node, ChunkEntry* chunk) RETAIL(InitInstanceNodeType1);
     GameNode* ConstructProjectileNode(void* node) RETAIL(InitInstanceNodeType8);
-    GameNode* MakeObjectModelNode(GameObject* object) RETAIL(GetOgiNodeFromObject);
-    // A message trigger's node (0x1A0 bytes, still asm)
-    TriggerNode* ConstructMessageTriggerNode(void* node, ChunkData* chunk, LayoutTrigger* trigger) RETAIL(InitTriggerNode);
 
     extern const GccVTableEntry g_ProjectileNodeVTable[] RETAIL(UnkNode_0x14_Methods);
 }
@@ -290,6 +295,10 @@ constexpr u32 HolderIntCountSlot = 11;
 constexpr u32 HolderIntToWriteSlot = 6;
 // The object node of kind 1 (an instance's agent's)
 constexpr u32 AgentObjectNodeKind = 1;
+// The holders' vtable function giving their class (0x12 or 0x13)
+constexpr u32 HolderClassSlot = 12;
+// The room the factory's list of templates starts with, and grows by
+constexpr u32 TemplatesRoom = 10;
 // A context's flags the base's stand-in sets: always 9, 14 when the instance's properties' state has bit 4
 constexpr u32 ContextBit9 = 0x200;
 constexpr u32 ContextBit14 = 0x4000;
@@ -299,7 +308,7 @@ constexpr u32 StandInIds = 0x1;
 constexpr u8 TriggerNodeBit3 = 0x8;
 constexpr u8 TriggerNodeNeverPolled = 0x10;
 constexpr u32 TriggerHeaderNeverPolled = 0x1000;
-constexpr u64 MessageNodeBit1 = 0x2;
+constexpr u16 MessageNodeBit1 = MessageTriggerNode::BitAnyCharacter;
 // The activators a trigger's node tells: their bits made the node kinds of their agents (bits 12-21)
 constexpr u32 OnlyCharacterActivator = 1;
 constexpr u32 ActivatorKinds[][2] = {{0x1, 0x1000},   {0x4, 0x2000},    {0x8, 0x8000},    {0x2, 0x4000},    {0x10, 0x10000},
@@ -310,15 +319,54 @@ constexpr u32 PickupNodeSize = 0xD0;
 constexpr u32 ProjectileNodeSize = 0xF0;
 constexpr u32 MessageTriggerNodeSize = 0x1A0;
 constexpr u32 AgentNodeSize = 0x1C;
+constexpr u32 ControlsNodeSize = 0x34;
+constexpr u32 FollowNodeSize = 0x770;
+// The nodes the game's stand-in looks for: the model's, the playable characters' agent node, the controls' and the follow node;
+// RegisterNode's second argument
+constexpr u32 ModelNodeKind = 3;
+constexpr u32 CharacterNodeKind = 0xC;
+constexpr u32 ControlsNodeKind = 0xB;
+constexpr u32 FollowNodeKind = 0x16;
+constexpr u32 AttachNode = 1;
+// A playable character's first integer property when it's none of the progress's characters
+constexpr s32 NoCharacter = 6;
+// The flag of a placement (InstancePlacement::Take's) the stand-in clears on a playable character's object node
+constexpr u32 PlacementFlag = 0x1;
+// Bit 0 of an instance's collision's bits (no reader of it was found), which crates, generic objects and pay gates get
+constexpr u64 CollisionBit0 = 0x1;
+// The instance's integer property giving its object and model nodes their word at 6: 0 and 0xFF stand for 0 and 0xFFFF, others
+// are squared
+constexpr u32 NodeWordProperty = 1;
+constexpr u32 NodeWordNone = 0;
+constexpr u32 NodeWordAll = 0xFF;
 
-// The node of a message trigger (0x1A0 bytes): a trigger node with 0x30 bytes of its own
-struct MessageTriggerNode : TriggerNode
+static_assert(offsetof(ChunkData, clocks) == 0x154);
+static_assert(offsetof(GameProgress, characters) == 0x80);
+static_assert(offsetof(ObjectInstance, properties) == 0x4C);
+
+// A pickup's object node (pickups.cpp's), as far as the stand-in sets it: the time its wait starts
+struct PickupNodeTimes : GameNode
 {
-    u8 unknown170[0x10];
-    u64 bits180;
-    u8 unknown188[0x1A0 - 0x188];
+    u8 unknown18[0xC0 - sizeof(GameNode)];
+    u32 waitStart;
 };
-CHECK_OFFSET(MessageTriggerNode, bits180, 0x180);
+
+// The clocks of a chunk's instances (the game's when it has none); retail reads them through no chunk data too (the word at
+// 0x154)
+TimeClock* ChunkClocks(const ChunkData* chunkData)
+{
+    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(chunkData) + offsetof(ChunkData, clocks);
+    auto* clocks = *reinterpret_cast<TimeClock* const*>(address);
+    return clocks != nullptr ? clocks : G_GameClockController->clocks;
+}
+
+// A character's handle among the progress's as retail indexes them: character 6 (none) is the first checkpoint's word
+Reference** CharacterHandle(GameProgress* progress, s32 character)
+{
+    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(progress->characters);
+    address += static_cast<u32>(character) * sizeof(Reference*);
+    return reinterpret_cast<Reference**>(address);
+}
 
 // An agent of a type made with its node: the holder of its class (the properties copied in), its part, the creator, the
 // factory's byte given to the holder, the agent and its node
@@ -604,7 +652,7 @@ TriggerNode* GameFactoryTriggerNode(InstanceFactory* factory, ChunkEntry* chunk,
     if (activators == OnlyCharacterActivator && (node->nodeBits & TriggerNodeBit3) == 0)
     {
         node->nodeBits |= TriggerNodeNeverPolled;
-        node->bits180 &= ~MessageNodeBit1;
+        node->messageBits &= ~MessageNodeBit1;
     }
     else if (activators == 0)
     {
@@ -613,7 +661,7 @@ TriggerNode* GameFactoryTriggerNode(InstanceFactory* factory, ChunkEntry* chunk,
             node->nodeBits |= TriggerNodeNeverPolled;
         }
 
-        node->bits180 = (node->bits180 & ~MessageNodeBit1) | MessageNodeBit1;
+        node->messageBits = (node->messageBits & ~MessageNodeBit1) | MessageNodeBit1;
     }
     else
     {
@@ -652,4 +700,231 @@ void GameFactoryDestroy(InstanceFactory* factory, u32 destroyFlags)
 {
     factory->vtable = g_GameFactoryVTable;
     BaseFactoryDestroy(factory, destroyFlags);
+}
+
+// A playable character's instance already in a chunk stands in for a new one of the same character (given a place for the new
+// one's chunk) when it has places; otherwise the new one becomes the progress's character, and whichever of the two it is gets
+// places, a controls' node and a follow node when it has none
+InstanceContext* GameFactoryStandIn(InstanceFactory* factory, ChunkEntry* chunk, GameObject* object, ObjectInstance* instance,
+                                    InstanceContext* context)
+{
+    auto* characterNode = static_cast<AgentNode*>(GetGameNode(&context->nodes, CharacterNodeKind));
+    Reference* data = chunk->data;
+    auto* chunkData = data != nullptr ? reinterpret_cast<ChunkData*>(data->object) : nullptr;
+    if (characterNode == nullptr)
+    {
+        u32 subtype = object->header[0] >> SubtypeShift & 0xFF;
+        if (subtype >= PickupNodeSubtype && subtype < PickupNodeSubtypeEnd)
+        {
+            TimeClock* clock = &ChunkClocks(chunkData)[context->clockIndex];
+            ObjectPlace* place = context->place;
+            place->SyncPosition();
+            Vector4 position = place->position;
+            Matrix4x4 matrix;
+            InitIdentityMatrix(&matrix);
+            *RowOf(&matrix, 3) = position;
+            SetCollisionMatrix(&context->collision, &matrix);
+            auto* node = static_cast<PickupNodeTimes*>(GetGameNode(&context->nodes, AgentObjectNodeKind));
+            node->waitStart = clock->time;
+        }
+
+        switch (object->header[0] >> TypeShift & 0xFF)
+        {
+        case TypeCrate:
+        case TypeGenericObject:
+        case TypePayGate:
+            context->collision.bits |= CollisionBit0;
+            break;
+        default:
+            break;
+        }
+    }
+    else
+    {
+        auto* objectNode = static_cast<ObjectNodeBase*>(GetGameNode(&context->nodes, AgentObjectNodeKind));
+        s32 character = characterNode->agent->properties->GetInt(0);
+        GameProgress* progress = &G_GameController_00309914->progress;
+        InstanceContext* kept = nullptr;
+        if (character != NoCharacter)
+        {
+            Reference* reference = *CharacterHandle(progress, character);
+            kept = reference != nullptr ? static_cast<InstanceContext*>(reference->object) : nullptr;
+        }
+
+        ChunkData* keptChunk = kept != nullptr ? kept->chunk : nullptr;
+        objectNode->information.flags &= ~PlacementFlag;
+        if (keptChunk == nullptr)
+        {
+            kept = context;
+            AssignReference(CharacterHandle(progress, character), context);
+        }
+
+        if (kept->places != nullptr)
+        {
+            AddInstancePlace(kept->places, context, chunkData);
+            return kept;
+        }
+
+        void* controls = GetGameNode(&kept->nodes, ControlsNodeKind);
+        void* follow = GetGameNode(&kept->nodes, FollowNodeKind);
+        MakeInstancePlaces(kept, chunkData);
+        if (controls == nullptr)
+        {
+            RegisterNode(kept, AttachNode, ConstructControlsNode(MemoryAllocate(ControlsNodeSize)));
+        }
+
+        if (follow == nullptr)
+        {
+            RegisterNode(kept, AttachNode, ConstructFollowNode(static_cast<FollowNode*>(MemoryAllocate(FollowNodeSize)), chunk));
+        }
+    }
+
+    MarkThinAndCopySurfaces(&context->collision);
+    auto* objectNode = static_cast<GameNode*>(GetGameNode(&context->nodes, AgentObjectNodeKind));
+    auto* modelNode = static_cast<GameNode*>(GetGameNode(&context->nodes, ModelNodeKind));
+    u32 given = instance->properties->IntAt(NodeWordProperty) & 0xFF;
+    u16 word = given == NodeWordNone ? 0 : given == NodeWordAll ? 0xFFFF : static_cast<u16>(given * given);
+    if (objectNode != nullptr)
+    {
+        objectNode->unknown06 = word;
+    }
+
+    if (modelNode != nullptr)
+    {
+        modelNode->unknown06 = word;
+    }
+
+    return BaseFactoryStandIn(factory, chunk, object, instance, context);
+}
+
+InstanceFactory* ConstructBaseFactory(InstanceFactory* factory, GameResources* resources)
+{
+    factory->vtable = g_BaseFactoryVTable;
+    factory->creationFlags = 0;
+    factory->clearedFlags = 0;
+    factory->id = NoId;
+    factory->resources = resources;
+    factory->templates.growth = TemplatesRoom;
+    factory->templates.capacity = TemplatesRoom;
+    factory->templates.count = 0;
+    factory->templates.data = static_cast<InstanceTemplate**>(MemoryAllocate2(TemplatesRoom * sizeof(InstanceTemplate*)));
+    factory->flags = NoByte << ByteShift;
+    factory->SetFlag4();
+    return factory;
+}
+
+InstanceFactory* ConstructGameFactory(InstanceFactory* factory, GameResources* resources)
+{
+    ConstructBaseFactory(factory, resources);
+    factory->vtable = g_GameFactoryVTable;
+    return factory;
+}
+
+void InstanceFactory::ClearFlag3()
+{
+    flags &= ~Flag3;
+}
+
+void InstanceFactory::ClearFlag4()
+{
+    flags &= ~Flag4;
+}
+
+void ObjectInstance::UseProperties(PropertyList* list)
+{
+    if (ownsProperties != 0 && properties != nullptr)
+    {
+        CallVirtual<void>(properties, properties->vtable, 1, u32{DestroyAndFree});
+    }
+
+    properties = list;
+    ownsProperties = 0;
+}
+
+InstanceContext* CreateInstance(InstanceFactory* factory, ChunkEntry* chunk, u32 objectId, const Vector4* position, const s32* angles)
+{
+    ResourceTable* objects = factory->resources->objects;
+    u16 id = static_cast<u16>(objectId);
+    auto* object = id != NoId ? static_cast<GameObject*>(objects->items[id & 0x7FFF]) : nullptr;
+    ObjectInstance instance;
+    ObjectInstance::ConstructEmpty(&instance);
+    instance.objectId = static_cast<s16>(objectId);
+    instance.UseProperties(object->properties);
+    instance.position = *position;
+    instance.rotation[0].raw = static_cast<u32>(angles[0]);
+    instance.rotation[1].raw = static_cast<u32>(angles[1]);
+    instance.rotation[2].raw = static_cast<u32>(angles[2]);
+    InstanceContext* context = CreateInstanceContext(factory, chunk, &instance);
+    instance.Destroy(DestroyOnly);
+    return context;
+}
+
+InstanceContext* CreateInstanceFrom(InstanceFactory* factory, ChunkEntry* chunk, InstanceContext* source, u32 objectId,
+                                    const Vector4* position, const s32* angles, u32 useObjectProperties)
+{
+    GameObject* object = ObjectOf(factory, static_cast<u16>(objectId));
+    PropertyList* objectProperties = object->properties;
+    PropertyHolder* holder = static_cast<ObjectNodeBase*>(GetGameNode(&source->nodes, AgentObjectNodeKind))->PacketProperties();
+    ObjectInstance instance;
+    ObjectInstance::ConstructEmpty(&instance);
+    instance.objectId = static_cast<s16>(objectId);
+    InstanceContext* context;
+    if (useObjectProperties != 0 && objectProperties != nullptr)
+    {
+        instance.UseProperties(objectProperties);
+        instance.position = *position;
+        instance.rotation[0].raw = static_cast<u32>(angles[0]);
+        instance.rotation[1].raw = static_cast<u32>(angles[1]);
+        instance.rotation[2].raw = static_cast<u32>(angles[2]);
+        context = CreateInstanceContext(factory, chunk, &instance);
+    }
+    else
+    {
+        // A list of the source's values, its class's and its extras
+        u32 taggedCount = holder->TaggedCount();
+        u32 floatCount = holder->FloatCount();
+        u32 intCount = holder->IntCount();
+        u32 holderClass = CallVirtual<u32>(holder, holder->vtable, HolderClassSlot);
+        PropertyExtras* extras = holder->extras;
+        if (extras != nullptr)
+        {
+            intCount += extras->counts[2];
+            taggedCount += extras->counts[0];
+            floatCount += extras->counts[1];
+        }
+
+        PropertyList list;
+        PropertyList::Construct(&list, taggedCount, floatCount, intCount, holderClass);
+        u8 tagged = list.counts[0];
+        u8 floats = list.counts[1];
+        u8 ints = list.counts[2];
+        for (u32 index = 0; index < tagged; index++)
+        {
+            TaggedValue value;
+            PropertyHolder::GetTagged(&value, holder, index);
+            list.SetTagged(index, &value);
+        }
+
+        for (u32 index = 0; index < floats; index++)
+        {
+            list.SetFloat(index, holder->GetFloat(index));
+        }
+
+        for (u32 index = 0; index < ints; index++)
+        {
+            list.SetInt(index, holder->GetInt(index));
+        }
+
+        list.state = holder->state;
+        instance.UseProperties(&list);
+        instance.position = *position;
+        instance.rotation[0].raw = static_cast<u32>(angles[0]);
+        instance.rotation[1].raw = static_cast<u32>(angles[1]);
+        instance.rotation[2].raw = static_cast<u32>(angles[2]);
+        context = CreateInstanceContext(factory, chunk, &instance);
+        list.Destroy(DestroyOnly);
+    }
+
+    instance.Destroy(DestroyOnly);
+    return context;
 }

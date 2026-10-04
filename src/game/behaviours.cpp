@@ -13,8 +13,6 @@ extern "C"
 {
     // The instances the starters' receivers' indexes stand for
     extern Reference* g_ReceiverInstances[256] RETAIL(G_InstanceContextRefsCounterArray);
-    // The object an instance is an instance of (still asm)
-    void* InstanceObject(void* instance) RETAIL(GetGameObjectAddress_FromInstance_);
 }
 
 namespace
@@ -230,7 +228,7 @@ void BehaviourRunner::EnterChild(u32 index, GraphState* state)
     GameNode* node = agentNode;
     auto* objectNode = static_cast<ObjectNodeBase*>(node);
     GameNode* source = objectNode->sourceNode;
-    void* object = source != nullptr ? InstanceObject(source) : objectNode->object;
+    void* object = source != nullptr ? SourceObject(source) : objectNode->object;
     GraphData* graph = ChildGraphOf(state, object);
     level->Start(graph, GetContextClock(agentNode->owner));
     reinterpret_cast<u8*>(&level->bits)[0] = at;
@@ -546,7 +544,7 @@ void BehaviourRunner::Stop(u32 release)
     if (receivers != nullptr)
     {
         u32& users = receivers->bits;
-        users = (users & ~(UsersMask << UsersShift)) | ((users >> UsersShift & UsersMask) - 1 & UsersMask) << UsersShift;
+        users = (users & ~(UsersMask << UsersShift)) | (((users >> UsersShift & UsersMask) - 1) & UsersMask) << UsersShift;
         if (release != 0)
         {
             StarterReceivers* used = receivers;

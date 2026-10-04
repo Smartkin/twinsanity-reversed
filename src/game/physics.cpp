@@ -445,7 +445,7 @@ u32 GatherTriangleContacts(ContactSet* set, ChunkData* chunk, const Vector4* pos
 void GatherInstanceContacts(ContactSet* set, ChunkData* chunk, const Vector4* position, const Vector4* motion, const u32* mask,
                             InstanceContext** skipped, s32 skippedCount, const CollisionHull* hull)
 {
-    // The node kind with the sphere, its centre and radius (still asm)
+    // The node kind with the sphere, its centre and radius
     constexpr u32 SphereNodeKind = 5;
     constexpr u32 SphereCentre = 0xE0;
     constexpr u32 SphereRadius = 0x380;
@@ -1807,6 +1807,11 @@ void InitPhysicsStatics(u32 initialise, u32 priority)
     }
 
     ConstructContactSet(&g_Contacts);
+}
+
+void ConstructPhysicsModule()
+{
+    InitPhysicsStatics(1, 0xFFFF);
 }
 
 namespace

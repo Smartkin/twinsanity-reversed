@@ -316,9 +316,13 @@ extern "C"
     // The section slots in use and their chunks (slot 0 the default particles, 2-15 the levels')
     extern s32 g_ParticleSlotsUsed[ParticleSectionSlots] RETAIL(D_003A14A0);
     extern ChunkData* g_ParticleSlotChunks[ParticleSectionSlots] RETAIL(D_003B0520);
-    // The stream particle sections are read from, and whether it was set
+    // The stream particle sections are read from, and whether it was set; two streams and a disk file the reading could keep
+    // (nothing makes them: the file is -1 from the start, the streams none)
     extern Stream* g_ParticleReader RETAIL(G_ParticleBinReader);
     extern u8 g_ParticleReaderSet RETAIL(D_00309BC0);
+    extern Stream* g_ParticleCopyStream RETAIL(D_00309BB4);
+    extern Stream* g_ParticleOtherStream RETAIL(D_00309BB8);
+    extern s32 g_ParticleSectionFile RETAIL(D_0030A800);
 
     // The reader's values: a block of bytes, a float, a word, a half word and a byte (both sign extended)
     void ReadParticleBytes(void* buffer, u32 size) RETAIL(ReadBytesIntoMemWithGlobalBinReader);
@@ -468,6 +472,9 @@ extern "C"
     void LoadParticlePages(const char* name, s32 blocks) RETAIL(FUN_001b9d58);
     // The pages (0x80 blocks a system) and the decals' page and types loaded at start-up. Returns 1
     s32 LoadParticles(const char* name) RETAIL(LoadParticles_);
+    // The systems' blocks made (0x80 a system) and the decals given their default types, when the default chunk's RM2 brings the
+    // pages (no startup files read). Returns 1
+    s32 SetUpDefaultParticles() RETAIL(FUN_0025cf88);
     // The particle section of an RM2: the default chunk's three pages, systems and emitters, decals' page and types (every
     // section unloaded first), or a level's systems and emitters, from the RM2's stream. A path of each page's file is made and
     // dropped
@@ -483,7 +490,7 @@ extern "C"
     extern const ParticleVelocityRule g_ParticleVelocityRules[] RETAIL(ParticleGenCodeTable);
     // The generators' random numbers
     extern u64 g_ParticleRandom RETAIL(ParticleRandomSeed);
-    // A system's render table of its curves' 64 steps made (still asm)
+    // A system's render table of its curves' 64 steps made
     void BuildParticleRenderTable(ParticleSystem* system) RETAIL(BuildParticleRenderTable);
     // The generators (TT Lab's GenSortType), turned by the emission's matrix. Box: a start up to the random start's either way
     // along each axis, a velocity of the system's up plus up to the random emit's either way (the second box generator is the
@@ -539,7 +546,8 @@ extern "C"
     void ResetParticleEmitters() RETAIL(FUN_001ba1d0);
     // A runtime's emission made to keep its translation: its place
     void KeepEmitterTranslation(s32 runtime) RETAIL(FUN_001ba0c8);
-    // The section's reading given up: the streams let go (still asm)
+    // The section's reading given up: the reader copied into the copy stream when it wasn't set (rewound first), the streams and
+    // the file let go
     void AbandonParticleSection() RETAIL(FUN_0019b170);
     // A loaded system by name: the slot's own first, then the default particles', then any (-1 none)
     s32 FindParticleSystem(const char* name, s8 slot) RETAIL(GetLoadedParticleIndexByName);

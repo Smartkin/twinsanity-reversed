@@ -3,10 +3,13 @@
 #include "game/agentlab.h"
 #include "game/chunkdata.h"
 #include "game/disk.h"
+#include "game/gamecontroller.h"
+#include "game/hull.h"
 #include "game/instances.h"
 #include "game/layout.h"
 #include "game/memory.h"
 #include "game/physics.h"
+#include "game/place.h"
 #include "game/readers.h"
 #include "platform/math.h"
 #include "retail/libc.h"
@@ -15,6 +18,7 @@ EABI_EXPORT(FUN_00200088, GrowBox);
 EABI_EXPORT(FUN_002801d8, SphereTouchesTriangle);
 EABI_EXPORT(FUN_00280ab0, EllipsoidTouchesTriangle);
 EABI_EXPORT(FUN_001f9118, SphereBoxPush);
+EABI_EXPORT(FUN_0027eb40, AccelerateOnSurface);
 
 namespace
 {
@@ -241,6 +245,11 @@ void MakeCollisionHit(CollisionHit* hit, const Vector4* first, const Vector4* se
     hit->vertices[2] = *third;
 }
 
+void TriangleNormal(const CollisionHit* hit, Vector4* normal)
+{
+    PlaneThroughTriangle(normal, &hit->vertices[0], &hit->vertices[1], &hit->vertices[2]);
+}
+
 CollisionSurface* ConstructCollisionSurface(CollisionSurface* surface)
 {
     constexpr u32 KeptHeader = 0xFFFC0000;
@@ -256,10 +265,10 @@ CollisionSurface* ConstructCollisionSurface(CollisionSurface* surface)
     surface->friction = 0.5f;
     surface->physics7 = 0.5f;
     surface->physics8 = 0.5f;
-    surface->unusedVector.x = 0.0f;
-    surface->unusedVector.w = 1.0f;
-    surface->unusedVector.y = 0.0f;
-    surface->unusedVector.z = 0.0f;
+    surface->flow.x = 0.0f;
+    surface->flow.w = 1.0f;
+    surface->flow.y = 0.0f;
+    surface->flow.z = 0.0f;
     ContactMessage::Construct(&surface->contact);
     surface->stepParticles = None;
     for (f32& scale : surface->volumeScales)
@@ -296,6 +305,11 @@ void InitCollisionStatics(u32 initialise, u32 priority)
 
     g_CollisionSurfaces.count = 0;
     ConstructHullPlaneCache(&g_HullPlaneCache);
+}
+
+void ConstructCollisionModule()
+{
+    InitCollisionStatics(1, 0xFFFF);
 }
 
 u32 GetSurfaceParticle(const CollisionSurface* surface, u32 kind)
@@ -947,6 +961,49 @@ f32 ChunkInstancesRayCast(ChunkData* chunk, const Vector4* segment, u32 mask, In
 
     return InstanceCellsRayCast(chunk->instanceCells, segment, mask, hit, flags);
 }
+
+u32 ChunkInstancesInSphere(ChunkData* chunk, const Vector4* sphere, u32 kinds, InstanceRayHit* query, u32 flag)
+{
+    if (chunk->instanceCells == nullptr)
+    {
+        return 0;
+    }
+
+    u16 before = query->count;
+    InstanceCellsInSphere(chunk->instanceCells, sphere, kinds, query, flag);
+    return static_cast<u16>(query->count - before);
+}
+
+u32 ChunkInstancesInCylinder(f32 height, ChunkData* chunk, const Vector4* base, u32 kinds, InstanceRayHit* query)
+{
+    if (chunk->instanceCells == nullptr)
+    {
+        return 0;
+    }
+
+    u16 before = query->count;
+    InstanceCellsInCylinder(height, chunk->instanceCells, base, kinds, query);
+    return static_cast<u16>(query->count - before);
+}
+
+u32 InstancesInDamageHull(InstanceContext* instance, u32 hull, u32 kinds, InstanceRayHit* query)
+{
+    ObjectPlace* place = instance->place;
+    ChunkData* chunk = instance->chunk;
+    RotateAndTranslate(place);
+    return ChunkInstancesInHull(chunk, &g_DamageHulls[hull], &place->matrix, kinds, query, 0);
+}
+
+void MakeFlatBoxHull()
+{
+    constexpr f32 HalfSize = 2.0f;
+    constexpr f32 HalfHeight = Rounded(0.15);
+    Vector4 min = {-HalfSize, -HalfHeight, -HalfSize, 1.0f};
+    Vector4 max = {HalfSize, HalfHeight, HalfSize, 1.0f};
+    BuildBoxHull(&g_DamageHulls[0], &min, &max);
+}
+
+EABI_EXPORT(FUN_001f2080, ChunkInstancesInCylinder);
 
 u32 SegmentHitsInstances(ChunkData* chunk, const Vector4* start, const Vector4* end, InstanceRayHit* hit, u32 mask, f32* share,
                          Vector4* point, u32 flags)
@@ -1892,3 +1949,217 @@ u32 EllipsoidTouchesTriangle(f32 radiusX, f32 radiusY, f32 radiusZ, const Collis
 
     return 1;
 }
+
+namespace
+{
+// The way out of the contacts' spaces looked for once a point is in them, the inverse lengths' epsilon, and the motion the
+// contacts are gathered for a hull standing still with
+constexpr f32 NoMargin = 0.0f;
+constexpr f32 InverseEpsilon = 0x1.5798ecp-29f;
+constexpr f32 StillMotion = Rounded(5e-5);
+}
+
+void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* velocity, const Vector4* wanted, const Vector4* normal)
+{
+    Vector4 target = *wanted;
+    Vector4 pull = g_DefaultBox.min;
+    pull.w = 1.0f;
+    if (0.0f < surface->physics8)
+    {
+        Vector4 downhill = *normal;
+        if (normal->y < surface->physics9)
+        {
+            downhill.y = 0.0f;
+            f32 inverse = InverseLength(&downhill, InverseEpsilon);
+            f32 across = __builtin_sqrtf(normal->x * normal->x + normal->z * normal->z);
+            downhill.x = downhill.x * inverse;
+            downhill.y = downhill.y * inverse;
+            downhill.z = downhill.z * inverse;
+            // All of it from a normal half way down from up (30 degrees)
+            f32 share = across + across;
+            if (1.0f < share)
+            {
+                share = 1.0f;
+            }
+
+            f32 strength = surface->physics8;
+            pull.x = downhill.x * strength * share;
+            pull.y = downhill.y * strength * share;
+            pull.z = downhill.z * strength * share;
+            pull.w = 1.0f;
+        }
+    }
+
+    velocity->x = velocity->x + pull.x * seconds;
+    velocity->z = velocity->z + pull.z * seconds;
+    Vector4 way;
+    way.x = (target.x - velocity->x) + surface->flow.x;
+    way.y = 0.0f;
+    way.z = (target.z - velocity->z) + surface->flow.z;
+    way.w = 1.0f;
+    f32 most = surface->physics5 * seconds;
+    f32 length = __builtin_sqrtf(way.x * way.x + way.z * way.z);
+    if (length != 0.0f)
+    {
+        f32 inverse = InverseLength(&way, InverseEpsilon);
+        f32 step = most < length ? most : length;
+        velocity->x = velocity->x + way.x * inverse * step;
+        velocity->z = velocity->z + way.z * inverse * step;
+    }
+
+    velocity->y = target.y;
+}
+
+u32 HullOverlaps(ChunkData* chunk, const CollisionHull* hull, const Vector4* position, u32, u32 instanceMask,
+                 ReferencedObject* const* leftOut, s32 leftOutCount, InstanceContext** touched, s32 mostTouched, s32* touchedCount,
+                 Vector4* away)
+{
+    if (chunk == nullptr)
+    {
+        return 0;
+    }
+
+    u32 overlaps = 0;
+    ContactSet* contacts = BeginContacts();
+    Vector4 motion = {StillMotion, StillMotion, StillMotion, 1.0f};
+    if (touchedCount != nullptr)
+    {
+        *touchedCount = 0;
+    }
+
+    if (away != nullptr)
+    {
+        *away = g_DefaultBox.min;
+        away->w = 1.0f;
+    }
+
+    GatherTriangleContacts(contacts, chunk, position, &motion, hull);
+    GatherInstanceContacts(contacts, chunk, position, &motion, &instanceMask,
+                           reinterpret_cast<InstanceContext**>(const_cast<ReferencedObject**>(leftOut)), leftOutCount, hull);
+    for (s32 index = 0; index < contacts->solid.count; index++)
+    {
+        Contact* contact = &contacts->solid.contacts[index];
+        if ((contact->kind & Contact::SphereBit) != 0)
+        {
+            continue;
+        }
+
+        s32 outside = -1;
+        if (PointInsidePlanes(NoMargin, &contact->space, position, &outside) == 0)
+        {
+            continue;
+        }
+
+        if (away != nullptr)
+        {
+            Vector4 push;
+            PushOutOfSpaceAgain(&contact->space, position, &push);
+            away->x = away->x + push.x;
+            away->y = away->y + push.y;
+            away->z = away->z + push.z;
+        }
+
+        overlaps++;
+        if ((contact->kind & Contact::KindHull) == 0 || touched == nullptr)
+        {
+            continue;
+        }
+
+        *touched = contact->instance;
+        (*touchedCount)++;
+        if (*touchedCount == mostTouched)
+        {
+            break;
+        }
+
+        touched++;
+    }
+
+    EndContacts();
+    if (away != nullptr)
+    {
+        f32 inverse = InverseLength(away, InverseEpsilon);
+        away->x = away->x * inverse;
+        away->y = away->y * inverse;
+        away->z = away->z * inverse;
+    }
+
+    return overlaps != 0;
+}
+
+u32 CastHullDown(f32 distance, ChunkData* chunk, const CollisionHull* hull, const Vector4* from, u32, u32 instanceMask,
+                 Vector4* found, InstanceContext* const* leftOut, s32 leftOutCount)
+{
+    // The steps down stop being halved below this
+    constexpr f32 FinestStep = Rounded(0.002);
+    if (chunk == nullptr)
+    {
+        return 0;
+    }
+
+    Box box;
+    HullBox(hull, &box);
+    // A hull of no height never steps down: unless it starts inside something the loop never ends (retail's; the game's hulls
+    // have height)
+    f32 step = (box.max.y - box.min.y) * 0.5f;
+    Vector4 motion = {StillMotion, StillMotion, StillMotion, 1.0f};
+    Vector4 at = *from;
+    while (true)
+    {
+        Vector4 position = at;
+        position.y = position.y - step;
+        ContactSet* contacts = BeginContacts();
+        GatherTriangleContacts(contacts, chunk, &position, &motion, hull);
+        GatherInstanceContacts(contacts, chunk, &position, &motion, &instanceMask, const_cast<InstanceContext**>(leftOut),
+                               leftOutCount, hull);
+        if (PointInsideSolidContact(NoMargin, contacts, &position, Contact::SphereBit) == 0)
+        {
+            at = position;
+            if (distance < from->y - at.y)
+            {
+                EndContacts();
+                return 0;
+            }
+        }
+        else
+        {
+            step = step * 0.5f;
+            if (step < FinestStep)
+            {
+                *found = at;
+                EndContacts();
+                return 1;
+            }
+        }
+
+        EndContacts();
+    }
+}
+
+// The EABI's call of CastHullDown (its integers in $a0-$a7, the distance in $f12) made n32's: the ninth argument (the count of the
+// instances left out) goes on the stack, which Abi::Thunk doesn't do
+asm(R"(
+    .pushsection .text.FUN_002816f8, "ax", @progbits
+    .globl FUN_002816f8
+    .type FUN_002816f8, @function
+    .set push
+    .set noreorder
+FUN_002816f8:
+    addiu $sp, $sp, -16
+    sd $31, 8($sp)
+    sd $11, 0($sp)
+    move $11, $10
+    move $10, $9
+    move $9, $8
+    move $8, $7
+    move $7, $6
+    move $6, $5
+    jal FUN_002816f8_n32
+    move $5, $4
+    ld $31, 8($sp)
+    jr $31
+    addiu $sp, $sp, 16
+    .set pop
+    .size FUN_002816f8, . - FUN_002816f8
+    .popsection
+)");

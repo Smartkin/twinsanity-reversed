@@ -1,11 +1,16 @@
 #include "game/chunkdata.h"
+#include "game/dynamicscenery.h"
 
 #include "game/archive.h"
 #include "game/collision.h"
 #include "game/graphicstables.h"
 #include "game/instances.h"
+#include "game/layout.h"
 #include "game/lights.h"
 #include "game/memory.h"
+#include "game/objectnode.h"
+#include "game/scenery.h"
+#include "game/shadows.h"
 #include "platform/graphics.h"
 #include "game/readers.h"
 #include "gcc2.h"
@@ -24,41 +29,32 @@ CHECK_SIZE(ChunkPartRelease, 0xC);
 
 extern "C"
 {
-    // An instance's collision sorted into a chunk's cells over its scenery (still asm)
-    void SortIntoCells(ObjectCollision* collision, u8* scenery, u32* cells, InstanceContext* instance) RETAIL(FUN_001eb7b0);
     // The empty name a released chunk gets
     extern const char g_ReleasedChunkPath[] RETAIL(D_00309FF8);
     // A reader's job releasing a part of a chunk's data (a reference to it and the part's number)
     extern const GccVTableEntry g_ChunkPartReleaseVTable[] RETAIL(D_002FBC00);
 
     // The parts' constructors and destructors
-    void* ConstructDynamicScenery(void* memory, ChunkData* data) RETAIL(FUN_00201aa0);
-    void DestroyDynamicScenery(void* scenery, u32 flags) RETAIL(FUN_00201ad8);
-    void* ConstructUnknown1DC(void* memory, s32 count) RETAIL(FUN_001cc310);
-    void DestroyUnknown1DC(void* object, u32 flags) RETAIL(FUN_001cc3f8);
     void DestroyClocks(void* clocks, u32 flags) RETAIL(FUN_00191ea8);
-    void DestroyUnknown164(void* object, u32 flags) RETAIL(FUN_00252be0);
-    void DestroyUnknown1D8(void* object, u32 flags) RETAIL(FUN_001a2430);
     void UnloadParticleSection(s8 section);
 
     // A shown chunk's frame
     void AdvanceClocks(void* clocks, GameTimeController* clock);
-    void UpdateUnknown164(void* object) RETAIL(FUN_002433e8);
-    void UpdateUnknown1D8(void* object, GameTimeController* clock) RETAIL(FUN_0019f5e0);
 }
 
 namespace
 {
 constexpr u32 CountMask = 0xFFFFFF;
 
-void ConstructSetting(ChunkDataSetting* setting)
+void ConstructSetting(ReverbSettings* setting)
 {
     *reinterpret_cast<u8*>(&setting->bits) = 0xFF;
     setting->bits &= ~0x100u;
     setting->bits &= ~0x200u;
-    setting->scale = 1.0f;
-    setting->unknown04 = 0;
-    setting->unknown08 = 0;
+    setting->depth = 1.0f;
+    setting->delay = 0.0f;
+    setting->feedback = 0.0f;
+}
 }
 
 ChunkDataReference* AddChunkDataReference(ChunkData* data)
@@ -77,7 +73,8 @@ ChunkDataReference* AddChunkDataReference(ChunkData* data)
     return reference;
 }
 
-
+namespace
+{
 void QueueParts(ChunkData* data, const u32* parts, u32 count)
 {
     for (u32 i = 0; i < count; i++)
@@ -116,21 +113,21 @@ extern "C"
         data->instances = nullptr;
         data->instanceCells = nullptr;
         data->unknown164 = nullptr;
-        ConstructSetting(&data->setting168);
-        ConstructSetting(&data->setting180);
+        ConstructSetting(&data->reverb);
+        ConstructSetting(&data->boxReverb);
         data->soundBoxCount = 0;
         data->collision = nullptr;
         data->lights = nullptr;
         data->unknown1C4.string = nullptr;
         data->unknown1C4.length = 0;
         data->unknown1C4.capacity = 0;
-        data->unknown1D0 = 0;
+        data->skyId = 0;
         data->sky = nullptr;
-        data->unknown1D8 = nullptr;
-        data->unknown1DC = nullptr;
+        data->wind = nullptr;
+        data->shadows = nullptr;
         data->particles = -1;
         data->dynamicScenery = nullptr;
-        data->unknown1EC = 0;
+        data->unusedByte = 0;
         data->colourFilterPalette = 1;
         data->bits = 0;
         data->bits &= ~ChunkData::StateMask;
@@ -155,7 +152,7 @@ extern "C"
 
         if (data->scenery != nullptr)
         {
-            CallVirtual<void>(data->scenery, *reinterpret_cast<const GccVTableEntry**>(data->scenery + 0x44), 1, 3u);
+            data->scenery->VirtualDestroy(3);
         }
 
         if (data->clocks != nullptr)
@@ -175,7 +172,7 @@ extern "C"
 
         if (data->unknown164 != nullptr)
         {
-            DestroyUnknown164(data->unknown164, 3);
+            DestroyChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164), 3);
         }
 
         if (data->collision != nullptr)
@@ -188,14 +185,14 @@ extern "C"
             DestroyLights(data->lights, 3);
         }
 
-        if (data->unknown1D8 != nullptr)
+        if (data->wind != nullptr)
         {
-            DestroyUnknown1D8(data->unknown1D8, 3);
+            DestroyChunkWind(data->wind, 3);
         }
 
-        if (data->unknown1DC != nullptr)
+        if (data->shadows != nullptr)
         {
-            DestroyUnknown1DC(data->unknown1DC, 3);
+            data->shadows->Destroy(DestroyAndFree);
         }
 
         UnloadParticleSection(static_cast<s8>(data->particles));
@@ -236,7 +233,7 @@ extern "C"
             }
 
             data->rm2Loads++;
-            DestroyChunkUnknown1DC(data);
+            DestroyChunkShadows(data);
             DestroyChunkParticles(data);
             DestroyChunkLights(data);
             DestroyChunkDynamicScenery(data);
@@ -257,7 +254,7 @@ extern "C"
             }
 
             data->rm2Loads++;
-            DestroyChunkUnknown1DC(data);
+            DestroyChunkShadows(data);
             DestroyChunkParticles(data);
             destroyScenery = false;
         }
@@ -286,12 +283,12 @@ extern "C"
 
             if (!paused && data->unknown164 != nullptr)
             {
-                UpdateUnknown164(data->unknown164);
+                CollideChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164));
             }
 
-            if ((data->bits & ChunkData::UpdateUnknown1D8) != 0 && data->unknown1D8 != nullptr)
+            if ((data->bits & ChunkData::UpdateWind) != 0 && data->wind != nullptr)
             {
-                UpdateUnknown1D8(data->unknown1D8, clock);
+                UpdateChunkWind(data->wind, clock);
             }
 
             return 1;
@@ -316,7 +313,7 @@ extern "C"
             SetState(data, ChunkData::Released);
             return 1;
         case ChunkData::Released >> 18:
-            if (data->collision != nullptr || data->lights != nullptr || data->unknown1DC != nullptr || data->particles != -1 ||
+            if (data->collision != nullptr || data->lights != nullptr || data->shadows != nullptr || data->particles != -1 ||
                 data->scenery != nullptr || data->clocks != nullptr)
             {
                 return 1;
@@ -359,13 +356,13 @@ extern "C"
 
     void ReleaseChunkScenery(ChunkData* data, bool unknown, bool destroy, bool tell)
     {
-        u8* scenery = data->scenery;
+        SceneryCell* scenery = data->scenery;
         if (scenery == nullptr)
         {
             return;
         }
 
-        const GccVTableEntry* vtable = *reinterpret_cast<const GccVTableEntry**>(scenery + 0x44);
+        const GccVTableEntry* vtable = scenery->vtable;
         if (tell)
         {
             // The asm hands the scenery its own arguments: its release (FUN_001efb40) queues its destruction through the readers
@@ -410,11 +407,11 @@ extern "C"
         return data->lights;
     }
 
-    void* ChunkDataDynamicScenery(ChunkData* data)
+    ChunkDynamicScenery* ChunkDataDynamicScenery(ChunkData* data)
     {
         if (data->dynamicScenery == nullptr)
         {
-            data->dynamicScenery = ConstructDynamicScenery(MemoryAllocate(0x14), data);
+            data->dynamicScenery = ConstructDynamicScenery(static_cast<ChunkDynamicScenery*>(MemoryAllocate(0x14)), data);
         }
 
         return data->dynamicScenery;
@@ -430,14 +427,14 @@ extern "C"
         return data->instances;
     }
 
-    void* ChunkDataUnknown(ChunkData* data, s32 count)
+    ChunkShadows* ChunkShadowsOf(ChunkData* data, s32 count)
     {
-        if (data->unknown1DC == nullptr)
+        if (data->shadows == nullptr)
         {
-            data->unknown1DC = ConstructUnknown1DC(MemoryAllocate(0x1C), count);
+            data->shadows = ChunkShadows::Construct(static_cast<ChunkShadows*>(MemoryAllocate(sizeof(ChunkShadows))), count);
         }
 
-        return data->unknown1DC;
+        return data->shadows;
     }
 
     void* ChunkDataCollision(ChunkData* data)
@@ -486,14 +483,14 @@ extern "C"
         data->dynamicScenery = nullptr;
     }
 
-    void DestroyChunkUnknown1DC(ChunkData* data)
+    void DestroyChunkShadows(ChunkData* data)
     {
-        if (data->unknown1DC != nullptr)
+        if (data->shadows != nullptr)
         {
-            DestroyUnknown1DC(data->unknown1DC, 3);
+            data->shadows->Destroy(DestroyAndFree);
         }
 
-        data->unknown1DC = nullptr;
+        data->shadows = nullptr;
     }
 
     void DestroyChunkParticles(ChunkData* data)
@@ -521,7 +518,7 @@ extern "C"
     {
         if (data->unknown164 != nullptr)
         {
-            DestroyUnknown164(data->unknown164, 3);
+            DestroyChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164), 3);
         }
 
         data->unknown164 = nullptr;
@@ -536,6 +533,11 @@ extern "C"
     // The C library's atexit, and what it's given: the list's destructor
     s32 RegisterAtExit(void (*function)()) RETAIL(FUN_002c79e8);
     void DestroyChunkListAtExit() RETAIL(FUN_001f4108);
+
+    void DestroyChunkListAtExit()
+    {
+        DestroyChunkList(&g_ChunkList, 2);
+    }
 
     ChunkList* GetChunkList()
     {
@@ -876,7 +878,7 @@ void ChunkPartRelease::Read(u8*, u32, ReaderStack*)
         DestroyChunkLights(chunk);
         break;
     case 5:
-        DestroyChunkUnknown1DC(chunk);
+        DestroyChunkShadows(chunk);
         break;
     case 6:
         DestroyChunkParticles(chunk);
@@ -895,7 +897,28 @@ void ChunkPartRelease::Read(u8*, u32, ReaderStack*)
     }
 }
 
-u32 ChunkData::AddSoundBox(ChunkData* chunk, void* box)
+u32 ChunkData::InSoundBox(const Vector4* point)
+{
+    if (soundBoxCount == 0)
+    {
+        return 0;
+    }
+
+    u32 index = 0;
+    do
+    {
+        if (soundBoxes[index]->Contains(point) != 0)
+        {
+            return 1;
+        }
+
+        index++;
+    } while (index < soundBoxCount);
+
+    return 0;
+}
+
+u32 ChunkData::AddSoundBox(ChunkData* chunk, SoundBox* box)
 {
     constexpr u32 MaxSoundBoxes = 7;
     if (chunk->soundBoxCount == MaxSoundBoxes)
@@ -921,10 +944,10 @@ u32 ChunkData::AddInstance(ChunkData* chunk, InstanceContext* instance)
     {
         if (chunk->instanceCells == nullptr)
         {
-            auto* cells = static_cast<u32*>(MemoryAllocate(CellWords * sizeof(u32)));
+            auto* cells = static_cast<InstanceContext**>(MemoryAllocate(CellWords * sizeof(InstanceContext*)));
             for (s32 index = CellWords - 1; index >= 0; index--)
             {
-                cells[index] = 0;
+                cells[index] = nullptr;
             }
 
             chunk->instanceCells = cells;

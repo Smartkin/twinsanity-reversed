@@ -1,5 +1,7 @@
 #include "game/array.h"
 
+#include "game/reference.h"
+
 namespace
 {
 void DestroyIterator(ArrayIterator* iterator, const GccVTableEntry* base, u32 flags)
@@ -110,6 +112,241 @@ void ArrayIterator::OtherLast()
 }
 
 ArrayIterator* ArrayIterator::OtherAssign(const ArrayIterator* other)
+{
+    return Assign(other);
+}
+
+void ArrayIterator::FontsDestroy(u32 flags)
+{
+    DestroyIterator(this, g_FontsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::FontsBaseDestroy(u32 flags)
+{
+    DestroyIterator(this, g_FontsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::FontsFirst()
+{
+    index = 0;
+}
+
+u32 ArrayIterator::FontsIsDone()
+{
+    return IsOutside(this) ? 1 : 0;
+}
+
+void** ArrayIterator::FontsCurrent()
+{
+    return &array->data[index];
+}
+
+void ArrayIterator::FontsNext()
+{
+    index++;
+}
+
+void ArrayIterator::FontsPrevious()
+{
+    index--;
+}
+
+void ArrayIterator::FontsLast()
+{
+    index = static_cast<s32>(array->count - 1);
+}
+
+void** ArrayIterator::FontsCurrentAgain()
+{
+    return &array->data[index];
+}
+
+ArrayIterator* ArrayIterator::FontsAssign(const ArrayIterator* other)
+{
+    return Assign(other);
+}
+
+void ArrayIterator::TextsDestroy(u32 flags)
+{
+    DestroyIterator(this, g_TextsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::TextsBaseDestroy(u32 flags)
+{
+    DestroyIterator(this, g_TextsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::TextsFirst()
+{
+    index = 0;
+}
+
+u32 ArrayIterator::TextsIsDone()
+{
+    return IsOutside(this) ? 1 : 0;
+}
+
+void** ArrayIterator::TextsCurrent()
+{
+    return &array->data[index];
+}
+
+void ArrayIterator::TextsNext()
+{
+    index++;
+}
+
+void ArrayIterator::TextsPrevious()
+{
+    index--;
+}
+
+void ArrayIterator::TextsLast()
+{
+    index = static_cast<s32>(array->count - 1);
+}
+
+void** ArrayIterator::TextsCurrentAgain()
+{
+    return &array->data[index];
+}
+
+ArrayIterator* ArrayIterator::TextsAssign(const ArrayIterator* other)
+{
+    return Assign(other);
+}
+
+void ArrayIterator::QueuedDestroy(u32 flags)
+{
+    DestroyIterator(this, g_HandleWalkBaseVTable, flags);
+}
+
+void ArrayIterator::QueuedFirst()
+{
+    index = 0;
+}
+
+u32 ArrayIterator::QueuedIsDone()
+{
+    return IsOutside(this) ? 1 : 0;
+}
+
+void** ArrayIterator::QueuedCurrent()
+{
+    return &array->data[index];
+}
+
+void ArrayIterator::QueuedNext()
+{
+    index++;
+}
+
+void ArrayIterator::QueuedPrevious()
+{
+    index--;
+}
+
+void ArrayIterator::QueuedLast()
+{
+    index = static_cast<s32>(array->count - 1);
+}
+
+void** ArrayIterator::QueuedCurrentAgain()
+{
+    return &array->data[index];
+}
+
+ArrayIterator* ArrayIterator::QueuedAssign(const ArrayIterator* other)
+{
+    return Assign(other);
+}
+
+void ArrayIterator::RendererFontsDestroy(u32 flags)
+{
+    DestroyIterator(this, g_RendererFontsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::RendererFontsBaseDestroy(u32 flags)
+{
+    DestroyIterator(this, g_RendererFontsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::RendererFontsFirst()
+{
+    index = 0;
+}
+
+u32 ArrayIterator::RendererFontsIsDone()
+{
+    return IsOutside(this) ? 1 : 0;
+}
+
+void** ArrayIterator::RendererFontsCurrent()
+{
+    return &array->data[index];
+}
+
+void ArrayIterator::RendererFontsNext()
+{
+    index++;
+}
+
+void ArrayIterator::RendererFontsPrevious()
+{
+    index--;
+}
+
+void ArrayIterator::RendererFontsLast()
+{
+    index = static_cast<s32>(array->count - 1);
+}
+
+ArrayIterator* ArrayIterator::RendererFontsAssign(const ArrayIterator* other)
+{
+    return Assign(other);
+}
+
+void ArrayIterator::RendererTextsDestroy(u32 flags)
+{
+    DestroyIterator(this, g_RendererTextsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::RendererTextsBaseDestroy(u32 flags)
+{
+    DestroyIterator(this, g_RendererTextsIteratorBaseVTable, flags);
+}
+
+void ArrayIterator::RendererTextsFirst()
+{
+    index = 0;
+}
+
+u32 ArrayIterator::RendererTextsIsDone()
+{
+    return IsOutside(this) ? 1 : 0;
+}
+
+void** ArrayIterator::RendererTextsCurrent()
+{
+    return &array->data[index];
+}
+
+void ArrayIterator::RendererTextsNext()
+{
+    index++;
+}
+
+void ArrayIterator::RendererTextsPrevious()
+{
+    index--;
+}
+
+void ArrayIterator::RendererTextsLast()
+{
+    index = static_cast<s32>(array->count - 1);
+}
+
+ArrayIterator* ArrayIterator::RendererTextsAssign(const ArrayIterator* other)
 {
     return Assign(other);
 }

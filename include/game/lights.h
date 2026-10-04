@@ -135,6 +135,81 @@ struct SpotLight : Light
 CHECK_OFFSET(SpotLight, attenuationPower, 0x80);
 CHECK_SIZE(SpotLight, 0x90);
 
+// The lights that follow an instance (kinds 5 to 8, which chunks never have): an ambient light glowing out from where it is and a
+// directional light, both falling off with the distance by 25 / (d² + 25) once, a point light and a spot light. Their vtables'
+// slot 11 takes their position (and direction) into the world through their instance's place; 9 (their bounds) does nothing, 13
+// says no
+struct AttachedAmbientLight : AmbientLight
+{
+    // After the base's whole size (GCC 2.9x didn't put members into a base's tail padding)
+    alignas(16) struct InstanceContext* instance;
+    Vector4 worldPosition;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001cb7a0);
+    void SetOwnKind() RETAIL(func_001CB7D0);
+    void LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4* towards) const
+        RETAIL(func_001CBA40);
+    void ComputeBounds() RETAIL(FUN_001cb7e0);
+    void Follow() RETAIL(FUN_001cb9f0);
+    u32 Slot13() RETAIL(FUN_001cb7e8);
+};
+CHECK_OFFSET(AttachedAmbientLight, instance, 0x60);
+CHECK_OFFSET(AttachedAmbientLight, worldPosition, 0x70);
+CHECK_SIZE(AttachedAmbientLight, 0x80);
+
+struct AttachedDirectionalLight : DirectionalLight
+{
+    alignas(16) struct InstanceContext* instance;
+    Vector4 worldPosition;
+    Vector4 worldDirection;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001cb7f8);
+    void SetOwnKind() RETAIL(func_001CB828);
+    void LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4* towards) const
+        RETAIL(func_001CBB50);
+    void ComputeBounds() RETAIL(FUN_001cb838);
+    void Follow() RETAIL(FUN_001cbaf0);
+    u32 Slot13() RETAIL(FUN_001cb840);
+};
+CHECK_OFFSET(AttachedDirectionalLight, instance, 0x80);
+CHECK_OFFSET(AttachedDirectionalLight, worldPosition, 0x90);
+CHECK_SIZE(AttachedDirectionalLight, 0xB0);
+
+struct AttachedPointLight : PointLight
+{
+    alignas(16) struct InstanceContext* instance;
+    Vector4 worldPosition;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001cb748);
+    void SetOwnKind() RETAIL(func_001CB778);
+    void LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4* towards) const
+        RETAIL(func_001C88D0);
+    void ComputeBounds() RETAIL(FUN_001cb788);
+    void Follow() RETAIL(FUN_001cbbf0);
+    u32 Slot13() RETAIL(FUN_001cb790);
+};
+CHECK_OFFSET(AttachedPointLight, instance, 0x70);
+CHECK_OFFSET(AttachedPointLight, worldPosition, 0x80);
+CHECK_SIZE(AttachedPointLight, 0x90);
+
+struct AttachedSpotLight : SpotLight
+{
+    alignas(16) struct InstanceContext* instance;
+    Vector4 worldPosition;
+    Vector4 worldDirection;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001cb850);
+    void SetOwnKind() RETAIL(FUN_001cb880);
+    void LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4* towards) const
+        RETAIL(FUN_001c89a8);
+    void ComputeBounds() RETAIL(FUN_001cb890);
+    void Follow() RETAIL(FUN_001cbc40);
+    u32 Slot13() RETAIL(FUN_001cb898);
+};
+CHECK_OFFSET(AttachedSpotLight, instance, 0x90);
+CHECK_OFFSET(AttachedSpotLight, worldPosition, 0xA0);
+CHECK_SIZE(AttachedSpotLight, 0xC0);
+
 // Which light a bit of the scenery's light masks is: the index in its kind's list and the kind
 struct LightReference
 {
@@ -186,9 +261,12 @@ extern "C"
     extern f32 g_LightingConstants[36] RETAIL(LightingConstants);
     // How many objects had their lights gathered (only counted)
     extern s32 g_LightGathers RETAIL(D_00309D84);
-    void InitLightingConstants(u32 initialise, u32 priority) RETAIL(FUN_001cb2d8);
+    void InitLightingConstants(u32 initialise, u32 priority) RETAIL(InitLightingConstants);
+    // A byte the renderer clears every frame, which nothing reads
+    extern u8 g_LightingUnused RETAIL(D_00309D88);
+    void ClearLightingUnused() RETAIL(FUN_001cb8b0);
 
-    // The spot light's box: the cone's (still asm)
+    // The spot light's box: the cone's at its reach (its intensity times 100), the light's position in it. Nothing reads it
     void ComputeSpotLightBounds(SpotLight* light);
 
     // A chunk's lights without any yet, and destroyed (their lists and the 16 more, last to first)

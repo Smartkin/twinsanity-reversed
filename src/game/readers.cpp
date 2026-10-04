@@ -424,6 +424,72 @@ void MemoryReader::Restart()
 {
 }
 
+void WaitingPartReader::Destroy(u32 flags)
+{
+    DestroyReader(this, flags);
+}
+
+void WaitingPartReader::Begin(FileStream* stream)
+{
+    u32 read;
+    FileStreamRead(stream, offset, size, data, 1, &read);
+}
+
+bool WaitingPartReader::IsDone()
+{
+    return true;
+}
+
+void WaitingPartReader::Finish(ReaderStack* stack)
+{
+    if (sectionReader != nullptr)
+    {
+        sectionReader->Read(data, size, stack);
+    }
+}
+
+void PolledPartReader::Destroy(u32 flags)
+{
+    DestroyReader(this, flags);
+}
+
+void PolledPartReader::Begin(FileStream* fileStream)
+{
+    Archive* archive = g_CurrentArchive;
+    if (inArchive != 0 && HasOwnFile(fileStream))
+    {
+        ArchiveFile* file = archive->lastFound;
+        if (file == nullptr)
+        {
+            return;
+        }
+
+        offset += file->entry.start;
+    }
+
+    u32 got;
+    if (FileStreamRead(fileStream, offset, size, data, 0, &got))
+    {
+        read = 1;
+        return;
+    }
+
+    stream = fileStream;
+}
+
+bool PolledPartReader::IsDone()
+{
+    return read != 0 || !FileStreamPoll(stream);
+}
+
+void PolledPartReader::Finish(ReaderStack* stack)
+{
+    if (sectionReader != nullptr)
+    {
+        sectionReader->Read(data, size, stack);
+    }
+}
+
 namespace
 {
 // The constructors' flags: bit 0 release, 1 ..., 2 and 1 together ..., 3 on the disk manager, 5 clamp to the file
@@ -986,4 +1052,21 @@ bool MemoryStream::LoadFile(const char* path, bool terminate)
 
     static_cast<Stream*>(this)->Rewind();
     return true;
+}
+
+void ItemInterface::BaseDestroy(u32 flags)
+{
+    vtable = g_ItemInterfaceVTable;
+    if ((flags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void ItemInterface::BaseSetCount(u32)
+{
+}
+
+void ItemInterface::BaseFinish(s32, u32, u32)
+{
 }

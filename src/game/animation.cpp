@@ -1361,6 +1361,14 @@ OgiAnimator* InitOgiAnimatorService(OgiAnimator* animator, GameOGI* ogi, u32 cam
     return animator;
 }
 
+void DeleteOgiAnimator(OgiAnimator* animator)
+{
+    DestroyBlendShapeWeights(&animator->blendShapes, DestroyOnly);
+    DestroyJointMatrices(&animator->matrices, DestroyOnly);
+    DestroyOgiAnimator(animator, DestroyOnly);
+    MemoryDeallocate2_(animator);
+}
+
 void ReleaseAnimatorOgi(OgiAnimator* animator)
 {
     SetAnimatorOgi(animator, nullptr, 0, 0);

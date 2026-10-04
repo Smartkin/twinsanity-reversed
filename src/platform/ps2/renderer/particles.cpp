@@ -150,26 +150,12 @@ extern "C"
 {
     // A packet started: no quadwords
     Vu0Packet* StartVu0Packet(Vu0Packet* packet) RETAIL(FUN_001ba2f0);
-    // A chunk's view for VU0's programs: four rows into a packet's quadwords and a fifth (still asm)
-    u32* WriteChunkViewRows(u32* fifth, const Matrix4x4* chunkMatrices, u32* rows) RETAIL(FUN_001ef370);
-    // Four quadwords transposed in place (still asm)
-    void TransposeQuadwords(void* rows) RETAIL(FUN_0018ee88);
-    // Quadwords copied into VU0's memory at an address by the VU0 programs' copier (still asm)
-    void SendToVu0(u8* programs, const void* data, s32 quadwords, s32 address) RETAIL(FUN_002b2178);
-    // A DMA channel's transfer started once its last is over, and whether VIF0's still is (still asm)
-    void TransferDMA_Data(s32 channel, void* data, s32 unknown) RETAIL(TransferDMA_Data);
-    s32 IsVIF0_TransferingFromMemory(s32 channel) RETAIL(IsVIF0_TransferingFromMemory);
-    // The VU0 microcode sets
-    extern u8 g_Vu0Programs[] RETAIL(G_UnkDmaRelated);
     // The disk node of the screen effects' buffers (none at start-up), the wave shader the particles' start-up makes and type 0x1C's
     // vtable
     extern s32 g_EffectsDiskNode RETAIL(D_0030A848);
     extern WaveShader g_ParticleWaveShader RETAIL(G_PrecompShader_0x1C_3323C0);
     extern const GccVTableEntry g_ShaderType1CVTable[] RETAIL(PrecompiledShader__Type_0x1C_Methods);
     extern Material g_DistortionMaterial RETAIL(D_00370758);
-    // The view's packet made (the matrices for the particles) and sent into VU0's memory at the index's place, which it returns
-    // and keeps in the word 0x100 bytes past the matrices (still asm)
-    s32 UploadParticleView(const Matrix4x4* matrices, s32 index) RETAIL(FUN_001e91f8);
 }
 
 EABI_EXPORT(DrawParticleBlock, DrawParticleBlock);
@@ -344,6 +330,7 @@ void LoadDecalType(DecalType* type)
     constexpr u32 EndTag = 0x70000000;
     constexpr u32 UnpackVariants = 0x6C000010;
     constexpr u32 VariantQuadwords = 8;
+    constexpr s32 Vif0Channel = 0;
     s32 count = *reinterpret_cast<const s32*>(reinterpret_cast<u8*>(type) + 0x790);
     auto* tag = reinterpret_cast<volatile u32*>(Address(type) | Uncached);
     tag[0] = 0;
@@ -352,10 +339,15 @@ void LoadDecalType(DecalType* type)
     tag[3] = 0;
     tag[3] = static_cast<u32>(count) * VariantQuadwords << 16 | UnpackVariants;
     tag[0] = static_cast<u32>(count) * VariantQuadwords | EndTag;
-    TransferDMA_Data(0, type, 1);
-    while (IsVIF0_TransferingFromMemory(0) != 0)
+    StartDmaChain(Vif0Channel, type, true);
+    while (IsDmaChannelBusy(Vif0Channel))
     {
     }
+}
+
+void DrawDecals(DecalData* decals)
+{
+    ::DrawDecals(decals);
 }
 
 // The decal in vf01-vf03 and its variant's address in vi01, the program in vi27 leaves its place in vf28, its colour in vf29 and
@@ -409,7 +401,7 @@ void InitParticleGraphics()
 
 s32 LoadParticleView(const Matrix4x4* matrices, s32 index)
 {
-    return UploadParticleView(matrices, index);
+    return UploadParticleView(const_cast<Matrix4x4*>(matrices), index);
 }
 
 // A render table: a CNT tag of its first two quadwords (VIF1's FLUSH and UNPACK), a RET of the steps that follow (the same), and
@@ -443,8 +435,6 @@ extern "C"
     // taken from the material table), its modes' materials made; and one loaded from its file (from the stream)
     void ReadParticlePageData(ParticlePage* page, Stream* stream, u32 fromStream, u32 decals) RETAIL(FUN_0019d9d8);
     void LoadParticlePageFile(ParticlePage* page, const char* path, u32 decals) RETAIL(FUN_001a1768);
-    // The particles' wave shader moved on by the clock's last advance
-    void UpdateParticleWaves(const TimeClock* clock) RETAIL(FUN_001b9a30);
 }
 
 namespace

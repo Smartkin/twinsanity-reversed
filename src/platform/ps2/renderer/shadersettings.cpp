@@ -305,6 +305,66 @@ extern "C"
         MakeSettings(shader, StandardClampedStyle);
     }
 
+    // The classes nothing makes: type 3 always writes seven registers, anti-aliased and untextured without the alpha test,
+    // types 5 to 9 none
+    void ShaderType03Settings(Shader* shader) RETAIL(FUN_001cf5e8);
+    void ShaderType05Settings(Shader* shader) RETAIL(FUN_001dcf30);
+    void ShaderType06Settings(Shader* shader) RETAIL(FUN_001dca38);
+    void ShaderType07Settings(Shader* shader) RETAIL(FUN_001dcc08);
+    void ShaderType08Settings(Shader* shader) RETAIL(FUN_001dcd20);
+    void ShaderType09Settings(Shader* shader) RETAIL(FUN_001dce38);
+
+    void ShaderType03Settings(Shader* shader)
+    {
+        constexpr u64 AntiAliased = 0x80;
+        u64 settings = shader->settings;
+        u64 preset = g_AlphaPresets[settings >> SettingPreset & 0xF];
+        auto* writes = static_cast<GsWrite*>(MemoryAllocate2(PlainWrites * sizeof(GsWrite)));
+        writes[0] = AddressDataTag(PlainWrites);
+        writes[1] = {0, GsPrmodeCont};
+        u64 mode = Bit(settings, SettingGouraud) << 3 | Bit(settings, SettingFog) << 5 | Bit(settings, SettingBlends) << 6 |
+                   AntiAliased | Bit(settings, SettingSecondContext) << 9;
+        writes[2] = {mode, GsPrmode};
+        shader->registers = Address(writes);
+        writes[3] = FrameBufferAlpha(settings, InContext(settings, GsFba));
+        writes[4] = DepthBuffer(settings);
+        writes[5] = AlphaBlending(settings, preset, OwnFix(settings));
+        writes[6] = PixelTest(settings);
+        writes[6].value &= ~Bit(settings, SettingAlphaTest);
+        shader->registerCount = PlainWrites;
+    }
+
+    void ShaderType05Settings(Shader*)
+    {
+    }
+
+    void ShaderType06Settings(Shader*)
+    {
+    }
+
+    void ShaderType07Settings(Shader*)
+    {
+    }
+
+    void ShaderType08Settings(Shader*)
+    {
+    }
+
+    void ShaderType09Settings(Shader*)
+    {
+    }
+
+    // ALPHA's value of each preset: 0 (Cs - Cd) As + Cd, 1 Cs As + Cd, 2 Cd - Cs As, 3 Cd As + Cd, 4 Cd - Cd As, 5 Cd As
+    void InitAlphaPresets()
+    {
+        g_AlphaPresets[0] = 0x44;
+        g_AlphaPresets[1] = 0x48;
+        g_AlphaPresets[5] = 0x89;
+        g_AlphaPresets[2] = 0x42;
+        g_AlphaPresets[3] = 0x49;
+        g_AlphaPresets[4] = 0x46;
+    }
+
     void ShaderType0CSettings(Shader* shader)
     {
         MakeSettings(shader, UnfilteredStyle);

@@ -2,7 +2,9 @@
 
 #include "game/chunkdata.h"
 #include "game/instances.h"
+#include "game/math.h"
 #include "game/memory.h"
+#include "game/place.h"
 #include "game/properties.h"
 #include "game/stream.h"
 #include "game/view.h"
@@ -248,22 +250,26 @@ void SpotLight::SetOwnKind()
     *reinterpret_cast<u8*>(&header) = KindSpot;
 }
 
-void SpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4* position, const Vector4*) const
+namespace
+{
+// A spot light's strength at a point from a position along an axis
+void SpotLightFrom(const SpotLight* light, const Vector4* at, Vector4* out, f32* strength, const Vector4* position,
+                   const Vector4* axis)
 {
     constexpr u32 HighestBit = 0x80;
-    f32 falloff = FallOff(this, at, out, position);
-    f32 lit = Attenuated(intensity, attenuationPower, falloff);
+    f32 falloff = FallOff(light, at, out, position);
+    f32 lit = Attenuated(light->intensity, light->attenuationPower, falloff);
     // How far into the cone: the (attenuated, not unit long) way to the light against its direction
-    f32 cosine = out->x * -direction.x + out->y * -direction.y + out->z * -direction.z;
-    if (cosine < outerConeCosine)
+    f32 cosine = out->x * -axis->x + out->y * -axis->y + out->z * -axis->z;
+    if (cosine < light->outerConeCosine)
     {
         *strength = 0.0f;
         return;
     }
 
-    if (cosine < innerConeCosine)
+    if (cosine < light->innerConeCosine)
     {
-        f32 share = (cosine - outerConeCosine) / (innerConeCosine - outerConeCosine);
+        f32 share = (cosine - light->outerConeCosine) / (light->innerConeCosine - light->outerConeCosine);
         if (share < 0.0f)
         {
             share = 0.0f;
@@ -278,7 +284,7 @@ void SpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Ve
     }
 
     // The cosine to the power of the exponent's low byte, squaring from its top bit
-    s32 exponent = static_cast<s16>(spotExponent);
+    s32 exponent = static_cast<s16>(light->spotExponent);
     f32 power = 1.0f;
     for (s32 bit = HighestBit; bit != 0; bit >>= 1)
     {
@@ -294,6 +300,12 @@ void SpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Ve
     }
 
     *strength = lit * power;
+}
+}
+
+void SpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4* position, const Vector4*) const
+{
+    SpotLightFrom(this, at, out, strength, position, &direction);
 }
 
 void SpotLight::Read(Stream* stream)
@@ -611,7 +623,7 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
         lights->colours[OwnSlot] = ownLight->colour;
     }
 
-    const u8* mask = lights->chunk->scenery + SceneryLightMask;
+    const u8* mask = reinterpret_cast<const u8*>(lights->chunk->scenery) + SceneryLightMask;
     for (u32 group = 0; group < 16; group++, mask++)
     {
         if (*mask == 0)
@@ -656,4 +668,254 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
     }
 
     FinishGatheredLights(lights, chunkMatrix, own);
+}
+
+namespace
+{
+// The fall off at a point of a light at a position: 25 / (d² + 25)
+f32 FallOffAt(const Vector4* from, const Vector4* at)
+{
+    Vector4 towards;
+    towards.x = from->x - at->x;
+    towards.y = from->y - at->y;
+    towards.z = from->z - at->z;
+    towards.w = 1.0f;
+    f32 constant = g_LightingConstants[FalloffConstant];
+    return constant / (towards.x * towards.x + towards.y * towards.y + towards.z * towards.z + constant);
+}
+
+void DestroyAttached(Light* light, u32 destroyFlags)
+{
+    light->vtable = g_LightVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(light);
+    }
+}
+
+// The attached lights' own kinds
+constexpr u8 KindAttachedAmbient = 5;
+constexpr u8 KindAttachedDirectional = 6;
+constexpr u8 KindAttachedPoint = 7;
+constexpr u8 KindAttachedSpot = 8;
+}
+
+void AttachedAmbientLight::Destroy(u32 destroyFlags)
+{
+    DestroyAttached(this, destroyFlags);
+}
+
+void AttachedAmbientLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindAttachedAmbient;
+}
+
+void AttachedAmbientLight::LightAt(const Vector4* at, Vector4*, f32* strength, const Vector4*, const Vector4*) const
+{
+    // The way out to the point is worked out with the fall off and dropped: an ambient light has no direction
+    *strength = intensity * FallOffAt(&worldPosition, at);
+}
+
+void AttachedAmbientLight::ComputeBounds()
+{
+}
+
+void AttachedAmbientLight::Follow()
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+
+    ObjectPlace* place = instance->place;
+    RotateAndTranslate(place);
+    VuTransformPoint(&place->matrix, &position, &worldPosition);
+}
+
+u32 AttachedAmbientLight::Slot13()
+{
+    return 0;
+}
+
+void AttachedDirectionalLight::Destroy(u32 destroyFlags)
+{
+    DestroyAttached(this, destroyFlags);
+}
+
+void AttachedDirectionalLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindAttachedDirectional;
+}
+
+void AttachedDirectionalLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
+{
+    *strength = intensity * FallOffAt(&worldPosition, at);
+    *out = worldDirection;
+}
+
+void AttachedDirectionalLight::ComputeBounds()
+{
+}
+
+void AttachedDirectionalLight::Follow()
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+
+    ObjectPlace* place = instance->place;
+    RotateAndTranslate(place);
+    VuTransformPoint(&place->matrix, &position, &worldPosition);
+    VuRotateVector(&place->matrix, &direction, &worldDirection);
+}
+
+u32 AttachedDirectionalLight::Slot13()
+{
+    return 0;
+}
+
+void AttachedPointLight::Destroy(u32 destroyFlags)
+{
+    DestroyAttached(this, destroyFlags);
+}
+
+void AttachedPointLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindAttachedPoint;
+}
+
+void AttachedPointLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
+{
+    f32 falloff = FallOff(this, at, out, &worldPosition);
+    *strength = Attenuated(intensity, attenuationPower, falloff);
+}
+
+void AttachedPointLight::ComputeBounds()
+{
+}
+
+void AttachedPointLight::Follow()
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+
+    ObjectPlace* place = instance->place;
+    RotateAndTranslate(place);
+    VuTransformPoint(&place->matrix, &position, &worldPosition);
+}
+
+u32 AttachedPointLight::Slot13()
+{
+    return 0;
+}
+
+void AttachedSpotLight::Destroy(u32 destroyFlags)
+{
+    DestroyAttached(this, destroyFlags);
+}
+
+void AttachedSpotLight::SetOwnKind()
+{
+    *reinterpret_cast<u8*>(&header) = KindAttachedSpot;
+}
+
+void AttachedSpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
+{
+    SpotLightFrom(this, at, out, strength, &worldPosition, &worldDirection);
+}
+
+void AttachedSpotLight::ComputeBounds()
+{
+}
+
+void AttachedSpotLight::Follow()
+{
+    if (instance == nullptr)
+    {
+        return;
+    }
+
+    ObjectPlace* place = instance->place;
+    RotateAndTranslate(place);
+    VuTransformPoint(&place->matrix, &position, &worldPosition);
+    VuRotateVector(&place->matrix, &direction, &worldDirection);
+}
+
+u32 AttachedSpotLight::Slot13()
+{
+    return 0;
+}
+
+void ClearLightingUnused()
+{
+    g_LightingUnused = 0;
+}
+
+void ComputeSpotLightBounds(SpotLight* light)
+{
+    constexpr f32 Reach = 100.0f;
+    constexpr f32 TurnStep = 0x1.921fb6p-14f;
+    constexpr f32 StepsPerRadian = 0x1.45f306p+13f;
+    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+    constexpr u32 Radians = 0;
+    f32 reach = light->intensity * Reach;
+    s32 angle[4];
+    AngleFrom(angle, static_cast<f32>(light->coneAngle) * TurnStep, Radians);
+    angle[0] = angle[0] + static_cast<s32>(static_cast<f32>(light->falloffAngle) * TurnStep * StepsPerRadian);
+    f32 radius = reach * TanOfAngle(angle);
+    // The cone's cross-section's two axes. Retail takes the first's perpendicular of an uninitialized stack vector: the direction
+    // is what it means (the box is never read)
+    Vector4 base = light->direction;
+    Vector4 across;
+    PerpendicularOf(&base, &across);
+    Vector4 other;
+    other.x = base.y * across.z - base.z * across.y;
+    other.z = base.x * across.y - base.y * across.x;
+    other.y = base.z * across.x - base.x * across.z;
+    other.w = 1.0f;
+    f32 inverse = InverseLength(&across, LengthEpsilon);
+    across.x = across.x * inverse;
+    across.y = across.y * inverse;
+    across.z = across.z * inverse;
+    inverse = InverseLength(&other, LengthEpsilon);
+    other.x = other.x * inverse;
+    other.y = other.y * inverse;
+    other.z = other.z * inverse;
+    Vector4 centre = {light->direction.x * reach, light->direction.y * reach, light->direction.z * reach, 1.0f};
+    f32 extentX = radius * __builtin_sqrtf(across.x * across.x + other.x * other.x);
+    f32 extentZ = radius * __builtin_sqrtf(across.z * across.z + other.z * other.z);
+    f32 extentY = radius * __builtin_sqrtf(across.y * across.y + other.y * other.y);
+    f32 low[4] = {centre.x - extentX, centre.y - extentY, centre.z - extentZ, 0.0f};
+    f32 high[4] = {centre.x + extentX, centre.y + extentY, centre.z + extentZ, 0.0f};
+    f32 lowest[4] = {};
+    f32 highest[4] = {};
+    for (s32 axis = 0; axis < 3; axis++)
+    {
+        if (low[axis] < lowest[axis])
+        {
+            lowest[axis] = low[axis];
+        }
+
+        if (highest[axis] < low[axis])
+        {
+            highest[axis] = low[axis];
+        }
+
+        if (high[axis] < lowest[axis])
+        {
+            lowest[axis] = high[axis];
+        }
+
+        if (highest[axis] < high[axis])
+        {
+            highest[axis] = high[axis];
+        }
+    }
+
+    light->boundsMin = {lowest[0] + light->position.x, lowest[1] + light->position.y, lowest[2] + light->position.z, lowest[3]};
+    light->boundsMax = {highest[0] + light->position.x, highest[1] + light->position.y, highest[2] + light->position.z,
+                        highest[3]};
 }

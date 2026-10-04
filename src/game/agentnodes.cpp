@@ -4,6 +4,10 @@
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/gamecontroller.h"
+#include "game/layout.h"
+#include "game/math.h"
+#include "game/objectnode.h"
+#include "game/place.h"
 #include "game/properties.h"
 #include "game/reference.h"
 
@@ -25,10 +29,6 @@ extern "C"
     extern const GccVTableEntry g_PayGateNodeVTable[] RETAIL(UnkNode_0x12_Methods);
     extern const GccVTableEntry g_GrapleNodeVTable[] RETAIL(UnkNode_0x13_Methods);
     extern const GccVTableEntry g_ProjectileNodeVTable[] RETAIL(UnkNode_0x14_Methods);
-
-    // The agent given the game's resources when its node gets its instance, and its step with them (still asm)
-    void AgentTakeResources(Agent* agent, GameResources* resources) RETAIL(FUN_00263390);
-    void AgentStep(Agent* agent, GameResources* resources, TimeClock* clock, u32 unknown) RETAIL(FUN_00263428);
 
     // The vtable functions: 1 an event handled (the agent's when it's of type 0x1801), 2 the destructor (the agent deleted with
     // it; the kinds' are copies of the base's but the character's, grabbables' and projectiles'), 3 given its instance (the agent
@@ -72,6 +72,10 @@ extern "C"
     u32 ProjectileNodeUpdate(AgentNode* node, TimeClock* clock) RETAIL(FUN_0013f168);
     u32 ProjectileNodeKind(AgentNode* node) RETAIL(GetNodeIndex);
     u32 ProjectileNodeType(AgentNode* node) RETAIL(FUN_0013f178);
+    // The game's nodes' base (D_002F54B8, between the game node and the agents', controls' and follow nodes): its destructor
+    // and its type
+    void GameNodeBaseDestroy(GameNode* node, u32 flags) RETAIL(FUN_00179568);
+    u32 GameNodeBaseType(GameNode* node) RETAIL(FUN_00179590);
 }
 
 namespace
@@ -102,7 +106,14 @@ constexpr u32 GrabbableKind = 0x11;
 constexpr u32 PayGateKind = 0x12;
 constexpr u32 GrapleKind = 0x13;
 constexpr u32 ProjectileKind = 0x14;
+constexpr u32 GameNodeType = 0x9001;
 constexpr u32 BaseType = 0x1423;
+// A grabbable's first integer: 1 a hook (else how many points it can be landed on from); the object nodes' kind, and what the
+// landing point's direction is normalized with
+constexpr u32 GrabbableKindIndex = 0;
+constexpr s32 HookGrabbable = 1;
+constexpr u32 ObjectNodeKind = 1;
+constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 constexpr u32 CharacterType = 0x9002;
 constexpr u32 CrateType = 0x9003;
 constexpr u32 CreatureType = 0x9004;
@@ -416,4 +427,68 @@ u32 ProjectileNodeKind(AgentNode*)
 u32 ProjectileNodeType(AgentNode*)
 {
     return ProjectileType;
+}
+
+void GameNodeBaseDestroy(GameNode* node, u32 flags)
+{
+    node->vtable = g_AgentNodeBaseVTable;
+    node->Destroy(flags);
+}
+
+u32 GameNodeBaseType(GameNode*)
+{
+    return GameNodeType;
+}
+
+u32 IsHookGrabbable(AgentNode* node)
+{
+    return node->agent->properties->GetInt(GrabbableKindIndex) == HookGrabbable;
+}
+
+Vector4* GrabbableLandingPoint(AgentNode* node, ObjectPlace* place)
+{
+    // The first integer: 1 a hook, else how many of its object node's waypoints' first keys it can be landed on from (0 one)
+    s32 kind = node->agent->properties->GetInt(GrabbableKindIndex);
+    if (kind == HookGrabbable)
+    {
+        return nullptr;
+    }
+
+    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&node->owner->nodes, ObjectNodeKind))->waypoints;
+    if (waypoints == nullptr)
+    {
+        return nullptr;
+    }
+
+    u32 count = kind != 0 ? static_cast<u32>(kind) : 1;
+    if (waypoints->keyCount < count)
+    {
+        return nullptr;
+    }
+
+    // The point the place faces most (its z axis, from its translation)
+    const Matrix4x4& matrix = place->matrix;
+    Vector4* landing = nullptr;
+    f32 best = -Rounded(1e30);
+    for (u32 index = 0; index < count; index++)
+    {
+        LayoutPosition* position = index < waypoints->keyCount ? waypoints->positions.data[index] : nullptr;
+        Vector4 direction = position->position;
+        direction.x -= matrix.m[3][0];
+        direction.y -= matrix.m[3][1];
+        direction.z -= matrix.m[3][2];
+        direction.w = 1.0f;
+        f32 inverse = InverseLength(&direction, LengthEpsilon);
+        direction.x *= inverse;
+        direction.y *= inverse;
+        direction.z *= inverse;
+        f32 facing = direction.x * matrix.m[2][0] + direction.y * matrix.m[2][1] + direction.z * matrix.m[2][2];
+        if (best < facing)
+        {
+            best = facing;
+            landing = &position->position;
+        }
+    }
+
+    return landing;
 }

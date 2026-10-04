@@ -4,6 +4,8 @@
 #include "game/menus.h"
 #include "game/pads.h"
 
+EABI_EXPORT(SetAnalogBind, &ButtonBindings::AddAxis);
+
 namespace
 {
 // A pressure the game takes for none
@@ -168,4 +170,58 @@ f32 ButtonBindings::Pressure(GamePad* pad, u32 action)
     }
 
     return held ? 0.0f : value;
+}
+
+f32 ButtonBindings::AxisValue(GamePad* pad, u32 axis)
+{
+    const AxisBinding& binding = axes[axis];
+    f32 deadZone = binding.deadZone;
+    f32 scale = binding.scale;
+    f32 value = 0.0f;
+    for (u32 index = 0; index < (binding.binding.flags & ButtonBinding::CountMask); index++)
+    {
+        f32 raw = GetPadAxis(pad, binding.binding.buttons[index]);
+        f32 past = 0.0f;
+        if (raw < 0.0f)
+        {
+            if (raw < -deadZone)
+            {
+                past = (raw + deadZone) * scale;
+            }
+        }
+        else if (deadZone < raw)
+        {
+            past = (raw - deadZone) * scale;
+        }
+
+        if (!(__builtin_fabsf(past) <= NoPressure) && __builtin_fabsf(value) <= NoPressure)
+        {
+            value = past;
+        }
+    }
+
+    u32 flags = binding.binding.flags;
+    if ((flags & ButtonBinding::HasModifier) == 0)
+    {
+        return value;
+    }
+
+    bool held = AnyHeld(ModifierOf(this, binding.binding), pad->now);
+    if ((flags & ButtonBinding::ModifierHeld) != 0)
+    {
+        return held ? value : 0.0f;
+    }
+
+    return held ? 0.0f : value;
+}
+
+void ButtonBindings::AddAxis(f32 deadZone, u32 axis, u32 padAxis)
+{
+    AxisBinding& binding = axes[axis];
+    u32 count = binding.binding.flags & ButtonBinding::CountMask;
+    u32 kept = binding.binding.flags & ~ButtonBinding::HasModifier & ~ButtonBinding::CountMask;
+    binding.binding.flags = kept | ((count + 1) & ButtonBinding::CountMask);
+    binding.binding.buttons[count] = static_cast<u8>(padAxis);
+    binding.deadZone = deadZone;
+    binding.scale = 1.0f / (1.0f - deadZone);
 }

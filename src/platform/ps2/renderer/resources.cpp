@@ -58,11 +58,7 @@ extern "C"
     void RigidModelRestartAnimations(RigidModel* model) RETAIL(FUN_001c1598);
     void BlendSkinRestartAnimations(BlendSkin* skin) RETAIL(FUN_001c1870);
     void SkinRestartAnimations(Skin* skin) RETAIL(FUN_001c1d18);
-    // The LOD's mesh for a squared distance: none nearer than its nearest or farther than its farthest, else the last mesh whose
-    // distance it has passed
-    RigidModel* LodMeshAt(Lod* lod, u32 distance) RETAIL(FUN_001c21a0);
-    // Every material's shaders moved on by the clock's last advance, and a material's by some seconds
-    void AnimateMaterials(const TimeClock* clock) RETAIL(FUN_001c0c98);
+    // A material's shaders moved on by some seconds
     void AnimateMaterial(MaterialResource* resource, f32 seconds) RETAIL_N32(FUN_001c0e70);
 }
 
@@ -802,6 +798,26 @@ EABI_EXPORT(FUN_001c0e70, AnimateMaterial);
 
 namespace Platform::Graphics
 {
+void RestartAnimations(RigidModel* model)
+{
+    RigidModelRestartAnimations(model);
+}
+
+void RestartAnimations(Skin* skin)
+{
+    SkinRestartAnimations(skin);
+}
+
+void RestartAnimations(BlendSkin* skin)
+{
+    BlendSkinRestartAnimations(skin);
+}
+
+MaterialResource* FirstMaterial(const RigidModel* model)
+{
+    return model->materials != nullptr && model->count != 0 ? model->materials[0] : nullptr;
+}
+
 GameTexture* NewTexture(u32 id)
 {
     return TextureConstruct(MemoryAllocate(sizeof(GameTexture)), id);

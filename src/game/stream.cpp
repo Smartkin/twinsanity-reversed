@@ -24,6 +24,15 @@ extern "C"
     extern String g_FilePathPrefix RETAIL(D_003C6F40);
     // 2 KB of scratch memory, CopyTo's and the decals' loader's
     extern u8 g_ScratchBuffer[0x800] RETAIL(DecalUnusedInt);
+    // The module's statics made (g_FilePathPrefix emptied), and the static constructor that runs it
+    void InitStreamStatics(s32 initialise, s32 priority) RETAIL(FUN_002b5938);
+    void StreamStaticInit() RETAIL(FUN_002b7850);
+    // An item builder of the module's nothing makes (its vtable 0x18 bytes before the object builder's list iterator's): its
+    // destructor (the base's), and its slot 3 making nothing (its slot 2 is abstract)
+    void DestroyStreamItemBuilder(void* builder, u32 destroyFlags) RETAIL(FUN_002b5a98);
+    void* StreamItemBuilderMakesNothing() RETAIL(FUN_002b5ac8);
+    // The items' builders' base (BuilderBaseFunctions)
+    extern const GccVTableEntry g_ItemBuilderBaseVTable[] RETAIL(BuilderBaseFunctions);
 }
 
 EABI_EXPORT(FUN_002b5ee8, &File::WriteF32);
@@ -552,4 +561,35 @@ void MemoryStream::WriteBool(bool value)
 void MemoryStream::WriteF32(f32 value)
 {
     Stream::Write(&value, sizeof(value));
+}
+
+void InitStreamStatics(s32 initialise, s32 priority)
+{
+    if (priority != 0xFFFF || initialise == 0)
+    {
+        return;
+    }
+
+    g_FilePathPrefix.string = nullptr;
+    g_FilePathPrefix.capacity = 0;
+    g_FilePathPrefix.length = 0;
+}
+
+void StreamStaticInit()
+{
+    InitStreamStatics(1, 0xFFFF);
+}
+
+void DestroyStreamItemBuilder(void* builder, u32 destroyFlags)
+{
+    *static_cast<const GccVTableEntry**>(builder) = g_ItemBuilderBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(builder);
+    }
+}
+
+void* StreamItemBuilderMakesNothing()
+{
+    return nullptr;
 }

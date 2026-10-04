@@ -31,6 +31,26 @@ struct StringList
     u32 growth;
 };
 
+// The retail iterator over the string lists (D_002EC458, its base D_002EC4A8; the game context's preloaded chunks), which the C++
+// walks with loops: the list and the index it's at, done outside the list
+struct StringListIterator
+{
+    const GccVTableEntry* vtable;
+    StringList* list;
+    s32 index;
+
+    void Destroy(u32 flags) RETAIL(FUN_00101458);
+    void BaseDestroy(u32 flags) RETAIL(FUN_00101428);
+    void First() RETAIL(FUN_00101488);
+    u32 IsDone() RETAIL(FUN_00101620);
+    String* Current() RETAIL(FUN_001014b8);
+    void Next() RETAIL(FUN_00101650);
+    void Previous() RETAIL(FUN_001014a8);
+    void Last() RETAIL(FUN_00101490);
+    StringListIterator* Assign(const StringListIterator* other) RETAIL(FUN_00101660);
+};
+CHECK_SIZE(StringListIterator, 0xC);
+
 // An archive: the table of its files (read from the BH), sorted by path, growing by growth files
 struct Archive
 {
@@ -69,6 +89,9 @@ public:
     {
         CallVirtual<void>(this, vtable, 3, data, size, readers);
     }
+
+    // The base's destructor (its vtable's slot 1)
+    void BaseDestroy(u32 flags) RETAIL(SectionReaderInterface_dtor);
 };
 
 // Reads an archive's table
@@ -83,6 +106,15 @@ public:
     void Read(u8* data, u32 size, ReaderStack* readers) RETAIL(UnpackArchiveIntoMemory);
 };
 CHECK_SIZE(ArchiveSectionReader, 0x14);
+
+// A section reader nothing makes (its vtable the 16 bytes past "cdrom0:\", D_00306E50): whatever the section, the current
+// archive's files let go of (the archive emptied); its Missing the base's
+class ArchiveFilesReleaser : public SectionReader
+{
+public:
+    void Destroy(u32 flags) RETAIL(FUN_002b70d0);
+    void Read(u8* data, u32 size, ReaderStack* readers) RETAIL(FUN_002b7100);
+};
 
 extern "C"
 {

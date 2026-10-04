@@ -5,6 +5,9 @@
 InitDisk
 GetSysFolder
 
+# The retail crt0's main thread's root (ExitThread's system call): src/platform/ps2/entry.cpp hands the thread PS2SDK's ExitThread
+func_001000E8
+
 # The disk manager's intrusive lists, game/list.h's IntrusiveList
 FUN_00199d40
 FUN_00199d80
@@ -63,6 +66,7 @@ FUN_002b1880
 FUN_002b18b8
 FUN_002b19a0
 FUN_002b1a88
+func_002B1AC0
 FUN_002b1ac8
 FUN_002b1cc8
 FUN_002b1e78

@@ -10,7 +10,7 @@ class Stream;
 struct ScriptPack;
 
 // A list of resources' IDs of a kind (0x24 bytes): up to 16 kept in it, more in a list of its own the first word then points to
-// (still asm)
+// (a first word past 16)
 struct ResourceIdList
 {
     static constexpr u32 BlockIds = 16;
@@ -18,8 +18,12 @@ struct ResourceIdList
     u32 countOrMore;
     u16 ids[BlockIds];
 
-    // Read from a stream: the count, then each ID (still asm)
+    // Read from a stream: the count, then each ID (what it had before let go)
     void Read(Stream* stream) RETAIL(FUN_00262c98);
+    // The list it goes on in let go
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00262b08);
+    // An ID added at the end (a full list goes on in a list of its own)
+    void Add(const u16* id) RETAIL(FUN_00263b40);
 };
 CHECK_SIZE(ResourceIdList, 0x24);
 
@@ -45,12 +49,16 @@ CHECK_SIZE(ResourceIdIterator, 0x10);
 // The resources a game object names, by kind (0x20 bytes): a bit for each kind it has a list of
 struct ResourceReferences
 {
-    u32 kinds;
-    ResourceIdList* lists[7];
+    static constexpr u32 KindCount = 7;
 
-    // Made and read from a stream: the kinds, then each kind's list (still asm; it returns its last list, not itself)
+    u32 kinds;
+    ResourceIdList* lists[KindCount];
+
+    // Made and read from a stream: the kinds, then each kind's list (it returns its last list, not itself)
     static void Construct(ResourceReferences* references, Stream* stream) RETAIL(ReadResourceReferences);
-    // Its lists let go (still asm)
+    // Made with no kinds
+    static ResourceReferences* ConstructEmpty(ResourceReferences* references) RETAIL(FUN_00262ae0);
+    // Its lists let go
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025f640);
 };
 CHECK_SIZE(ResourceReferences, 0x20);
@@ -68,7 +76,7 @@ enum ResourceKind : u32
 };
 
 // A code model (0x18 bytes, a resource of the game's tables): two bytes 0xFF when made, the count of its script packs, the packs
-// (made with new[]), a command and the packs' IDs (still asm but its construction)
+// (made with new[]), a command and the packs' IDs
 struct CodeModel
 {
     u32 bits;
@@ -84,10 +92,12 @@ struct CodeModel
     // Made empty (no ID)
     static CodeModel* Construct(CodeModel* model) RETAIL(FUN_00263840);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00263898);
+    // Its four bytes, its packs with their IDs and its command read (what it had before is lost)
+    void Read(Stream* stream) RETAIL(ReadCodeModel);
 };
 CHECK_SIZE(CodeModel, 0x18);
 
-// A game object's script pack: a count, then its command list when there's one (still asm)
+// A game object's script pack: a count, then its command list when there's one
 struct ScriptPack
 {
     u32 count;
@@ -156,6 +166,23 @@ struct GameObject
     {
         return header[1] >> 24;
     }
+
+    // How many behaviour slots its agents' events can run (the second header word's second byte)
+    u32 BehaviourSlotCount() const
+    {
+        return static_cast<u8>(header[1] >> 8);
+    }
+
+    // Its model's exit points and react joints (the first header word's bits 0-5 and 6-11)
+    u32 ExitPoints() const
+    {
+        return header[0] & 0x3F;
+    }
+
+    u32 ReactJoints() const
+    {
+        return header[0] >> 6 & 0x3F;
+    }
 };
 CHECK_OFFSET(GameObject, name, 0x14);
 CHECK_OFFSET(GameObject, scripts, 0x28);
@@ -170,9 +197,12 @@ extern "C"
     u16* GetObjectAnimationId(u16* id, const GameObject* object, u32 slot) RETAIL(GetAnimID_FromObject);
     u16* GetObjectBehaviourId(u16* id, const GameObject* object, u32 slot) RETAIL(GetScriptId_FromScriptSlot);
     u16* GetObjectSoundId(u16* id, const GameObject* object, u32 slot) RETAIL(GetSoundID_FromObject);
-    // A word of the object's first slots read
+    // A word of the object's first slots read, and an ID of a resource list
     void ReadObjectWord(u32* word, Stream* stream) RETAIL(FUN_00263a38);
-    // A script pack made empty and read (still asm)
+    void ReadResourceId(u16* id, Stream* stream) RETAIL(FUN_00263ab0);
+    // A trigger behaviour of the object (game/objects.h's TriggerBehaviour)
+    const u32* GetObjectTriggerBehaviour(const GameObject* object, u32 index) RETAIL(GetTriggerReceiver);
+    // A script pack made empty and read
     ScriptPack* ConstructScriptPack(ScriptPack* pack) RETAIL(InitGameObjectScriptAppend);
     void ReadScriptPack(ScriptPack* pack, Stream* stream) RETAIL(LoadScriptPack);
     void DestroyScriptPack(ScriptPack* pack, u32 destroyFlags) RETAIL(FUN_00251910);

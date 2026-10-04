@@ -3,7 +3,9 @@
 #include "debug.h"
 
 #include "game/memory.h"
+#include "game/sound.h"
 #include "platform/stream.h"
+#include "retail/libc.h"
 
 namespace
 {
@@ -32,8 +34,6 @@ void HandOver(FileStream* stream)
 extern "C"
 {
     extern const GccVTableEntry g_StreamSystemVTable[] RETAIL(D_00306C78);
-
-    s32 FormatString(char* buffer, const char* format, ...);
 }
 
 StreamSystem* StreamSystem::Construct(StreamSystem* system, u16 capacity)
@@ -658,12 +658,22 @@ extern "C"
         bank->header = header;
         CloseFileStream(g_StreamSystem, stream);
         char samplesPath[0x100];
-        FormatString(samplesPath, "%s.mb", name);
+        RetailLibc::Format(samplesPath, "%s.mb", name);
         if (bank->samples != Platform::Stream::NoFile)
         {
             Platform::Stream::CloseFile(bank->samples);
         }
 
         bank->samples = Platform::Stream::OpenFile(samplesPath);
+    }
+
+    MusicTrack* FindMusicTrack(SoundBankFiles* bank, u32 track)
+    {
+        // The header: how many tracks, a word, then the tracks
+        constexpr u32 TracksOffset = 8;
+        u8* header = bank->header;
+        u32 last = *reinterpret_cast<const u32*>(header) - 1;
+        u32 index = track < last ? track : last;
+        return reinterpret_cast<MusicTrack*>(header + TracksOffset) + index;
     }
 }

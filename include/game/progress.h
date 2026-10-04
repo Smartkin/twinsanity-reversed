@@ -225,6 +225,16 @@ extern "C"
 {
     // The area a script's token names (the global progression commands' argument), -1 for none
     s32 TokenArea(u32 token) RETAIL(FUN_00167df0);
+    // A gem marked found in a level's word (its low byte): whether it wasn't before. The level's crystal (bit 8) the same way
+    u32 MarkGem(u8* level, u32 gem) RETAIL(FUN_0017a2e8);
+    u32 MarkCrystal(u32* level) RETAIL(FUN_0017a2c0);
+    // A level's word made (no gem, no crystal), read from a stream and written to one (the progress's constructor and the save
+    // controller have them inline)
+    u32* ConstructLevelWord(u32* level) RETAIL(FUN_0017a220);
+    void ReadLevelWord(u32* level, Stream* stream) RETAIL(FUN_0017a250);
+    void WriteLevelWord(const u32* level, Stream* stream) RETAIL(FUN_0017a288);
+    // The gem a keyword names (0x288 to 0x28D: 0 to 5), -1 for any other
+    s32 TokenGem(u32 token) RETAIL(FUN_0017a318);
     // The player mode a script's token names (1 to 6, the player mode command's argument), 0 for none
     u32 TokenPlayerMode(u32 token) RETAIL(FUN_001798d8);
 }

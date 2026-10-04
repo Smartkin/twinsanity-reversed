@@ -5,7 +5,8 @@
 #include "game/math.h"
 #include "game/reference.h"
 
-// What controls a character (a vehicle while it rides one, still asm): its vtable at 0xD4 (8 its kind: 6 the slider's)
+// What controls a character (a vehicle while it rides one: game/vehicles.h's Vehicle, the same object with its fields named): its
+// vtable at 0xD4 (8 its kind: 6 the slider's)
 struct CharacterControl
 {
     // Bit 2 the characters' flag commands 650 and 651 set and clear
@@ -19,7 +20,7 @@ struct CharacterControl
     }
 };
 
-// What the HUD's counter at the bottom right counts of a character (still asm): the count in bits 13-19 of its second double
+// What the HUD's counter at the bottom right counts of a character: the count in bits 13-19 of its second double
 // word
 struct CharacterCounter
 {
@@ -32,7 +33,7 @@ struct CharacterCounter
     }
 };
 
-// A character's data (still asm): bit 54 of its bits is set in the second of two characters tied together
+// A character's data: bit 54 of its bits is set in the second of two characters tied together
 struct CharacterData
 {
     enum Bits : u64
@@ -44,14 +45,15 @@ struct CharacterData
     u64 bits;
 };
 
-// The character a player plays (the retail player character, still asm): its data, what the HUD's counter counts of it, its link
-// to another character (two tied together), what controls it and what it's told to do (a vector at 0xE0)
+// The character a player plays (the retail player character; game/agents.h's CharacterAgent is the same object with every field
+// named, which new code uses): its data, what the HUD's counter counts of it, its link to another character (two tied together),
+// what controls it and what it's told to do (a vector at 0xE0)
 struct PlayerCharacter
 {
     u8 unknown00[0x10];
     CharacterData* data;
     u8 unknown14[0xA0 - 0x14];
-    // Its attack's state in the low 5 bits of the first word (12 to 14 a downward blast; still asm)
+    // Its attack's state in the low 5 bits of the first word (12 to 14 a downward blast)
     const u32* attack;
     CharacterCounter* counter;
     u8 unknownA8[0xB0 - 0xA8];
@@ -77,15 +79,16 @@ extern "C"
     extern void* g_PlayerCharacterData RETAIL(G_UnkCreationHelper);
     extern void* g_PlayerCharacterData2 RETAIL(G_UnkCreationHelper2);
 
-    // The character given another as its vehicle, of a kind (still asm)
+    // The character given another as its vehicle, of a kind
     void SetPlayerVehicle(PlayerCharacter* character, u32 kind, PlayerCharacter* other, u32 unknown) RETAIL(SetPlayerVehicle);
-    // Two characters tied together, each given the other, and untied (by the first; still asm)
+    // Two characters tied together, each given the other, and untied (by the first)
     void LinkCharacters(PlayerCharacter* character, PlayerCharacter* other) RETAIL(FUN_00132ca8);
     void UnlinkCharacters(PlayerCharacter* character) RETAIL(FUN_00132dc0);
-    // The other character of a link (still asm)
+    // The other character of a link
     PlayerCharacter* LinkedCharacter(void* link) RETAIL(FUN_0015fdc0);
-    // The character's own part of the overlay: what controls it (at 0xB8) draws it, its vtable's slot 13 (still asm)
+    // The character's own part of the overlay: what controls it (at 0xB8) draws it, its vtable's slot 13
     void DrawCharacterOverlay(PlayerCharacter* character) RETAIL(FUN_0013fe28);
-    // A vehicle's gauge, 0 to 1 (by its kind: its speed; still asm)
+    // The HUD's gauge of a wrestle (kind 6, vehicles.h's WrestleVehicle: only it has the fields read), 0 the creature pinning the
+    // character to 1 the character pinning it
     f32 VehicleGauge(CharacterControl* vehicle) RETAIL(FUN_00161198);
 }

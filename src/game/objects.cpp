@@ -3,6 +3,14 @@
 #include "game/memory.h"
 #include "game/stream.h"
 
+extern "C"
+{
+    // The module's static initialisation (its word nothing reads made 0), and the static constructor that runs it
+    extern u32 g_ObjectsUnused RETAIL(D_0030A988);
+    void InitObjectStatics(s32 initialise, s32 priority) RETAIL(FUN_00261c70);
+    void ObjectsStaticInit() RETAIL(FUN_00263d88);
+}
+
 namespace
 {
 constexpr u16 NoId = 0xFFFF;
@@ -191,6 +199,24 @@ u16* GetObjectSoundId(u16* id, const GameObject* object, u32 slot)
 void ReadObjectWord(u32* word, Stream* stream)
 {
     stream->ReadS32(reinterpret_cast<s32*>(word));
+}
+
+const u32* GetObjectTriggerBehaviour(const GameObject* object, u32 index)
+{
+    return &object->triggerBehaviours.items[index];
+}
+
+void InitObjectStatics(s32 initialise, s32 priority)
+{
+    if (priority == 0xFFFF && initialise != 0)
+    {
+        g_ObjectsUnused = 0;
+    }
+}
+
+void ObjectsStaticInit()
+{
+    InitObjectStatics(1, 0xFFFF);
 }
 
 void ScriptPack::Run(void* agent)

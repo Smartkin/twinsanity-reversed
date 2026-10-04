@@ -4,6 +4,7 @@
 #include "game/controllers.h"
 #include "game/instances.h"
 #include "game/place.h"
+#include "game/reference.h"
 
 EABI_EXPORT(FUN_0026f0c8, &RenderView::Update);
 
@@ -67,4 +68,15 @@ void RenderView::MakeMatrices(const RenderTargetDescription* target)
     VuMultiplyMatrices(&toCamera, &projection, &toClip);
     VuMultiplyMatrices(&projection, &target->clipToScreen, &cameraToScreen);
     VuMultiplyMatrices(&toClip, &target->clipToScreen, &toScreen);
+}
+
+InstanceContext* CameraInstance()
+{
+    RenderView* view = G_Renderer_->view;
+    if (view == nullptr || view->cameraObject == nullptr)
+    {
+        return nullptr;
+    }
+
+    return static_cast<InstanceContext*>(view->cameraObject->object);
 }

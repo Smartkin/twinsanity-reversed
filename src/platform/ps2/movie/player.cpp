@@ -11,7 +11,7 @@
 
 extern "C"
 {
-    // Sony's libsdr (the sound processor's driver's calls) and libgraph's vertical blank handler, still in the asm
+    // libsdr's calls of the sound processor's driver (sdr.cpp) and libgraph's vertical blank callback (graphics.cpp)
     s32 sceSdRemote(s32 arg, s32 command, ...);
     void* sceGsSyncVCallback(s32 (*handler)(s32 cause));
 

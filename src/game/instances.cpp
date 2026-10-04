@@ -40,6 +40,60 @@ u32 KindOf(GameNode* node)
 {
     return CallVirtual<u32>(node, node->vtable, NodeKindSlot);
 }
+
+// The reference arrays' start: 10 handles, none set
+constexpr u32 ReferenceArrayGrowth = 10;
+}
+
+extern "C"
+{
+    // The items' builders' base (BuilderBaseFunctions), and a word the module's static initialisation clears, which nothing reads
+    extern const GccVTableEntry g_ItemBuilderBaseVTable[] RETAIL(BuilderBaseFunctions);
+    extern u32 g_UnreadInstancesWord RETAIL(D_0030A7F0);
+
+    // The module's static initialisation (GCC 2.9x's: the call to initialise with priority 0xFFFF) and the constructor running it
+    void InitInstancesStatics(u32 initialize, u32 priority) RETAIL(FUN_0019a238);
+    void InstancesStaticConstructor() RETAIL(FUN_0019b148);
+
+    // An item builder of the module's that makes nothing (its vtable D_002F5F60 alone, which nothing makes): no item of any
+    // class, and its destructor
+    void* MakeNoItem(void* builder, u32 classId) RETAIL(FUN_00199d38);
+    void DestroyNoItemBuilder(void* builder, u32 destroyFlags) RETAIL(FUN_0019aae0);
+}
+
+namespace
+{
+// A handle pointed at another's reference (a reference taken, its old one let go), as GCC 2.9x's handles assign
+void CopyHandle(Reference** to, Reference* const* from)
+{
+    if (*to == *from)
+    {
+        return;
+    }
+
+    RemoveReference(to);
+    *to = *from;
+    Reference* reference = *from;
+    if (reference != nullptr)
+    {
+        u32 value = reference->value;
+        reference->value = (value & ~ReferenceBits::CountMask) | ((value + 1) & ReferenceBits::CountMask);
+    }
+}
+
+void ConstructReferenceArray(ReferenceArray* array)
+{
+    array->count = 0;
+    array->capacity = ReferenceArrayGrowth;
+    array->growth = ReferenceArrayGrowth;
+    Reference** data = NewArray<Reference*>(ReferenceArrayGrowth);
+    for (u32 index = 0; index < ReferenceArrayGrowth; index++)
+    {
+        data[index] = nullptr;
+    }
+
+    array->data = data;
+}
 }
 
 GameNode* GameNode::Construct(GameNode* node)
@@ -258,6 +312,45 @@ void QueueObject(ReferencedObject* object)
     object->flags |= ReferencedObject::FlagQueued;
     Reference* handle = object != nullptr ? AddReference(object) : nullptr;
     ReferenceArrayAppend(&g_QueuedObjects, &handle);
+}
+
+u32 ReferenceArrayAppend(ReferenceArray* array, Reference** handle)
+{
+    if (array->count == array->capacity)
+    {
+        u32 grown = array->count + array->growth;
+        Reference** larger = NewArray<Reference*>(grown);
+        for (u32 index = 0; index < grown; index++)
+        {
+            larger[index] = nullptr;
+        }
+
+        for (u32 index = 0; index < array->count; index++)
+        {
+            CopyHandle(&larger[index], &array->data[index]);
+        }
+
+        if (array->data != nullptr)
+        {
+            Reference** old = array->data + ArrayCount(array->data);
+            while (old != array->data)
+            {
+                old--;
+                RemoveReference(old);
+            }
+
+            DeleteArray(array->data);
+        }
+
+        array->data = larger;
+        array->capacity = grown;
+    }
+
+    u32 index = array->count++;
+    CopyHandle(&array->data[index], handle);
+    u32 last = array->count - 1;
+    RemoveReference(handle);
+    return last;
 }
 
 InstanceContext* InstanceContext::Construct(InstanceContext* instance)
@@ -967,7 +1060,7 @@ Reference* CopyEvent(Reference* event)
 {
     if (event != nullptr)
     {
-        event->value = (event->value & 0xFF000000) | ((event->value & 0xFFFFFF) + 1 & 0xFFFFFF);
+        event->value = (event->value & 0xFF000000) | (((event->value & 0xFFFFFF) + 1) & 0xFFFFFF);
     }
 
     return event;
@@ -1244,4 +1337,37 @@ void InstanceIds::Remove(InstanceContext* instance)
 void TriggerNode::AddInstance(InstanceContext* instance)
 {
     instances[instanceCount++] = instance;
+}
+
+void InitInstancesStatics(u32 initialize, u32 priority)
+{
+    constexpr u32 AllPriorities = 0xFFFF;
+    if (priority != AllPriorities || initialize == 0)
+    {
+        return;
+    }
+
+    TimeClockReset(&g_GlobalClock);
+    g_UnreadInstancesWord = 0;
+    ConstructReferenceArray(&g_QueuedObjects);
+    ConstructReferenceArray(&g_InstancesWithEvents);
+}
+
+void InstancesStaticConstructor()
+{
+    InitInstancesStatics(1, 0xFFFF);
+}
+
+void* MakeNoItem(void*, u32)
+{
+    return nullptr;
+}
+
+void DestroyNoItemBuilder(void* builder, u32 destroyFlags)
+{
+    *static_cast<const GccVTableEntry**>(builder) = g_ItemBuilderBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(builder);
+    }
 }

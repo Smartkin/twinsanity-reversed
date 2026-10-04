@@ -3,15 +3,25 @@
 #include "game/array.h"
 
 #include "game/clock.h"
+#include "game/collision.h"
 #include "game/context.h"
 #include "game/controllers.h"
+#include "game/instances.h"
 #include "game/memory.h"
 #include "game/navigation.h"
+#include "game/objectnode.h"
+#include "game/particles.h"
+#include "game/pools.h"
 #include "game/readers.h"
 #include "game/reference.h"
 #include "game/renderer.h"
+#include "game/resources.h"
+#include "game/scenery.h"
+#include "game/shadows.h"
 #include "game/sound.h"
 #include "game/stream.h"
+#include "retail/libc.h"
+#include "retail/libc.h"
 
 // The chunks' loading: loaders of the chunks wanted around what the loading follows, and the links between chunks
 namespace
@@ -33,22 +43,22 @@ constexpr u32 Shown = 0x40000;
 extern "C"
 {
     extern const GccVTableEntry g_ChunkLoaderBaseVTable[] RETAIL(D_003069F0);
+    // The items' builders' base (BuilderBaseFunctions)
+    extern const GccVTableEntry g_ItemBuilderBaseVTable[] RETAIL(BuilderBaseFunctions);
     extern const u8 CasingTable[];
 
-    void LinkMatricesConstruct(ChunkLinkData* data) RETAIL(FUN_001f00b8);
-    void LinkMatricesDestroy(ChunkLinkData* data, u32 flags) RETAIL(FUN_001f00e0);
-    void LinkMatricesRead(ChunkLinkData* data, Stream* reader) RETAIL(FUN_001f0260);
     extern const GccVTableEntry g_Sm2LoaderVTable[] RETAIL(ChunkSm2Loader_Methods);
     extern const GccVTableEntry g_Rm2LoaderVTable[] RETAIL(ChunkRm2Loader_Methods);
     extern const GccVTableEntry g_ChunkLoadingUtilVTable[] RETAIL(D_002FC2E0);
     extern const GccVTableEntry g_Sm2LoadingUtilVTable[] RETAIL(ChunkLoadUtil_Sm2_Methods);
     extern const GccVTableEntry g_Rm2LoadingUtilVTable[] RETAIL(ChunkLoadUtil_Rm2_Methods);
 
-    // The resources take the objects the RM2 brought
-    void AddChunkObjects(void* resources, u32* objects) RETAIL(FUN_00266180);
-
     void DestroyPendingInstances() RETAIL(FUN_001996b0);
-    void UnloadAllChunks(ChunkManager* chunks) RETAIL(UnloadAllChunks_);
+    // The chunk manager's base and the persistent flags' stores' base
+    extern const GccVTableEntry g_ChunkManagerBaseVTable[] RETAIL(D_00304208);
+    extern const GccVTableEntry g_PersistentFlagsBaseVTable[] RETAIL(UnkChunkInterface_methods);
+    // "Particle", the particles' file without the default chunk's RM2
+    extern const char g_DefaultParticlesFile[] RETAIL(D_00303690);
 }
 
 namespace
@@ -759,6 +769,30 @@ extern "C"
         }
     }
 
+    void* MakeChunkLinkItem(void*, u32 type)
+    {
+        constexpr u32 LinkHullListType = 0x1D02;
+        if (type != LinkHullListType)
+        {
+            return nullptr;
+        }
+
+        auto* list = static_cast<LinkHullList*>(MemoryAllocate(sizeof(LinkHullList)));
+        list->next = nullptr;
+        HullConstruct(&list->hull);
+        RetailLibc::MemorySet(&list->flags, 0, sizeof(list->flags));
+        return list;
+    }
+
+    void DestroyChunkLinkItemBuilder(void* builder, u32 destroyFlags)
+    {
+        *static_cast<const GccVTableEntry**>(builder) = g_ItemBuilderBaseVTable;
+        if ((destroyFlags & 1) != 0)
+        {
+            MemoryDeallocate2_(builder);
+        }
+    }
+
     bool IsPositionInLinkHulls(LinkHullList* list, const Vector4* position)
     {
         if (IsPointInsideHull(&list->hull, position))
@@ -1332,7 +1366,7 @@ bool Rm2Loader::StartLoading(s32 index, bool now)
     entry = g_ChunkManager->AddChunk(loader->path.string, chunk);
     chunk->rm2Loads++;
     ChunkDataContext(chunk);
-    ChunkDataUnknown(chunk, 100);
+    ChunkShadowsOf(chunk, 100);
     ChunkDataCollision(chunk);
     ChunkEntry* added = entry;
     auto* objects = static_cast<u32*>(MemoryAllocate(0x404));
@@ -1367,7 +1401,7 @@ bool Rm2Loader::ContinueLoading(s32, bool)
             }
         }
 
-        AddChunkObjects(resources, chunk->objects);
+        resources->TakeObjects(chunk->objects);
     }
 
     if (reader != nullptr)
@@ -1437,6 +1471,218 @@ void Rm2Loader::Unlink(GameChunkLink*)
 {
 }
 
+namespace
+{
+// A store of persistent flags' vtable (at its start) functions: 5 the destructor, 6 read from a stream
+constexpr u32 FlagsDestroySlot = 5;
+constexpr u32 FlagsReadSlot = 6;
+// A path's vtable is 8 bytes into it
+constexpr u32 PathVTable = 0x8;
+// The instances a chunk's search for an ID looks at (the awake ones), and the object nodes, kind 1
+constexpr u16 MostInstances = 0x400;
+constexpr u32 AwakeFlags = 0x2;
+constexpr u32 ObjectNodeKind = 1;
+constexpr f32 NoHitDistance = Rounded(1e30);
+// The object nodes' vtable functions: their parts let go, slot 20, their runners stopped (and released)
+constexpr u32 ReleasePartsSlot = 35;
+constexpr u32 Slot20 = 20;
+constexpr u32 StopRunnersSlot = 21;
+// The collector's instance pools a filter's walk goes through (both)
+constexpr u32 BothPools = 0x3;
+
+const GccVTableEntry* FlagsVTable(PersistentFlags* flags)
+{
+    return *reinterpret_cast<const GccVTableEntry* const*>(flags);
+}
+
+// A chunk's reference to its data is a ChunkDataReference (game/chunkdata.h)
+ChunkDataReference** DataReferenceOf(ChunkEntry* chunk)
+{
+    return reinterpret_cast<ChunkDataReference**>(&chunk->data);
+}
+
+// Every element of a list destroyed (none skipped), then the list freed and forgotten (no list: nothing)
+template <typename Destroy>
+void DestroyList(PointerArray<void>** list, Destroy destroy)
+{
+    PointerArray<void>* array = *list;
+    if (array == nullptr)
+    {
+        return;
+    }
+
+    for (s32 index = 0; index >= 0 && static_cast<u32>(index) < array->count; index++)
+    {
+        void* element = array->data[index];
+        if (element != nullptr)
+        {
+            destroy(element);
+        }
+    }
+
+    array = *list;
+    if (array != nullptr)
+    {
+        if (array->data != nullptr)
+        {
+            MemoryDeallocate_(array->data);
+        }
+
+        MemoryDeallocate2_(array);
+    }
+
+    *list = nullptr;
+}
+}
+
+void ChunkEntry::DestroyPositions()
+{
+    DestroyList(&positions, [](void* position) { static_cast<LayoutPosition*>(position)->Destroy(DestroyAndFree); });
+}
+
+void ChunkEntry::DestroyPaths()
+{
+    DestroyList(&paths, [](void* path) {
+        auto* vtable = *reinterpret_cast<const GccVTableEntry**>(static_cast<u8*>(path) + PathVTable);
+        CallVirtual<void>(path, vtable, 1, u32{DestroyAndFree});
+    });
+}
+
+void ChunkEntry::Destroy(u32 destroyFlags)
+{
+    UnloadChunkEntry(this);
+    if (flags != nullptr)
+    {
+        CallVirtual<void>(flags, FlagsVTable(flags), FlagsDestroySlot, u32{DestroyAndFree});
+    }
+
+    if (data != nullptr)
+    {
+        ReleaseChunkDataReference(DataReferenceOf(this));
+    }
+
+    StringDestroy(&path);
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+InstanceContext* FindChunkInstance(ChunkEntry* chunk, u16 id)
+{
+    if (id == 0xFFFF)
+    {
+        return nullptr;
+    }
+
+    Reference* data = chunk->data;
+    if (data == nullptr || data->object == nullptr)
+    {
+        return nullptr;
+    }
+
+    InstanceContext* found[MostInstances];
+    InstanceRayHit query;
+    query.results = reinterpret_cast<void**>(found);
+    query.count = 0;
+    query.most = MostInstances;
+    query.distance = NoHitDistance;
+    query.bits = InstanceRayHit::BitAllWanted;
+    query.wantedFlags = 0;
+    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.skipped[0] = nullptr;
+    query.skipped[1] = nullptr;
+    query.instance = nullptr;
+    u32 count = QueryChunkInstancesByFlags(reinterpret_cast<ChunkData*>(data->object), AwakeFlags, &query);
+    for (u32 index = 0; index < count; index++)
+    {
+        auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&found[index]->nodes, ObjectNodeKind));
+        if (node->agent->id == id)
+        {
+            return found[index];
+        }
+    }
+
+    return nullptr;
+}
+
+ChunkEntry* ChunkManager::AddChunkEntry(const char* path, ChunkData* data)
+{
+    ChunkEntry* entry = FindChunkEntry(this, path);
+    if (entry != nullptr)
+    {
+        AssignChunkData(DataReferenceOf(entry), data);
+        return entry;
+    }
+
+    entry = static_cast<ChunkEntry*>(MemoryAllocate(sizeof(ChunkEntry)));
+    u16 index = count;
+    StringConstruct(&entry->path, path);
+    entry->index = index;
+    entry->manager = this;
+    *DataReferenceOf(entry) = data != nullptr ? AddChunkDataReference(data) : nullptr;
+    entry->objects = nullptr;
+    entries[count] = entry;
+    count++;
+    entry->flags = nullptr;
+    entry->otherFlags = nullptr;
+    entry->nextFlagSlot = 0;
+    entry->navigation = nullptr;
+    entry->positions = nullptr;
+    entry->positionCount = 0;
+    entry->paths = nullptr;
+    return entry;
+}
+
+void ReadChunkStates(ChunkManager* chunks, Stream* stream)
+{
+    UnloadAllChunks(chunks);
+    u32 count;
+    stream->ReadS32(reinterpret_cast<s32*>(&count));
+    for (u32 index = 0; index < count; index++)
+    {
+        String path;
+        path.string = nullptr;
+        path.length = 0;
+        path.capacity = 0;
+        StringRead(&path, stream);
+        ChunkEntry* chunk = chunks->AddChunk(path.string, nullptr);
+        bool ownStore;
+        stream->ReadBool(&ownStore);
+        if (ownStore)
+        {
+            CallVirtual<void>(chunk->flags, FlagsVTable(chunk->flags), FlagsReadSlot, stream);
+        }
+
+        StringDestroy(&path);
+    }
+}
+
+void StopFilteredObjectNodes(ChunkManager*, const u32* filter)
+{
+    InstanceCollector collector;
+    InstanceCollectorConstruct(&collector, filter[1], filter[2], 0);
+    if (CollectChunksInstances(GetChunkList(), filter[0], &collector) != 0)
+    {
+        PoolsWalk<InstanceContext*> walk;
+        ConstructPoolsWalk(&walk, g_InstancePoolsWalkVTable, g_InstanceWalkVTable, &collector.instances, BothPools);
+        for (walk.First(); !walk.AtEnd(); walk.Next())
+        {
+            auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&(*walk.Item())->nodes, ObjectNodeKind));
+            if (node != nullptr)
+            {
+                CallVirtual<void>(node, node->vtable, ReleasePartsSlot);
+                CallVirtual<void>(node, node->vtable, Slot20);
+                CallVirtual<void>(node, node->vtable, StopRunnersSlot, u32{1});
+            }
+        }
+
+        walk.Destroy(DestroyOnly);
+    }
+
+    InstanceCollectorDestroy(&collector, DestroyOnly);
+}
+
 void* ChunkEntry::OtherLayoutPosition(u32 index)
 {
     if (positions == nullptr)
@@ -1450,4 +1696,367 @@ void* ChunkEntry::OtherLayoutPosition(u32 index)
 u16 ChunkEntry::NextFlagSlot()
 {
     return nextFlagSlot++;
+}
+
+namespace
+{
+// A store of persistent flags' vtable function that writes it to a stream
+constexpr u32 FlagsWriteSlot = 7;
+// The default chunk's list of object IDs: a count, then room for 0x200 IDs
+constexpr u32 DefaultObjectsSize = 0x404;
+// The resources' vtable function told the resources were read (with 0)
+constexpr u32 ResourcesReadSlot = 2;
+// A chunk's AI navigation's destructor
+constexpr u32 NavigationDestroySlot = 1;
+
+InstanceIds* InstanceIdsOf(ChunkManager* manager)
+{
+    return reinterpret_cast<InstanceIds*>(manager->instanceIds);
+}
+}
+
+void UnloadChunkEntry(ChunkEntry* chunk)
+{
+    GameResources* resources = chunk->manager->resources;
+    if (chunk->navigation != nullptr)
+    {
+        chunk->navigation->pathFinder->navigations[chunk->index] = nullptr;
+        AiNavigation* navigation = chunk->navigation;
+        if (navigation != nullptr)
+        {
+            CallVirtual<void>(navigation, navigation->vtable, NavigationDestroySlot, u32{DestroyAndFree});
+        }
+
+        chunk->navigation = nullptr;
+    }
+
+    chunk->DestroyPositions();
+    chunk->DestroyPaths();
+    PersistentFlags* otherFlags = chunk->otherFlags;
+    if (otherFlags != nullptr)
+    {
+        CallVirtual<void>(otherFlags, otherFlags->vtable, FlagsDestroySlot, u32{DestroyAndFree});
+    }
+
+    chunk->otherFlags = nullptr;
+    if (chunk->objects != nullptr)
+    {
+        resources->ReleaseObjects(chunk->objects);
+        MemoryDeallocate2_(chunk->objects);
+        chunk->objects = nullptr;
+    }
+
+    AssignChunkData(DataReferenceOf(chunk), nullptr);
+    chunk->nextFlagSlot = 0;
+}
+
+void SetOtherFlags(ChunkEntry* entry, PersistentFlags* flags)
+{
+    entry->otherFlags = flags;
+}
+
+AiPosition* NearestAiPosition(ChunkEntry* chunk, const Vector4* point, u16* index)
+{
+    AiNavigation* navigation = chunk->navigation;
+    if (navigation == nullptr)
+    {
+        return nullptr;
+    }
+
+    if (index == nullptr)
+    {
+        return navigation->Nearest(point);
+    }
+
+    return navigation->NearestIndex(point, index);
+}
+
+AiPosition* NearestFlaggedAiPosition(ChunkEntry* chunk, const Vector4* point, u16* index, u32 required, u32 ruledOut)
+{
+    AiNavigation* navigation = chunk->navigation;
+    if (navigation == nullptr)
+    {
+        return nullptr;
+    }
+
+    return navigation->NearestWithFlags(point, index, required & 0xFFFF, ruledOut & 0xFFFF);
+}
+
+ChunkEntry* ChunkManager::NewEntry(const char* path, ChunkData* data, void*, PersistentFlags* store)
+{
+    auto* entry = static_cast<ChunkEntry*>(MemoryAllocate(sizeof(ChunkEntry)));
+    u16 index = count;
+    StringConstruct(&entry->path, path);
+    entry->index = index;
+    entry->manager = this;
+    *DataReferenceOf(entry) = data != nullptr ? AddChunkDataReference(data) : nullptr;
+    entry->flags = store;
+    entries[count] = entry;
+    count++;
+    entry->objects = nullptr;
+    entry->otherFlags = nullptr;
+    entry->nextFlagSlot = 0;
+    entry->navigation = nullptr;
+    entry->positions = nullptr;
+    entry->positionCount = 0;
+    entry->paths = nullptr;
+    return entry;
+}
+
+u32 ChunkManager::RemoveChunkEntry(ChunkEntry* entry)
+{
+    UnloadChunkEntry(entry);
+    return 1;
+}
+
+ChunkManager* ChunkManager::Construct(ChunkManager* manager, GameResources* resources, u32 queueDefaultRm2, u32 keepDefaultObjects)
+{
+    manager->defaultReader = nullptr;
+    manager->defaultObjects = nullptr;
+    manager->pathFinder = nullptr;
+    manager->resources = resources;
+    manager->vtable = g_ChunkManagerBaseVTable;
+    InstanceIds::Construct(InstanceIdsOf(manager));
+    g_ChunkManager = manager;
+    RetailLibc::MemorySet(manager, 0, sizeof(manager->count) + sizeof(manager->flags));
+    manager->flags = (queueDefaultRm2 & 1) | (keepDefaultObjects & 1) << 1;
+    g_InstanceIds = InstanceIdsOf(manager);
+    return manager;
+}
+
+void ChunkManager::Destroy(u32 destroyFlags)
+{
+    vtable = g_ChunkManagerBaseVTable;
+    UnloadAllChunks(this);
+    if (defaultReader != nullptr)
+    {
+        static_cast<ItemInterface*>(defaultReader)->Destroy(DestroyAndFree);
+    }
+
+    MemoryDeallocate2_(defaultObjects);
+    InstanceIdsOf(this)->Destroy(DestroyOnly);
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void ChunkManager::LoadDefault(const char* path)
+{
+    ClearCounters();
+    defaultObjects = static_cast<u32*>(MemoryAllocate(DefaultObjectsSize));
+    defaultObjects[0] = 0;
+    auto* reader = static_cast<Rm2Reader*>(MemoryAllocate(sizeof(Rm2Reader)));
+    defaultReader = Rm2Reader::ConstructDefault(reader, path, resources, defaultObjects);
+    if ((flags & FlagQueueDefaultRm2) != 0)
+    {
+        SetUpDefaultParticles();
+        defaultReader->Queue(true, true);
+        InitShadows(0);
+    }
+    else
+    {
+        InitShadows(1);
+        LoadParticles(g_DefaultParticlesFile);
+        defaultReader->Queue(true, false);
+    }
+
+    if ((flags & FlagKeepDefaultObjects) == 0)
+    {
+        resources->TakeObjects(defaultObjects);
+    }
+
+    CallVirtual<void>(resources, resources->vtable, ResourcesReadSlot, 0u);
+}
+
+void ChunkManager::ClearCounters()
+{
+    for (s32& counter : counters)
+    {
+        counter = 0;
+    }
+}
+
+ChunkEntry* FindChunkEntry(ChunkManager* chunks, const char* path)
+{
+    for (u32 index = 0; index < chunks->count; index++)
+    {
+        ChunkEntry* entry = chunks->entries[index];
+        if (!StringNotEqual(&entry->path, path))
+        {
+            return entry;
+        }
+    }
+
+    return nullptr;
+}
+
+ChunkEntry* ChunkOfIndex(void* manager, u16 index)
+{
+    auto* chunks = static_cast<ChunkManager*>(manager);
+    u32 count = chunks->count;
+    for (u32 i = 0; i < count; i++)
+    {
+        ChunkEntry* entry = chunks->entries[i];
+        if (entry->index == index)
+        {
+            return entry;
+        }
+    }
+
+    return nullptr;
+}
+
+ChunkEntry* ChunkOfInstance(void* chunks, InstanceContext* instance)
+{
+    auto* manager = static_cast<ChunkManager*>(chunks);
+    u32 count = manager->count;
+    ChunkData* data = instance->chunk;
+    for (u32 index = 0; index < count; index++)
+    {
+        ChunkDataReference* reference = *DataReferenceOf(manager->entries[index]);
+        if ((reference != nullptr ? reference->data : nullptr) == data)
+        {
+            return manager->entries[index];
+        }
+    }
+
+    return nullptr;
+}
+
+void WriteChunkStates(ChunkManager* chunks, Stream* stream)
+{
+    u32 count = chunks->count;
+    stream->WriteS32(static_cast<s32>(count));
+    for (u32 index = 0; index < count; index++)
+    {
+        ChunkEntry* chunk = chunks->entries[index];
+        StringWrite(&chunk->path, stream);
+        bool ownStore = chunk->flags != nullptr;
+        stream->WriteBool(ownStore);
+        if (ownStore)
+        {
+            PersistentFlags* flags = chunk->flags;
+            CallVirtual<void>(flags, flags->vtable, FlagsWriteSlot, stream);
+        }
+    }
+}
+
+void ResetChunkInstances(ChunkManager* chunks, u32 entry, const u32* filter)
+{
+    StopFilteredObjectNodes(chunks, filter);
+    ChunkListMakeGlobalWhere(GetChunkList(), entry, filter);
+    FreeAll(entry);
+}
+
+void ResetChunks(ChunkManager* chunks, u32, u32 dropInstances)
+{
+    for (u32 index = 0; index < chunks->count; index++)
+    {
+        ChunkEntry* chunk = chunks->entries[index];
+        if (chunk->otherFlags != nullptr)
+        {
+            chunk->otherFlags->Clear();
+        }
+
+        if (dropInstances != 0 && chunk->flags != nullptr)
+        {
+            chunk->flags->Clear();
+        }
+    }
+
+    chunks->ClearCounters();
+}
+
+void SetGameCounter(void* manager, u32 counter, s32 value)
+{
+    static_cast<ChunkManager*>(manager)->counters[counter] = value;
+}
+
+void AddToGameCounter(void* manager, u32 counter, s32 value)
+{
+    static_cast<ChunkManager*>(manager)->counters[counter] += value;
+}
+
+s32 GameCounter(void* manager, u32 counter)
+{
+    return static_cast<ChunkManager*>(manager)->counters[counter];
+}
+
+void UnloadAllChunks(ChunkManager* chunks)
+{
+    for (u32 index = 0; index < chunks->count; index++)
+    {
+        ChunkEntry* entry = chunks->entries[index];
+        if (entry != nullptr)
+        {
+            entry->Destroy(DestroyAndFree);
+        }
+    }
+
+    chunks->count = 0;
+}
+
+PersistentFlags* PersistentFlags::ConstructBase(PersistentFlags* flags)
+{
+    flags->vtable = g_PersistentFlagsBaseVTable;
+    return flags;
+}
+
+void PersistentFlags::BaseDestroy(u32 destroyFlags)
+{
+    vtable = g_PersistentFlagsBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void PersistentFlags::Clear()
+{
+    u32 count = WordCount();
+    u32* words = Words();
+    for (u32 index = 0; index < count; index++)
+    {
+        words[index] = 0;
+    }
+}
+
+void SetPersistentFlag(PersistentFlags* flags, u32 index, u32 value)
+{
+    if (index >= flags->Count())
+    {
+        return;
+    }
+
+    u32* words = flags->Words();
+    u32 bit = 1u << (index & 0x1F);
+    if (value != 0)
+    {
+        words[index >> 5] |= bit;
+    }
+    else
+    {
+        words[index >> 5] &= ~bit;
+    }
+}
+
+void TogglePersistentFlag(PersistentFlags* flags, u32 index)
+{
+    if (index >= flags->Count())
+    {
+        return;
+    }
+
+    flags->Words()[index >> 5] ^= 1u << (index & 0x1F);
+}
+
+u32 GetPersistentFlag(PersistentFlags* flags, u32 index)
+{
+    if (index >= flags->Count())
+    {
+        return 0;
+    }
+
+    return (flags->WordsToRead()[index >> 5] & 1u << (index & 0x1F)) != 0 ? 1 : 0;
 }

@@ -256,6 +256,44 @@ extern "C"
         shader->type = 0x4;
     }
 
+    // The classes of types 3 and 5 to 9, which the factory never makes
+    void ShaderType03SetUp(Shader* shader) RETAIL(func_001D94C0);
+    void ShaderType05SetUp(Shader* shader) RETAIL(func_001D9580);
+    void ShaderType06SetUp(Shader* shader) RETAIL(func_001D9700);
+    void ShaderType07SetUp(Shader* shader) RETAIL(func_001D97C0);
+    void ShaderType08SetUp(Shader* shader) RETAIL(func_001D9880);
+    void ShaderType09SetUp(Shader* shader) RETAIL(func_001D9940);
+
+    void ShaderType03SetUp(Shader* shader)
+    {
+        shader->type = 0x3;
+    }
+
+    void ShaderType05SetUp(Shader* shader)
+    {
+        shader->type = 0x5;
+    }
+
+    void ShaderType06SetUp(Shader* shader)
+    {
+        shader->type = 0x6;
+    }
+
+    void ShaderType07SetUp(Shader* shader)
+    {
+        shader->type = 0x7;
+    }
+
+    void ShaderType08SetUp(Shader* shader)
+    {
+        shader->type = 0x8;
+    }
+
+    void ShaderType09SetUp(Shader* shader)
+    {
+        shader->type = 0x9;
+    }
+
     void ShaderType0ASetUp(Shader* shader)
     {
         shader->type = 0xa;
@@ -506,6 +544,43 @@ extern "C"
         ReadShader(shader, stream);
     }
 
+    void ShaderType03Read(Shader* shader, Stream* stream) RETAIL(FUN_001db460);
+    void ShaderType05Read(Shader* shader, Stream* stream) RETAIL(FUN_001dd030);
+    void ShaderType06Read(Shader* shader, Stream* stream) RETAIL(FUN_001dcb38);
+    void ShaderType07Read(Shader* shader, Stream* stream) RETAIL(FUN_001dcc50);
+    void ShaderType08Read(Shader* shader, Stream* stream) RETAIL(FUN_001dcd68);
+    void ShaderType09Read(Shader* shader, Stream* stream) RETAIL(FUN_001dce80);
+
+    void ShaderType03Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
+    void ShaderType05Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
+    void ShaderType06Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
+    void ShaderType07Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
+    void ShaderType08Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
+    void ShaderType09Read(Shader* shader, Stream* stream)
+    {
+        ReadShader(shader, stream);
+    }
+
     void ShaderType0ARead(Shader* shader, Stream* stream)
     {
         ReadShader(shader, stream);
@@ -722,6 +797,68 @@ extern "C"
     }
 
     u32 ShaderType04Different(Shader* shader, Shader* other)
+    {
+        return Opposite(Same(shader, other, ShaderTypeSameSlot));
+    }
+
+    // Types 5 to 9 are never the same as another (type 3 has neither function)
+    u32 ShaderType05Same(Shader* shader, Shader* other) RETAIL(FUN_001dcff8);
+    u32 ShaderType05Different(Shader* shader, Shader* other) RETAIL(FUN_001dd000);
+    u32 ShaderType06Same(Shader* shader, Shader* other) RETAIL(FUN_001dcb00);
+    u32 ShaderType06Different(Shader* shader, Shader* other) RETAIL(FUN_001dcb08);
+    u32 ShaderType07Same(Shader* shader, Shader* other) RETAIL(FUN_001dcc18);
+    u32 ShaderType07Different(Shader* shader, Shader* other) RETAIL(FUN_001dcc20);
+    u32 ShaderType08Same(Shader* shader, Shader* other) RETAIL(FUN_001dcd30);
+    u32 ShaderType08Different(Shader* shader, Shader* other) RETAIL(FUN_001dcd38);
+    u32 ShaderType09Same(Shader* shader, Shader* other) RETAIL(FUN_001dce48);
+    u32 ShaderType09Different(Shader* shader, Shader* other) RETAIL(FUN_001dce50);
+
+    u32 ShaderType05Same(Shader*, Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType05Different(Shader* shader, Shader* other)
+    {
+        return Opposite(Same(shader, other, ShaderTypeSameSlot));
+    }
+
+    u32 ShaderType06Same(Shader*, Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType06Different(Shader* shader, Shader* other)
+    {
+        return Opposite(Same(shader, other, ShaderTypeSameSlot));
+    }
+
+    u32 ShaderType07Same(Shader*, Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType07Different(Shader* shader, Shader* other)
+    {
+        return Opposite(Same(shader, other, ShaderTypeSameSlot));
+    }
+
+    u32 ShaderType08Same(Shader*, Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType08Different(Shader* shader, Shader* other)
+    {
+        return Opposite(Same(shader, other, ShaderTypeSameSlot));
+    }
+
+    u32 ShaderType09Same(Shader*, Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType09Different(Shader* shader, Shader* other)
     {
         return Opposite(Same(shader, other, ShaderTypeSameSlot));
     }

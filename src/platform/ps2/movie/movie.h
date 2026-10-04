@@ -6,7 +6,10 @@
 // The PS2's movie player. Sony's libmpeg demultiplexes the PSS file's sectors (read through the disc drive's stream) into a ring of
 // video for the IPU and a ring of sound, and decodes the pictures with the IPU into a buffer of 32 bit pixels; an upload chain
 // sends the buffer to the GS's memory from the vertical blank's interrupt, and the sound goes through a ring in the I/O processor's
-// memory that the sound processor's block transfer plays in a loop. libmpeg and libipu stay Sony's (asm)
+// memory that the sound processor's block transfer plays in a loop. libmpeg and libipu are Sony's code in C++ (mpeg.h)
+
+// libmpeg's state (mpeg.h)
+struct MpegSystem;
 
 // libmpeg's decoder (sceMpeg): the picture's size and times, its own state behind sys
 struct Mpeg
@@ -20,33 +23,37 @@ struct Mpeg
     s64 pts2nd;
     s64 dts2nd;
     u64 flags2nd;
-    void* sys;
+    MpegSystem* sys;
 };
 CHECK_SIZE(Mpeg, 0x48);
 
-// libipu's copy of the IPU's DMA channels (sceIpuDmaEnv)
+// libipu's copy of the IPU's DMA channels (sceIpuDmaEnv): the toIPU channel's, the fromIPU channel's and the IPU's bit position
+// and control
 struct IpuDmaEnvironment
 {
+    u32 toMadr;
+    u32 toTadr;
+    u32 toQwc;
+    u32 toChcr;
     u32 fromMadr;
     u32 fromQwc;
     u32 fromChcr;
-    u32 toMadr;
-    u32 toQwc;
-    u32 toChcr;
-    u32 toTadr;
     u32 bitPosition;
     u32 control;
 };
 CHECK_SIZE(IpuDmaEnvironment, 0x24);
 
-// What libmpeg hands a stream's callback: the data of the stream's packet (sceMpegCbDataStr)
+// What libmpeg hands a stream's callback: the stream's packet, its header and data (sceMpegCbDataStr)
 struct MpegStreamData
 {
     u32 type;
-    Mpeg* mpeg;
+    u8* header;
     u8* data;
     u32 length;
+    s64 pts;
+    s64 dts;
 };
+CHECK_SIZE(MpegStreamData, 0x20);
 
 // The sound's header, the first 0x28 bytes of its stream ("SShd" then "SSbd")
 struct MovieAudioHeader
@@ -183,7 +190,8 @@ extern "C"
     s32 sceMpegDelete(Mpeg* mpeg) RETAIL(FUN_002b8498);
     s32 sceMpegReset(Mpeg* mpeg);
     s32 sceMpegIsEnd(Mpeg* mpeg) RETAIL(FUN_002b85c8);
-    // The stream has no more data: libmpeg finishes what it has
+    // The stream has no more data (Sony's sceMpegGetPictureAbort: the picture being decoded is given up, and the decoder needs
+    // sceMpegReset before the next)
     void MpegStreamEnded(Mpeg* mpeg) RETAIL(FUN_002b8538);
     s32 sceMpegGetPicture(Mpeg* mpeg, u8* rgb32, s32 macroblocks);
     s32 sceMpegGetPictureRAW8(Mpeg* mpeg, u8* raw8, s32 macroblocks);

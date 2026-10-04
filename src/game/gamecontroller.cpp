@@ -1,5 +1,7 @@
 #include "game/gamecontroller.h"
 
+#include "game/agentparts.h"
+#include "game/agents.h"
 #include "game/camerarig.h"
 #include "game/chunkdata.h"
 #include "game/chunkfiles.h"
@@ -12,6 +14,7 @@
 #include "game/effects.h"
 #include "game/events.h"
 #include "game/filestream.h"
+#include "game/followcamera.h"
 #include "game/instances.h"
 #include "game/language.h"
 #include "game/math.h"
@@ -20,6 +23,7 @@
 #include "game/movie.h"
 #include "game/pads.h"
 #include "game/particles.h"
+#include "game/place.h"
 #include "game/player.h"
 #include "game/readers.h"
 #include "game/renderer.h"
@@ -32,6 +36,9 @@
 #include "platform/graphics.h"
 #include "platform/stream.h"
 #include "retail/libc.h"
+
+#include <cstddef>
+#include <cstdint>
 
 namespace
 {
@@ -862,7 +869,7 @@ u32 GameController::SwitchCharacter(u32 character, u32 played, u32 unfollow)
     auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, Node16));
     ReferencedObject* followed = follow->object != nullptr ? follow->object->object : nullptr;
     PlayerCharacter* playerCharacter = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodePlayer))->character;
-    AssignReference(&follow->cameraTarget, instance);
+    AssignReference(&follow->camera.rig.ownTarget.followed, instance);
     RegisterNode(follow->owner, 0, follow);
     ReferencedObject* object = follow->object != nullptr ? follow->object->object : nullptr;
     if (object != nullptr)
@@ -1737,7 +1744,7 @@ u32 GameController::StartingPlay(TimeClock*)
             EnableCharacters(1);
             InstanceContext* player = CharacterInstance(&progress);
             auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
-            ResetFollowCamera(follow->camera);
+            follow->camera.rig.Restart();
         }
             [[fallthrough]];
         case StateCredits:
@@ -1798,7 +1805,7 @@ u32 GameController::StartingPlay(TimeClock*)
 
     ResumeSound();
     camera.Prepare(player);
-    video->camera = &cutsceneCamera;
+    video->cameraTrack.camera = &cutsceneCamera;
     oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
     hudDelay = static_cast<s32>(g_ClockUnitsPerSecond * 0.25f);
     StringAssign(&progress.startChunk, "");
@@ -2276,4 +2283,206 @@ void GameController::ResetGame(u32 entry)
     BackgroundWork(false);
     ResetChunks(chunkManager, entry, dropInstances);
     UpdateGlobalInstances();
+}
+
+namespace
+{
+// The camera shown, the state word's bits 19-22 (0 the played character's follow camera, 3 the game's rig, 4 the cutscenes')
+constexpr u32 CameraShownShift = 19;
+constexpr u64 CameraShownMask = 0xF;
+constexpr u32 ShowsFollowCamera = 0;
+constexpr u32 ShowsGameRig = 3;
+constexpr u32 ShowsCutsceneRig = 4;
+// The camera's instance's bit 17 keeps it in its chunk (the follow node's CanChangeChunk)
+constexpr u32 CameraStaysFlag = 0x20000;
+// The player's held: the character's bit at 0x1C (its agent's), the instance's flag 0x80000 every character but the fifth loses
+// when it's let go
+constexpr u32 CharacterHeld = 0x1;
+constexpr u32 SolidModelFlag = 0x80000;
+// The character part's reset slot (its vtable's 2), the kind it's given when the player's let go
+constexpr u32 PartResetSlot = 2;
+constexpr u32 PartResetKind = 3;
+
+// An instance's place as the retail code reads it, also when there's no instance (the word at address 8 then)
+ObjectPlace* RetailPlaceOf(const InstanceContext* instance)
+{
+    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(instance) + offsetof(ReferencedObject, place);
+    return *reinterpret_cast<ObjectPlace* const*>(address);
+}
+
+InstanceContext* ShownCamera(GameController* controller)
+{
+    Reference* shown = controller->view.cameraObject;
+    return shown != nullptr ? static_cast<InstanceContext*>(shown->object) : nullptr;
+}
+
+struct HeldCharacter
+{
+    ControlsNode* controls;
+    CharacterAgent* character;
+};
+
+HeldCharacter PlayedCharacter(GameController* controller)
+{
+    InstanceContext* player = CharacterInstance(&controller->progress);
+    auto* controls = static_cast<ControlsNode*>(GetGameNode(&player->nodes, NodeControls));
+    auto* node = static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodePlayer));
+    return {controls, reinterpret_cast<CharacterAgent*>(node->character)};
+}
+
+CharacterPart* PartOf(CharacterAgent* character)
+{
+    return static_cast<CharacterPart*>(character->part);
+}
+}
+
+InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset)
+{
+    controller->states = (controller->states & ~(CameraShownMask << CameraShownShift)) |
+                         static_cast<u64>(camera & CameraShownMask) << CameraShownShift;
+    switch (camera)
+    {
+    case ShowsFollowCamera:
+    {
+        InstanceContext* player = CharacterInstance(&controller->progress);
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
+        auto* followCamera = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+        ShowFollowCamera(&follow->camera, followCamera, player, reset);
+        // Unchecked: the follow node always has a camera once it's given its instance
+        followCamera->flags &= ~CameraStaysFlag;
+        AssignReference(&controller->view.cameraObject, followCamera);
+        return followCamera;
+    }
+    case ShowsGameRig:
+    {
+        InstanceContext* shown = ShownCamera(controller);
+        auto* lens = static_cast<CameraLensNode*>(GetGameNode(&shown->nodes, NodeCameraLens));
+        // The player's place (without a player played, the word at address 8 taken for it)
+        ObjectPlace* place = RetailPlaceOf(CharacterInstance(&controller->progress));
+        place->SyncPosition();
+        Vector4 position = place->position;
+        lens->SetRig(&controller->camera, reset);
+        controller->camera.ownTarget.end = position;
+        return shown;
+    }
+    case ShowsCutsceneRig:
+    {
+        InstanceContext* shown = ShownCamera(controller);
+        auto* lens = static_cast<CameraLensNode*>(GetGameNode(&shown->nodes, NodeCameraLens));
+        // The cutscenes' rig without followers or a target, taking nothing from the camera trigger, not smoothed
+        CutsceneCameraRig& rig = controller->cutsceneCamera;
+        rig.DropCameraFollower();
+        rig.cameraFollower = nullptr;
+        rig.bits = ((rig.bits & ~CameraRig::BitOwnsCameraFollower & ~CameraRig::BitIgnoresTrigger) | CameraRig::BitIgnoresTrigger) &
+                   ~CameraRig::BitSmoothed;
+        rig.DropTargetFollower();
+        rig.targetFollower = nullptr;
+        rig.bits &= ~CameraRig::BitOwnsTargetFollower;
+        rig.DropTarget();
+        rig.target = nullptr;
+        rig.bits &= ~CameraRig::BitOwnsTarget;
+        lens->SetRig(&rig, reset);
+        return shown;
+    }
+    default:
+        return nullptr;
+    }
+}
+
+void BlendToCamera(GameController* controller, u32 camera, const s32* ticks, u32 reset, u32 curve)
+{
+    u8 blendCurve = static_cast<u8>(curve);
+    if (camera == ShowsFollowCamera)
+    {
+        InstanceContext* player = CharacterInstance(&controller->progress);
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
+        auto* followCamera = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+        auto* lens = static_cast<CameraLensNode*>(GetGameNode(&followCamera->nodes, NodeCameraLens));
+        CameraRig* rig = &follow->camera.rig;
+        if (reset != 0)
+        {
+            rig->ResetVirtual(followCamera);
+        }
+
+        lens->BlendTo(rig, *ticks, blendCurve);
+    }
+    else if (camera == ShowsGameRig)
+    {
+        auto* lens = static_cast<CameraLensNode*>(GetGameNode(&ShownCamera(controller)->nodes, NodeCameraLens));
+        lens->BlendTo(&controller->camera, *ticks, blendCurve);
+    }
+}
+
+void GameController::HoldPlayer()
+{
+    HeldCharacter held = PlayedCharacter(this);
+    CharacterAgent* character = held.character;
+    character->unknown1C |= CharacterHeld;
+    held.controls->bits |= ControlsNode::BitMotionDriven;
+    // What the reset loses of the part kept: being tied to the other character (only the leader isn't set back) and the hit
+    // points
+    CharacterPart* part = PartOf(character);
+    bool leader = (part->moveBits & CharacterPart::LinkedFirst) != 0;
+    bool second = (part->moveBits & CharacterPart::LinkedSecond) != 0;
+    u32 hitPoints = part->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+    if (!leader)
+    {
+        character->Reset();
+    }
+
+    if (second)
+    {
+        PartOf(character)->moveBits |= CharacterPart::LinkedSecond;
+    }
+    else if (leader)
+    {
+        PartOf(character)->moveBits |= CharacterPart::LinkedFirst;
+    }
+
+    part = PartOf(character);
+    part->flags = (part->flags & ~(CreaturePart::HitPointsMask << CreaturePart::HitPointsShift)) |
+                  hitPoints << CreaturePart::HitPointsShift;
+}
+
+void GameController::ReleasePlayer(u32 resume)
+{
+    HeldCharacter held = PlayedCharacter(this);
+    CharacterAgent* character = held.character;
+    character->unknown1C &= ~CharacterHeld;
+    held.controls->bits &= ~ControlsNode::BitMotionDriven;
+    CharacterPart* part = PartOf(character);
+    bool leader = (part->moveBits & CharacterPart::LinkedFirst) != 0;
+    u32 hitPoints = part->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+    if (!leader && resume != 0)
+    {
+        CallVirtual<void>(part, part->vtable, PartResetSlot, PartResetKind);
+        character->Reset();
+    }
+
+    part = PartOf(character);
+    part->flags = (part->flags & ~(CreaturePart::HitPointsMask << CreaturePart::HitPointsShift)) |
+                  hitPoints << CreaturePart::HitPointsShift;
+    for (u32 index = 0; index < GameProgress::Characters; index++)
+    {
+        if (index == FifthCharacter)
+        {
+            continue;
+        }
+
+        InstanceContext* instance = progress.Instance(index);
+        if (instance != nullptr)
+        {
+            instance->flags &= ~SolidModelFlag;
+        }
+    }
+}
+
+u32 CrateGivesSecondContents(void*)
+{
+    return 0;
+}
+
+s32 CrateContentsCount(void*, u32 least, u32 most)
+{
+    return RandomFrom(least, most - least);
 }

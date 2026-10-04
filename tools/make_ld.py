@@ -8,13 +8,14 @@ defines takes its asm's place: its asm object isn't linked. Addresses splat coul
 .vutext, the middle of a function or a data blob) are defined from the section, function or file they're in, so they move with
 it; addresses outside the program (hardware registers, uncached and scratchpad memory) stay as they are. The Sony SDK functions
 ps2sdk.txt lists aren't linked either: PS2SDK's libraries take their place, their sections go after src/'s. Neither are the
-game's functions retired.txt lists, whose work the C++ does elsewhere.
+game's functions retired.txt lists, whose work the C++ does elsewhere, nor fragments.txt's bytes between functions that nothing
+reaches.
 
     tools/make_ld.py <output> [--nm NM] [--matching] [--shift N] [src objects...]
 
 --nm is the toolchain's nm, which tells what src/'s objects define (tools/local_config.py's by default).
 
---matching leaves ps2sdk.txt and retired.txt out: every retail function is linked, as the retail executable has them.
+--matching leaves ps2sdk.txt, retired.txt and fragments.txt out: every retail function is linked, as the retail executable has them.
 
 --shift puts N bytes before the first function, moving everything: the test that nothing depends on where things are.
 """
@@ -54,18 +55,19 @@ def text_functions():
 
 
 def defined_functions(objects):
+    """What src/'s objects define: functions, and data that the asm kept in .text (libmpeg's lq mask D_002BF5B0)"""
     if not objects:
         return set()
 
     output = subprocess.run([NM, "--defined-only", "-g", *objects], capture_output=True, text=True, check=True).stdout
-    return {parts[2] for parts in (line.split() for line in output.splitlines()) if len(parts) == 3 and parts[1] in "TW"}
+    return {parts[2] for parts in (line.split() for line in output.splitlines()) if len(parts) == 3 and parts[1] in "TWRD"}
 
 
 def dropped_functions():
     """ps2sdk.txt's Sony SDK functions (PS2SDK has them) and retired.txt's game functions (the C++ does their work elsewhere,
-    the platform layer's start-up for instance), and ps2sdk.txt's aliases"""
+    the platform layer's start-up for instance), fragments.txt's unreachable bytes, and ps2sdk.txt's aliases"""
     names, aliases = set(), {}
-    for file in ("ps2sdk.txt", "retired.txt"):
+    for file in ("ps2sdk.txt", "retired.txt", "fragments.txt"):
         for line in (HERE / file).read_text().splitlines():
             line = line.split("#", 1)[0].strip()
             if "=" in line:

@@ -35,6 +35,20 @@ struct LayoutInstances
         ContextCountMask = 0x3FFF,
     };
 
+    // The kinds' lists
+    enum Kind : u32
+    {
+        KindTemplates,
+        KindObjectInstances,
+        KindAiPositions,
+        KindAiPaths,
+        KindPositions,
+        KindPaths,
+        KindTriggers,
+        KindCameras,
+        KindSurfaces,
+    };
+
     u32 flags;
     GameResources* resources;
     ChunkEntry* chunk;
@@ -49,6 +63,13 @@ struct LayoutInstances
     // Once every kind is read: the chunk's AI navigation linked, every object instance's context linked to the contexts of the
     // instances it names, and the contexts' table let go
     void Finish() RETAIL(FUN_00266ba0);
+    // Once the chunk has what was read: the lists of what it keeps let go (the templates the factory has, the AI positions and
+    // paths, the positions, the paths and the surfaces), the object instances (their contexts made), the triggers and the
+    // cameras destroyed with their lists
+    void ReleaseRead() RETAIL(FUN_00266d90);
+    // Every element of its lists destroyed, then the lists freed
+    void DestroyElements() RETAIL(FUN_002670f0);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00266628);
 
     // Each kind's element registered as it's read (the index it gets in its list, the count of the kind): an instance template
     // goes to the factory's templates, an object instance gets a context (the factory makes it with the flags of the layout) linked

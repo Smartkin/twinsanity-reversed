@@ -1,7 +1,10 @@
 #include "game/navigation.h"
 
+#include "game/math.h"
 #include "game/memory.h"
 #include "game/stream.h"
+
+EABI_EXPORT(FUN_00252500, SetNearFocusWeight);
 
 namespace
 {
@@ -766,4 +769,29 @@ void Route::Leave()
         u32 cost = position->bits >> AiPosition::CostShift & AiPosition::CostMask;
         position->bits = (position->bits & ~CostBits) | ((cost - 1) & AiPosition::CostMask) << AiPosition::CostShift;
     }
+}
+
+void SetNearFocusWeight(PathFinder* finder, f32 weight)
+{
+    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+    const Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
+    Vector4 way = finder->routeEnd;
+    way.x = way.x - finder->routeStart.x;
+    way.y = way.y - finder->routeStart.y;
+    way.z = way.z - finder->routeStart.z;
+    f32 inverse = InverseLength(&way, LengthEpsilon);
+    f32 x = way.x * inverse;
+    f32 y = way.y * inverse;
+    f32 z = way.z * inverse;
+    Vector4 across;
+    across.x = up.y * z - up.z * y;
+    across.y = up.z * x - up.x * z;
+    across.z = up.x * y - up.y * x;
+    f32 dx = finder->routeStart.x - finder->routeEnd.x;
+    f32 dy = finder->routeStart.y - finder->routeEnd.y;
+    f32 dz = finder->routeStart.z - finder->routeEnd.z;
+    f32 scale = weight * __builtin_sqrtf(dx * dx + dy * dy + dz * dz);
+    finder->focus.x = finder->focus.x + across.x * scale;
+    finder->focus.y = finder->focus.y + across.y * scale;
+    finder->focus.z = finder->focus.z + across.z * scale;
 }

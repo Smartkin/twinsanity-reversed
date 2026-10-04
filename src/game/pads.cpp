@@ -761,4 +761,9 @@ extern "C"
             g_VibrationRequests[i].bits &= 0xFFFF8000;
         }
     }
+
+    void ConstructPadsModule()
+    {
+        InitialiseVibrationRequests(1, 0xFFFF);
+    }
 }

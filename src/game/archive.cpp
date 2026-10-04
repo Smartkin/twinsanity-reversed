@@ -317,6 +317,34 @@ void ArchiveSectionReader::Destroy(u32 flags)
     }
 }
 
+void ArchiveFilesReleaser::Destroy(u32 flags)
+{
+    vtable = g_SectionReaderVTable;
+    if ((flags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void ArchiveFilesReleaser::Read(u8*, u32, ReaderStack*)
+{
+    Archive* archive = g_CurrentArchive;
+    if (archive->files != nullptr)
+    {
+        for (ArchiveFile* file = archive->files + ArrayCount(archive->files); file != archive->files;)
+        {
+            file--;
+            StringDestroy(&file->path);
+        }
+
+        DeleteArray(archive->files);
+    }
+
+    archive->capacity = 0;
+    archive->files = nullptr;
+    archive->count = 0;
+}
+
 void ArchiveSectionReader::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream table;
@@ -354,4 +382,13 @@ void ArchiveSectionReader::Read(u8* data, u32 size, ReaderStack*)
     StringAssign(&archive->path, path.string);
     // The table's memory is the stream's: it's freed with it
     table.Destroy(0);
+}
+
+void SectionReader::BaseDestroy(u32 flags)
+{
+    vtable = g_SectionReaderVTable;
+    if ((flags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
 }

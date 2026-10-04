@@ -543,3 +543,61 @@ void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matr
 {
     SetRigidModelDma_(model, matrix, lights.directions, lights.colours, lights.ambient, mode);
 }
+
+namespace Platform::Graphics
+{
+void DrawPlacedModel(RigidModel* model, ChunkView* view, const Matrix4x4* world)
+{
+    SetPlacedModelDMA(model, reinterpret_cast<PlacedObject*>(view), world);
+}
+
+RigidModel* LodModelAt(Lod* lod, u32 distance)
+{
+    return LodMeshAt(lod, distance);
+}
+}
+
+namespace Platform::Graphics
+{
+void BeginScreenModel()
+{
+    StartScreenModel();
+}
+
+void SetScreenModelMaterial(Material* material)
+{
+    ScreenModelMaterial(material);
+}
+
+void SetScreenModelColour(u32 colour)
+{
+    ScreenModelColour(colour);
+}
+
+void AddScreenModelVertex(const Vector4* place)
+{
+    ScreenModelVertex(place, 0);
+}
+
+ScreenModel* EndScreenModel()
+{
+    return FinishScreenModel();
+}
+
+// Its packet's memory and then the model's
+void DeleteScreenModel(ScreenModel* model)
+{
+    if (model->packet != 0)
+    {
+        MemoryDeallocate2_(reinterpret_cast<void*>(model->packet));
+    }
+
+    MemoryDeallocate2_(model);
+}
+
+void DrawScreenModel(ScreenModel* model, const Matrix4x4* toScreen, const Matrix4x4* toClip, const Vector4* clip)
+{
+    constexpr u32 ClippedMode = 2;
+    SetScreenModelDMA(model, toScreen, ClippedMode, toClip, clip);
+}
+}

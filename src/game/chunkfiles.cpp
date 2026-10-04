@@ -1,14 +1,18 @@
 #include "game/chunkfiles.h"
+#include "game/dynamicscenery.h"
 
 #include "game/graphicstables.h"
 #include "game/resources.h"
 
 #include "game/chunkloading.h"
 #include "game/collision.h"
+#include "game/instancesection.h"
 #include "game/disk.h"
 #include "game/memory.h"
+#include "game/particles.h"
 #include "game/readers.h"
 #include "game/reference.h"
+#include "game/scenery.h"
 #include "game/stream.h"
 #include "retail/libc.h"
 
@@ -23,15 +27,17 @@ extern "C"
     // ".sm2" and ".rm2"
     extern const char* g_Sm2Extension RETAIL(D_0030A010);
     extern const char* g_Rm2Extension RETAIL(D_0030A160);
-
-    // Tells the chunk's scenery its data is read
-    void ChunkSceneryRead(ChunkData* data) RETAIL(FUN_001f22a0);
-
-    void Rm2ReaderDestroyInstances(Rm2Reader* reader) RETAIL(FUN_0026a4f0);
-
-    void ReadScenery(ChunkData* data, MemoryStream* stream);
-    void LoadDynamicScenery(void* scenery, MemoryStream* stream);
-    void ReadRM2(Rm2Reader* reader, u32 id, u32 offset, MemoryStream* stream);
+    // The extensions of the RM2's other files
+    extern const char g_Ga2Extension[] RETAIL(D_0030A168);
+    extern const char g_Gc2Extension[] RETAIL(D_0030A170);
+    extern const char g_Ge2Extension[] RETAIL(D_0030A178);
+    extern const char g_Gw2Extension[] RETAIL(D_0030A180);
+    extern const char g_Ma2Extension[] RETAIL(D_0030A188);
+    extern const char g_Mc2Extension[] RETAIL(D_0030A190);
+    extern const char g_Me2Extension[] RETAIL(D_0030A198);
+    extern const char g_PtlExtension[] RETAIL(D_0030A1A0);
+    extern const char g_Su2Extension[] RETAIL(D_0030A1A8);
+    extern const char g_TriExtension[] RETAIL(D_0030A1B0);
 }
 
 namespace
@@ -39,6 +45,12 @@ namespace
 constexpr u32 FileSectionType = 1;
 constexpr u32 Sm2Sections = 7;
 constexpr u32 Rm2Sections = 12;
+// The RM2's sections past its layouts' instances (sections 0-7)
+constexpr u32 Rm2Layouts = 8;
+constexpr u32 Rm2ParticlesSection = 8;
+constexpr u32 Rm2CollisionSection = 9;
+constexpr u32 Rm2CodeSection = 10;
+constexpr u32 Rm2GraphicsSection = 11;
 
 ChunkData* ChunkDataOf(Sm2Loader* loader)
 {
@@ -129,10 +141,10 @@ void Sm2Reader::Unload()
     ChunkData* data = ChunkDataOf(loader);
     if (data != nullptr)
     {
-        u8* scenery = data->scenery;
+        SceneryCell* scenery = data->scenery;
         if (scenery != nullptr)
         {
-            CallVirtual<void>(scenery, *reinterpret_cast<const GccVTableEntry**>(scenery + 0x44), 1, 3u);
+            scenery->VirtualDestroy(3);
         }
 
         data->scenery = nullptr;
@@ -227,14 +239,14 @@ Rm2Reader* Rm2Reader::Construct(Rm2Reader* reader, ChunkEntry* entry)
     reader->entry = entry;
     auto* data = static_cast<ChunkData*>(entry->data != nullptr ? static_cast<void*>(entry->data->object) : nullptr);
     void* collision = data->collision;
-    reader->bits = 0;
+    RetailLibc::MemorySet(&reader->bits, 0, sizeof(reader->bits));
     reader->bits |= 2;
     reader->collision = ConstructCollisionHolder(static_cast<CollisionData**>(MemoryAllocate(sizeof(CollisionData*))),
                                                  static_cast<CollisionData*>(collision));
-    for (u32 i = 0; i < 8; i++)
+    for (u32 layout = 0; layout < Rm2Layouts; layout++)
     {
-        reader->unknown128[i] = nullptr;
-        reader->unknown148[i] = nullptr;
+        reader->layouts[layout] = nullptr;
+        reader->instanceItems[layout] = nullptr;
     }
 
     return reader;
@@ -244,7 +256,7 @@ void Rm2Reader::Destroy(u32 flags)
 {
     vtable = g_Rm2ReaderVTable;
     MemoryDeallocate2_(collision);
-    Rm2ReaderDestroyInstances(this);
+    DestroyInstances();
     code.Unload(DestroyOnly);
     UnloadGraphics(&graphics, 2);
     StringDestroy(&path);
@@ -335,6 +347,122 @@ void Rm2Reader::Queue(bool now, bool queue)
     }
 }
 
+Rm2Reader* Rm2Reader::ConstructDefault(Rm2Reader* reader, const char* path, GameResources* resources, u32* objects)
+{
+    reader->vtable = g_Rm2ReaderVTable;
+    StringConstruct(&reader->path, path);
+    reader->resources = resources;
+    reader->objects = objects;
+    reader->collision = nullptr;
+    InitGraphicsItem(&reader->graphics);
+    CodeItem::Construct(&reader->code, resources, objects);
+    reader->entry = nullptr;
+    RetailLibc::MemorySet(&reader->bits, 0, sizeof(reader->bits));
+    // Its graphics finish without registering
+    reader->bits |= 3;
+    for (u32 layout = 0; layout < Rm2Layouts; layout++)
+    {
+        reader->layouts[layout] = nullptr;
+        reader->instanceItems[layout] = nullptr;
+    }
+
+    return reader;
+}
+
+void Rm2Reader::DestroyInstances()
+{
+    for (u32 layout = 0; layout < Rm2Layouts; layout++)
+    {
+        if (layouts[layout] != nullptr)
+        {
+            layouts[layout]->ReleaseRead();
+            if (layouts[layout] != nullptr)
+            {
+                layouts[layout]->Destroy(DestroyAndFree);
+            }
+        }
+
+        if (instanceItems[layout] != nullptr)
+        {
+            instanceItems[layout]->Destroy(DestroyAndFree);
+        }
+
+        layouts[layout] = nullptr;
+        instanceItems[layout] = nullptr;
+    }
+}
+
+void Rm2Reader::ReadSection(u32 id, u32 offset, MemoryStream* stream)
+{
+    switch (id)
+    {
+    case Rm2ParticlesSection:
+        ReadParticleData(this, stream);
+        return;
+    case Rm2CollisionSection:
+        QueueCollisionSection(collision, static_cast<s32>(offset));
+        return;
+    case Rm2CodeSection:
+        AddSectionToLoadQueue(&code, offset);
+        return;
+    case Rm2GraphicsSection:
+        AddSectionToLoadQueue(&graphics, offset);
+        return;
+    default:
+        break;
+    }
+
+    // The other sections are the layouts' instances: layouts 0-2 and 7 are the chunk's own
+    u32 chunkOwn = id < 3 || id == 7 ? 1 : 0;
+    auto* layout = static_cast<LayoutInstances*>(MemoryAllocate(sizeof(LayoutInstances)));
+    layout = LayoutInstances::Construct(layout, bits & 1, chunkOwn, resources, entry);
+    auto* item = static_cast<InstanceSectionItem*>(MemoryAllocate(sizeof(InstanceSectionItem)));
+    item = InstanceSectionItem::Construct(item, layout);
+    layouts[id] = layout;
+    instanceItems[id] = item;
+    AddSectionToLoadQueue(item, offset);
+}
+
+void Rm2Reader::FilePath(u32 kind, String* file)
+{
+    StringAssign(file, path.string);
+    switch (kind)
+    {
+    case 0:
+        StringAppend(file, g_Ma2Extension);
+        break;
+    case 1:
+        StringAppend(file, g_Mc2Extension);
+        break;
+    case 2:
+        StringAppend(file, g_Me2Extension);
+        break;
+    case 3:
+        StringAppend(file, g_Ga2Extension);
+        break;
+    case 4:
+        StringAppend(file, g_Gc2Extension);
+        break;
+    case 5:
+        StringAppend(file, g_Ge2Extension);
+        break;
+    case 6:
+        StringAppend(file, g_Gw2Extension);
+        break;
+    case 7:
+        StringAppend(file, g_Su2Extension);
+        break;
+    case 8:
+        StringAppend(file, g_PtlExtension);
+        break;
+    case 9:
+        StringAppend(file, g_TriExtension);
+        break;
+    default:
+        break;
+    }
+}
+
 void Rm2SectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
@@ -348,7 +476,7 @@ void Rm2SectionReader::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream stream;
     MemoryStream::Construct(&stream, data, size, 0, 0x40);
-    ReadRM2(static_cast<Rm2Reader*>(item), id, offset, &stream);
+    static_cast<Rm2Reader*>(item)->ReadSection(id, offset, &stream);
     stream.Destroy(2);
 }
 

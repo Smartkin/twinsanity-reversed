@@ -126,6 +126,12 @@ struct SaveSummary
     u32 progress;
     // The time played (clock units)
     s32 time;
+
+    // Its vtable (BanksHeader_methods, 0x14 bytes in) over game/savedevice.h's FolderSummary's (game/savemanager.cpp): 1 the
+    // destructor (the folder summary's), 5 and 6 the progress and the time read and written before the folder summary's part
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00179ae0);
+    void Read(Stream* stream) RETAIL(ReadBanksHeader);
+    void Write(Stream* stream) RETAIL(WriteBanksHeader);
 };
 
 // A save slot on the save manager's slots page (D_002F5180): its save's level picture and name, the time played (hours and
@@ -205,7 +211,8 @@ public:
     FloatCurve particleTurns[2];
     Emitter2D emitters[8];
     SparkleEffect sparkle;
-    u32 unknownB40[3];
+    // The materials of the HUD's icons (SetHudIcon's slots: sprites 3 to 5), none for the flat material
+    struct MaterialResource* hudIcons[3];
     Sprite sprites[46];
     Sprite tiles[8];
     TextLine textLine;
@@ -328,12 +335,12 @@ public:
 
     // The first of its menus that's shown (but the game over's and the save manager's), none without one
     MenuWidget* ShownMenu() RETAIL(FUN_001715a0);
-    // Its material for the 2D particles and its particle sprite, and the emitters' sprites (still asm)
+    // Its material for the 2D particles and its particle sprite, and the emitters' sprites
     void SetUpParticles() RETAIL(FUN_0016d0d0);
-    // The HUD's values from the game's progress and the character (still asm)
+    // The HUD's values from the game's progress and the character
     void UpdateHud(PlayerCharacter* character) RETAIL(FUN_00169320);
-    // The HUD's icon of a slot (sprites 3 to 5: 0 the boss's, 1 whack-a-worm's) shows the game object's (its model's material;
-    // 0xFFFF the flat shader, still asm)
+    // The HUD's icon of a slot (sprites 3 to 5: 0 the boss's, 1 whack-a-worm's) shows an OGI's (its first rigid model's first
+    // material; 0xFFFF the flat material; nothing changes for an ID without an OGI)
     void SetHudIcon(u32 slot, const u16* object) RETAIL(FUN_00171008);
     // Lives added (0 to 100), the count shown and rocked; celebrated, the extra life's head (sprite45E8: the character's) appears
     // sliding and spinning and its sound plays
@@ -405,7 +412,7 @@ extern "C"
     extern const GccVTableEntry g_SliderWidgetVTable[] RETAIL(D_002F53B8);
     // -0, a constant of OLEG's file's
     extern f32 g_MinusZero RETAIL(D_00309A44);
-    // OLEG's file's places (its static initialiser fills them, still asm)
+    // OLEG's file's places (its static initialiser fills them)
     extern Vector2 g_OlegPlace628 RETAIL(D_0030A628);
     extern Vector2 g_OlegPlace630 RETAIL(D_0030A630);
     // The menus' items' place and size (the lists' drawers')
@@ -489,7 +496,7 @@ extern "C"
     // The pulse effect (a curve scale of 1, 1.2, 1.3 and 1)
     CurveScaleEffect* PulseEffectConstruct(CurveScaleEffect* effect) RETAIL(FUN_00167160);
 
-    // OLEG's pages (still asm), their parent page given or none: the screen's position (moved by the directions), the
+    // OLEG's pages, their parent page given or none: the screen's position (moved by the directions), the
     // extras, the main menu ("crash twinsanity"), the game over, the pause menu (handed what it doesn't use), the confirmations of
     // disabling the autosave and of quitting, an autosave notice's (continuing to the resume page, or a link that leads nowhere
     // when it's told to), a world's levels (its four, each with a ring and a widget of its own chained after the menu's), the

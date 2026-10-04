@@ -228,3 +228,52 @@ extern "C"
         EndPacket(bucket, reinterpret_cast<u8*>(flush + 4));
     }
 }
+
+namespace Platform::Graphics
+{
+void SetUpShadowPass()
+{
+    constexpr u32 PaletteEntries = 0x100;
+    g_ShadowTextureAddress = FUN_001c0fe0();
+    auto* words = reinterpret_cast<u32*>(g_ShadowSetUp);
+    words[0] = 0x60000046;
+    words[1] = 0;
+    words[2] = 0x13000000;
+    words[3] = 0x50000046;
+    PairWriter pairs{reinterpret_cast<u64*>(g_ShadowSetUp + 0x10)};
+    // The palette's upload: BITBLTBUF (to the slot, 32 bit), TRXPOS, TRXREG (16 by 16), TRXDIR, then the image of 64 quad words
+    pairs.Write(0x1000000000000004ull, 0xE);
+    pairs.Write(static_cast<u64>(g_ShadowTextureAddress) << 32 | 0x1000000000000ull, 0x50);
+    pairs.Write(0, 0x51);
+    pairs.Write(0x1000000010ull, 0x52);
+    pairs.Write(0, 0x53);
+    pairs.Write(0x0800000000008040ull, 0);
+    auto* palette = reinterpret_cast<u32*>(pairs.at);
+    u32 alpha = 0xFF000000;
+    for (u32 index = 0; index < PaletteEntries; index++)
+    {
+        // The GS's palette order (CSM1): bits 3 and 4 of the index swapped
+        u32 slot = (index & 0xE7) | (index & 0x8) << 1 | (index & 0x10) >> 1;
+        palette[slot] = alpha | 0xFFFFFF;
+        alpha = alpha + 0xFF000000;
+    }
+}
+
+void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4* toCamera, const Matrix4x4* world)
+{
+    SetDefaultMeshDMA(mesh, toScreen, toCamera, world);
+}
+}
+
+namespace Platform::Graphics
+{
+void BeginShadows()
+{
+    StartShadows(nullptr);
+}
+
+void EndShadows()
+{
+    ApplyShadows(nullptr);
+}
+}

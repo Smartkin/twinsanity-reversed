@@ -7,11 +7,13 @@
 
 #include "game/chunkfiles.h"
 #include "game/controllers.h"
+#include "game/language.h"
 #include "game/memory.h"
 #include "game/objects.h"
 #include "game/sound.h"
 #include "game/stream.h"
 #include "game/string.h"
+#include "platform/graphics.h"
 #include "retail/libc.h"
 
 extern "C"
@@ -99,6 +101,10 @@ extern "C"
     extern const GccVTableEntry g_AnimationReaderVTable[] RETAIL(AnimationItemReader_methods);
     extern const GccVTableEntry g_ModelReaderVTable[] RETAIL(OgiItemReader_Methods);
     extern const GccVTableEntry g_CodeModelReaderVTable[] RETAIL(CodeModelItemReader_methods);
+    extern const GccVTableEntry g_CodeSubsectionReaderVTable[] RETAIL(CodeSubSectionReader_Methods);
+    // The code item's vtable slot 5: the reader of a subsection (none when the item's size is 0; the subsections it reads get
+    // their header's size, the voices of other languages none)
+    SectionReader* CodeItemGetReader(CodeItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_00266540);
     // The graphics tables' static deletion queues
     extern DeletionQueue g_MaterialQueue RETAIL(D_003B6F20);
     extern DeletionQueue g_TextureQueue RETAIL(D_003B7B20);
@@ -149,6 +155,12 @@ extern "C"
     void CodeModelTableNothing4() RETAIL(FUN_0026cb70);
     void SoundTableNothing3() RETAIL(FUN_0026c9a8);
     void SoundTableBaseNothing4() RETAIL(FUN_0026c9b8);
+    // The resources' base's vtable slots 2 and 3 do nothing
+    void ResourcesBaseNothing2() RETAIL(FUN_002685c0);
+    void ResourcesBaseNothing3() RETAIL(FUN_002685c8);
+    // A sound table's slot 4: the samples of the sounds the section read (by the order they were read in) queued on the first
+    // readers' storage, each at its offset past where the section ended
+    void SoundTableQueueSamples(ResourceTable* table, s32 read, u32 count, u32 end) RETAIL(FUN_00269d50);
 }
 
 namespace
@@ -159,13 +171,13 @@ constexpr u32 TableSize = 0x18;
 constexpr u32 ScriptVTableOffset = 0x18;
 constexpr u32 ScriptDestroySlot = 1;
 constexpr u32 ScriptResolveSlot = 3;
-// A table's vtable function that lets every resource go
+// A table's vtable function that lets every resource go, and its destructor
 constexpr u32 TableClearSlot = 2;
+constexpr u32 TableDestroySlot = 1;
 
 // A table made with its base's vtable and a capacity, every resource none
-ResourceTable* MakeTable(const GccVTableEntry* base, u32 capacity, bool bit15)
+void ConstructTable(ResourceTable* table, const GccVTableEntry* base, u32 capacity, bool bit15)
 {
-    auto* table = static_cast<ResourceTable*>(MemoryAllocate(TableSize));
     table->vtable = base;
     table->unknown0C = 0;
     table->queue = nullptr;
@@ -178,7 +190,12 @@ ResourceTable* MakeTable(const GccVTableEntry* base, u32 capacity, bool bit15)
     {
         table->items[index] = nullptr;
     }
+}
 
+ResourceTable* MakeTable(const GccVTableEntry* base, u32 capacity, bool bit15)
+{
+    auto* table = static_cast<ResourceTable*>(MemoryAllocate(TableSize));
+    ConstructTable(table, base, capacity, bit15);
     return table;
 }
 
@@ -258,12 +275,68 @@ void ReleaseSound(void* sound)
 {
     static_cast<GameSound*>(sound)->Destroy(DestroyAndFree);
 }
+
+// A table destroyed (none: nothing)
+void DestroyResourceTable(ResourceTable* table)
+{
+    if (table != nullptr)
+    {
+        CallVirtual<void>(table, table->vtable, TableDestroySlot, u32{DestroyAndFree});
+    }
+}
+
+// Everything waiting in a queue deleted, then the queue freed (none: nothing)
+template <typename Release>
+void EmptyQueue(DeletionQueue* queue, Release release)
+{
+    if (queue == nullptr)
+    {
+        return;
+    }
+
+    while (queue->DeleteFirst(release))
+    {
+    }
+
+    MemoryDeallocate2_(queue);
+}
+
+// A queue's oldest deleted (none: nothing). Whether there was one
+template <typename Release>
+u32 DeleteOldest(DeletionQueue* queue, Release release)
+{
+    return queue != nullptr && queue->DeleteFirst(release);
+}
+
+// A graphics table's queue's oldest deleted by the platform. Whether there was one
+template <typename Item>
+u32 DeleteOldestGraphics(DeletionQueue* queue, void (*deleteItem)(Item*))
+{
+    return queue->DeleteFirst([deleteItem](void* item) { deleteItem(static_cast<Item*>(item)); });
+}
+
+// The game object of an ID (the ID 0xFFFF none)
+GameObject* ObjectOf(GameResources* resources, u16 id)
+{
+    if (id == 0xFFFF)
+    {
+        return nullptr;
+    }
+
+    return static_cast<GameObject*>(resources->objects->items[id & 0x7FFF]);
+}
 }
 
 namespace
 {
 // The sections the code kinds' readers read
 constexpr u32 CodeKindSection = 1;
+// The code section's subsections (game/chunkfiles.h's CodeSubsectionReader): kind 5 has none, the voices of the language
+// played are read, and a subsection's reader reads its header
+constexpr u32 CodeKindNone = 5;
+constexpr u32 CodeKindVoices = 7;
+constexpr u32 CodeKindCount = 13;
+constexpr s32 CodeSubsectionHeaderSize = 0xC;
 // The tables' vtable functions the readers pass on to: the clear, the count of resources to come, the count read
 constexpr u32 TableSetCountSlot = 3;
 constexpr u32 TableFinishSlot = 4;
@@ -515,6 +588,27 @@ ResourceTable** GameResources::MakeVoiceTables(u32 capacity)
     return voices;
 }
 
+// The ID 0xFFFF has no object: retail reads its references at address 0x24
+void GameResources::TakeObjects(const u32* objects)
+{
+    const u16* ids = reinterpret_cast<const u16*>(objects + 1);
+    for (u32 index = 0; index < objects[0]; index++)
+    {
+        u16 id = ids[index];
+        LoadObjectResources(ObjectOf(this, id)->references, &id, this);
+    }
+}
+
+void GameResources::ReleaseObjects(const u32* objects)
+{
+    const u16* ids = reinterpret_cast<const u16*>(objects + 1);
+    for (u32 index = 0; index < objects[0]; index++)
+    {
+        u16 id = ids[index];
+        ReleaseObjectResources(ObjectOf(this, id)->references, &id, this);
+    }
+}
+
 CodeItem* CodeItem::Construct(CodeItem* item, GameResources* resources, u32* objects)
 {
     item->vtable = g_CodeItemVTable;
@@ -554,6 +648,254 @@ void CodeItem::Unload(u32 destroyFlags)
     {
         MemoryDeallocate2_(this);
     }
+}
+
+SectionReader* CodeItemGetReader(CodeItem* item, s32, ItemHeader* header, s32* size)
+{
+    if (*size == 0)
+    {
+        return nullptr;
+    }
+
+    u32 voices = CodeKindVoices + g_CurrentLanguage;
+    u32 kind = header->id;
+    u32 start = header->offset;
+    if (kind < CodeKindCount)
+    {
+        if (kind >= CodeKindVoices)
+        {
+            *size = kind == voices ? CodeSubsectionHeaderSize : 0;
+        }
+        else if (kind != CodeKindNone)
+        {
+            *size = CodeSubsectionHeaderSize;
+        }
+    }
+
+    if (*size == 0)
+    {
+        return nullptr;
+    }
+
+    auto* reader = static_cast<CodeSubsectionReader*>(MemoryAllocate(sizeof(CodeSubsectionReader)));
+    reader->kind = kind;
+    reader->vtable = g_CodeSubsectionReaderVTable;
+    reader->start = start;
+    reader->item = item;
+    return reader;
+}
+
+s32 CodeItem::SectionCount()
+{
+    return CodeKindCount;
+}
+
+s32 CodeItem::Unknown3()
+{
+    return 1;
+}
+
+bool CodeItem::CanRead(u32 type)
+{
+    return type == CodeKindSection;
+}
+
+void CodeItem::ReleaseResources()
+{
+    UnloadPendingResources(resources);
+}
+
+void CodeItem::QueueSubsection(u32 kind, u32 start)
+{
+    CodeKindReader* reader;
+    switch (kind)
+    {
+    case 0:
+        reader = &objects;
+        break;
+    case 1:
+        reader = &behaviours;
+        break;
+    case 2:
+        reader = &animations;
+        break;
+    case 3:
+        reader = &models;
+        break;
+    case 4:
+        reader = &codeModels;
+        break;
+    case 6:
+        reader = &sounds;
+        break;
+    default:
+        if (kind < CodeKindVoices || kind >= CodeKindCount)
+        {
+            return;
+        }
+
+        reader = &voices[kind - CodeKindVoices];
+        break;
+    }
+
+    AddSectionToLoadQueue(reinterpret_cast<ItemInterface*>(reader), start);
+}
+
+void CodeSubsectionReader::Destroy(u32 flags)
+{
+    vtable = g_SectionReaderVTable;
+    if ((flags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void CodeSubsectionReader::Read(u8*, u32, ReaderStack*)
+{
+    item->QueueSubsection(kind, start);
+}
+
+SoundTable* SoundTable::Construct(SoundTable* table, u32 count)
+{
+    auto* sounds = reinterpret_cast<ResourceTable*>(table);
+    ConstructTable(sounds, g_SoundTableBaseVTable, count, true);
+    sounds->vtable = g_SoundTableVTable;
+    // Retail allocates the order again, the first one let go of nowhere
+    sounds->order = static_cast<u16*>(MemoryAllocate2(count * sizeof(u16)));
+    return table;
+}
+
+void SoundTableQueueSamples(ResourceTable* table, s32 read, u32, u32 end)
+{
+    GameReadersStorage* storage = g_ReadersStorages[0];
+    for (u32 index = 0; index < static_cast<u32>(read); index++)
+    {
+        auto* sound = static_cast<GameSound*>(table->items[table->order[index]]);
+        if (sound == nullptr || sound->size == 0)
+        {
+            continue;
+        }
+
+        s32 size = sound->size;
+        u32 offset = end + sound->offset;
+        auto* reader = static_cast<SoundBankReader*>(MemoryAllocate(sizeof(SoundBankReader)));
+        reader = SoundBankReader::Construct(reader, reinterpret_cast<SoundBankEntry*>(sound), offset, size);
+        AddItemReaderToReaderStorage(storage, reader, 0);
+    }
+}
+
+void ResourcesBaseNothing2()
+{
+}
+
+void ResourcesBaseNothing3()
+{
+}
+
+void GameResources::DestroyBase(u32 destroyFlags)
+{
+    vtable = g_ResourcesBaseVTable;
+    DestroyResourceTable(objects);
+    DestroyResourceTable(scripts);
+    DestroyResourceTable(animations);
+    DestroyResourceTable(models);
+    DestroyResourceTable(codeModels);
+    DestroyResourceTable(sounds);
+    EmptyQueue(objectQueue, ReleaseObject);
+    EmptyQueue(scriptQueue, ReleaseScript);
+    EmptyQueue(animationQueue, ReleaseAnimation);
+    EmptyQueue(modelQueue, ReleaseOgi);
+    EmptyQueue(codeModelQueue, ReleaseCodeModel);
+    EmptyQueue(soundQueue, ReleaseSound);
+    if (voices != nullptr)
+    {
+        for (u32 language = 0; language < languageCount; language++)
+        {
+            DestroyResourceTable(voices[language]);
+        }
+
+        MemoryDeallocate2_(voices);
+    }
+
+    if (voiceQueues != nullptr)
+    {
+        for (u32 language = 0; language < languageCount; language++)
+        {
+            EmptyQueue(voiceQueues[language], ReleaseSound);
+        }
+
+        MemoryDeallocate2_(voiceQueues);
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+u32 ResourcesStep(GameResources* resources)
+{
+    // The first of the tables' queues that has something deletes its oldest
+    u32 deleted = DeleteOldest(resources->objectQueue, ReleaseObject);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted = DeleteOldest(resources->scriptQueue, ReleaseScript);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted = DeleteOldest(resources->animationQueue, ReleaseAnimation);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted = DeleteOldest(resources->modelQueue, ReleaseOgi);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted = DeleteOldest(resources->codeModelQueue, ReleaseCodeModel);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted = DeleteOldest(resources->soundQueue, ReleaseSound);
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    // Else every language's voices delete one (their queues are never none), else every graphics table's queue
+    if (resources->voiceQueues != nullptr)
+    {
+        for (u32 language = 0; language < resources->languageCount; language++)
+        {
+            deleted |= resources->voiceQueues[language]->DeleteFirst(ReleaseSound);
+        }
+    }
+
+    if (deleted != 0)
+    {
+        return deleted;
+    }
+
+    deleted |= DeleteOldestGraphics(&g_MaterialQueue, Platform::Graphics::DeleteMaterial);
+    deleted |= DeleteOldestGraphics(&g_TextureQueue, Platform::Graphics::DeleteTexture);
+    deleted |= DeleteOldestGraphics(&g_ModelQueue, Platform::Graphics::DeleteModel);
+    deleted |= DeleteOldestGraphics(&g_RigidModelQueue, Platform::Graphics::DeleteRigidModel);
+    deleted |= DeleteOldestGraphics(&g_SkinQueue, Platform::Graphics::DeleteSkin);
+    deleted |= DeleteOldestGraphics(&g_BlendSkinQueue, Platform::Graphics::DeleteBlendSkin);
+    deleted |= DeleteOldestGraphics(&g_SkyQueue, Platform::Graphics::DeleteSky);
+    deleted |= DeleteOldestGraphics(&g_MeshQueue, Platform::Graphics::DeleteMesh);
+    deleted |= DeleteOldestGraphics(&g_LodQueue, Platform::Graphics::DeleteLod);
+    return deleted;
 }
 
 void UnloadPendingResources(GameResources* resources)
@@ -970,9 +1312,6 @@ void SoundReaderFinish(CodeKindReader* reader, s32 read, u32 count, u32 end)
 
 extern "C"
 {
-    // The resources' readers (still asm): a code model's, a script's of each kind and a sound's (made too), and the scripts' base
-    // made
-    void ReadCodeModel(void* codeModel, Stream* stream) RETAIL(ReadCodeModel);
     extern const GccVTableEntry g_SectionReaderInterfaceVTable[] RETAIL(SectionReaderInterface_Methods);
 
     // Each kind's section reader's functions: the destructor and the read
@@ -1124,9 +1463,9 @@ void LoadCodeModel(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
     MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
-    void* codeModel = MemoryAllocate(sizeof(CodeModel));
+    auto* codeModel = static_cast<CodeModel*>(MemoryAllocate(sizeof(CodeModel)));
     ConstructResourceHeader(codeModel);
-    ReadCodeModel(codeModel, &stream);
+    codeModel->Read(&stream);
     AddResource(reader, codeModel);
     stream.Destroy(DestroyOnly);
 }
@@ -1138,4 +1477,57 @@ void LoadSound(ResourceSectionReader* reader, u8* data, u32 size, void*)
     GameSound* sound = GameSound::Construct(static_cast<GameSound*>(MemoryAllocate(sizeof(GameSound))), &stream);
     AddResource(reader, sound);
     stream.Destroy(DestroyOnly);
+}
+
+extern "C"
+{
+    // The custom pickups' and projectiles' slots cleared (their pickups, projectiles, packs and commands destroyed), and a code
+    // model's slot set up (game/pickups.cpp, game/projectiles.cpp)
+    void ClearCustomPickups() RETAIL(FUN_0010a4b0);
+    void ClearCustomProjectiles() RETAIL(FUN_0010c240);
+    void SetUpCustomPickup(CodeModel* model) RETAIL(FUN_0010a380);
+    void SetUpCustomProjectile(CodeModel* model) RETAIL(FUN_0010c3b8);
+}
+
+void GameResources::Destroy(u32 destroyFlags)
+{
+    vtable = g_ResourcesVTable;
+    DestroyBase(destroyFlags);
+}
+
+void GameResources::SetUpCodeModels(u32 clear)
+{
+    // The code models' table's capacity, and the kinds of code models with slots (their byte 8)
+    constexpr u16 CodeModelIds = 200;
+    constexpr u8 PickupModel = 0x11;
+    constexpr u8 ProjectileModel = 0x12;
+    if (clear != 0)
+    {
+        ClearCustomPickups();
+        ClearCustomProjectiles();
+    }
+
+    for (u16 index = 0; index < CodeModelIds; index++)
+    {
+        u16 id;
+        CopyResourceId(&id, &index);
+        CodeModel* model = id != 0xFFFF ? static_cast<CodeModel*>(codeModels->items[id & 0x7FFF]) : nullptr;
+        if (model == nullptr)
+        {
+            continue;
+        }
+
+        if (model->unknown08 == PickupModel)
+        {
+            SetUpCustomPickup(model);
+        }
+        else if (model->unknown08 == ProjectileModel)
+        {
+            SetUpCustomProjectile(model);
+        }
+    }
+}
+
+void GameResources::Nothing3()
+{
 }

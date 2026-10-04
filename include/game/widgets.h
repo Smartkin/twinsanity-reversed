@@ -424,6 +424,27 @@ public:
 };
 CHECK_SIZE(ShapeWidget, 0x8C);
 
+// A pad moving an instance around (0xC bytes; its vtable after its members, the derived class's D_00302858 over the base's
+// D_00302878: 1 the destructor, 2 its frame, the same in both). Nothing makes one: the bindings it reads a pad with, the instance
+// (released with it)
+struct PadInstanceMover
+{
+    struct ButtonBindings* bindings;
+    struct InstanceContext* instance;
+    const GccVTableEntry* vtable;
+
+    // The derived class's destructor and the base's (the instance released)
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0025cc00);
+    void BaseDestroy(u32 destroyFlags) RETAIL(FUN_0025cc30);
+    // Its frame (over some seconds, with a pad): the instance moved along its own x and y axes by the bindings' axes 9 and 10 (20
+    // units a second) and along its z axis by how much more action 0 is pressed than action 1 (40 a second), then turned about the
+    // world's x and y axes by axes 6 and 7 (radians a second); and the instance moved along an axis by an amount a second (not by
+    // under 5e-05 on every axis)
+    void Frame(f32 seconds, struct GamePad* pad) RETAIL_N32(FUN_00259420);
+    void MoveAlong(const Vector4* axis, f32 amount, f32 seconds) RETAIL_N32(FUN_002592d8);
+};
+CHECK_SIZE(PadInstanceMover, 0xC);
+
 extern "C"
 {
     extern const GccVTableEntry g_WidgetVTable[] RETAIL(D_003031B8);

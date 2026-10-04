@@ -36,6 +36,8 @@ struct TaggedValue
     // The game's AngleFrom (game/math.h)
     static TaggedValue* FromFloat(TaggedValue* value, u32 kind, f32 number);
     void Read(Stream* stream) RETAIL(FUN_0018c190);
+    // Its destructor (the commands' destructors call it for each of theirs)
+    void Destroy(u32 destroyFlags) RETAIL(DestroyObj_);
     // An argument's value with the properties its index would read: an integer, a float (other types 0) and an angle (made from
     // the radians; other types none), returned through the first argument as GCC 2.9x returns a struct
     s32 IntWith(PropertyHolder* holder) const RETAIL(GetTaggedInt);
@@ -73,6 +75,9 @@ struct PropertyList
 
     // Made empty and read from the stream
     static PropertyList* Construct(PropertyList* list, Stream* stream) RETAIL(InitInstanceProperties);
+    // Made with room for as many of each (no state; the holder's class the caller passes is unused)
+    static PropertyList* Construct(PropertyList* list, u32 taggedCount, u32 floatCount, u32 intCount, u32 unused)
+        RETAIL(FUN_00262e60);
     void Destroy(u32 destroyFlags) RETAIL(FreeInstancePropsList_);
     // Its counts and state, then each array's count and values (the arrays there were freed first)
     void Read(Stream* stream) RETAIL(ReadInstancePropertiesList);
@@ -80,6 +85,9 @@ struct PropertyList
     static TaggedValue* TaggedAt(TaggedValue* value, const PropertyList* list, u32 index) RETAIL(GetFlagPropAtIndex_002630B0);
     f32 FloatAt(u32 index) RETAIL(GetFloatPropAtIndex_002630D0);
     s32 IntAt(u32 index) RETAIL(GetIntegerPropAtIndex);
+    void SetTagged(u32 index, const TaggedValue* value) RETAIL(FUN_00263058);
+    void SetFloat(u32 index, f32 value) RETAIL_N32(FUN_00263080);
+    void SetInt(u32 index, s32 value) RETAIL(FUN_00263098);
 };
 CHECK_SIZE(PropertyList, 0x24);
 

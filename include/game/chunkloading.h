@@ -12,12 +12,45 @@
 
 class Stream;
 struct AiNavigation;
+struct AiPosition;
+struct GameResources;
 template <typename T>
 struct PointerArray;
 struct ChunkLoader;
 struct ChunkManager;
 struct InstanceContext;
-struct PersistentFlags;
+// A chunk's store of persistent flags (its vtable at its start, the base's UnkChunkInterface_methods: 1 its words to read, 2 its
+// words, 3 how many words, 4 how many flags, 5 the destructor, 6 read from a stream, 7 written; the game's two stores are
+// game/gamechunkmanager.cpp's)
+struct PersistentFlags
+{
+    const GccVTableEntry* vtable;
+
+    const u32* WordsToRead()
+    {
+        return CallVirtual<const u32*>(this, vtable, 1);
+    }
+
+    u32* Words()
+    {
+        return CallVirtual<u32*>(this, vtable, 2);
+    }
+
+    u32 WordCount()
+    {
+        return CallVirtual<u32>(this, vtable, 3);
+    }
+
+    u32 Count()
+    {
+        return CallVirtual<u32>(this, vtable, 4);
+    }
+
+    // The base's: made, destroyed, every flag cleared (through the vtable)
+    static PersistentFlags* ConstructBase(PersistentFlags* flags) RETAIL(FUN_002691b0);
+    void BaseDestroy(u32 destroyFlags) RETAIL(FUN_002691c8);
+    void Clear() RETAIL(FUN_002691f8);
+};
 struct ReferencedObject;
 struct Reference;
 struct TimeClock;
@@ -35,6 +68,9 @@ class ChunkLoadingUtil
 {
 public:
     const GccVTableEntry* vtable;
+
+    // The base's destructor (D_002FC2E0, whose other functions are abstract)
+    void BaseDestroy(u32 flags) RETAIL(FUN_001f6880);
 
     void Destroy(u32 flags)
     {
@@ -187,21 +223,48 @@ struct ChunkEntry
     void* OtherLayoutPosition(u32 index) RETAIL(FUN_00268788);
     // The next persistent flag slot given out
     u16 NextFlagSlot() RETAIL(NextPersistentFlagSlot);
+    // Unloaded first, its own store of persistent flags destroyed, its data let go and its path
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00263fa8);
+    // Every position and every path of its layouts destroyed, the list freed (none: nothing)
+    void DestroyPositions() RETAIL(FUN_00263da8);
+    void DestroyPaths() RETAIL(FUN_00263e98);
 };
 CHECK_OFFSET(ChunkEntry, flags, 0x1C);
 CHECK_OFFSET(ChunkEntry, navigation, 0x28);
 CHECK_OFFSET(ChunkEntry, manager, 0x10);
 CHECK_SIZE(ChunkEntry, 0x38);
 
-// The chunk manager (G_ChunkManager_). Its vtable follows 0x1FB8 bytes of members
+// The chunk manager (G_ChunkManager_). Its vtable (the base's D_00304208, the game's ChunkManager__Methods) follows 0x1FB8 bytes of
+// members: 1 a chunk's entry (made when there's none), 2 a chunk unloaded, 3 the destructor
 struct ChunkManager
 {
-    u8 unknown0000[0x80C];
-    // The game's resources the chunks' objects go into, and the path finder (retail's MiniBigBoi, 0x1FC0 bytes in, still asm),
+    static constexpr u32 MaxChunks = 0x200;
+    static constexpr u32 Counters = 1000;
+
+    // Its constructor's flags (bits 16 and 17 of the word): the default chunk's RM2 queued for reading (otherwise only what's
+    // queued already is read, the particles and the shadows come from their own files), and the resources of the default chunk's
+    // objects not taken
+    enum Flags : u16
+    {
+        FlagQueueDefaultRm2 = 0x1,
+        FlagKeepDefaultObjects = 0x2,
+    };
+
+    // How many chunks it has and the chunks
+    u16 count;
+    u16 flags;
+    ChunkEntry* entries[MaxChunks];
+    // The default chunk's RM2 reader and the object IDs it brought (a count, then the IDs)
+    Rm2Reader* defaultReader;
+    u32* defaultObjects;
+    // The game's resources the chunks' objects go into, and the path finder (retail's MiniBigBoi, 0x1FC0 bytes in),
     // which starts with every chunk's AI navigation by the chunk's index
     struct GameResources* resources;
     struct PathFinder* pathFinder;
-    u8 unknown0814[0x1FB8 - 0x814];
+    // The instances' IDs (game/instances.h's InstanceIds, g_InstanceIds)
+    u8 instanceIds[0x1018 - 0x814];
+    // The game's counters the scripts set, add to and test
+    s32 counters[Counters];
     const GccVTableEntry* vtable;
 
     ChunkEntry* AddChunk(const char* path, ChunkData* data)
@@ -214,27 +277,79 @@ struct ChunkManager
         CallVirtual<void>(this, vtable, 2, entry);
     }
 
-    // The default chunk read now (still asm)
+    // The base made: no chunks, the instances' IDs made (g_InstanceIds), the two flags (each argument's low bit), and the
+    // manager the game's (g_ChunkManager)
+    static ChunkManager* Construct(ChunkManager* manager, struct GameResources* resources, u32 queueDefaultRm2,
+                                   u32 keepDefaultObjects) RETAIL(FUN_00268b50);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00268c10);
+    // The counters cleared, the default chunk's RM2 reader made and read now (and its objects' resources taken unless the flags
+    // say not to), then the resources told they were read
     void LoadDefault(const char* path) RETAIL(LoadDefault);
+    // A chunk's entry made and added, given its own store of persistent flags (the game's slot 1's; the fourth argument unused)
+    ChunkEntry* NewEntry(const char* path, ChunkData* data, void* unused, PersistentFlags* store) RETAIL(FUN_00268948);
+    // Its vtable's slot 2: the chunk unloaded, its entry kept. Returns 1
+    u32 RemoveChunkEntry(ChunkEntry* entry) RETAIL(FUN_00268a78);
+    void ClearCounters() RETAIL(FUN_00268da8);
+    // Its vtable's slot 1: the chunk of the path given the data (made with no objects, flags, navigation, positions or paths
+    // and added when there's none). The game's manager has its own (ChunkManager__Methods' GetChunkMeta, which makes the
+    // chunks' persistent flags too)
+    ChunkEntry* AddChunkEntry(const char* path, ChunkData* data) RETAIL(FUN_00264248);
 };
+CHECK_OFFSET(ChunkManager, instanceIds, 0x814);
+CHECK_OFFSET(ChunkManager, counters, 0x1018);
+CHECK_OFFSET(ChunkManager, vtable, 0x1FB8);
 
 extern "C"
 {
     extern ChunkManager* g_ChunkManager RETAIL(G_ChunkManager_);
+    // The game's chunk manager (game/gamechunkmanager.cpp, 0x3200 bytes) made: the base with the instance factory's resources and
+    // its two flags, its own path finder (64 chunks' navigations); the path finder's and the instance factory's globals set
+    void* ConstructChunkManager(void* manager, void* factory, u32 flag16, u32 flag17) RETAIL(FUN_0017a508);
 }
 
 extern "C"
 {
-    // The chunk of the path (nullptr for none, still asm)
+    // The chunk of a list of the chunk manager's (a count, then the chunks) whose data an instance's chunk is (nullptr for none)
+    ChunkEntry* ChunkOfInstance(void* chunks, struct InstanceContext* instance) RETAIL(GetChunkMetaFromInstanceContext);
+    // The chunk of the path, and of an index (nullptr for none)
     ChunkEntry* FindChunkEntry(ChunkManager* chunks, const char* path) RETAIL(FindChunkInfoByName);
-    // The chunk's instance of the ID (nullptr for none and for the ID 0xFFFF, still asm)
+    ChunkEntry* ChunkOfIndex(void* manager, u16 index) RETAIL(FUN_00268e60);
+    // A chunk unloaded: its AI navigation, positions and paths, the other store of its persistent flags, its objects' resources
+    // and its data let go
+    void UnloadChunkEntry(ChunkEntry* chunk) RETAIL(FUN_002687e0);
+    // A chunk's other store of persistent flags set (the game's manager makes it)
+    void SetOtherFlags(ChunkEntry* entry, PersistentFlags* flags) RETAIL(FUN_002688b0);
+    // Every chunk destroyed, none left
+    void UnloadAllChunks(ChunkManager* chunks) RETAIL(UnloadAllChunks_);
+    // The AI position of a chunk nearest a point, with its index when asked; and the nearest with any of the required flags and
+    // none of the ruled out ones (their low 16 bits). nullptr for a chunk without AI navigation
+    AiPosition* NearestAiPosition(ChunkEntry* chunk, const Vector4* point, u16* index) RETAIL(FUN_002688d0);
+    AiPosition* NearestFlaggedAiPosition(ChunkEntry* chunk, const Vector4* point, u16* index, u32 required, u32 ruledOut)
+        RETAIL(FUN_00268910);
+    // The chunks' instances reset for a way into the game, filtered by three words (the entry also the word every instance freed
+    // gets)
+    void ResetChunkInstances(ChunkManager* chunks, u32 entry, const u32* filter) RETAIL(FUN_00268fe0);
+    // The chunks reset for a way into the game (the other stores of their persistent flags cleared, their own too when their
+    // instances are dropped) and the game's counters cleared
+    void ResetChunks(ChunkManager* chunks, u32 entry, u32 dropInstances) RETAIL(FUN_00269038);
+    // The game's counters (the chunk manager's) set, added to and read
+    void SetGameCounter(void* manager, u32 counter, s32 value) RETAIL(FUN_002690f8);
+    void AddToGameCounter(void* manager, u32 counter, s32 value) RETAIL(FUN_00269108);
+    s32 GameCounter(void* manager, u32 counter) RETAIL(FUN_00269130);
+    // The chunk's instance of the ID (an awake one whose agent has it: nullptr for none, for the ID 0xFFFF and for a chunk without
+    // data; the first 0x400 instances of the chunk are looked at)
     InstanceContext* FindChunkInstance(ChunkEntry* chunk, u16 id) RETAIL(FUN_00264120);
     // The chunks' persistent flags read (every chunk unloaded first, the chunks read added) and written: the count, then each
-    // chunk's path and whether its own store follows (still asm)
+    // chunk's path and whether its own store follows
     void ReadChunkStates(ChunkManager* chunks, Stream* stream) RETAIL(FUN_00264390);
     void WriteChunkStates(ChunkManager* chunks, Stream* stream) RETAIL(FUN_00268f08);
-    // A persistent flag set or cleared, when the store has it (still asm)
+    // Every instance of the chunks' sceneries a filter matches (its kinds of nodes, the flags it has all of and none of): its
+    // object node's parts let go, its slot 20 called and its runners stopped (the chunks unused)
+    void StopFilteredObjectNodes(ChunkManager* chunks, const u32* filter) RETAIL(FUN_00264488);
+    // A persistent flag set or cleared, toggled and read, when the store has it (0 when it hasn't)
     void SetPersistentFlag(PersistentFlags* flags, u32 index, u32 value) RETAIL(SetPersistentFlag);
+    void TogglePersistentFlag(PersistentFlags* flags, u32 index) RETAIL(FUN_00269330);
+    u32 GetPersistentFlag(PersistentFlags* flags, u32 index) RETAIL(GetPersistentFlag);
 }
 
 struct GameChunkLink;
@@ -386,6 +501,10 @@ extern "C"
 
     LinkHullList* InitLinkHullList(LinkHullList* list, Stream* reader);
     void FreeLinkHullList(LinkHullList* list, u32 flags);
+    // The chunk links' items' builder (a vtable alone, D_003069D0, the game context's): a list of hulls (type 0x1D02, empty;
+    // none for another type), and its destructor
+    void* MakeChunkLinkItem(void* builder, u32 type) RETAIL(FUN_002add58);
+    void DestroyChunkLinkItemBuilder(void* builder, u32 destroyFlags) RETAIL(FUN_002add28);
     bool IsPositionInLinkHulls(LinkHullList* list, const Vector4* position);
     void ReadLinkHullList(LinkHullList* list, Stream* reader);
 

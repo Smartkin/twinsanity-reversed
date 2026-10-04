@@ -1,5 +1,8 @@
 #include "renderer.h"
 
+#include "game/context.h"
+#include "game/particles.h"
+
 #include "platform/graphics.h"
 
 #include <ee_regs.h>
@@ -259,6 +262,45 @@ extern "C" void RenderBucketConstruct(RenderBucket* bucket)
     bucket->unknown28 = 0;
     bucket->lastJoints = 0;
     bucket->lastCall = 0;
+}
+
+extern "C"
+{
+    // The renderer's statics made (GCC 2.9x's static initialisation: no particle section's file, the screen's places on the
+    // two TVs none, the frame's buckets and two of their own emptied, the models' update rate), and the static constructor that
+    // runs it
+    void InitRendererStatics(s32 initialise, s32 priority) RETAIL(FUN_0019fee0);
+    void RendererStaticInit() RETAIL(FUN_001a6678);
+}
+
+void InitRendererStatics(s32 initialise, s32 priority)
+{
+    constexpr s32 AllPriorities = 0xFFFF;
+    if (priority != AllPriorities || initialise == 0)
+    {
+        return;
+    }
+
+    g_ParticleSectionFile = -1;
+    g_PalScreenOffset.x = 0.0f;
+    g_PalScreenOffset.y = 0.0f;
+    g_NtscScreenOffset.x = 0.0f;
+    g_NtscScreenOffset.y = 0.0f;
+    RenderBucketConstruct(&g_SmallBucket.buckets[0]);
+    for (RenderBucket& bucket : g_FrameBuckets.buckets)
+    {
+        RenderBucketConstruct(&bucket);
+    }
+
+    RenderBucketConstruct(&g_LargeBucket.buckets[0]);
+    g_ModelUpdateRate.cutoff = 0xFFFF;
+    g_ModelUpdateRate.slope = 1.0f;
+    g_ModelUpdateRate.grace = 0;
+}
+
+void RendererStaticInit()
+{
+    InitRendererStatics(1, 0xFFFF);
 }
 
 void Platform::Graphics::ResetBuckets(bool movie)

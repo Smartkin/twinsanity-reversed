@@ -369,6 +369,72 @@ CHECK_SIZE(ExtrasPage, 0x248);
 class LevelWidget;
 class MenuWidget;
 class RingWidget;
+class SaveSlotWidget;
+struct SaveManager;
+
+// A page of the save code's (retail's D_00306930, 0x54 bytes): its save manager
+class SaveCodePage : public MenuPage
+{
+public:
+    SaveManager* manager;
+
+    // Made named "" for player 1, and its two items added: "Continue wihout saving" (id 0) and "Cancel" (id 1)
+    static SaveCodePage* Construct(SaveCodePage* page, SaveManager* manager) RETAIL(FUN_002a80a8);
+    void AddItems() RETAIL(FUN_002a8018);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_002a98a0);
+    // The save slots page's items shown: mode 0 (loading) the slots holding a save and "Cancel", 1 (saving) every slot,
+    // "Cancel" and while saving "Continue wihout saving", another none of the two
+    void ShowSlotItems(s32 mode, u32 saving) RETAIL(FUN_002a20a8);
+};
+CHECK_SIZE(SaveCodePage, 0x54);
+
+// The save code's page of choices (retail's vtable D_003064C8, oleg.h's SaveChoicesPageConstruct makes it): its items "Format",
+// "Continue", "Continue wihout saving", "Create save", "Retry", "Cancel", "Yes" and "No" (ids 0 to 7)
+class SaveChoicesPage : public SaveCodePage
+{
+public:
+    void Destroy(u32 destroyFlags) RETAIL(FUN_002a7930);
+    // The items of a screen of choices shown (the save manager's mode of the screen, -1 none: nothing shown), the first of them
+    // selected
+    void ShowItems(s32 mode, u32 saving) RETAIL(FUN_002a2460);
+};
+CHECK_SIZE(SaveChoicesPage, 0x54);
+
+// An item of the save code's pages (retail's vtable D_003063A0): activated it answers the screen (0: the first choice, its id the
+// save slot; 1: back; 2: the third), its text one of the save code's messages
+struct SaveCodeItem : LinkItem
+{
+    enum Answer : u32
+    {
+        AnswerChoose = 0,
+        AnswerBack = 1,
+        AnswerThird = 2,
+    };
+
+    SaveManager* manager;
+    u32 answer;
+    s32 message;
+
+    MenuPage* Activate(u32 player, MenuPage* page) RETAIL(func_002A80F8);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_002a7ff8);
+    // Its text the message's
+    void Entered(u32 player, u32 mode) RETAIL(func_002A8230);
+};
+CHECK_SIZE(SaveCodeItem, 0x20);
+
+// The save slots page (retail's D_002F3CB0, 0x60 bytes, oleg.h's SaveSlotsPageConstruct makes it): a save slot widget and a ring
+// widget behind it per card slot (the save code's items, 0x100 + the slot), chained after the menu widget
+class SaveSlotsPage : public SaveCodePage
+{
+public:
+    u32 count;
+    SaveSlotWidget** widgets;
+    RingWidget** rings;
+
+    // Its destructor skips the save code page's (straight to MenuPage's)
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00167008);
+};
+CHECK_SIZE(SaveSlotsPage, 0x60);
 
 // A world's levels page (D_002F3FD0, untitled; going back leaves the menu): its four levels (named items: the level widgets show
 // them) in two staggered columns, each a disc (a ring widget) behind a level widget, sliding in from their side. The rings and
@@ -415,4 +481,15 @@ extern "C"
     extern const GccVTableEntry g_NewGamePageVTable[] RETAIL(D_002F4250);
     extern const GccVTableEntry g_LoadGamePageVTable[] RETAIL(D_002F42A0);
     extern const GccVTableEntry g_ActionItemVTable[] RETAIL(D_002F4188);
+    extern const GccVTableEntry g_SaveCodePageVTable[] RETAIL(D_00306930);
+    extern const GccVTableEntry g_SaveChoicesPageVTable[] RETAIL(D_003064C8);
+    extern const GccVTableEntry g_SaveCodeItemVTable[] RETAIL(D_003063A0);
+    // A save code's item: its message, id and answer for the save manager (named "", leading nowhere, for player 1)
+    MenuItem* ConstructSaveCodeItem(void* item, u32 value, u32 id, u32 operation, SaveManager* manager) RETAIL(FUN_002a81b8);
+    extern const GccVTableEntry g_SaveSlotsPageVTable[] RETAIL(D_002F3CB0);
+
+    // The pages' translation unit's start-up: its static initialisation (initialize 1, priority 0xFFFF: the header's constants,
+    // which nothing reads) and its entry in the static constructors' table
+    void InitOlegPagesModule(u32 initialize, u32 priority) RETAIL(FUN_00164b88);
+    void ConstructOlegPagesModule() RETAIL(FUN_00167140);
 }

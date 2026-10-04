@@ -7,7 +7,7 @@ struct RenderTargetDescription;
 struct RenderView;
 struct Vector2;
 
-// The renderer's frames: the render buckets (the PS2's DMA chains, still asm) linked into one chain the platform presents
+// The renderer's frames: the render buckets (the PS2's DMA chains) linked into one chain the platform presents
 extern "C"
 {
     // The chain of the frame's buckets
@@ -24,6 +24,9 @@ extern "C"
     // The renderer's frame size in pixels (InitRenderer_'s)
     extern s16 g_RendererWidth RETAIL(D_0030AB08);
     extern s16 g_RendererHeight RETAIL(D_0030AB0A);
+    // Where the screen starts on a PAL and an NTSC TV (none: the static initialisation's)
+    extern Vector2 g_PalScreenOffset RETAIL(D_0030A808);
+    extern Vector2 g_NtscScreenOffset RETAIL(D_0030A810);
 
     // A place made fit for the TV's shape about an anchor (a 16:9 TV squeezes it towards the anchor), and a size; in pixels of
     // the frame when inPixels
@@ -36,6 +39,8 @@ extern "C"
     // The frame's start at the head of the first render bucket, for the target: drawing set up for it, and it cleared to its
     // color and depth (when they aren't 0; the asm hands in bits it doesn't mask)
     void SetUpFrame(RenderTargetDescription* target, u32 clearColor, u32 clearDepth) RETAIL(FUN_0019f958);
-    // The view the renderer draws the scene with, its aspect the TV's (4:3, or 16:9 on a widescreen TV) (still asm)
+    // The frame's scene drawn with the renderer's view, then the overlay
+    void DrawRendererScene(Renderer* renderer) RETAIL(FUN_0019ba10);
+    // The view the renderer draws the scene with, its aspect the TV's (4:3, or 16:9 on a widescreen TV)
     void SetRendererView(Renderer* renderer, RenderView* view) RETAIL(FUN_001a0d70);
 }

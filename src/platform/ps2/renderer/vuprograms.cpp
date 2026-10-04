@@ -200,10 +200,10 @@ extern "C"
     extern const u64 g_ShaderType01Code[] RETAIL(D_002DF700);
     extern s16 g_ShaderType01Size RETAIL(D_002EC388);
     extern ProgramCode g_ShaderType01Copy RETAIL(D_0030ABAC);
-    extern u32 g_ShaderType06Program RETAIL(D_00309DC0);
-    extern const u64 g_ShaderType06Code[] RETAIL(D_002DB3E0);
-    extern s16 g_ShaderType06Size RETAIL(D_002EC360);
-    extern ProgramCode g_ShaderType06Copy RETAIL(D_00309DB8);
+    extern u32 g_ShaderType03Program RETAIL(D_00309DC0);
+    extern const u64 g_ShaderType03Code[] RETAIL(D_002DB3E0);
+    extern s16 g_ShaderType03Size RETAIL(D_002EC360);
+    extern ProgramCode g_ShaderType03Copy RETAIL(D_00309DB8);
     extern u32 g_ShaderType02Program RETAIL(D_00309DC8);
     extern const u64 g_ShaderType02Code[] RETAIL(D_002DBEB0);
     extern s16 g_ShaderType02Size RETAIL(D_002EC368);
@@ -322,7 +322,7 @@ extern "C"
     void RegisterResidentE1CProgram() RETAIL(FUN_001dcda8);
     void RegisterShaderType04Program() RETAIL(FUN_001dd350);
     void RegisterShaderType01Program() RETAIL(FUN_001dc350);
-    void RegisterShaderType06Program() RETAIL(FUN_001db350);
+    void RegisterShaderType03Program() RETAIL(FUN_001db350);
     void RegisterShaderType02Program() RETAIL(FUN_001db568);
     void RegisterShaderType0AProgram() RETAIL(FUN_001dd438);
     void RegisterShaderType0BProgram() RETAIL(FUN_001dc7f8);
@@ -344,7 +344,6 @@ extern "C"
     void RegisterShaderType12Program() RETAIL(FUN_001db7b8);
     void RegisterShaderType13Program() RETAIL(FUN_001dac88);
     void RegisterShaderType18Program() RETAIL(FUN_001dc6c8);
-    void InitVuPrograms() RETAIL(InitVU_Programs);
 
     void RegisterVuProgram(const u64* code, s32 size, u32 index)
     {
@@ -397,10 +396,10 @@ extern "C"
         g_ShaderType01Copy = {g_ShaderType01Code, g_ShaderType01Size};
     }
 
-    void RegisterShaderType06Program()
+    void RegisterShaderType03Program()
     {
-        Register(g_ShaderType06Program, g_ShaderType06Code, g_ShaderType06Size, false);
-        g_ShaderType06Copy = {g_ShaderType06Code, g_ShaderType06Size};
+        Register(g_ShaderType03Program, g_ShaderType03Code, g_ShaderType03Size, false);
+        g_ShaderType03Copy = {g_ShaderType03Code, g_ShaderType03Size};
     }
 
     void RegisterShaderType02Program()
@@ -556,7 +555,7 @@ extern "C"
         RegisterResidentE1CProgram();
         RegisterShaderType04Program();
         RegisterShaderType01Program();
-        RegisterShaderType06Program();
+        RegisterShaderType03Program();
         RegisterShaderType02Program();
         RegisterShaderType0AProgram();
         RegisterShaderType0BProgram();

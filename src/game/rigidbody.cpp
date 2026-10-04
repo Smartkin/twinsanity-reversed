@@ -2856,6 +2856,11 @@ void InitRigidBodyStatics(u32 initialise, u32 priority)
     }
 }
 
+void ConstructRigidBodyModule()
+{
+    InitRigidBodyStatics(1, 0xFFFF);
+}
+
 f32 InverseLengthKeepingSquare(const Vector4* vector, f32* lengthSquared)
 {
     f32 squared = vector->x * vector->x + vector->y * vector->y + vector->z * vector->z;
@@ -3257,8 +3262,8 @@ u32 EllipsoidsApart(EllipsoidPair* pair, Vector4* separation, Vector4* other, co
     search.steps = 16;
     search.tolerance = Tolerance;
     search.closeness = Tolerance;
-    search.unknown0C = 0;
-    search.unknown10 = 1.0f;
+    search.low = 0.0f;
+    search.high = 1.0f;
     f32 value = -largest;
     FindMinimum(&search, pair, reinterpret_cast<const void*>(&NegativeEllipsoidValueEntry), &found, &value, 0);
     largest = -value;

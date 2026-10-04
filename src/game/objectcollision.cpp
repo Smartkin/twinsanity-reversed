@@ -69,8 +69,8 @@ ObjectCollision* ConstructObjectCollision(ObjectCollision* collision, Referenced
     collision->owner = owner;
     collision->hull = nullptr;
     collision->givenHull = nullptr;
-    collision->cellLink = nullptr;
-    collision->cellNode = nullptr;
+    collision->sceneryCell = nullptr;
+    collision->cells = nullptr;
     collision->leftOut = nullptr;
     collision->hullMatrix = nullptr;
     collision->ogi = nullptr;
@@ -338,7 +338,7 @@ void GetInstanceHullBounds(ObjectCollision* collision, const Matrix4x4* matrix, 
 void HullJointMatrix(ObjectCollision* collision, u32 joint, s32 hull, Matrix4x4* out)
 {
     auto* model = static_cast<ModelNode*>(GetGameNode(&static_cast<InstanceContext*>(collision->owner)->nodes, NodeModel));
-    auto* animator = static_cast<OgiAnimator*>(model->unknown24);
+    OgiAnimator* animator = model->animator;
     if (animator != nullptr && CopyJointTransform(animator, joint, out) != 0)
     {
         if ((collision->bits & ObjectCollision::BitKeepsJointMatrices) == 0)
@@ -425,6 +425,21 @@ void SetCollisionMatrix(ObjectCollision* collision, const Matrix4x4* matrix)
     GetInstanceHullBounds(collision, matrix, &collision->box);
 }
 
+void SetCollisionSolid(ObjectCollision* collision, u32 solid)
+{
+    ReferencedObject* owner = collision->owner;
+    if (solid == 0)
+    {
+        owner->flags &= ~ReferencedObject::FlagSolidModel;
+    }
+    else
+    {
+        owner->flags |= ReferencedObject::FlagSolidModel;
+    }
+
+    QueueObject(collision->owner);
+}
+
 void SetCollisionOgi(ObjectCollision* collision, GameOGI* ogi)
 {
     if (ogi == nullptr)
@@ -474,7 +489,7 @@ void* StepObjectCollision(ObjectCollision* collision)
         GetInstanceHullBounds(collision, &place->matrix, &collision->box);
     }
 
-    if (collision->cellLink == nullptr)
+    if (collision->sceneryCell == nullptr)
     {
         return ChunkNoticeInstance(owner);
     }

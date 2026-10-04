@@ -26,8 +26,9 @@ struct ObjectCollision
     ReferencedObject* owner;
     CollisionHull* hull;
     CollisionHull* givenHull;
-    void* cellLink;
-    void* cellNode;
+    // The scenery cell it's on the instance list of, the chunk's collision cells and the one of them it's in (-1 none)
+    struct SceneryCell* sceneryCell;
+    struct InstanceContext** cells;
     s32 cell;
     ReferencedObject* leftOut;
     Matrix4x4* hullMatrix;
@@ -87,9 +88,13 @@ extern "C"
         RETAIL(FUN_001f09a8);
     void SetCollisionMatrix(ObjectCollision* collision, const Matrix4x4* matrix) RETAIL(FUN_001f0a78);
     void SetCollisionOgi(ObjectCollision* collision, GameOGI* ogi) RETAIL(FUN_001eb400);
+    // Its instance's FlagSolidModel set or cleared, and the instance queued
+    void SetCollisionSolid(ObjectCollision* collision, u32 solid) RETAIL(FUN_001f06f0);
+    // Its box hull of its own destroyed (it has none after)
+    void ReleaseCollisionHull(ObjectCollision* collision) RETAIL(FUN_001f06b8);
     void MarkThinAndCopySurfaces(ObjectCollision* collision) RETAIL(FUN_001eb6a0);
     // A frame: its joints' matrices made again for a new OGI, its box worked out from its place (without a matrix of its own),
-    // and its cell found (the chunk told of it when it has no cell; still asm the cell's part)
+    // and its cell found (the chunk told of it when it has no cell)
     void* StepObjectCollision(ObjectCollision* collision) RETAIL(FUN_001f0af8);
-    void* UpdateCollisionCell(ObjectCollision* collision, InstanceContext* owner) RETAIL(FUN_001eb250);
+    struct ChunkData* UpdateCollisionCell(ObjectCollision* collision, InstanceContext* owner) RETAIL(FUN_001eb250);
 }

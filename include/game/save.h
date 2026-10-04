@@ -19,6 +19,7 @@ CHECK_SIZE(SaveDate, 8);
 
 extern "C"
 {
-    // The local date and time now
+    // A date made empty (every field 0), and the local date and time now
+    SaveDate* ConstructSaveDate(SaveDate* date) RETAIL(FUN_00181c00);
     void GetSaveDate(SaveDate* date) RETAIL(FUN_00192410);
 }

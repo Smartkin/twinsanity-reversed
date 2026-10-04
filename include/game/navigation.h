@@ -32,6 +32,8 @@ struct AiPosition
     s16 flags;
     u16 unknown1E;
 
+    // Made at the default box's corner (w 1) with no stamp, links nor flags, no previous position (0xFF)
+    static AiPosition* Construct(AiPosition* position) RETAIL(FUN_0023ce48);
     // Read from a stream (its position and flags), the stamp the path finder's current one and no links
     void Read(Stream* stream) RETAIL(FUN_0023cf48);
     // Its path to a position (a chunk's index and its own), nullptr when none links them
@@ -73,7 +75,7 @@ struct Route
 CHECK_SIZE(Route, 0x402);
 
 // A chunk's AI navigation (0x14 bytes; vtable 0x10 in: 1 the destructor): the AI positions and paths of its layouts by their
-// index, their counts, and the chunk manager's path finder (retail's MiniBigBoi, still asm)
+// index, their counts, and the chunk manager's path finder (retail's MiniBigBoi)
 struct AiNavigation
 {
     AiPosition** positions;
@@ -110,7 +112,7 @@ struct AiNavigation
 };
 CHECK_SIZE(AiNavigation, 0x14);
 
-// What asks the path finder for a route (still asm): its flags (bit 2: the steps cost their distance alone; bits 3 and 4: away
+// What asks the path finder for a route: its flags (bit 2: the steps cost their distance alone; bits 3 and 4: away
 // from and near the path finder's focus; bit 5: the positions' own costs; bit 10: no route was found; bits 17-24 rule out paths
 // with some flags), the positions it starts and ends at and their chunks' indexes
 struct RouteRequest
@@ -156,7 +158,10 @@ struct PathFinder
     u16 unknown202;
     SearchEntry entries[255];
     u8 backwards;
-    u8 unknown11F5[0x1220 - 0x11F5];
+    u8 unknown11F5[0x1200 - 0x11F5];
+    // The ends of the route being searched for (the GetShortRoute command sets them)
+    Vector4 routeStart;
+    Vector4 routeEnd;
     // A point the game's step costs can keep routes near or away from, and its radius
     Vector4 focus;
     f32 focusRadius;
@@ -183,11 +188,13 @@ struct PathFinder
     f32 SquaredDistanceOf(const Vector4* a, const Vector4* b) RETAIL(FUN_00252a78);
 };
 CHECK_OFFSET(PathFinder, count, 0x200);
+CHECK_OFFSET(PathFinder, routeStart, 0x1200);
+CHECK_OFFSET(PathFinder, focus, 0x1220);
 CHECK_OFFSET(PathFinder, vtable, 0x1238);
 CHECK_SIZE(PathFinder, 0x1240);
 
 // The game's path finder (retail's MiniBigBoi, the chunk manager's): a step's cost goes by the request's flags, the path's and the
-// positions' (-1 for a path the request can't take, still asm)
+// positions' (-1 for a path the request can't take)
 struct GamePathFinder : PathFinder
 {
     static GamePathFinder* Construct(GamePathFinder* finder) RETAIL(FUN_0017c378);
@@ -205,4 +212,7 @@ extern "C"
     extern PathFinder* g_PathFinder RETAIL(G_MiniBigBoi);
     // The path finder's stamp of its current search
     extern u32 g_PathSearchStamp RETAIL(D_0030A10C);
+    // The focus moved across the way from the route's start to its end (along the y axis crossed with the way) by the weight
+    // times the distance between them, for the routes kept near it
+    void SetNearFocusWeight(PathFinder* finder, f32 weight) RETAIL_N32(FUN_00252500);
 }

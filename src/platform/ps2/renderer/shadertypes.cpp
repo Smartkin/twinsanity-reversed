@@ -218,6 +218,44 @@ extern "C"
         DestroyShader(shader, flags);
     }
 
+    // The classes of types 3 and 5 to 9, which the shader factory never makes
+    void ShaderType03Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d9420);
+    void ShaderType05Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d94e8);
+    void ShaderType06Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d9668);
+    void ShaderType07Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d9728);
+    void ShaderType08Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d97e8);
+    void ShaderType09Destroy(Shader* shader, u32 flags) RETAIL(FUN_001d98a8);
+
+    void ShaderType03Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
+    void ShaderType05Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
+    void ShaderType06Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
+    void ShaderType07Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
+    void ShaderType08Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
+    void ShaderType09Destroy(Shader* shader, u32 flags)
+    {
+        DestroyShader(shader, flags);
+    }
+
     u32 ShaderType00RegistersSize(const Shader* shader, u32 withMore) RETAIL(FUN_001d9408);
     u32 ShaderType01RegistersSize(const Shader* shader, u32 withMore) RETAIL(FUN_001d9288);
     u32 ShaderType02RegistersSize(const Shader* shader, u32 withMore) RETAIL(FUN_001d9348);
@@ -368,6 +406,43 @@ extern "C"
     }
 
     u32 UnusedShaderRegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType03RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D94D0);
+    u32 ShaderType05RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D9590);
+    u32 ShaderType06RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D9710);
+    u32 ShaderType07RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D97D0);
+    u32 ShaderType08RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D9890);
+    u32 ShaderType09RegistersSize(const Shader* shader, u32 withMore) RETAIL(func_001D9950);
+
+    u32 ShaderType03RegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType05RegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType06RegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType07RegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType08RegistersSize(const Shader* shader, u32 withMore)
+    {
+        return RegistersSize(shader, withMore);
+    }
+
+    u32 ShaderType09RegistersSize(const Shader* shader, u32 withMore)
     {
         return RegistersSize(shader, withMore);
     }
@@ -670,6 +745,46 @@ extern "C"
     }
 }
 
+
+extern "C"
+{
+    // Types 5 to 8 call the base's update (type 9 has it in its vtable), type 3 has none
+    u32 ShaderType03Update(const Shader* shader) RETAIL(FUN_001d94b8);
+    u32 ShaderType05Update(Shader* shader, f32 seconds) RETAIL_N32(FUN_001dd050);
+    u32 ShaderType06Update(Shader* shader, f32 seconds) RETAIL_N32(FUN_001dcb58);
+    u32 ShaderType07Update(Shader* shader, f32 seconds) RETAIL_N32(FUN_001dcc70);
+    u32 ShaderType08Update(Shader* shader, f32 seconds) RETAIL_N32(FUN_001dcd88);
+
+    u32 ShaderType03Update(const Shader*)
+    {
+        return 0;
+    }
+
+    u32 ShaderType05Update(Shader* shader, f32 seconds)
+    {
+        return UpdateShader(shader, seconds);
+    }
+
+    u32 ShaderType06Update(Shader* shader, f32 seconds)
+    {
+        return UpdateShader(shader, seconds);
+    }
+
+    u32 ShaderType07Update(Shader* shader, f32 seconds)
+    {
+        return UpdateShader(shader, seconds);
+    }
+
+    u32 ShaderType08Update(Shader* shader, f32 seconds)
+    {
+        return UpdateShader(shader, seconds);
+    }
+}
+
+EABI_EXPORT(FUN_001dd050, ShaderType05Update);
+EABI_EXPORT(FUN_001dcb58, ShaderType06Update);
+EABI_EXPORT(FUN_001dcc70, ShaderType07Update);
+EABI_EXPORT(FUN_001dcd88, ShaderType08Update);
 EABI_EXPORT(UpdateShaderScrollAndColor, UpdateShader);
 EABI_EXPORT(FUN_001d2848, ShaderType17Update);
 EABI_EXPORT(FUN_001d1cf0, ShaderType1AUpdate);

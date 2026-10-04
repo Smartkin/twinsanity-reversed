@@ -1,10 +1,21 @@
 #include "game/sound.h"
 
+#include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/controllers.h"
 #include "game/filestream.h"
+#include "game/gamecontroller.h"
+#include "game/instances.h"
+#include "game/language.h"
+#include "game/layout.h"
+#include "game/memory.h"
 #include "game/movie.h"
+#include "game/place.h"
+#include "game/reference.h"
+#include "game/resources.h"
+#include "game/stream.h"
 #include "platform/audio.h"
+#include "retail/libc.h"
 
 // The sound code's side of the sound processor: voices, reverbs, groups and music
 namespace
@@ -54,41 +65,13 @@ u32 MusicState(const MusicPlayer* player)
 
 f32* GroupScales();
 
-// A bank's music track: a stereo track is interleaved
-struct MusicTrack
-{
-    s32 interleaved;
-    u32 size;
-    u32 offset;
-    u32 rate;
-    u32 value;
-};
 }
 
 extern "C"
 {
-    // The renderer's alpha presets, which the groups' scales follow in memory
-    extern u64 G_AlphaRegPresets[];
-    extern u8 D_003B1B00[];
     // The music request the sound's update plays when one is pending
     extern const MusicRequest D_002E7918;
 
-    SoundVoice* FindFreeVoice(s32 unknown, s32 core) RETAIL(FUN_001dff30);
-    MusicTrack* FindMusicTrack(SoundBankFiles* bank, u32 track) RETAIL(FUN_002addb0);
-    MusicPlayer* ConstructMusicPlayer(MusicPlayer* player) RETAIL(FUN_001e6c90);
-    u32 FadeMusic(f32 time, MusicPlayer* player) RETAIL_N32(FUN_001e0fd0);
-    // The volumes and pitch of a sound at a place: left, right and pitch go to out[0] to out[2], what the next call is given as
-    // previous to out[4]. Returns whether it can be heard
-    u32 SoundAtPlace(f32 volume, f32 distance, f32 previous, s32 pitch, Matrix4x4* place, f32* out) RETAIL_N32(FUN_001e0a20);
-    void UpdateSoundCore(SoundCore* core) RETAIL(FUN_001df7b0);
-    void UpdateSoundEmitters() RETAIL(FUN_001dd730);
-    void UpdateSoundObjects() RETAIL(FUN_001de488);
-    void UpdatePlayingSounds(f32 time, bool paused) RETAIL_N32(FUN_001dddd0);
-    void UpdateSoundTimers(f32 time) RETAIL(FUN_001df670);
-    void ClearSoundPool(void* pool) RETAIL(FUN_001e8c70);
-    void StopSoundEmitters() RETAIL(FUN_001dea10);
-    void MuteVoice(SoundVoice* voice) RETAIL(FUN_001e6398);
-    void ReleaseVoice(SoundVoice* voice) RETAIL(FUN_001e68c0);
 }
 
 extern "C" u32 PlaySound(f32 volume, f32 pitchScale, GameSound* sound, s32 group, s32 voiceKind, s32 last)
@@ -147,9 +130,9 @@ extern "C" u32 PlaySoundById(f32 volume, f32 pitchScale, u32 id, s32 group, s32 
 
 EABI_EXPORT(FUN_001e5d98, PlaySound);
 EABI_EXPORT(FUN_001e5d10, PlaySoundById);
-EABI_IMPORT(FUN_001e0fd0, FadeMusic);
-EABI_IMPORT(FUN_001e0a20, SoundAtPlace);
-EABI_IMPORT(FUN_001dddd0, UpdatePlayingSounds);
+EABI_EXPORT(FUN_001e0fd0, FadeMusic);
+EABI_EXPORT(FUN_001e6c20, FadeMusicOut);
+EABI_EXPORT(FUN_001e6e30, FadeMusicTo);
 EABI_EXPORT(FUN_001e60b0, SetReverbVolume);
 EABI_EXPORT(FUN_001e6108, SetReverbDepth);
 EABI_EXPORT(FUN_001e64f0, SetVoiceVolume);
@@ -381,7 +364,7 @@ extern "C"
         return VoiceNumber(voice);
     }
 
-    s32 PlaySoundAt(f32 volume, f32 pitchScale, SoundVoice* voice, GameSound* sound, u32 group, Matrix4x4* place, s32 last)
+    s32 PlaySoundAt(f32 volume, f32 pitchScale, SoundVoice* voice, GameSound* sound, u32 group, const Vector4* position, s32 last)
     {
         voice->pitchScale = pitchScale;
         voice->volume = volume;
@@ -404,7 +387,7 @@ extern "C"
         }
 
         f32 out[8];
-        u32 heard = SoundAtPlace(level, g_SoundDistance, voice->unknown1C, pitch, place, out);
+        u32 heard = SoundAtPlace(level, g_SoundDistance, voice->unknown1C, pitch, position, out);
         if (heard != 0)
         {
             voice->unknown1C = out[4];
@@ -503,8 +486,8 @@ extern "C"
             g_Music->fading[slot] = nullptr;
         }
 
-        ClearSoundPool(D_003B1B00);
-        StopSoundEmitters();
+        ClearInstanceSounds(&g_InstanceSounds);
+        StopMusicEmitters();
         g_GroupFadeTime = 0.0f;
         ApplyGroupVolumes();
         for (u32 group = 0; group < 4; group++)
@@ -530,8 +513,8 @@ extern "C"
 
         if (paused == 0)
         {
-            UpdateSoundEmitters();
-            UpdateSoundObjects();
+            UpdateInstanceSounds();
+            UpdateMusicEmitters();
         }
 
         UpdatePlayingSounds(time, paused != 0);
@@ -552,7 +535,7 @@ extern "C"
             }
         }
 
-        UpdateSoundTimers(time);
+        UpdateCutsceneVolumes(time);
         g_SoundFrames++;
         if (g_SoundFrames >= KeepAliveFrames)
         {
@@ -875,4 +858,554 @@ void FadeFromCutsceneVolumes()
 {
     g_CutsceneVolumeMode = 3;
     g_CutsceneVolumeFade = 1.0f;
+}
+
+namespace
+{
+constexpr u32 VoicesPerCore = 24;
+constexpr u32 UseShift = 9;
+constexpr f32 NoScale = -1.0f;
+// The frames a core keeps its reverb without a voice sending to it
+constexpr u32 ReverbIdleFrames = 0x12D;
+// A core without reverb counts as this many free voices when the chunk's reverb picks one
+constexpr s32 ReverbFreeCore = 10000;
+// The sound's listener
+
+bool StealableVoice(const SoundVoice* voice)
+{
+    return (voice->bits >> UseShift & 0x1F) == 0;
+}
+
+SoundVoice* TakeVoice(SoundCore* core, s32 steal)
+{
+    u32 bit = 1;
+    for (u32 index = 0; index < VoicesPerCore; index++, bit <<= 1)
+    {
+        SoundVoice* voice = nullptr;
+        if ((core->voicesInUse & bit) == 0)
+        {
+            voice = &core->voices[index];
+        }
+        else if (steal != 0)
+        {
+            voice = &core->voices[index];
+            if (!StealableVoice(voice))
+            {
+                voice = nullptr;
+            }
+            else
+            {
+                MuteVoice(voice);
+            }
+        }
+
+        if (voice != nullptr)
+        {
+            u32 bits = (voice->bits & ~SoundVoice::NumberMask) | (index & SoundVoice::NumberMask);
+            voice->bits = bits;
+            bits = (bits & ~SoundVoice::SecondCore) | static_cast<u32>(static_cast<u16>(core->reverbBits) != 0) << 7;
+            voice->bits = bits & ~SoundVoice::TakenByMusic;
+            core->voicesInUse |= bit;
+            return voice;
+        }
+    }
+
+    return nullptr;
+}
+
+u32 FreeVoices(const SoundCore* core, s32 steal)
+{
+    u32 count = 0;
+    u32 bit = 1;
+    for (u32 index = 0; index < VoicesPerCore; index++, bit <<= 1)
+    {
+        if ((core->voicesInUse & bit) == 0)
+        {
+            count++;
+        }
+        else if (steal != 0 && StealableVoice(&core->voices[index]))
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+// The reverb modes of the chunks' reverb types (0 is the sound processor's 9)
+s32 ReverbModeOf(u8 type)
+{
+    switch (type)
+    {
+    case 0:
+        return 9;
+    case 1:
+        return 1;
+    case 2:
+        return 2;
+    case 3:
+        return 3;
+    case 4:
+        return 4;
+    case 5:
+        return 5;
+    case 6:
+        return 6;
+    default:
+        return 0;
+    }
+}
+}
+
+// Whether the core is set to the reverb settings: their mode and depth (UseReverb has it inline)
+extern "C" bool CoreHasReverb(const SoundCore* core, const ReverbSettings* settings) RETAIL(func_001E61E0);
+
+bool CoreHasReverb(const SoundCore* core, const ReverbSettings* settings)
+{
+    const u8* bytes = reinterpret_cast<const u8*>(settings);
+    return core->reverbMode == ReverbModeOf(bytes[0]) &&
+           static_cast<s32>(settings->depth * ReverbVolumeScale) == core->reverbDepthLeft;
+}
+
+SoundVoice* FindFreeVoice(s32 reverbMode, s32 steal)
+{
+    if (reverbMode != 0)
+    {
+        for (SoundCore* core = g_SoundCores; core < g_SoundCores + 2; core++)
+        {
+            if (core->reverbMode == reverbMode)
+            {
+                SoundVoice* voice = TakeVoice(core, steal);
+                if (voice != nullptr)
+                {
+                    return voice;
+                }
+            }
+        }
+    }
+
+    SoundCore* plain = nullptr;
+    for (s32 index = 0; index < 2; index++)
+    {
+        if (g_SoundCores[index].reverbMode == 0 && FreeVoices(&g_SoundCores[index], steal) != 0)
+        {
+            plain = &g_SoundCores[index];
+            break;
+        }
+    }
+
+    if (plain != nullptr)
+    {
+        return TakeVoice(plain, steal);
+    }
+
+    for (SoundCore* core = g_SoundCores; core < g_SoundCores + 2; core++)
+    {
+        if (FreeVoices(core, steal) != 0)
+        {
+            SoundVoice* voice = TakeVoice(core, steal);
+            if (voice != nullptr)
+            {
+                return voice;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+void ReleaseVoice(SoundVoice* voice)
+{
+    u32 bits = voice->bits;
+    u32 core = bits >> 7 & 1;
+    voice->bits = bits & ~SoundVoice::UseMask;
+    voice->volume = NoScale;
+    voice->pitchScale = NoScale;
+    g_SoundCores[core].voicesInUse &= ~(1u << (bits & SoundVoice::NumberMask));
+}
+
+SoundVoice* VoiceOfNumber(u32 number)
+{
+    if (number < VoicesPerCore)
+    {
+        return &g_SoundCores[0].voices[number];
+    }
+
+    return &g_SoundCores[1].voices[number - VoicesPerCore];
+}
+
+void UpdateSoundCore(SoundCore* core)
+{
+    bool reverbUsed = false;
+    u32 bit = 1;
+    for (u32 index = 0; index < VoicesPerCore; index++, bit <<= 1)
+    {
+        SoundVoice* voice = &core->voices[index];
+        if ((core->voicesInUse & bit) == 0 || (voice->bits & SoundVoice::TakenByMusic) != 0)
+        {
+            continue;
+        }
+
+        u32 playing = UpdateVoice(voice);
+        u32 bits = voice->bits;
+        if (playing == 0)
+        {
+            voice->pitchScale = NoScale;
+            voice->volume = NoScale;
+            voice->bits = bits & ~SoundVoice::UseMask;
+            core->voicesInUse &= ~(1u << (bits & SoundVoice::NumberMask));
+        }
+        else if ((bits & SoundVoice::ReverbSend) != 0)
+        {
+            reverbUsed = true;
+        }
+    }
+
+    if (reverbUsed || core->reverbMode == 0)
+    {
+        core->unknown18 = 0;
+    }
+    else if (static_cast<u32>(core->unknown18) < ReverbIdleFrames)
+    {
+        core->unknown18++;
+    }
+    else
+    {
+        SetReverb(core, 0, 0, 0);
+        core->unknown18 = 0;
+    }
+}
+
+s32 UseReverb(const ReverbSettings* settings)
+{
+    const u8* bytes = reinterpret_cast<const u8*>(settings);
+    s32 mode = ReverbModeOf(bytes[0]);
+    for (s32 index = 0; index < 2; index++)
+    {
+        SoundCore* core = &g_SoundCores[index];
+        if (core->reverbMode == ReverbModeOf(bytes[0]) &&
+            static_cast<s32>(settings->depth * ReverbVolumeScale) == core->reverbDepthLeft)
+        {
+            return mode;
+        }
+    }
+
+    s32 most = -1;
+    s32 chosen = -1;
+    for (s32 index = 0; index < 2; index++)
+    {
+        SoundCore* core = &g_SoundCores[index];
+        s32 free = ReverbFreeCore;
+        if (core->reverbMode != 0)
+        {
+            free = 0;
+            for (u32 voice = 0; voice < VoicesPerCore; voice++)
+            {
+                if ((core->voicesInUse & 1u << voice) == 0)
+                {
+                    free++;
+                }
+            }
+        }
+
+        if (most < free)
+        {
+            most = free;
+            chosen = index;
+        }
+    }
+
+    SetReverbFromSettings(&g_SoundCores[chosen], bytes);
+    return mode;
+}
+
+void SetSoundListener(ReferencedObject* object)
+{
+    AssignReference(&g_SoundListener, object);
+}
+
+s32 ListenerVoiceKind()
+{
+    auto* listener = static_cast<InstanceContext*>(g_SoundListener != nullptr ? g_SoundListener->object : nullptr);
+    if (listener == nullptr)
+    {
+        return 0;
+    }
+
+    ChunkData* chunk = listener->chunk;
+    const ReverbSettings* settings = &chunk->reverb;
+    if (chunk->soundBoxCount != 0)
+    {
+        ObjectPlace* place = listener->place;
+        place->SyncPosition();
+        Vector4 position = place->position;
+        if (chunk->InSoundBox(&position) != 0)
+        {
+            settings = &chunk->boxReverb;
+        }
+    }
+
+    if (static_cast<s8>(settings->bits) == -1)
+    {
+        return 0;
+    }
+
+    return UseReverb(settings);
+}
+
+u32 SoundBox::Contains(const Vector4* point)
+{
+    f32 dy = point->y - position.y;
+    if (!((point->x - position.x) * (point->x - position.x) + dy * dy + (point->z - position.z) * (point->z - position.z) <=
+          radiusSquared))
+    {
+        return 0;
+    }
+
+    Vector4 local = *point;
+    VuTransformPoint(&inverse, &local, &local);
+    return reinterpret_cast<Box*>(this)->Contains(&local);
+}
+
+void UpdateCutsceneVolumes(f32 time)
+{
+    // The groups' volumes in cutscenes: the music's is left alone
+    static constexpr f32 CutsceneLevels[4] = {0.25f, 0.25f, 0.25f, 1.0f};
+    if (g_CutsceneVolumeMode == 0 || g_CutsceneVolumeMode == 2)
+    {
+        return;
+    }
+
+    if (0.0f < g_CutsceneVolumeFade)
+    {
+        g_CutsceneVolumeFade = g_CutsceneVolumeFade - time / g_CutsceneVolumeFade;
+        if (g_CutsceneVolumeFade < 0.0f)
+        {
+            g_CutsceneVolumeFade = 0.0f;
+        }
+    }
+
+    f32 share = g_CutsceneVolumeFade;
+    if (g_CutsceneVolumeMode == 3)
+    {
+        share = 1.0f - share;
+    }
+
+    f32* scales = GroupScales();
+    for (u32 group = 0; group < 4; group++)
+    {
+        f32 level = CutsceneLevels[group];
+        scales[group] = level + (1.0f - level) * share;
+        f32 volume = GroupVolumeLevel(static_cast<s32>(group));
+        SetGroupVolume(volume, volume, static_cast<s32>(group));
+    }
+
+    if (g_CutsceneVolumeFade == 0.0f)
+    {
+        g_CutsceneVolumeMode = g_CutsceneVolumeMode == 1 ? 2 : 0;
+    }
+}
+
+f32 GroupVolumeLevel(s32 group)
+{
+    constexpr f32 Half = 1.0f / (2.0f * GroupVolumeScale);
+    return static_cast<f32>(static_cast<u16>(g_GroupVolumes[group].left)) * Half +
+           static_cast<f32>(static_cast<u16>(g_GroupVolumes[group].right)) * Half;
+}
+
+void CreateMusic()
+{
+    g_Music = ConstructMusic(static_cast<MusicSystem*>(MemoryAllocate(sizeof(MusicSystem))));
+}
+
+void SetMusicStereo(u32 mode)
+{
+    g_MusicStereo = mode;
+    for (MusicPlayer& player : g_Music->players)
+    {
+        if (MusicState(&player) != MusicPlayer::Stopped)
+        {
+            ApplyMusicVolume(&player);
+        }
+    }
+}
+
+void ReclaimMusicBuffers()
+{
+    for (MusicPlayer& player : g_Music->players)
+    {
+        LendMusicPlayer(&player, 0);
+    }
+}
+
+void LendMusicPlayer(MusicPlayer* player, u32 lend)
+{
+    if (lend == 0)
+    {
+        if (MusicState(player) != MusicPlayer::LentToMovie)
+        {
+            return;
+        }
+
+        SetMusicState(player, MusicPlayer::Stopped);
+        return;
+    }
+
+    if (MusicState(player) != MusicPlayer::Stopped)
+    {
+        StopMusic(player);
+    }
+
+    SetMusicState(player, MusicPlayer::LentToMovie);
+}
+
+s32 ApplyMusicVolume(MusicPlayer* player)
+{
+    return SetMusicVolume(player->left, player->right, player);
+}
+
+void FadeMusicOut(f32 time, MusicPlayer* player, u32 stops)
+{
+    constexpr f32 ShortestFade = Rounded(0.3);
+    player->fadeTime = time;
+    if (time < ShortestFade)
+    {
+        player->fadeTime = ShortestFade;
+    }
+
+    player->fromLeft = player->left;
+    player->bits = (((player->bits & ~MusicPlayer::StateMask) | MusicPlayer::FadingOutState << 1) & ~MusicPlayer::FadingOut) |
+                   (stops & 1) << 10;
+    player->fromRight = player->right;
+    player->targetLeft = 0.0f;
+    player->targetRight = 0.0f;
+}
+
+void FadeMusicTo(f32 left, f32 right, f32 time, MusicPlayer* player)
+{
+    if (MusicState(player) == MusicPlayer::FadingOutState)
+    {
+        SetMusicState(player, MusicPlayer::PlayingState);
+    }
+
+    player->fadeTime = time;
+    player->fromRight = player->right;
+    player->targetLeft = left;
+    player->targetRight = right;
+    player->fromLeft = player->left;
+}
+
+MusicPlayer* ConstructMusicPlayer(MusicPlayer* player)
+{
+    player->channelValue = 0;
+    player->voices[0] = nullptr;
+    player->voices[1] = nullptr;
+    player->bits &= ~0x3Fu;
+    player->stream = nullptr;
+    player->second = nullptr;
+    return player;
+}
+
+u32 FadeMusic(f32 time, MusicPlayer* player)
+{
+    constexpr f32 Instant = Rounded(1e-05);
+    u32 leftDone = 0;
+    u32 rightDone = 0;
+    if (player->fadeTime < Instant)
+    {
+        leftDone = 1;
+        rightDone = 1;
+        player->left = player->targetLeft;
+        player->right = player->targetRight;
+    }
+    else
+    {
+        f32 step = time / player->fadeTime;
+        f32 targetLeft = player->targetLeft;
+        f32 left = player->left + (targetLeft - player->fromLeft) * step;
+        player->left = left;
+        player->right = player->right + (player->targetRight - player->fromRight) * step;
+        if (player->fromLeft < targetLeft ? targetLeft <= left : left <= targetLeft)
+        {
+            player->left = targetLeft;
+            leftDone = 1;
+        }
+
+        f32 targetRight = player->targetRight;
+        f32 right = player->right;
+        if (player->fromRight < targetRight ? targetRight <= right : right <= targetRight)
+        {
+            player->right = targetRight;
+            rightDone = 1;
+        }
+    }
+
+    SetMusicVolume(player->left, player->right, player);
+    return leftDone != 0 ? rightDone : 0;
+}
+
+void ReadSoundParameters(u16* parameters, Stream* stream)
+{
+    for (u32 index = 0; index < 5; index++)
+    {
+        stream->ReadS16(reinterpret_cast<s16*>(&parameters[index]));
+    }
+}
+
+f32 RemainingShare(f32 part, f32 whole, f32 total)
+{
+    return total - part / whole;
+}
+
+GameSound* SoundById(u16 id)
+{
+    GameSound* sound = nullptr;
+    GameResources* resources = G_GameResourcesObjectPointer;
+    ResourceTable* sounds = resources->sounds;
+    ResourceTable* voices = resources->voices[g_CurrentLanguage];
+    if (id < (sounds->bits & ResourceTable::CapacityMask))
+    {
+        u16 copy = id;
+        if (copy != 0xFFFF)
+        {
+            sound = static_cast<GameSound*>(sounds->items[copy & 0x7FFF]);
+        }
+
+        if (sound == nullptr && copy != 0xFFFF)
+        {
+            sound = static_cast<GameSound*>(voices->items[copy & 0x7FFF]);
+        }
+    }
+
+    return sound;
+}
+
+GameSound* GameSound::Construct(GameSound* sound, Stream* stream)
+{
+    ConstructResourceHeader(sound);
+    sound->name.string = nullptr;
+    sound->name.capacity = 0;
+    sound->name.length = 0;
+    RetailLibc::MemorySet(&sound->flags, 0, 4);
+    sound->Read(stream);
+    return sound;
+}
+
+void GameSound::Read(Stream* stream)
+{
+    u32 header;
+    stream->ReadU32(&header);
+    ReadSoundParameters(&basePitch, stream);
+    stream->ReadS32(&size);
+    stream->ReadS32(&offset);
+}
+
+void GameSound::Destroy(u32 destroyFlags)
+{
+    FreeSoundSamples(reinterpret_cast<u32>(&basePitch), soundId);
+    StringDestroy(&name);
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
 }

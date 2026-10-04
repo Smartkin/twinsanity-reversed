@@ -164,6 +164,19 @@ struct GameResources
     ResourceTable* MakeModelTable(u32 capacity) RETAIL(InitOgiTable);
     ResourceTable* MakeSoundTable(u32 capacity) RETAIL(InitSoundTable);
     ResourceTable** MakeVoiceTables(u32 capacity) RETAIL(InitVoiceTables);
+    // The base's destructor (its vtable's slot 1): every table destroyed, everything waiting in the deletion queues deleted, the
+    // queues freed
+    void DestroyBase(u32 destroyFlags) RETAIL(FUN_00264c48);
+    // The resources of each object of a chunk's list (a count, then the IDs) taken and let go of (game/objects.h's
+    // LoadObjectResources and ReleaseObjectResources)
+    void TakeObjects(const u32* objects) RETAIL(FUN_00266180);
+    void ReleaseObjects(const u32* objects) RETAIL(FUN_00266260);
+    // The game's (its vtable GameResources_Methods): 1 the destructor (the base's), 2 the code models' slots set up again (the
+    // custom pickups' and projectiles' cleared first when asked, then each of the 200 code models a pickup's or a projectile's
+    // set up), 3 nothing
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0017a720);
+    void SetUpCodeModels(u32 clear) RETAIL(FUN_00171c20);
+    void Nothing3() RETAIL(FUN_0017a748);
 };
 
 extern "C"
@@ -172,6 +185,8 @@ extern "C"
     void UnloadPendingResources(GameResources* resources) RETAIL(FUN_00265920);
     // The scripts' table (the game's resources')
     extern ResourceTable* g_ScriptTable RETAIL(G_ScriptTable);
+    // A resource's ID copied (the ID's copy constructor, out of line): the copy
+    u16* CopyResourceId(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
 }
 CHECK_OFFSET(GameResources, voiceQueues, 0x3C);
 CHECK_SIZE(GameResources, 0x44);

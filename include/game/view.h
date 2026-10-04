@@ -43,8 +43,11 @@ CHECK_SIZE(RenderView, 0x170);
 
 extern "C"
 {
-    // The scene's view
+    // The scene's view and its render target
     extern RenderView* g_RenderView RETAIL(G_RendRel);
+    extern RenderTargetDescription* g_RenderTarget RETAIL(G_FontRendererRel);
+    // The instance of the camera the renderer's view looks through (none: nullptr)
+    struct InstanceContext* CameraInstance() RETAIL(FUN_002098a0);
     // How far past the screen's edges, in screens, the VU1 programs let things be before they clip them (5 either way)
     extern f32 g_GuardBandX RETAIL(D_0030A1D4);
     extern f32 g_GuardBandY RETAIL(D_0030A1D8);

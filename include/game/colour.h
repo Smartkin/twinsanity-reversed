@@ -49,4 +49,9 @@ extern "C"
     u32 ColourScale(u32* colour, f32 scale) RETAIL_N32(FUN_001a0ee8);
     // The colour tinted by another (their fractions multiplied); returns it
     u32 ColourTint(u32* colour, u32 tint) RETAIL(FUN_001a0f80);
+    // One of its bytes set from a fraction
+    void ColourSetAlpha(u32* colour, f32 alpha) RETAIL_N32(FUN_00101678);
+    void ColourSetRed(u32* colour, f32 red) RETAIL_N32(FUN_00101698);
+    void ColourSetGreen(u32* colour, f32 green) RETAIL_N32(FUN_001016b8);
+    void ColourSetBlue(u32* colour, f32 blue) RETAIL_N32(FUN_001016d8);
 }

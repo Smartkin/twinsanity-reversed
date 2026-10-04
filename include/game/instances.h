@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "game/controls.h"
 #include "game/layout.h"
 #include "game/math.h"
 #include "game/place.h"
@@ -17,7 +18,7 @@ struct OgiAnimator;
 struct PlayerCharacter;
 struct TimeClock;
 
-// The kinds of an instance's nodes (still asm): its model, the camera's lens, the controls (the pad they're read from), the
+// The kinds of an instance's nodes: its model, the camera's lens, the controls (the pad they're read from), the
 // player's, and the one kept at 0x16
 enum NodeKind : u32
 {
@@ -85,7 +86,7 @@ struct NodeList
 };
 CHECK_SIZE(NodeList, 0x64);
 
-// The events queued for an instance (still asm): a list of the events' handles
+// The events queued for an instance: a list of the events' handles
 struct QueuedEvent
 {
     Reference* event;
@@ -93,7 +94,7 @@ struct QueuedEvent
     QueuedEvent* next;
 };
 
-// Where an instance is (still asm): its rotation and position, a flag, and the chunk it's in. A character's node of kind 1 has one
+// Where an instance is: its rotation and position, a flag, and the chunk it's in. A character's node of kind 1 has one
 // for where it comes back to
 struct alignas(16) InstancePlacement
 {
@@ -106,17 +107,25 @@ struct alignas(16) InstancePlacement
     // The chunk's path taken as its chunk when there's a chunk
     static InstancePlacement* Construct(InstancePlacement* placement, struct ChunkData* chunk) RETAIL(FUN_001958c8);
     InstancePlacement* Assign(const InstancePlacement* other) RETAIL(FUN_001959a8);
-    // The instance's place, with the flag
+    // The instance's place, with the flag (and the chunk given, or the instance's when it's in one)
     void Take(InstanceContext* instance, u32 flag) RETAIL(FUN_00195a08);
+    void TakeInChunk(InstanceContext* instance, struct ChunkData* chunk, u32 flag) RETAIL(FUN_00195b28);
     // The instance put there (moved to the chunk; when the chunk isn't loaded, it's let go unless the flag is set)
     void Apply(InstanceContext* instance) RETAIL(FUN_00195c38);
 };
 CHECK_SIZE(InstancePlacement, 0x30);
 
-// The places an instance keeps (0x190 bytes of the heap): a string and 8 places
+extern "C"
+{
+    // A placement copied (retail's copy constructor)
+    InstancePlacement* CopyInstancePlacement(InstancePlacement* placement, const InstancePlacement* other) RETAIL(FUN_00195938);
+}
+
+// The places a character keeps in the chunks it was put in (0x190 bytes of the heap): how many, the path of the chunk it was put
+// in last, and the places (8 at most)
 struct InstancePlaces
 {
-    u32 unknown00;
+    u32 count;
     String name;
     InstancePlacement places[8];
 };
@@ -172,7 +181,7 @@ struct ChunkInstances
     // kinds, the flags of its second and none of its third (everything to free freed first)
     void MakeGlobal(u32 unknown, InstanceContext* instance) RETAIL(FUN_00199508);
     void MakeGlobalWhere(u32 unknown, const u32* filter) RETAIL(FUN_00199558);
-    // A frame of its instances' nodes, kind by kind (still asm)
+    // A frame of its instances' nodes, kind by kind
     u32 Update(struct GameTimeController* clock, void* clocks, s32 detail) RETAIL(FUN_00199848);
     // Every sleeping instance released
     void Release() RETAIL(FUN_001997d0);
@@ -248,14 +257,19 @@ CHECK_OFFSET(InstanceContext, events, 0x138);
 CHECK_OFFSET(InstanceContext, clockIndex, 0x153);
 CHECK_SIZE(InstanceContext, 0x160);
 
-// An instance's movement node (kind 0, still asm but its places): the seconds between its two places, its bits (1: they're
-// captured for the frame) and its place's matrix a frame before and now (its update moves the one it had into the first)
+// An instance's movement node (kind 0, retail vtable UnkMatricesNode__Methods): the seconds between its two places, its bits (1:
+// set when it's made, 2: they're captured for the frame) and its place's matrix a frame before and now (its update moves the one it
+// had into the first)
 struct MovementNode : GameNode
 {
     enum Bits : u32
     {
+        BitMade = 0x1,
         BitCaptured = 0x2,
     };
+
+    static constexpr u32 NodeKind = 0;
+    static constexpr u32 ClassId = 0x1309;
 
     f32 seconds;
     u32 bits;
@@ -267,21 +281,70 @@ struct MovementNode : GameNode
     Matrix4x4* CurrentMatrix() RETAIL(FUN_00192b38);
     f32 Seconds() RETAIL(FUN_00192b80);
     void Capture() RETAIL(CaptureMovementNodeTransform);
+    // Its vtable's destructor and update: while its clock runs and they're captured, the place it had is the one before and its
+    // instance's place now the new one, the seconds the clock's last advance (captured anew otherwise), then the base's update
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001929d8);
+    u32 Update(TimeClock* clock) RETAIL(FUN_00192a00);
+    // Its kind and its class (its vtable's functions 5 and 10)
+    u32 Kind() RETAIL(GetNodeIndex_0019A7D8);
+    u32 GetClassId() RETAIL(FUN_0019a7e0);
 };
 CHECK_OFFSET(MovementNode, previousMatrix, 0x20);
 CHECK_OFFSET(MovementNode, matrix, 0x60);
 
-// An instance's model node (kind 3, 0x30 bytes, still asm but its drawing): the OGI and the animator it's drawn with this frame
-// (what its update left for the drawing, emptied once drawn) and what its lights are gathered with
+extern "C"
+{
+    extern const GccVTableEntry g_MovementNodeVTable[] RETAIL(UnkMatricesNode__Methods);
+    // A movement node made (the base's first), its bits 1 and none captured
+    GameNode* ConstructMovementNode(void* node) RETAIL(InitMovementNode);
+    // Its move over its last frame as a velocity (the two places' positions apart over its seconds, captured first when they
+    // aren't)
+    void MovementVelocity(MovementNode* node, Vector4* velocity) RETAIL(GetMovementNodeDelta);
+}
+
+// An instance's model node (kind 3, class 0x141E, 0x30 bytes): its bits (the stamps its instance went unseen past the update rate's
+// grace, at its last update), its OGI and its animator (none for an OGI of one joint without exit points), the OGI and the animator
+// it's drawn with this frame (what its update left for the drawing, emptied once drawn) and what its lights are gathered with
 struct ModelNode : GameNode
 {
+    enum Bits : u32
+    {
+        UnseenMask = 0xFFFFFF,
+        // Its OGI was replaced: the next update animates it however long it went unseen
+        OgiChanged = 0x1000000,
+        AlwaysAnimated = 0x2000000,
+        // Its last update made its joints' matrices
+        MatricesMade = 0x4000000,
+        // Its OGI's hulls collide (SetSolid)
+        Solid = 0x8000000,
+    };
+
+    static constexpr u32 NodeKind = 3;
+    static constexpr u32 ClassId = 0x141E;
+
     u32 bits;
-    GameOGI* unknown1C;
+    GameOGI* ogi;
     GameOGI* drawnOgi;
-    void* unknown24;
+    OgiAnimator* animator;
     OgiAnimator* drawnAnimator;
     Light* lighting;
 
+    static ModelNode* Construct(ModelNode* node) RETAIL(InitOgiNode);
+    // Its vtable's slots: 2 the destructor (its animator and lighting with it), 3 given its instance (its animator given the
+    // instance's place, its instance's collision its OGI's box), 5 its kind, 7 its step (its OGI let go, its instance stepped
+    // out of its chunk), 8 its update (its animator animated as often as the update rate says for how long its instance went
+    // unseen, and only for the drawing while its instance is seen and in a drawn cell), 10 its class
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001a1818);
+    void SetOwner(InstanceContext* instance) RETAIL(FUN_001a18b8);
+    u32 Kind() RETAIL(GetNodeIndex_001A0280);
+    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_001a1910);
+    u32 Update(TimeClock* clock) RETAIL(FUN_0019e5d0);
+    u32 GetClassId() RETAIL(FUN_001a0288);
+    // Given an OGI (none: its animator deleted; its animator made or given it when it has joints or exit points) and its
+    // animations restarted; its instance's collision given its OGI's box; its OGI's hulls made solid or not
+    void SetOgi(GameOGI* ogi, u32 cameraJoints, u32 exitPoints) RETAIL(SetInstanceOGI_);
+    void AttachCollision() RETAIL(FUN_001a1960);
+    void SetSolid(u32 solid) RETAIL(FUN_001a1990);
     // Drawn with its instance's matrix in the world, lit by the strongest lights at it (gathered through the chunk's matrix):
     // with its animator's joints' matrices and blend shapes when it has one, else its OGI's rigid models at the matrix
     void Draw(const Matrix4x4* matrix, const Matrix4x4* chunkMatrix, ChunkLights* lights, u32 mode) RETAIL(FUN_001a1a00);
@@ -295,12 +358,40 @@ struct PlayerNode
     PlayerCharacter* character;
 };
 
-// The controls' node: the pad the character's controls are read from (none: the character isn't controlled)
-struct ControlsNode
+// The controls' node (kind 0xB, retail's D_002F4D90, 0x34 bytes): the pad the character's controls are read from (none: the
+// character isn't controlled), its own controls (game/controls.h), a vehicle's that replace them (owned), its bits (0: its
+// instance's motion drives it, no pad read)
+struct ControlsNode : GameNode
 {
-    u8 unknown00[0x18];
+    enum Bits : u32
+    {
+        BitMotionDriven = 0x1,
+    };
+
     GamePad* pad;
+    CharacterControls handler;
+    ControlsHandler* replacement;
+    u32 bits;
+
+    // Its vtable's functions (game/characternodes.cpp): 2 the destructor, 5 its kind, 7 a step (set back: the vehicle's handler
+    // dropped, not motion driven, its own handler reset), 8 the update, 10 its type
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0017b2b0);
+    u32 Kind() RETAIL(GetNodeIndex_0017B208);
+    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_0017b380);
+    u32 Update(TimeClock* clock) RETAIL(FUN_00172528);
+    u32 Type() RETAIL(FUN_0017b210);
 };
+CHECK_OFFSET(ControlsNode, pad, 0x18);
+CHECK_OFFSET(ControlsNode, replacement, 0x2C);
+CHECK_SIZE(ControlsNode, 0x34);
+
+extern "C"
+{
+    // The controls' node made (no pad, its own handler, none replacing it, not motion driven), and its handler replaced by
+    // another (a vehicle's, which it owns: the one before destroyed; none: its own)
+    ControlsNode* ConstructControlsNode(void* node) RETAIL(CreateButtonBindingsNode);
+    void ReplaceControlsHandler(ControlsNode* controls, void* handler) RETAIL(FUN_0017b330);
+}
 
 class AgentPart;
 struct InstanceCreator;
@@ -310,9 +401,12 @@ struct InstanceCreator;
 // its properties (bit 6 of their state: it keeps a persistent flag of its chunk), the part of its type, its chunk's index and its
 // ID in its chunk (the persistent flag slot it was given, which checkpoints find it by), the last contact message that told it
 // something, and its vtable: 1 its instance's state flags applied (made again), 2 the destructor, 7 its node collided (the
-// other, the point, the impulse), 9 a contact message (and its sender), 10 whether its instance may change chunks, 11 a position
-// of its own (whether it has one), 14 the center of its collision box, 20 an event of type 0x1801 and its sender, 21 its
-// velocity set, 22 its frame. The base's other functions do nothing (7 and 10 say yes, 12 no), 3 to 5 and 11 are abstract
+// other, the point, the impulse), 8 it bumped into an instance while moving (the instance, the contact and its normal), 9 a
+// contact message (and its sender), 10 whether its instance may change chunks, 11 a velocity of its own (whether it has one), 13
+// put back on its feet, 14 the center of its collision box, 15 frozen and 16 unfrozen, 17 a contact sound of what it rides played
+// (its strength), 18 footprints left (a kind), 19 it touched an instance (the instance, the contact's normal), 20 an event of type
+// 0x1801 and its sender, 21 its velocity set, 22 its frame. The base's other functions do nothing (7 and 10 say yes, 12 no), 3 to
+// 5 and 11 are abstract
 class Agent
 {
 public:
@@ -348,21 +442,24 @@ public:
     // resource the object lists; and those let go of
     static Agent* Construct(Agent* agent, InstanceCreator* creator, PropertyHolder* holder, AgentPart* part)
         RETAIL(FUN_002631f0);
+    // Its vtable's slot 1: nothing in the base
+    void ApplyState(u32 unknown) RETAIL(RETURN_BACK);
     void Destroy(u32 destroyFlags) RETAIL(FUN_002632f0);
     void ClearUnknown18() RETAIL(FUN_00263410);
     void Nothing6() RETAIL(FUN_00262380);
     u32 Collided(void* other, const Vector4* point, const Vector4* impulse) RETAIL(FUN_00262388);
-    void Nothing8() RETAIL(FUN_00262390);
+    void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_00262390);
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_00262398);
     u32 CanChangeChunk(struct ChunkData* from, struct ChunkLinkData* link) RETAIL(FUN_002623a0);
     u32 Slot12() RETAIL(FUN_002623a8);
-    void Nothing13() RETAIL(FUN_002623b0);
+    void Recover() RETAIL(FUN_002623b0);
     // The center of its instance's collision box (w the box's top corner's)
     void CollisionCenter(Vector4* center) RETAIL(FUN_00263630);
-    void Nothing15() RETAIL(FUN_002623b8);
-    void Nothing16() RETAIL(FUN_002623c0);
-    void Nothing17() RETAIL(FUN_002623c8);
-    void Nothing18() RETAIL(FUN_002623d0);
+    void Freeze() RETAIL(FUN_002623b8);
+    void Unfreeze() RETAIL(FUN_002623c0);
+    // (The float the callers pass is left alone: it takes none)
+    void PlayRideSound() RETAIL(FUN_002623c8);
+    void LeaveFootprints(u32 kind) RETAIL(FUN_002623d0);
 };
 CHECK_OFFSET(Agent, properties, 0xC);
 CHECK_OFFSET(Agent, id, 0x16);
@@ -390,32 +487,139 @@ extern "C"
     AgentNode* ConstructGrabbableNode(AgentNode* node, Agent* agent) RETAIL(FUN_0017ab90);
     AgentNode* ConstructPayGateNode(AgentNode* node, Agent* agent) RETAIL(FUN_0017af70);
     AgentNode* ConstructGrapleNode(AgentNode* node, Agent* agent) RETAIL(FUN_0017ade0);
+    // A grabbable's node: whether it's a hook (its agent's first integer property 1), and the point to land on (none: nullptr): of
+    // its object node's waypoints' first keys (as many as its first integer, 0 one), the one a place's z axis points at most
+    u32 IsHookGrabbable(AgentNode* node) RETAIL(FUN_0017abd8);
+    Vector4* GrabbableLandingPoint(AgentNode* node, ObjectPlace* place) RETAIL(FUN_00172358);
+    // An instance's places made with its place in a chunk (the chunk's path its name), and made for it when it has none
+    InstancePlaces* ConstructInstancePlaces(InstancePlaces* places, InstanceContext* instance, struct ChunkData* chunk)
+        RETAIL(FUN_001987f8);
+    InstancePlaces* MakeInstancePlaces(InstanceContext* instance, struct ChunkData* chunk) RETAIL(FUN_001985d0);
+    // The places kept (in their order) whose chunks are loaded and not being released, and the ones in other chunks than one: how
+    // many are left
+    u32 KeepLoadedPlaces(InstancePlaces* places) RETAIL(FUN_00198628);
+    u32 DropPlacesInChunk(InstancePlaces* places, struct ChunkData* chunk) RETAIL(FUN_00198730);
+    // The instance's place in a chunk added to its places (the chunk's other one dropped, the unloaded ones too): 1
+    u32 AddInstancePlace(InstancePlaces* places, InstanceContext* instance, struct ChunkData* chunk) RETAIL(FUN_001988c0);
+    // The unloaded places dropped and the instance put to sleep (the dismiss character command), and the instance sent to its
+    // place in a chunk (the place character in chunk command: it starts from there, moved out of the chunk it's in into the
+    // instances of no chunk, or put there when it's in that chunk already): whether it had one
+    void DismissPlaces(InstancePlaces* places, InstanceContext* instance) RETAIL(FUN_00198a18);
+    u32 PlacePlacesInChunk(InstancePlaces* places, InstanceContext* instance, struct ChunkData* chunk) RETAIL(FUN_00198a50);
 }
 
-// A trigger's or a camera's node (the base of kinds 7 and 8, 0x170 bytes, still asm; kind 7's has 0x30 bytes more): the time
-// between two checks of its box, the instances it tells (their count 0x19 bytes in)
+// A trigger's or a camera's node (the base BaseTriggerNode_Methods of kinds 7 and 8, 0x170 bytes; kind 7's has 0x30 bytes more):
+// its bits (the trigger's first byte, the count of the instances it tells, then bits 16-23: 16 what enters is told (unless 21),
+// 17 and 18 other ways to (18 what stays too), 19 what leaves, 20 never polled (the trigger's bit 12), 21 something was inside
+// at a check, kept until it's reset), the clock units between two checks of its box (the bits' 64 bit word's high half), the
+// kinds of nodes its events go to, its chunk, where its instance started, the instances inside its box at the last check
+// (sorted) and the instances it tells. Its vtable's functions besides the base's: 3 its instance given (where it is taken), 7 put
+// back where it started and woken, 8 the update (the instances inside gathered once the check interval passed, those that
+// entered, stayed and left told), 11 a check begins, 12-14 what entered by the bits (14 also what stayed), 15 what left
 struct TriggerNode : GameNode
 {
+    enum Bits : u32
+    {
+        TellsEntered = 0x10000,
+        TellsEnteredSecond = 0x20000,
+        TellsEnteredAndStayed = 0x40000,
+        TellsLeft = 0x80000,
+        NeverPolled = 0x100000,
+        WasEntered = 0x200000,
+    };
+
     u8 unknown18;
     u8 instanceCount;
-    // Bits 16-23 of the trigger's bits (2: a camera's node, 4: never polled)
     u8 nodeBits;
     u8 unknown1B;
     // The clock units between two checks of its box
     s32 checkTicks;
     // The kinds of nodes its events go to
     u32 eventKinds;
-    u8 unknown24[0xE4 - 0x24];
+    struct ChunkData* chunk;
+    u8 unknown28[8];
+    InstancePlacement placement;
+    ReferenceSet inside;
     InstanceContext* instances[(0x170 - 0xE4) / 4];
 
-    // Made for a trigger of a chunk (still asm), and destroyed (still asm)
+    u32& Bits()
+    {
+        return *reinterpret_cast<u32*>(&unknown18);
+    }
+
+    // Made for a trigger of a chunk, and destroyed
     static TriggerNode* Construct(TriggerNode* node, struct ChunkData* chunk, class LayoutTrigger* trigger) RETAIL(FUN_001f6028);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001f60d0);
     void AddInstance(InstanceContext* instance) RETAIL(FUN_001f6298);
+    void SetOwner(InstanceContext* instance) RETAIL(FUN_001f6160);
+    void Reset() RETAIL(FUN_001f61a8);
+    u32 Update(TimeClock* clock) RETAIL(FUN_001f5428);
+    void Nothing16() RETAIL(FUN_001f5fe0);
+    // The instances inside now compared with those inside at the last check: the ones that entered, stayed and left told by the
+    // bits, then kept
+    void Compare(const ReferenceSet* now) RETAIL(FUN_001f4ec0);
+    // A check now with one instance inside (the time of the check kept)
+    void CheckWith(InstanceContext* instance) RETAIL(FUN_001f6208);
 };
+CHECK_OFFSET(TriggerNode, chunk, 0x24);
+
+extern "C"
+{
+    // The instances (awake, with a node of the kinds) inside an instance's first hull in a chunk, the instance left out, sorted
+    ReferenceSet* GatherTriggerInstances(ReferenceSet* set, struct ChunkData* chunk, u32 kinds, InstanceContext* owner)
+        RETAIL(FUN_001f4cd0);
+}
+CHECK_OFFSET(TriggerNode, placement, 0x30);
+CHECK_OFFSET(TriggerNode, inside, 0x60);
 CHECK_OFFSET(TriggerNode, nodeBits, 0x1A);
 CHECK_OFFSET(TriggerNode, instances, 0xE4);
 CHECK_SIZE(TriggerNode, 0x170);
+
+struct GameEvent;
+
+// A message trigger's node (kind 7, retail's TriggerNode_Methods, 0x1A0 bytes): after the base's, a vector (0, 0, 0, 1 when it's
+// made and reset; nothing reads it), its bits (bit 0 cleared when it's made and reset, bit 1: it's told of any character inside,
+// not just the player), its trigger's messages it sends what entered (by the base's bits 16 to 18, the third also what stayed)
+// and what left (19), and the events made of them (the first time each is sent, forgotten when a check begins, kept by their
+// references). Its vtable's functions besides the base's: 2 the destructor, 5 its kind (7), 7 reset, 10 its item type (0x1814),
+// 11 a check begins, 12 to 15 an instance told it entered (the first three messages, by the bits) and left (the fourth)
+struct MessageTriggerNode : TriggerNode
+{
+    enum MessageBits : u16
+    {
+        Bit0 = 0x1,
+        BitAnyCharacter = 0x2,
+    };
+
+    Vector4 unknown170;
+    u16 messageBits;
+    u16 messages[4];
+    GameEvent* events[4];
+    u32 unknown19C;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00209e38);
+    u32 Kind() RETAIL(FUN_00209d30);
+    void Reset() RETAIL(FUN_00209de8);
+    u32 ItemType() RETAIL(FUN_00209d38);
+    void BeginCheck() RETAIL(FUN_00209d60);
+    void Entered(InstanceContext* instance) RETAIL(FUN_00209d78);
+    void EnteredSecond(InstanceContext* instance) RETAIL(FUN_00209db0);
+    void EnteredOrStayed(InstanceContext* instance) RETAIL(FUN_00207c00);
+    void Left(InstanceContext* instance) RETAIL(FUN_00207ee0);
+    // A message sent to an instance (the event given, or one made of the message with the node's instance as its argument),
+    // then to each instance the trigger tells (one event made of it with the instance as its argument): the instance's event
+    GameEvent* Tell(u16 message, InstanceContext* instance, GameEvent* event) RETAIL(CreateTriggerEvent);
+};
+CHECK_OFFSET(MessageTriggerNode, messageBits, 0x180);
+CHECK_OFFSET(MessageTriggerNode, events, 0x18C);
+CHECK_SIZE(MessageTriggerNode, 0x1A0);
+
+extern "C"
+{
+    // A message trigger's node made for a message trigger of a chunk: its messages taken with the bits that send them
+    TriggerNode* ConstructMessageTriggerNode(void* node, struct ChunkData* chunk, class LayoutTrigger* trigger)
+        RETAIL(InitTriggerNode);
+}
 
 // A camera trigger's node (kind 8, 0x180 bytes, retail's vtable CameraNode_Methods: 14 something entered its box): the camera its
 // trigger switches to (its own: its destructor destroys it) and the event it sends what enters (made the first time, kept by
@@ -438,40 +642,25 @@ struct CameraNode : TriggerNode
     u32 Kind() RETAIL(FUN_0027b7e8);
     u32 Type() RETAIL(FUN_0027b7f0);
     void ForgetEvent() RETAIL(FUN_0027e3c8);
+    // What entered the other ways and what left are told nothing (its vtable's 12, 13 and 15)
+    void Entered(InstanceContext* instance) RETAIL(FUN_0027e3d0);
+    void EnteredSecond(InstanceContext* instance) RETAIL(FUN_0027e3d8);
+    void Left(InstanceContext* instance) RETAIL(FUN_0027e3e0);
     // Something entered its box: the camera's event sent to it (for the node's instance) and to the instances it tells (for it)
     void Enter(InstanceContext* entering) RETAIL(FUN_0027aa80);
 };
 CHECK_OFFSET(CameraNode, event, 0x174);
 CHECK_SIZE(CameraNode, 0x180);
 
-// The node of kind 0x16: the instance it's in, an object it follows (while playing, the sounds are heard from it), its bits (bit 7:
-// the scripts don't set its camera's target) and a camera of its own (still asm, 0x50 bytes in): the camera's target 0xE0 bytes
-// in (a FollowCameraTarget, what it follows 0x74 bytes further: the character's instance) and its positioner 0x2F0 bytes in (a
-// FollowCameraPositioner)
-struct FollowNode
-{
-    InstanceContext* owner;
-    u8 unknown04[0x20 - 0x4];
-    Reference* object;
-    u8 unknown24[0x30 - 0x24];
-    u64 bits;
-    u8 unknown38[0x50 - 0x38];
-    u8 camera[0xE0];
-    u8 target[0x74];
-    Reference* cameraTarget;
-    u8 unknown1A8[0x340 - 0x1A8];
-    u8 positioner[0x400];
-};
-CHECK_OFFSET(FollowNode, bits, 0x30);
-CHECK_OFFSET(FollowNode, target, 0x130);
-CHECK_OFFSET(FollowNode, cameraTarget, 0x1A4);
-CHECK_OFFSET(FollowNode, positioner, 0x340);
+// The node of kind 0x16, a playable character's camera: game/followcamera.h's
+struct FollowNode;
 
 extern "C"
 {
     extern const GccVTableEntry g_GameNodeVTable[] RETAIL(GameNode_Methods);
     extern const GccVTableEntry g_InstanceContextVTable[] RETAIL(InstanceContext_methods);
     extern const GccVTableEntry g_CameraNodeVTable[] RETAIL(CameraNode_Methods);
+    extern const GccVTableEntry g_ModelNodeVTable[] RETAIL(OgiNode_Methods);
 
     // The node of a kind
     void* GetGameNode(NodeList* nodes, u32 kind) RETAIL(GetGameNode_);
@@ -488,7 +677,7 @@ extern "C"
     // The queued instances drawn (the VU0's standard programs loaded first), each through its chunk's matrix with its chunk's
     // lights: the ones wholly in view unclipped (mode 1), then the others clipped (mode 2)
     void DrawQueuedInstances() RETAIL(FUN_001fe358);
-    // An event's handle let go (still asm)
+    // An event's handle let go (RemoveReference for an event: its reference block at its start, its vtable at 0x10)
     void ReleaseEvent(Reference** event) RETAIL(FUN_0011e890);
     // The instance's clock (of its chunk's clocks, else the game's)
     TimeClock* GetContextClock(InstanceContext* instance) RETAIL(GetContextClock);
@@ -533,13 +722,15 @@ extern "C"
     // An instance's queued events handed to its nodes of the kinds each goes to, and let go
     void HandOutEvents(InstanceContext* instance) RETAIL(FUN_00198380);
     // The chunk's side of an instance woken, put to sleep, released and moved in through a link (its place taken through the
-    // link's object matrix, then the linked chunk's side) (still asm)
-    void ChunkWakeInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001f2188);
-    void ChunkSleepInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001edaf8);
-    void ChunkReleaseInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001f2240);
-    void MoveThroughLink(struct ChunkLinkData* link, InstanceContext* instance) RETAIL(FUN_001f0160);
-    void LinkedChunkTakeInstance(struct ChunkLinkData* link, InstanceContext* instance) RETAIL(FUN_001f0130);
-    // An instance's places' instances let go of when it's released: whether they let it be (still asm)
+    // link's object matrix, then the linked chunk's side)
+    u32 ChunkWakeInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001f2188);
+    u32 ChunkSleepInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001edaf8);
+    u32 ChunkReleaseInstance(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001f2240);
+    u32 MoveThroughLink(struct ChunkLinkData* link, InstanceContext* instance) RETAIL(FUN_001f0160);
+    u32 LinkedChunkTakeInstance(struct ChunkLinkData* link, InstanceContext* instance) RETAIL(FUN_001f0130);
+    // An instance with places released: when it has a place in a loaded chunk but its own, it isn't (0) but starts from the
+    // first of them (its object node's information), moved out of its chunk into the instances of no chunk (put to sleep there
+    // when it's in none); else 1
     u32 ReleasePlaces(InstancePlaces* places, InstanceContext* instance) RETAIL(FUN_00198938);
     // The instances' IDs (the game's table of them)
     extern struct InstanceIds* g_InstanceIds RETAIL(D_00309B8C);
@@ -554,11 +745,11 @@ extern "C"
     u32 HasParent(InstanceContext* instance, InstanceContext* other) RETAIL(FUN_00198178);
     // The object's place set to a copy of one
     void SetObjectPlace(ReferencedObject* object, const ObjectPlace* place) RETAIL(FUN_001978b0);
-    // The instance's chunk told of the instance when its flag 17 is set (still asm the chunk's part)
+    // The instance's chunk told of the instance when its flag 17 is set
     void* ChunkNoticeInstance(InstanceContext* instance) RETAIL(FUN_00198138);
-    void* ChunkNoticeInstance2(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001ede20);
+    struct ChunkData* ChunkNoticeInstance2(struct ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001ede20);
     // The object's place's matrix made from its position and rotation, unless its collision has a value at 0x1C (returned
-    // instead; still asm the maths)
+    // instead)
     void* UpdateObjectMatrix(ReferencedObject* object) RETAIL(FUN_001978e0);
     // The retail list template's copies: a node pushed onto a list's front, taken out of it
     void ListPushFront(void* node, void** head, u32 previous, u32 next) RETAIL(FUN_0019a088);
@@ -569,24 +760,40 @@ extern "C"
     // A node unregistered from its instance and queued to be destroyed (the game's list of nodes to free)
     u32 RemoveNode(InstanceContext* instance, void* node) RETAIL(FUN_00197c10);
     void FreeNode(void* node) RETAIL(FUN_00199a48);
-    // An object's place set to none (still asm)
-    u32 ResetObjectPlace(ObjectPlace* place) RETAIL(FUN_0019a370);
-    // The follow node's camera reset (still asm)
-    void ResetFollowCamera(void* camera) RETAIL(FUN_0015e4a8);
     // A node registered with its instance's chunk, after it's attached to the instance when asked; and the other way round
-    // (still asm)
+    //
     u32 RegisterNode(InstanceContext* instance, u32 attach, void* node) RETAIL(FUN_00197918);
     u32 UnregisterNode(InstanceContext* instance, u32 detach, void* node) RETAIL(FUN_00197990);
-    // An object put in a chunk (still asm)
-    void MoveToChunk(struct ChunkData* chunk, ReferencedObject* object) RETAIL(FUN_001ed918);
+    // An object put in a chunk (out of the one it's in first)
+    u32 MoveToChunk(struct ChunkData* chunk, ReferencedObject* object) RETAIL(FUN_001ed918);
     // The instance's agent node: the first it has of the kinds 0xD, 0xE, 0xF, 0xC, 0x10, 0x11, 0x14, 0x12 and 0x13
     AgentNode* AgentNodeOf(InstanceContext* instance) RETAIL(FUN_001721a8);
     // The same (a second copy in retail)
     AgentNode* AgentNodeOf2(InstanceContext* instance) RETAIL(FUN_00172280);
-    // The agent's script told an event of its object, by the event's index (still asm)
-    u32 RunAgentEvent(Agent* agent, u32 event, u32 unknown2, u32 unknown3, u32 unknown4) RETAIL(ExecuteEvent);
+    // The behaviour of a slot of the agent's object started on its instance's object node (a script event queued for the
+    // instance) in a runner slot (the low byte), forced when asked, with an originator (an instance; 0 none): whether the agent
+    // could (it has an object, its events aren't off (bit 0 of its word at 0x1C) and the object has the slot; a slot without a
+    // behaviour starts none)
+    u32 RunAgentEvent(Agent* agent, u32 event, u32 originator, u32 force, u32 runner) RETAIL(ExecuteEvent);
+    // A behaviour starter started on the agent's instance's object node the same way
+    void StartAgentBehaviour(Agent* agent, const u16* starter, InstanceContext* originator, u32 force, u32 runner)
+        RETAIL(FUN_00261488);
+    // The agent's instance's model node given its object's first model (OGI) with its react joints and exit points
+    void SetAgentModel(Agent* agent, struct GameResources* resources) RETAIL(FUN_00261610);
+    // The agent's spawn starter started (none: its object's slot 0 behaviour), when it has an object
+    void RestartAgent(Agent* agent) RETAIL(FUN_002634c8);
+    // The agent given the game's resources when its node gets its instance (its state applied, its model set, it restarted, its
+    // bytes at 0x18 and its events' bit cleared), and its node's step once its instance starts again (the same with the step's
+    // word, its contact message made none)
+    void AgentTakeResources(Agent* agent, struct GameResources* resources) RETAIL(FUN_00263390);
+    void AgentStep(Agent* agent, struct GameResources* resources, TimeClock* clock, u32 unknown) RETAIL(FUN_00263428);
+    // An instance linked to the agent's instance's attachments (made when it has none), and an instance attached to it at an
+    // exit point (the low byte, 0xFF none) with an offset matrix (none: the exit point's or the instance's own): whether it was
+    void LinkToAgent(Agent* agent, InstanceContext* linked, u32 unknown) RETAIL(FUN_00263550);
+    u32 AttachToAgent(Agent* agent, InstanceContext* instance, u32 flags, u32 exitPoint, const Matrix4x4* offset)
+        RETAIL(FUN_00263598);
     // Where the node of kind 1 brings its instance back to: a copy of the placement (in memory of its own, kept), or back to its
-    // own place (still asm)
+    // own place
     void SetComebackPlacement(void* node, const InstancePlacement* placement) RETAIL(FUN_0023d510);
     void ClearComebackPlacement(void* node) RETAIL(FUN_0023d4c0);
 }

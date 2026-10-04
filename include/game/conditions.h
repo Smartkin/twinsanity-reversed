@@ -9,7 +9,7 @@ class GameNode;
 // The script conditions the builder makes (made once by a script from the retail builder and TT Lab's AgentLabDefsPS2.json,
 // whose names they have, and edited by hand since): the base's word (the ID in its low half, a parameter from bit 17) and floats,
 // which the reader sets, and its vtable, then what a few keep of their own (set by the builder by the ID). A check scores the
-// agent's node for the level at the clock's time (src/game/conditionchecks.cpp; the others are still asm)
+// agent's node for the level at the clock's time (src/game/conditionchecks.cpp and the conditions' own files)
 
 // 0
 class NextCondition : public ScriptCondition
@@ -106,6 +106,7 @@ class MeToFocusSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond10_MeToFocusSqrDist_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(CheckDistanceFromPlayerCondition);
 };
 CHECK_SIZE(MeToFocusSqrDistCondition, 0x14);
 
@@ -168,6 +169,7 @@ class MeFacingFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond22_MeFacingFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond22_MeFacingFocus_Check);
 };
 CHECK_SIZE(MeFacingFocusCondition, 0x14);
 
@@ -176,6 +178,7 @@ class FocusFacingMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond23_FocusFacingMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond23_FocusFacingMe_Check);
 };
 CHECK_SIZE(FocusFacingMeCondition, 0x14);
 
@@ -184,6 +187,7 @@ class ClearLineOfSightToFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond24_ClearLineOfSightToFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond24_ClearLineOfSightToFocus_Check);
 };
 CHECK_SIZE(ClearLineOfSightToFocusCondition, 0x14);
 
@@ -192,6 +196,7 @@ class FocusAgentCanSeeMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond25_FocusAgentCanSeeMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond25_FocusAgentCanSeeMe_Check);
 };
 CHECK_SIZE(FocusAgentCanSeeMeCondition, 0x14);
 
@@ -200,6 +205,7 @@ class CanSeeFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond26_CanSeeFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond26_CanSeeFocus_Check);
 };
 CHECK_SIZE(CanSeeFocusCondition, 0x14);
 
@@ -208,6 +214,7 @@ class MeFacingRouteNodeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond27_MeFacingRouteNode_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond27_MeFacingRouteNode_Check);
 };
 CHECK_SIZE(MeFacingRouteNodeCondition, 0x14);
 
@@ -216,6 +223,7 @@ class ClearLineOfSightToRouteNodeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond28_ClearLineOfSightToRouteNode_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond28_ClearLineOfSightToRouteNode_Check);
 };
 CHECK_SIZE(ClearLineOfSightToRouteNodeCondition, 0x14);
 
@@ -224,6 +232,7 @@ class HeightAboveFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond29_HeightAboveFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond29_HeightAboveFocus_Check);
 };
 CHECK_SIZE(HeightAboveFocusCondition, 0x14);
 
@@ -232,6 +241,7 @@ class MeFacingCameraCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond35_MeFacingCamera_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond35_MeFacingCamera_Check);
 };
 CHECK_SIZE(MeFacingCameraCondition, 0x14);
 
@@ -240,6 +250,7 @@ class CameraFacingMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond36_CameraFacingMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond36_CameraFacingMe_Check);
 };
 CHECK_SIZE(CameraFacingMeCondition, 0x14);
 
@@ -248,6 +259,7 @@ class InCameraFrustrumCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond37_InCameraFrustrum_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond37_InCameraFrustrum_Check);
 };
 CHECK_SIZE(InCameraFrustrumCondition, 0x14);
 
@@ -256,6 +268,7 @@ class ClearLineOfSightToCameraCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond38_ClearLineOfSightToCamera_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond38_ClearLineOfSightToCamera_Check);
 };
 CHECK_SIZE(ClearLineOfSightToCameraCondition, 0x14);
 
@@ -264,6 +277,7 @@ class CameraCanSeeMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond39_CameraCanSeeMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond39_CameraCanSeeMe_Check);
 };
 CHECK_SIZE(CameraCanSeeMeCondition, 0x14);
 
@@ -272,6 +286,7 @@ class HeadLookingAtFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond40_HeadLookingAtFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond40_HeadLookingAtFocus_Check);
 };
 CHECK_SIZE(HeadLookingAtFocusCondition, 0x14);
 
@@ -280,6 +295,7 @@ class HeadCanSeeFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond41_HeadCanSeeFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond41_HeadCanSeeFocus_Check);
 };
 CHECK_SIZE(HeadCanSeeFocusCondition, 0x14);
 
@@ -288,6 +304,7 @@ class HeadLookingAtRouteNodeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond42_HeadLookingAtRouteNode_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond42_HeadLookingAtRouteNode_Check);
 };
 CHECK_SIZE(HeadLookingAtRouteNodeCondition, 0x14);
 
@@ -296,6 +313,7 @@ class FocusHeadLookingAtMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond43_FocusHeadLookingAtMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond43_FocusHeadLookingAtMe_Check);
 };
 CHECK_SIZE(FocusHeadLookingAtMeCondition, 0x14);
 
@@ -304,6 +322,7 @@ class FocusHeadCanSeeMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond44_FocusHeadCanSeeMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond44_FocusHeadCanSeeMe_Check);
 };
 CHECK_SIZE(FocusHeadCanSeeMeCondition, 0x14);
 
@@ -456,6 +475,7 @@ class IsRestingCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond61_IsResting_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond61_IsResting_Check);
 };
 CHECK_SIZE(IsRestingCondition, 0x14);
 
@@ -518,6 +538,7 @@ class MeToCurrentKeySqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond68_MeToCurrentKeySqrDist_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond68_MeToCurrentKeySqrDist_Check);
 };
 CHECK_SIZE(MeToCurrentKeySqrDistCondition, 0x14);
 
@@ -526,6 +547,7 @@ class SpeedTowardsNextKeyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond70_SpeedTowardsNextKey_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond70_SpeedTowardsNextKey_Check);
 };
 CHECK_SIZE(SpeedTowardsNextKeyCondition, 0x14);
 
@@ -534,6 +556,7 @@ class BoxAboveIsOverlappedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond72_BoxAboveIsOverlapped_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond72_BoxAboveIsOverlapped_Check);
 };
 CHECK_SIZE(BoxAboveIsOverlappedCondition, 0x14);
 
@@ -677,6 +700,7 @@ class DistanceToTargetCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond88_DistanceToTarget_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond88_DistanceToTarget_Check);
 };
 CHECK_SIZE(DistanceToTargetCondition, 0x14);
 
@@ -694,6 +718,7 @@ class GroundBelowFocusPositionCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond90_GroundBelowFocusPosition_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond90_GroundBelowFocusPosition_Check);
 };
 CHECK_SIZE(GroundBelowFocusPositionCondition, 0x14);
 
@@ -783,6 +808,7 @@ class SubPathKeyDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond104_SubPathKeyDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond104_SubPathKeyDistanceSquared_Check);
 };
 CHECK_SIZE(SubPathKeyDistanceSquaredCondition, 0x14);
 
@@ -809,6 +835,7 @@ class SubPathPreviousKeyDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond107_SubPathPreviousKeyDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond107_SubPathPreviousKeyDistanceSquared_Check);
 };
 CHECK_SIZE(SubPathPreviousKeyDistanceSquaredCondition, 0x14);
 
@@ -970,6 +997,7 @@ class FocusForwardDotCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond126_FocusForwardDot_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond126_FocusForwardDot_Check);
 };
 CHECK_SIZE(FocusForwardDotCondition, 0x14);
 
@@ -978,6 +1006,7 @@ class FocusObjectProp0EqualsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond127_FocusObjectProp0Equals_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond127_FocusObjectProp0Equals_Check);
 };
 CHECK_SIZE(FocusObjectProp0EqualsCondition, 0x14);
 
@@ -989,6 +1018,7 @@ public:
     u32 unknown18;
 
     void Destroy(u32 destroyFlags) RETAIL(Cond128_AngleToFocus_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond128_AngleToFocus_Check);
 };
 CHECK_SIZE(AngleToFocusCondition, 0x1C);
 
@@ -1033,6 +1063,7 @@ class FocusVisibleCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond136_FocusVisible_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond136_FocusVisible_Check);
 };
 CHECK_SIZE(FocusVisibleCondition, 0x14);
 
@@ -1050,6 +1081,7 @@ class FocusToAgentRef1DistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond138_FocusToAgentRef1DistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond138_FocusToAgentRef1DistanceSquared_Check);
 };
 CHECK_SIZE(FocusToAgentRef1DistanceSquaredCondition, 0x14);
 
@@ -1058,6 +1090,7 @@ class FocusDistanceFromStartSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond139_FocusDistanceFromStartSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond139_FocusDistanceFromStartSquared_Check);
 };
 CHECK_SIZE(FocusDistanceFromStartSquaredCondition, 0x14);
 
@@ -1075,6 +1108,7 @@ class FocusOffXAxisDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond141_FocusOffXAxisDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond141_FocusOffXAxisDistanceSquared_Check);
 };
 CHECK_SIZE(FocusOffXAxisDistanceSquaredCondition, 0x14);
 
@@ -1083,6 +1117,7 @@ class FocusHorizontalDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond142_FocusHorizontalDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond142_FocusHorizontalDistanceSquared_Check);
 };
 CHECK_SIZE(FocusHorizontalDistanceSquaredCondition, 0x14);
 
@@ -1091,6 +1126,7 @@ class FocusOffForwardAxisDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond143_FocusOffForwardAxisDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond143_FocusOffForwardAxisDistanceSquared_Check);
 };
 CHECK_SIZE(FocusOffForwardAxisDistanceSquaredCondition, 0x14);
 
@@ -1099,6 +1135,7 @@ class AgentRef1OffXAxisDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond144_AgentRef1OffXAxisDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond144_AgentRef1OffXAxisDistanceSquared_Check);
 };
 CHECK_SIZE(AgentRef1OffXAxisDistanceSquaredCondition, 0x14);
 
@@ -1107,6 +1144,7 @@ class AgentRef1HorizontalDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond145_AgentRef1HorizontalDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond145_AgentRef1HorizontalDistanceSquared_Check);
 };
 CHECK_SIZE(AgentRef1HorizontalDistanceSquaredCondition, 0x14);
 
@@ -1115,6 +1153,7 @@ class AgentRef1OffAxisDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond146_AgentRef1OffAxisDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond146_AgentRef1OffAxisDistanceSquared_Check);
 };
 CHECK_SIZE(AgentRef1OffAxisDistanceSquaredCondition, 0x14);
 
@@ -1132,6 +1171,7 @@ class AgentRef1SideOffsetCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond148_AgentRef1SideOffset_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond148_AgentRef1SideOffset_Check);
 };
 CHECK_SIZE(AgentRef1SideOffsetCondition, 0x14);
 
@@ -1140,6 +1180,7 @@ class AgentRef1VisibleCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond149_AgentRef1Visible_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond149_AgentRef1Visible_Check);
 };
 CHECK_SIZE(AgentRef1VisibleCondition, 0x14);
 
@@ -1148,6 +1189,7 @@ class AgentRef1InViewConeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond150_AgentRef1InViewCone_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond150_AgentRef1InViewCone_Check);
 };
 CHECK_SIZE(AgentRef1InViewConeCondition, 0x14);
 
@@ -1192,6 +1234,7 @@ class FocusFromExitPointCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond155_FocusFromExitPoint_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond155_FocusFromExitPoint_Check);
 };
 CHECK_SIZE(FocusFromExitPointCondition, 0x14);
 
@@ -1236,6 +1279,7 @@ class NearestPointEdgeDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond160_NearestPointEdgeDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond160_NearestPointEdgeDistanceSquared_Check);
 };
 CHECK_SIZE(NearestPointEdgeDistanceSquaredCondition, 0x14);
 
@@ -1273,6 +1317,7 @@ class SplineDistanceToAgentRef1Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond167_SplineDistanceToAgentRef1_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond167_SplineDistanceToAgentRef1_Check);
 };
 CHECK_SIZE(SplineDistanceToAgentRef1Condition, 0x14);
 
@@ -1281,6 +1326,7 @@ class ObstacleAheadCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond168_ObstacleAhead_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond168_ObstacleAhead_Check);
 };
 CHECK_SIZE(ObstacleAheadCondition, 0x14);
 
@@ -1397,6 +1443,7 @@ class MeToPlayerSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond517_MeToPlayerSqrDist_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond517_MeToPlayerSqrDist_Check);
 };
 CHECK_SIZE(MeToPlayerSqrDistCondition, 0x14);
 
@@ -1468,6 +1515,7 @@ class CanMoveForwardsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond525_CanMoveForwards_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond525_CanMoveForwards_Check);
 };
 CHECK_SIZE(CanMoveForwardsCondition, 0x14);
 
@@ -1476,6 +1524,7 @@ class CanMoveBackwardsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond526_CanMoveBackwards_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond526_CanMoveBackwards_Check);
 };
 CHECK_SIZE(CanMoveBackwardsCondition, 0x14);
 
@@ -1484,6 +1533,7 @@ class CanStrafeLeftCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond527_CanStrafeLeft_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond527_CanStrafeLeft_Check);
 };
 CHECK_SIZE(CanStrafeLeftCondition, 0x14);
 
@@ -1492,6 +1542,7 @@ class CanStrafeRightCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond528_CanStrafeRight_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond528_CanStrafeRight_Check);
 };
 CHECK_SIZE(CanStrafeRightCondition, 0x14);
 
@@ -1509,6 +1560,7 @@ class CanFallCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond530_CanFall_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond530_CanFall_Check);
 };
 CHECK_SIZE(CanFallCondition, 0x14);
 
@@ -1580,6 +1632,7 @@ class PlayerToMyFocusSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond538_PlayerToMyFocusSqrDist_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond538_PlayerToMyFocusSqrDist_Check);
 };
 CHECK_SIZE(PlayerToMyFocusSqrDistCondition, 0x14);
 
@@ -1597,6 +1650,7 @@ class MeFacingPlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond540_MeFacingPlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond540_MeFacingPlayer_Check);
 };
 CHECK_SIZE(MeFacingPlayerCondition, 0x14);
 
@@ -1605,6 +1659,7 @@ class PlayerFacingMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond541_PlayerFacingMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond541_PlayerFacingMe_Check);
 };
 CHECK_SIZE(PlayerFacingMeCondition, 0x14);
 
@@ -1613,6 +1668,7 @@ class ClearLineOfSightToPlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond542_ClearLineOfSightToPlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond542_ClearLineOfSightToPlayer_Check);
 };
 CHECK_SIZE(ClearLineOfSightToPlayerCondition, 0x14);
 
@@ -1621,6 +1677,7 @@ class CanSeePlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond543_CanSeePlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond543_CanSeePlayer_Check);
 };
 CHECK_SIZE(CanSeePlayerCondition, 0x14);
 
@@ -1629,6 +1686,7 @@ class PlayerCanSeeMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond544_PlayerCanSeeMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond544_PlayerCanSeeMe_Check);
 };
 CHECK_SIZE(PlayerCanSeeMeCondition, 0x14);
 
@@ -1691,6 +1749,7 @@ class HeightAbovePlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond552_HeightAbovePlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond552_HeightAbovePlayer_Check);
 };
 CHECK_SIZE(HeightAbovePlayerCondition, 0x14);
 
@@ -1699,6 +1758,7 @@ class HeadLookingAtPlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond553_HeadLookingAtPlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond553_HeadLookingAtPlayer_Check);
 };
 CHECK_SIZE(HeadLookingAtPlayerCondition, 0x14);
 
@@ -1707,6 +1767,7 @@ class HeadCanSeePlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond554_HeadCanSeePlayer_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond554_HeadCanSeePlayer_Check);
 };
 CHECK_SIZE(HeadCanSeePlayerCondition, 0x14);
 
@@ -1715,6 +1776,7 @@ class PlayerHeadLookingAtMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond555_PlayerHeadLookingAtMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond555_PlayerHeadLookingAtMe_Check);
 };
 CHECK_SIZE(PlayerHeadLookingAtMeCondition, 0x14);
 
@@ -1723,6 +1785,7 @@ class PlayerHeadCanSeeMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond556_PlayerHeadCanSeeMe_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond556_PlayerHeadCanSeeMe_Check);
 };
 CHECK_SIZE(PlayerHeadCanSeeMeCondition, 0x14);
 
@@ -1830,6 +1893,7 @@ class AmIHarmfulCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond568_AmIHarmful_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond568_AmIHarmful_Check);
 };
 CHECK_SIZE(AmIHarmfulCondition, 0x14);
 
@@ -1946,6 +2010,7 @@ class GlobalInstanceOp581Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond581_GlobalInstanceOp581_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond581_GlobalInstanceOp581_Check);
 };
 CHECK_SIZE(GlobalInstanceOp581Condition, 0x14);
 
@@ -1954,6 +2019,7 @@ class PlayerVisibleCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond582_PlayerVisible_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond582_PlayerVisible_Check);
 };
 CHECK_SIZE(PlayerVisibleCondition, 0x14);
 
@@ -1971,6 +2037,7 @@ class PlayerVisible2Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond584_PlayerVisible2_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond584_PlayerVisible2_Check);
 };
 CHECK_SIZE(PlayerVisible2Condition, 0x14);
 
@@ -1979,6 +2046,7 @@ class PlayerVisible3Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond585_PlayerVisible3_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond585_PlayerVisible3_Check);
 };
 CHECK_SIZE(PlayerVisible3Condition, 0x14);
 
@@ -2194,6 +2262,7 @@ class PlayerVectorLengthDifferenceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond609_PlayerVectorLengthDifference_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond609_PlayerVectorLengthDifference_Check);
 };
 CHECK_SIZE(PlayerVectorLengthDifferenceCondition, 0x14);
 
@@ -2256,6 +2325,7 @@ class FocusPositionToPlayerDistanceSquaredCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond616_FocusPositionToPlayerDistanceSquared_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond616_FocusPositionToPlayerDistanceSquared_Check);
 };
 CHECK_SIZE(FocusPositionToPlayerDistanceSquaredCondition, 0x14);
 
@@ -2273,6 +2343,7 @@ class PlayerSideOffsetCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond618_PlayerSideOffset_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond618_PlayerSideOffset_Check);
 };
 CHECK_SIZE(PlayerSideOffsetCondition, 0x14);
 
@@ -2281,6 +2352,7 @@ class PlayerNearCurrentKeyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond619_PlayerNearCurrentKey_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond619_PlayerNearCurrentKey_Check);
 };
 CHECK_SIZE(PlayerNearCurrentKeyCondition, 0x14);
 
@@ -2424,6 +2496,7 @@ class CameraForwardDistanceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond635_CameraForwardDistance_Dtor);
+    f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond635_CameraForwardDistance_Check);
 };
 CHECK_SIZE(CameraForwardDistanceCondition, 0x14);
 
@@ -2795,5 +2868,10 @@ extern "C"
     extern const GccVTableEntry g_PlayerFlag14ConditionVTable[] RETAIL(vt_Cond642_Unknown);
     extern const GccVTableEntry g_GameStateIsConditionVTable[] RETAIL(vt_Cond643_Unknown);
     extern const GccVTableEntry g_TriggeredByOtherCharacterConditionVTable[] RETAIL(vt_Cond644_Unknown);
+
+    // The conditions' checks' translation unit's start-up: its static initialisation (initialize 1, priority 0xFFFF: the header's
+    // constants, which nothing reads) and its entry in the static constructors' table
+    void InitConditionChecksModule(u32 initialize, u32 priority) RETAIL(FUN_00128d50);
+    void ConstructConditionChecksModule() RETAIL(FUN_0012d500);
 }
 

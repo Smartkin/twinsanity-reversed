@@ -18,16 +18,13 @@ extern "C"
     extern const GccVTableEntry g_InstanceSectionReaderVTable[] RETAIL(InstanceSectionReader_Methods);
     // The templates' list let go, every template first when asked
     void ClearTemplates(PointerArray<InstanceTemplate>** list, u32 destroyTemplates) RETAIL(FUN_0026b088);
-    // The elements made and read from a stream (still asm): a position, a path, a trigger made (returned) and read, a camera read,
+    // The elements made and read from a stream: a position, a path, a trigger made (returned) and read, a camera read,
     // a collision surface read, and a surface's box made (the default box)
     // An object instance's context given the positions and the paths it names as waypoints (a layout that isn't the chunk's own
     // has its positions after the chunk's own; its paths are looked up like the chunk's own)
     void LinkInstancePositions(ObjectInstance* instance, ChunkEntry* chunk, InstanceContext* context, u32 notChunkOwn)
         RETAIL(FUN_0025f448);
     void LinkInstancePaths(ObjectInstance* instance, ChunkEntry* chunk, InstanceContext* context, u32 notChunkOwn) RETAIL(FUN_0025f558);
-    // An agent's instance given a node of the instances it links to (made when it has none) with another instance in it (still
-    // asm)
-    void LinkInstance(Agent* agent, InstanceContext* linked, u32 unknown) RETAIL(FUN_00263550);
 
     // The section readers' functions: the destructors and the reads
     void InstanceSectionReaderDestroy(InstanceSectionReader* reader, u32 destroyFlags) RETAIL(FUN_00269e38);
@@ -897,6 +894,94 @@ void LoadCollisionSurface(InstanceKindReader* reader, u8* data, u32 size, Reader
     stream.Destroy(DestroyOnly);
 }
 
+namespace
+{
+// A list freed and forgotten, its elements kept (none: forgotten)
+void FreeList(PointerArray<void>** list)
+{
+    PointerArray<void>* array = *list;
+    if (array != nullptr)
+    {
+        if (array->data != nullptr)
+        {
+            MemoryDeallocate_(array->data);
+        }
+
+        MemoryDeallocate2_(array);
+    }
+
+    *list = nullptr;
+}
+
+// Every element of a list destroyed (none skipped), then the list freed and forgotten (no list: nothing)
+template <typename Destroy>
+void DestroyListElements(PointerArray<void>** list, Destroy destroy)
+{
+    PointerArray<void>* array = *list;
+    if (array == nullptr)
+    {
+        *list = nullptr;
+        return;
+    }
+
+    for (s32 index = 0; index >= 0 && static_cast<u32>(index) < array->count; index++)
+    {
+        destroy(array->data[index]);
+    }
+
+    FreeList(list);
+}
+}
+
+void LayoutInstances::ReleaseRead()
+{
+    ClearTemplates(reinterpret_cast<PointerArray<InstanceTemplate>**>(&kinds[KindTemplates]), 0);
+    FreeList(&kinds[KindAiPositions]);
+    FreeList(&kinds[KindAiPaths]);
+    FreeList(&kinds[KindPositions]);
+    FreeList(&kinds[KindPaths]);
+    FreeList(&kinds[KindSurfaces]);
+    DestroyListElements(&kinds[KindObjectInstances], DestroyObjectInstance);
+    DestroyListElements(&kinds[KindTriggers], DestroyTrigger);
+    DestroyListElements(&kinds[KindCameras], DestroyTrigger);
+}
+
+void LayoutInstances::DestroyElements()
+{
+    ClearTemplates(reinterpret_cast<PointerArray<InstanceTemplate>**>(&kinds[KindTemplates]), 1);
+    DestroyListElements(&kinds[KindObjectInstances], DestroyObjectInstance);
+    DestroyListElements(&kinds[KindAiPositions], DestroyAiPosition);
+    DestroyListElements(&kinds[KindAiPaths], DestroyAiPath);
+    DestroyListElements(&kinds[KindPositions], DestroyPosition);
+    DestroyListElements(&kinds[KindPaths], DestroyPath);
+    DestroyListElements(&kinds[KindTriggers], DestroyTrigger);
+    DestroyListElements(&kinds[KindCameras], DestroyTrigger);
+    DestroyListElements(&kinds[KindSurfaces], DestroySurface);
+}
+
+void LayoutInstances::Destroy(u32 destroyFlags)
+{
+    DestroyElements();
+    for (s32 kind = Kinds - 1; kind >= 0; kind--)
+    {
+        PointerArray<void>* list = kinds[kind];
+        if (list != nullptr)
+        {
+            if (list->data != nullptr)
+            {
+                MemoryDeallocate_(list->data);
+            }
+
+            MemoryDeallocate2_(list);
+        }
+    }
+
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
 LayoutInstances* LayoutInstances::Construct(LayoutInstances* layout, u32 readerBit0, u32 chunkOwn, GameResources* resources, ChunkEntry* chunk)
 {
     for (PointerArray<void>*& list : layout->kinds)
@@ -944,7 +1029,7 @@ void LayoutInstances::Finish()
             Agent* agent = static_cast<ObjectNode*>(GetGameNode(&context->nodes, ObjectNodeKind))->agent;
             for (u32 link = 0; link < linked.count; link++)
             {
-                LinkInstance(agent, contexts->contexts[linked.data[link]], 1);
+                LinkToAgent(agent, contexts->contexts[linked.data[link]], 1);
             }
         }
     }

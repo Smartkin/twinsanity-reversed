@@ -1,5 +1,6 @@
 #include "game/objectnode.h"
 
+#include "game/animation.h"
 #include "game/behaviours.h"
 #include "game/clock.h"
 #include "game/collision.h"
@@ -24,7 +25,7 @@
 
 extern "C"
 {
-    // A playing sound's slot let go (still asm)
+    // A playing sound's slot let go
     void StopSoundChannel(u32 channel) RETAIL(FUN_001e5858);
 }
 
@@ -229,7 +230,7 @@ void StepMovement(ObjectNode* node, TimeClock* clock)
     {
         if ((body->bits88 & Moves) != 0 && (node->owner->flags & InstanceHeld) == 0)
         {
-            StepRigidBody(body, clock, 0);
+            StepRigidBody(body, clock, nullptr);
         }
 
         // The middle of the instance's collision box (its bounds 0x40 bytes in)
@@ -253,7 +254,7 @@ void StepMovement(ObjectNode* node, TimeClock* clock)
         body->bits90 = ((body->bits90 & ~TouchingHandedOn) | touching) & ~Cleared90;
         if ((node->rigidBody->bits88 & TellsNode) != 0)
         {
-            RigidBodyEvent54(node);
+            ReleaseRigidBodyAtRest(node);
         }
     }
 
@@ -285,7 +286,7 @@ ObjectNodeBase* ObjectNodeBase::Construct(ObjectNodeBase* node, ChunkEntry* chun
     InstancePlacement::Construct(&node->information, data != nullptr ? reinterpret_cast<ChunkData*>(data->object) : nullptr);
     node->ownInformation = nullptr;
     node->informationPointer = &node->information;
-    *reinterpret_cast<u16*>(node->unknown7C) = 0xFFFF;
+    node->ownObjectId = 0xFFFF;
     node->Reset();
     node->tracked = nullptr;
     node->vtable = g_ObjectNodeBaseVTable;
@@ -532,7 +533,7 @@ void ObjectNodeBase::Reset()
     flags = 0;
     CallVirtual<void>(this, vtable, SetAgentSlot, static_cast<Agent*>(nullptr));
     ClearMessages();
-    *reinterpret_cast<u16*>(unknown7C) = 0xFFFF;
+    ownObjectId = 0xFFFF;
     unknown8C = 0xFF;
     sourceNode = nullptr;
 }
@@ -1047,8 +1048,6 @@ void ObjectNode::ReleaseParts()
     CallVirtual<void>(this, vtable, PacketEndedSlot, static_cast<BehaviourRunner*>(nullptr));
 }
 
-EABI_IMPORT(FUN_00237db0, TrackHead);
-
 u32 ObjectNode::SetDesignator(u32 designator, InstanceContext* instance)
 {
     switch (designator)
@@ -1174,8 +1173,6 @@ void ObjectNode::Collided(void* other, const Vector4* point, const Vector4* impu
 }
 
 EABI_EXPORT(FUN_0022f440, LaunchNode);
-EABI_IMPORT(FUN_002541e0, SetRigidBodyGravity);
-EABI_IMPORT(FUN_0020a358, SendImpact);
 
 void LaunchNode(f32 gravity, ObjectNode* node, const Vector4* velocity)
 {
@@ -1252,9 +1249,6 @@ void PushNode(f32 strength, ObjectNode* node, InstanceContext* other)
     away.z = away.z * inverse * push;
     PushRigidBody(node->rigidBody, &away, &from);
 }
-
-EABI_IMPORT(PlaySurfaceContact, PlaySurfaceContact);
-EABI_IMPORT(PlaySurfaceContactHard, PlaySurfaceContactHard);
 
 namespace
 {
@@ -1582,4 +1576,67 @@ u32 ObjectNode::SetDesignatorPosition(u32 designator, const Vector4* position)
     default:
         return 0;
     }
+}
+
+u32 ExitPointPlace(InstanceContext* instance, u32 slot, Vector4* position, Vector4* direction)
+{
+    constexpr u32 ModelNodeKind = 3;
+    constexpr u32 Slots = 0x3F;
+    slot &= 0xFF;
+    if (slot >= Slots)
+    {
+        return 0;
+    }
+
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
+    OgiAnimator* animator = model->animator;
+    if (animator == nullptr)
+    {
+        return 0;
+    }
+
+    ExitPointAnimation* exitPoint = animator->exitPoints != nullptr ? animator->exitPoints->data[slot] : nullptr;
+    if (exitPoint == nullptr)
+    {
+        return 0;
+    }
+
+    ExitPointAnimation* updated = UpdateExitPointMatrix(exitPoint);
+    *position = *RowOf(&updated->matrix, 3);
+    *direction = *RowOf(&updated->matrix, 2);
+    return 1;
+}
+
+void CopyVelocity(ObjectNode* node, Vector4* velocity)
+{
+    *velocity = node->motion->velocity;
+}
+
+GameObject* SourceObject(GameNode* node)
+{
+    auto* object = static_cast<ObjectNodeBase*>(node);
+    return object->sourceNode != nullptr ? SourceObject(object->sourceNode) : object->object;
+}
+
+PropertyHolder* GetPropsHolderFromInstanceNode(GameNode* node)
+{
+    auto* object = static_cast<ObjectNodeBase*>(node);
+    return object->sourceNode != nullptr ? GetPropsHolderFromInstanceNode(object->sourceNode) : object->properties;
+}
+
+GameObject* ObjectNodeBase::OwnObject()
+{
+    if (ownObjectId == 0xFFFF)
+    {
+        return nullptr;
+    }
+
+    ResourceTable* objects = G_GameResourcesObjectPointer->objects;
+    if (objects == nullptr)
+    {
+        return nullptr;
+    }
+
+    u16 id = ownObjectId;
+    return id != 0xFFFF ? static_cast<GameObject*>(objects->items[id & 0x7FFF]) : nullptr;
 }

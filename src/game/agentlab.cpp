@@ -72,6 +72,18 @@ u32 ScriptResource::ItemType()
     return 0x1802;
 }
 
+// Its bits (the tool's fields): the type (bits 0-3, 0xF none of them), locality (4-7: anywhere), status (8-11: any state),
+// preference (12-15: anyhow) and the argument (16-31: none)
+void CallConvention::SetDefaults()
+{
+    constexpr u32 NoType = 0xF;
+    constexpr u32 Anywhere = 3;
+    constexpr u32 AnyState = 2;
+    constexpr u32 Anyhow = 5;
+    constexpr u32 NoArgument = 0xFFFF;
+    bits = NoArgument << 16 | Anyhow << 12 | AnyState << 8 | Anywhere << 4 | NoType;
+}
+
 void CallConvention::Read(Stream* stream)
 {
     stream->ReadS32(reinterpret_cast<s32*>(&bits));
@@ -621,13 +633,49 @@ u32 ScriptGraph::IsStarter()
 
 ObjectBuilder* ObjectBuilder::Construct(ObjectBuilder* builder)
 {
-    builder->factories = nullptr;
-    for (u32& word : builder->unknown04)
+    builder->first = nullptr;
+    builder->last = nullptr;
+    builder->count = 0;
+    builder->added = 0;
+    return builder;
+}
+
+void* ObjectBuilder::Build(u32 id, s32 kind)
+{
+    constexpr u32 MakeSlot = 2;
+    for (Node* node = first; node != nullptr; node = node->next)
     {
-        word = 0;
+        void* factory = node->factory;
+        void* made = CallVirtual<void*>(factory, *static_cast<const GccVTableEntry* const*>(factory), MakeSlot, id, kind);
+        if (made != nullptr)
+        {
+            return made;
+        }
     }
 
-    return builder;
+    return nullptr;
+}
+
+void ObjectBuilder::Add(void* factory)
+{
+    auto* node = static_cast<Node*>(MemoryAllocate(sizeof(Node)));
+    node->factory = factory;
+    node->previous = nullptr;
+    node->next = nullptr;
+    if (count == 0)
+    {
+        last = node;
+        first = node;
+    }
+    else
+    {
+        node->next = first;
+        first->previous = node;
+        first = node;
+    }
+
+    count++;
+    added++;
 }
 
 ScriptCommand* ReadCommand(Stream* stream)

@@ -8,6 +8,7 @@
 #include "game/clock.h"
 #include "game/controllers.h"
 #include "game/decals.h"
+#include "game/disk.h"
 #include "game/memory.h"
 #include "game/renderer.h"
 #include "game/reference.h"
@@ -654,6 +655,36 @@ extern "C"
         g_ParticleReader = stream;
         g_ParticleReaderSet = 1;
         return 0x65;
+    }
+
+    void AbandonParticleSection()
+    {
+        constexpr s32 FileLetGo = -2;
+        if (g_ParticleReaderSet == 0)
+        {
+            g_ParticleReader->Rewind();
+            g_ParticleReader->CopyTo(g_ParticleCopyStream);
+        }
+
+        if (g_ParticleCopyStream != nullptr)
+        {
+            g_ParticleCopyStream->Destroy(3);
+        }
+
+        if (g_ParticleOtherStream != nullptr)
+        {
+            g_ParticleOtherStream->Destroy(3);
+        }
+
+        if (g_ParticleSectionFile >= 0)
+        {
+            DiskRelease(GetDiskManager(), &g_ParticleSectionFile);
+            g_ParticleSectionFile = FileLetGo;
+        }
+
+        g_ParticleCopyStream = nullptr;
+        g_ParticleOtherStream = nullptr;
+        g_ParticleReader = nullptr;
     }
 
     s32 FindParticleSystem(const char* name, s8 slot)
@@ -3382,6 +3413,13 @@ extern "C"
     {
         LoadParticlePages(name, StartupBlocks);
         LoadDecals(&g_DecalData, DecalFile);
+        return 1;
+    }
+
+    s32 SetUpDefaultParticles()
+    {
+        InitParticleSystemsForLevel(StartupBlocks);
+        SetDefaultDecalTypes(&g_DecalData);
         return 1;
     }
 

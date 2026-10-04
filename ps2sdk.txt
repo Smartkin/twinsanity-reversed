@@ -1,12 +1,13 @@
 # The retail executable's Sony SDK functions the build leaves out: PS2SDK's libraries define most of them by the same names (and
-# structs of the same layout), src/sce/ has the ones the retail asm calls by names PS2SDK doesn't use (over the platform layer),
-# and the platform layer's PS2 side (src/platform/ps2/) the rest. One asm function name a line, # starts a comment.
+# structs of the same layout), and the platform layer's PS2 side (src/platform/ps2/) calls PS2SDK or does the rest. One asm
+# function name a line, "name = target" defines a name the retail code used as another, # starts a comment.
 
-# libdev, libgraph, libdma: the device resets (src/platform/ps2/graphics.cpp; src/sce/ has sceGsResetPath, the renderer's)
+# libdev, libgraph, libdma: the device resets and the path to the GS's (src/platform/ps2/graphics.cpp)
 sceDevVif0Reset
 sceDevVif1Reset
 sceDevVu0Reset
 sceDevVu1Reset
+sceGsResetPath
 sceDmaReset
 sceDmaPutEnv
 memclr
@@ -56,7 +57,7 @@ isceSifSetDChain
 sceSifSetReg
 sceSifGetReg
 
-# libkernel: iopheap (src/sce/io.cpp has sceSifAllocIopHeap and sceSifFreeIopHeap)
+# libkernel: iopheap (the platform layer's Io::AllocateHeap and FreeHeap, on PS2SDK's)
 sceSifInitIopHeap
 sceSifAllocIopHeap
 sceSifFreeSysMemory
@@ -99,7 +100,7 @@ sceCdStStop
 sceCdStRead
 sceCdStream
 
-# libpad: PS2SDK's libpadx, for the disc's PADMAN (src/sce/pads.cpp)
+# libpad: PS2SDK's libpadx, for the disc's PADMAN (src/platform/ps2/pads.cpp)
 scePadInit
 _pad_intr_hdr
 scePadInit2
@@ -137,7 +138,7 @@ sceMcChdir
 sceMcFormat
 sceMcDelete
 
-# libfs: PS2SDK's fileio (src/sce/files.cpp). sceFsReset is fioExit: the next call binds again
+# libfs: PS2SDK's fileio (src/platform/ps2/files.cpp). sceFsReset is fioExit: the next call binds again
 _sceFsIobSemaMK
 new_iob
 sceFsSifCallRpc
@@ -156,7 +157,7 @@ sceRead
 sceWrite
 
 # libkernel: the system calls and Sony's kernel helpers (alarms, the timer, threads, the TLB and ExecPS2 patches, the TTY), which
-# PS2SDK has by the same names. The entry runs PS2SDK's _InitSys in place of Sony's SystemInit; the game's own memset stays
+# PS2SDK has by the same names. The entry runs PS2SDK's _InitSys in place of Sony's SystemInit
 AddDmacHandler2
 AddIntcHandler2
 AlarmHandler
@@ -278,12 +279,6 @@ kprintf_char
 serialPutchar
 kputchar
 
-# The C library functions PS2SDK's libraries call, taken from the retail executable (Sony's newlib, its scePrintf) as long as
-# the game's own C library is its. "name = retail function" (their arguments are ints and pointers, which n32 and EABI pass alike)
-strcpy = CopyString
-printf = DebugPrint_
-snprintf = sceSnprintf
-
 # libscf: the console's ROM name and the clock's local time (PS2SDK's rom0_info, the platform layer's LocalTime)
 GetRomName
 IsT10K
@@ -299,3 +294,154 @@ addhour
 subhour
 AdjustTime
 sceScfGetLocalTimefromRTC
+
+# Sony SDK code nothing reaches: the C library's scanf family, libdev's VU pauses and waits, libsdr's and the kernel
+# library's unused helpers
+sceDevVu0Pause
+sceDevVu0Sync
+sceDevVu1Pause
+sceDevVu1Sync
+func_002C5B48
+func_002C5D80
+func_002C6188
+FUN_002c85d0
+FUN_002ce1c8
+FUN_002ce270
+FUN_002ce2a8
+FUN_002ce3b0
+FUN_002ce4e8
+FUN_002ce570
+FUN_002ce630
+FUN_002ce668
+FUN_002ce870
+FUN_002ce970
+FUN_002ceac8
+FUN_002ceb30
+FUN_002cecc0
+FUN_002ced88
+FUN_002cef20
+FUN_002cf0a0
+FUN_002cf168
+FID_conflict_gcc2_compiled__002CFE98
+FID_conflict_SyncDCache_002CFF40
+AreInterruptionsDisabled
+StartThread_002D04B8
+func_002D1D78
+func_002D1D98
+func_002D39E8
+FUN_002d75d8
+FUN_002d9ce8
+
+# The kernel set-up's payloads (PS2SDK's set-up has its own): only the tables of Sony's set-up, which PS2SDK replaced, point at
+# them
+kFindAddress
+FUN_002d5428
+func_002D5588
+kCopy_002D5610
+FUN_002d6828
+FUN_002d6c00
+kFindAddress = 0
+FUN_002d5428 = 0
+func_002D5588 = 0
+kCopy_002D5610 = 0
+FUN_002d6828 = 0
+FUN_002d6c00 = 0
+
+# libkernel's second copy of the AddDmacHandler2 system call, and its DI/EI (PS2SDK's DIntr and EIntr are the same code)
+AddDmacHandler2_002CF380
+DisableInterruptions
+EnableInterruptions
+AddDmacHandler2_002CF380 = AddDmacHandler2
+DisableInterruptions = DIntr
+EnableInterruptions = EIntr
+
+# The C library and GCC's runtime where the toolchain's newlib (libc_nano.a: sprintf, snprintf, strcat, strcmp, strcpy), PS2SDK's
+# libkernel (memcpy, memset, strlen, strncpy: the game's own code) and libgcc (__muldi3, which libmpeg calls) do what the game's
+# do, with every format and argument the program passes; "retail name = its name". src/platform/ps2/libc.cpp has memmove
+# (Sony's, on PS2SDK's memcpy), printf (on deci2's kputs) and, by their retail names, what newlib does otherwise (malloc.cpp
+# and libm.cpp too)
+CopyBytesIntoMemory
+FUN_002c70fc
+DoConcat
+StringDifference
+CopyString
+GetStringLength
+StringCopy
+FormatString
+sceSnprintf
+DebugPrint_
+FUN_002d7fa0
+memset
+CopyBytesIntoMemory = memcpy
+FUN_002c70fc = memmove
+DoConcat = strcat
+StringDifference = strcmp
+CopyString = strcpy
+GetStringLength = strlen
+StringCopy = strncpy
+FormatString = sprintf
+sceSnprintf = snprintf
+DebugPrint_ = printf
+FUN_002d7fa0 = __muldi3
+
+# Sony's newlib, scePrintf and libgcc code nothing calls any more: malloc's semaphores, vfprintf, dtoa and mprec, matherr,
+# the TTY's write, scePrintf's formatter and output, libgcc's 64 bit divisions and soft doubles
+FUN_002c22e0
+WaitSemaphore1
+SignalSemaphore1
+FUN_002c95a8
+FUN_002c9618
+FUN_002c9690
+FUN_002c9730
+FUN_002c9cc0
+FUN_002c9dc8
+FUN_002c9e98
+FUN_002caee0
+FUN_002cb090
+FUN_002cb198
+FUN_002cced0
+FUN_002ccee8
+FUN_002ccf10
+FUN_002cd000
+FUN_002cd1f0
+FUN_002cd638
+FUN_002cdc68
+FUN_002cde88
+write
+deci2Putchar
+ftoi
+printfloat
+_sceSnprintf
+func_002D1B38
+printf_char
+_sceSnprintf_pf
+InitSemaphores
+FUN_002d6df8
+FUN_002d6f40
+FUN_002d7638
+FUN_002d7728
+FUN_002d77c0
+FUN_002d7908
+FUN_002d8018
+FUN_002d8038
+FUN_002d86d0
+FUN_002d86f0
+FUN_002d8d88
+FUN_002d8eb8
+FUN_002d8f58
+FUN_002d91b0
+FUN_002d9208
+FUN_002d9270
+FUN_002d92c8
+FUN_002d9428
+FUN_002d9540
+FUN_002d9590
+FUN_002d9648
+FUN_002d96e0
+FUN_002d9780
+FUN_002d97b0
+FUN_002d9808
+FUN_002d9aa8
+FUN_002d9bb8
+FUN_002d9c78
+FUN_002d9ca8

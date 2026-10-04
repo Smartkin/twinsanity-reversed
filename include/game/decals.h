@@ -10,7 +10,7 @@ struct ChunkData;
 struct Material;
 
 // The decals (footfalls, ripples): blocks of up to 32 decals of a type drawn by VU1, each decal aged by a VU0 microprogram every
-// frame (still asm) and dropped once its life is over. The default chunk's particle data holds them
+// frame and dropped once its life is over. The default chunk's particle data holds them
 
 // A decal's frame in its block, a unit 32768: its normal (its two directions' cross product) and its second direction
 struct DecalFrame

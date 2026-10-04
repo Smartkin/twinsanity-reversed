@@ -1,4 +1,5 @@
 #include "game/context.h"
+#include "game/copyprotection.h"
 
 #include "debug.h"
 
@@ -10,6 +11,7 @@
 #include "game/filestream.h"
 #include "game/sound.h"
 #include "game/disk.h"
+#include "game/math.h"
 #include "game/memory.h"
 #include "game/movie.h"
 #include "game/renderer.h"
@@ -38,8 +40,6 @@ extern "C"
     extern bool g_RendererRestartDue RETAIL(D_00309AB1);
     extern const GccVTableEntry g_GameContextPrototypeVTable[] RETAIL(D_002F5AF0);
 
-    void UnkDebugFunction3();
-    void SimpleCopyrightChecksum() RETAIL(SimpleCopyrightChecksum_);
     // The instance contexts' frame, and the deletion of one object waiting for it
     void UpdateInstanceContexts() RETAIL(FUN_00199820);
     u32 DestroyPendingStep() RETAIL(FUN_00199a00);

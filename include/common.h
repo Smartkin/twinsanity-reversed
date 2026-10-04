@@ -25,7 +25,8 @@ consteval f32 Rounded(double value)
     return __builtin_bit_cast(f32, (sign | exponent << 23) + kept);
 }
 
-// A function or variable the asm still defines, by the name the asm (and the Ghidra project) gives it
+// A function or variable by the name the retail executable's symbols give it (the asm's and the Ghidra project's): a function
+// defined with it takes the retail one's place, a variable declared with it is the retail data the split keeps
 #define RETAIL(name) asm(#name)
 
 // Checks a struct against the size the game's code gives it. VS Code's C/C++ extension (__INTELLISENSE__) lays structs out

@@ -30,9 +30,10 @@ PS2SDK = local_config.ps2sdk()
 ASFLAGS = ["-EL", "-march=r5900", "-mabi=n32", "-msingle-float", "-G0", "-no-pad-sections", "-I", "include", "-I", "."]
 # C++ is PS2SDK's n32: EABI's stack is only kept 8 byte aligned by GCC, and the retail code (lq/sq) needs 16. The two agree on
 # integer and pointer arguments; calls mixing ints and floats go through thunks (see docs/DEVELOPMENT.md). The retail code
-# expects $f20-$f31 kept across calls, n32 only the even ones. C++26 for asm statements made of constant expressions (abi.h's
-# thunks). The retail code's divisions don't trap on 0
-CALL_SAVED_FPRS = [f"-fcall-saved-$f{n}" for n in range(21, 32, 2)]
+# expects $f20-$f31 kept across calls, n32 only the even ones: GCC 15 accepts -fcall-saved-$f21... and still uses the odd
+# ones without saving them (RigidBody::Step clobbered StepPhysicsWorld's $f21), so the C++ doesn't use them at all. C++26 for
+# asm statements made of constant expressions (abi.h's thunks). The retail code's divisions don't trap on 0
+CALL_SAVED_FPRS = [f"-ffixed-$f{n}" for n in range(21, 32, 2)]
 CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G0", "-O2", "-std=gnu++26", "-D_EE",
              "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-asynchronous-unwind-tables", "-fno-common",
              "-fno-strict-aliasing", "-ffunction-sections", "-mno-check-zero-division", "-ffp-contract=off",
@@ -41,8 +42,10 @@ CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G
 
 PLATFORM = os.environ.get("PLATFORM", "ps2")
 
-# PS2SDK's libraries, in place of the Sony SDK functions ps2sdk.txt lists
-LIBRARIES = ["kernel", "xcdvd", "padx", "mc"]
+# PS2SDK's libraries, in place of the Sony SDK functions ps2sdk.txt lists, then the toolchain's C library (newlib's small
+# libc_nano: sprintf, snprintf and string functions that do what the game's did) and GCC's runtime (__muldi3, which libmpeg
+# calls). libkernel comes first: its memcpy, memset, strlen and strncpy are the game's own code, newlib's copy bytes
+LIBRARIES = ["kernel", "xcdvd", "padx", "mc", "c_nano", "gcc"]
 
 
 def quote(argument):
@@ -55,6 +58,23 @@ def quote(argument):
 
 def command(arguments):
     return " ".join(quote(argument).replace("$", "$$") for argument in arguments)
+
+
+def toolchain_library_dirs():
+    """Where the toolchain's newlib and libgcc are: the link runs ld, which isn't told by gcc's driver"""
+    dirs = []
+    for name in ("libc_nano.a", "libgcc.a"):
+        try:
+            result = subprocess.run([local_config.ee_tool("gcc"), f"-print-file-name={name}"], capture_output=True, text=True,
+                                    timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+
+        path = Path(result.stdout.strip())
+        if path.is_absolute() and path.exists():
+            dirs.append(Path(os.path.normpath(path.parent)).as_posix())
+
+    return dirs
 
 
 def toolchain_includes():
@@ -99,7 +119,7 @@ def main():
         f"nm = {command([local_config.ee_tool('nm')])}",
         f"python = {python}",
         f"asflags = {command(ASFLAGS)}",
-        f"libdir = {command(['-L' + PS2SDK + '/ee/lib'])}",
+        f"libdir = {command(['-L' + directory for directory in [PS2SDK + '/ee/lib'] + toolchain_library_dirs()])}",
         f"libs = {libs}",
         f"cxxflags = {command(CXXFLAGS)}",
         "",
@@ -143,7 +163,7 @@ def main():
                                               ["-c", "-o", obj, path]})
 
     lines += [
-        f"build build/link.ld: ldscript {' '.join(src_objects)} | tools/make_ld.py ps2sdk.txt retired.txt build/splat.yaml build/undefined_syms_auto.txt",
+        f"build build/link.ld: ldscript {' '.join(src_objects)} | tools/make_ld.py ps2sdk.txt retired.txt fragments.txt build/splat.yaml build/undefined_syms_auto.txt",
         f"build build/SLES_525.68.elf: link | build/link.ld {' '.join(asm_objects)} {' '.join(src_objects)}",
         "build build/check.ok: check build/SLES_525.68.elf",
         "build check: phony build/check.ok",

@@ -34,8 +34,9 @@ struct ScriptResource
     void Destroy(u32 destroyFlags) RETAIL(DestroyGenericScriptInfo_);
     u16 Id() RETAIL(GetScriptId);
     void Resolve() RETAIL(SetFlagField);
-    // Its bits read (not resolved yet)
+    // Its bits read (not resolved yet), and written (every kind's)
     void Read(Stream* stream) RETAIL(FUN_00208d70);
+    void Write(Stream* stream) RETAIL(FUN_00208dc0);
     u32 ItemType() RETAIL(FUN_00208878);
 };
 CHECK_OFFSET(ScriptResource, vtable, 0x18);
@@ -46,6 +47,8 @@ struct CallConvention
 {
     u32 bits;
 
+    // The AgentLab tool's defaults: no type, anywhere, any state, anyhow, no argument
+    void SetDefaults() RETAIL(FUN_00220760);
     void Read(Stream* stream) RETAIL(ReadAssignerConvention);
     void Destroy(u32 destroyFlags) RETAIL(FUN_002207a0);
 };
@@ -292,6 +295,8 @@ struct StateBody
     ScriptCommand* commands;
     StateBody* next;
 
+    // Made empty
+    static StateBody* Construct(StateBody* body) RETAIL(FUN_002088e0);
     void Read(Stream* stream) RETAIL(ReadStateBody);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00208900);
 };
@@ -313,6 +318,8 @@ struct GraphState
     StateBody* bodies;
     GraphState* next;
 
+    // Made empty (its bits' high half 0xFFFF)
+    static GraphState* Construct(GraphState* state) RETAIL(FUN_00208df0);
     // Read with the states after it (each put in the jump table), their bodies when asked
     void Read(Stream* stream, u32 readBodies) RETAIL(LoadScriptState);
     void ReadBodies(Stream* stream) RETAIL(LoadStateBodies);
@@ -330,6 +337,9 @@ struct GraphData
     String name;
     GraphState* states;
 
+    // Made empty: no name and states, its ID none and no start state (ClearHead)
+    static GraphData* Construct(GraphData* data) RETAIL(FUN_00208b58);
+    void ClearHead() RETAIL(FUN_00208b98);
     // Its bits, name, states and their bodies (the start state the one of the index read)
     void Read(Stream* stream) RETAIL(ReadScriptData);
 };
@@ -349,7 +359,10 @@ struct ScriptGraph : ScriptResource
 };
 CHECK_SIZE(ScriptGraph, 0x20);
 
-// The builder of the scripts' commands and conditions (16 bytes): a list of the factories that make them by their ID
+// The builder of the items the game reads (16 bytes): a list of the factories that make them by their ID (the game context's item
+// builders, the last one added first; each node the factory after its links), how many there are and how many were added. A
+// factory's vtable's slot 2 makes the object of an ID (none for IDs it has none of); the scripts' commands and conditions only
+// of their kind
 struct ObjectBuilder
 {
     // The kinds of objects it makes
@@ -359,12 +372,23 @@ struct ObjectBuilder
         ConditionKind = -11,
     };
 
-    void* factories;
-    u32 unknown04[3];
+    struct Node
+    {
+        Node* previous;
+        Node* next;
+        void* factory;
+    };
+
+    Node* first;
+    Node* last;
+    u32 count;
+    u32 added;
 
     static ObjectBuilder* Construct(ObjectBuilder* builder) RETAIL(FUN_00101408);
-    // An object made by the first factory that makes the ID (kinds: -10 commands, -11 conditions; still asm)
+    // An object made by the first factory that makes the ID (kinds: -10 commands, -11 conditions)
     void* Build(u32 id, s32 kind) RETAIL(BuildObject);
+    // A factory put in front of the others
+    void Add(void* factory) RETAIL(FUN_002b5a08);
 };
 CHECK_SIZE(ObjectBuilder, 0x10);
 
@@ -407,4 +431,10 @@ extern "C"
     // A command (with the ones after it) and a condition read
     ScriptCommand* ReadCommand(Stream* stream) RETAIL(ReadScriptCommand);
     ScriptCondition* ReadCondition(Stream* stream) RETAIL(ReadScriptCondition);
+    // The AgentLab items' builder's slot 2 (the game context's, vtable D_002FD2C0): an item of a class ID (0x1800 a graph's state,
+    // 0x1801 a graph's data, 0x1803 a starter, 0x1804 a graph, 0x1805 a state's body, 0x1808 a control packet, 0x1809 a call
+    // convention, 0x180F an AI position, 0x1810 an AI path; 0x180C, 0x180E and 0x1811 unknown items), none for another
+    void* MakeAgentLabItem(void* builder, u32 classId) RETAIL(FUN_00209ef8);
+    // The game context's constructor's settings 0x60 bytes before the states' jump table, which nothing reads
+    void InitUnusedAgentLabSettings() RETAIL(InitSomeUnkownGlobals);
 }

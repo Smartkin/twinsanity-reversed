@@ -20,6 +20,39 @@ struct IdArray
 };
 CHECK_SIZE(IdArray, 0x10);
 
+// The retail walk over an ID array (vtable D_003033E0 over its base D_00303430, whose functions but the destructor are abstract;
+// 0xC bytes): the array and the index it's at, done outside the array. The C++ walks the arrays with loops
+struct IdArrayIterator
+{
+    const GccVTableEntry* vtable;
+    IdArray* array;
+    s32 index;
+
+    // Back to the base's vtable (both)
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00262a50);
+    void BaseDestroy(u32 destroyFlags) RETAIL(FUN_00262a20);
+    void First() RETAIL(FUN_00262a80);
+    u32 IsDone() RETAIL(FUN_00262a88);
+    u16* Current() RETAIL(FUN_00262ac8);
+    void Next() RETAIL(FUN_00262ab8);
+    void Previous() RETAIL(FUN_00263a68);
+    void Last() RETAIL(FUN_00263a78);
+    IdArrayIterator* Assign(const IdArrayIterator* other) RETAIL(FUN_00263a90);
+
+    // The walk over a trigger's instances the layouts' readers use (D_00303AF0, its base D_00303B48; game/layoutiterators.cpp)
+    void TriggerIdsDestroy(u32 destroyFlags) RETAIL(FUN_0026aa58);
+    void TriggerIdsBaseDestroy(u32 destroyFlags) RETAIL(FUN_0026aa28);
+    void TriggerIdsFirst() RETAIL(FUN_0026aa88);
+    u32 TriggerIdsIsDone() RETAIL(FUN_0026aa90);
+    u16* TriggerIdsCurrent() RETAIL(FUN_0026aad0);
+    void TriggerIdsNext() RETAIL(FUN_0026aac0);
+    void TriggerIdsPrevious() RETAIL(FUN_0026b8e8);
+    void TriggerIdsLast() RETAIL(FUN_0026b8f8);
+    u16* TriggerIdsCurrentAgain() RETAIL(FUN_0026b910);
+    IdArrayIterator* TriggerIdsAssign(const IdArrayIterator* other) RETAIL(FUN_0026b928);
+};
+CHECK_SIZE(IdArrayIterator, 0xC);
+
 // An object instance of a layout (0x60 bytes): where it is, its rotation (three angles), the instances, positions and paths of its
 // layout it names (by their index in the layout's lists), its properties (its own when it says so), the object it's an instance of,
 // its index in the starter's receivers (-1 none) and the behaviour starter its spawn runs
@@ -43,6 +76,8 @@ struct ObjectInstance
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025efd8);
     // Its place, rotation, lists, IDs and properties read (what it had before let go)
     void Read(Stream* stream) RETAIL(ReadInstance);
+    // Given properties it doesn't own (its own destroyed first)
+    void UseProperties(PropertyList* list) RETAIL(CopyInstProps_);
 };
 CHECK_OFFSET(ObjectInstance, instances, 0x1C);
 CHECK_OFFSET(ObjectInstance, properties, 0x4C);
@@ -145,6 +180,8 @@ struct SoundBox
     u8 unknownB4[0xC0 - 0xB4];
 
     static SoundBox* Construct(SoundBox* box, const LayoutTrigger* trigger) RETAIL(FUN_001dd4f0);
+    // Whether a point is in it: within its radius of its position, then inside its box through its inverse matrix
+    u32 Contains(const Vector4* point) RETAIL(FUN_001e5370);
 };
 CHECK_OFFSET(SoundBox, inverse, 0x70);
 CHECK_SIZE(SoundBox, 0xC0);
@@ -176,13 +213,19 @@ public:
 CHECK_SIZE(PointList, 0xC);
 
 // A path of a layout (0x50 bytes; the cameras' path subtype has one too): its points and its parameters, a count of floats in two
-// halves (every segment's arc length from the start, then 1 over the steps it takes)
+// halves (every segment's arc length from the start, then 1 over the steps it takes), and where a nearest point search stands in
+// the segment it searches: the point it searches for, the segment's point nearest it so far with its distance squared and its
+// share of the segment, and the segment (-1 none yet)
 class LayoutPath : public PointList
 {
 public:
     f32* lengths;
     f32* steps;
-    u8 unknown14[0x48 - 0x14];
+    u8 unknown14[0xC];
+    Vector4 searchPoint;
+    Vector4 nearest;
+    f32 nearestDistance;
+    f32 nearestShare;
     s32 unknown48;
     u32 unknown4C;
 
@@ -190,6 +233,8 @@ public:
     void Read(Stream* stream) RETAIL(ReadPath);
     u32 ItemType() RETAIL(FUN_0018e750);
 };
+CHECK_OFFSET(LayoutPath, searchPoint, 0x20);
+CHECK_OFFSET(LayoutPath, nearestDistance, 0x40);
 CHECK_OFFSET(LayoutPath, unknown48, 0x48);
 CHECK_SIZE(LayoutPath, 0x50);
 
@@ -208,8 +253,10 @@ CHECK_SIZE(ContactMessage, 0x20);
 
 // A collision surface of the default chunk's layout 7 (0x90 bytes, a resource of the game): the objects that collide with it (a
 // bit per ray cast, game/enums), the physics parameters (the tools' list of ten: five volume scales of the contact kinds, -1
-// leaving the volume, then the friction (the seventh), the rest never read), two values made 1, the vector nothing reads, what a
-// contact does, and the sounds and particles of each kind of contact (the particles index the default chunk's systems)
+// leaving the volume, then how fast the characters' velocity eases on it (the sixth), the friction (the seventh), how hard steep
+// ground of it pulls downhill (the ninth) and from which slope (the tenth: the ground's normal's y below it), two values made 1,
+// the velocity it carries the characters along with, what a contact does, and the sounds and particles of each kind of contact
+// (the particles index the default chunk's systems)
 struct CollisionSurface
 {
     u32 header;
@@ -223,7 +270,7 @@ struct CollisionSurface
     f32 physics8;
     f32 physics9;
     u8 unknown28[0x30 - 0x28];
-    Vector4 unusedVector;
+    Vector4 flow;
     ContactMessage contact;
     u16 surfaceId;
     u16 impactSound;
@@ -270,8 +317,14 @@ extern "C"
     extern const GccVTableEntry g_CameraTriggerVTable[] RETAIL(GameCamera_Methods);
     extern const GccVTableEntry g_PointListVTable[] RETAIL(D_002F5C90);
     extern const GccVTableEntry g_LayoutPathVTable[] RETAIL(D_002F5C28);
-    // The point of a path nearest to a position: how far along the path it is (still asm)
+    // The point of a path nearest to a position: how far along the path it is
     f32 NearestPointOnPath(LayoutPath* path, const Vector4* position, Vector4* nearest) RETAIL(FUN_0018e840);
-    // A path's direction at how far along it (still asm)
+    // A path's direction at how far along it
     void PathDirectionAt(f32 along, LayoutPath* path, Vector4* direction) RETAIL_N32(FUN_00189550);
+    // A segment's cubic stepped on by its forward differences (each of the first three rows plus the next; the path unused), its
+    // direction (a unit one, none when it has no length) and its tangent (the derivative of its uniform cubic B-spline, the w 1) a
+    // share into a segment
+    void PathDifferencesStep(const LayoutPath* path, Vector4* differences) RETAIL(FUN_0018e920);
+    void PathDirectionIn(f32 into, const LayoutPath* path, Vector4* direction, s32 segment) RETAIL_N32(FUN_0018ea78);
+    void PathTangentIn(f32 into, const LayoutPath* path, Vector4* tangent, s32 segment) RETAIL_N32(FUN_00189c18);
 }

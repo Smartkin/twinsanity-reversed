@@ -1,5 +1,6 @@
 #pragma once
 
+#include "abi.h"
 #include "common.h"
 #include "gcc2.h"
 #include "game/chunkdata.h"
@@ -262,8 +263,10 @@ extern "C"
     // The shaders' base constructor and a shader's texture set by its ID (none for 0)
     Shader* ShaderConstruct(Shader* shader) RETAIL(FUN_001cd070);
     void SetShaderTexture(Shader* shader, u32 id) RETAIL(FUN_001daaa8);
-    // Type 0xE's, 0x12's, 0x13's, 0x18's and 0x1C's set-ups (their vtables' function 13: the type number), and types 0x12's and
-    // 0x13's vtables (the particle pages' shaders)
+    // Type 0x1's, 0xE's, 0x12's, 0x13's, 0x18's and 0x1C's set-ups (their vtables' function 13: the type number), and types
+    // 0x1's, 0x12's and 0x13's vtables (the skid marks' and the particle pages' shaders)
+    void ShaderType01SetUp(Shader* shader) RETAIL(FUN_001d9278);
+    extern const GccVTableEntry g_ShaderType01VTable[] RETAIL(PrecompiledShader__Type_0x1_Methods);
     void ShaderType0ESetUp(Shader* shader) RETAIL(FUN_001dc2b8);
     void ShaderType12SetUp(Shader* shader) RETAIL(FUN_001d9eb8);
     void ShaderType13SetUp(Shader* shader) RETAIL(FUN_001d9f70);
@@ -527,8 +530,23 @@ extern "C"
     extern u8 g_MovieBuckets RETAIL(D_00309B4C);
     extern FrameBuckets g_FrameBuckets RETAIL(D_003239D8);
 
+    // The renderer's DMA memory (0x540000 bytes taken at its start) and where its next part goes
+    extern u8* g_RendererDmaMemory RETAIL(G_DMA_ByteStream_Beg_);
+    extern u8* g_RendererDmaNext RETAIL(G_DMA_ByteStream_CurPosition_);
+    // The two buckets of their own (the small one's chain of 100 quadwords, the large one's of 10000)
+    extern SingleBucket g_SmallBucket RETAIL(D_003238F0);
+    extern SingleBucket g_LargeBucket RETAIL(D_00324000);
+
     // The two regions of the chains' buffers out of the memory given; returns the memory after them
     u8* CarveDmaMemory(u8* memory) RETAIL(FUN_00181fa0);
+    // Whether a DMA channel is sending (its CHCR's STR), and a chain sent on one once it's done with the one before (from the
+    // scratchpad when it's there; its tags sent too when asked)
+    bool IsDmaChannelBusy(s32 channel) RETAIL(IsVIF0_TransferingFromMemory);
+    void StartDmaChain(s32 channel, const void* chain, bool sendTags) RETAIL(TransferDMA_Data);
+    // The wait until the chain the renderer sent on a channel is sent (its D_STAT bit, through COP0's condition), and on VIF1's;
+    // they return 1
+    s32 WaitForDmaChannel(s32 channel) RETAIL(FinishDMATransfer);
+    s32 WaitForVif1Dma() RETAIL(FinishDMATransferChannel1);
     // The frame's buckets' three chains (the first 5 buckets', the next 16', the last 7'), and the buckets started
     void InitialiseFrameBuckets(FrameBuckets* buckets) RETAIL(InitDMA_Manager);
     // A bucket of its own with a chain of 100 quadwords, of 10000
@@ -636,6 +654,22 @@ extern "C"
     u32 FlushMaterials() RETAIL(FUN_001c0c20);
     void ForgetMaterials() RETAIL(FUN_001c0ba0);
     void InitShadersRenderedAmt();
+    // The renderer's start: the VU1 programs registered, ALPHA's presets, the screen effects (their palettes and wave grid made)
+    void InitVuPrograms() RETAIL(InitVU_Programs);
+    void InitAlphaPresets() RETAIL(FUN_001daa68);
+    void InitialiseScreenEffects() RETAIL(FUN_001afd88);
+    // Every material's shaders moved on by the clock's last advance, and the particles' wave shader
+    void AnimateMaterials(const TimeClock* clock) RETAIL(FUN_001c0c98);
+    void UpdateParticleWaves(const TimeClock* clock) RETAIL(FUN_001b9a30);
+
+    // The bytes of a pixel of the buffer shown (2) and of the one the frame is drawn in (4)
+    extern u32 g_DisplayPixelBytes RETAIL(D_00309BD0);
+    extern u32 g_DrawPixelBytes RETAIL(D_00309BD4);
+    // The frame chain's head written (g_FrameChain: the GS set up for the frame in its second context and the frame drawn copied
+    // into the buffer shown in strips of 32 pixels, dithered), and the packet the materials can call made (the drawing set up for
+    // the whole screen in the first context, alpha not written)
+    void WriteFrameHead() RETAIL(InitDefaultGifTags_);
+    void MakeSharedGifPacket() RETAIL(FUN_0019bc10);
     // TEXFLUSH and the texture's TEX0 (and MIPTBP1 and 2 for its mips) sent to the GIF at packet, for its slot; returns where it
     // ends. The texture of the material's shader uploaded for the bucket, and its registers
     u8* WriteTextureRegisters(void* context, u8* packet, const Texture* texture) RETAIL(FUN_001bcbf8);
@@ -648,7 +682,7 @@ extern "C"
     u8* FUN_001c0b00(const Material* material, u8* packet, u32 shader);
 
     // The 2D drawing's packet in progress: its tag, its material, its GIF tag, whether its vertexes have ST coordinates and how
-    // many registers it set
+    // many registers it set (the screen models' builder keeps its packet, material and vertex count in them too)
     extern u32* g_2DTag RETAIL(D_0030AB20);
     extern Material* g_2DMaterial RETAIL(G_ShaderRel_3);
     extern u64* g_2DGifTag RETAIL(D_0030AB28);
@@ -668,6 +702,11 @@ extern "C"
     // The material listed among the frame's and its writer started, with one tag or two
     void StartMaterialWriter(Material* material) RETAIL(FUN_001c0920);
     void StartMaterialWriterTwoTags(Material* material) RETAIL(FUN_001c0980);
+    // The two materials the renderer makes at its start (bucket 2, key 8): one of shader type 0 that nothing uses, and the screen
+    // models' default, of shader type 1 (the vertexes' colours, no texture)
+    extern Material* g_UnusedDefaultMaterial RETAIL(G_ShaderRel_1);
+    extern Material* g_ScreenModelMaterial RETAIL(G_ShaderRel_2);
+    void MakeDefaultMaterials() RETAIL(FUN_001a66a0);
 
     // What the skin being drawn is drawn with (the OGI's drawer sets them): its matrix, its inverse (what takes the camera into
     // its space), its lights' directions (a row each), their colours and the ambient light; the same of the blend skin
@@ -713,9 +752,12 @@ extern "C"
     u8* FUN_001c1ac0(const BlendSubModel* subModel, u8* packet, const f32* weights, const s32* shapes, const s32* shapeCount);
     u8* CreateSubBlendDMA_Chain_(const BlendPart* part, u8* packet, const f32* weights, const s32* shapes,
                                  const s32* shapeCount, const f32* factors);
-    // The renderer's DMA channels' registers (still asm)
+    // The renderer's DMA channels set up: every channel's DMA on (D_PCR), the table of their address registers, and the
+    // renderer's channels (not the SIF's 5 to 7) their registers, their tags sent too (CHCR's TTE), their bit, not sending
     void SetDmaRegisterPointers();
-    // The screen effects the game's flags ask for (still asm)
+    // The wait until every channel's chain is sent (WaitForDmaChannel on each): 1
+    s32 FinishDMATransferAll();
+    // The screen effects the game's flags ask for
     void FUN_001b9a68();
 
     // The materials drawn this frame (the label's size is splat's, D_003D6074 is the rest), how many
@@ -761,6 +803,15 @@ extern "C"
     // tags and put into its bucket at once) takes the CALLs of the render target's packet, the block and the model's packet
     void SetScreenModelDMA(ScreenModel* model, const Matrix4x4* toScreen, u32 mode, const Matrix4x4* toCamera,
                            const Vector4* clip) RETAIL(FUN_001a6a28);
+    // The screen models' builder (screenmodels.cpp; the skid marks are its only models): started (no vertexes, the default
+    // material), the material set (none: kept), the colour of the next vertexes (RGBA bytes), a vertex (0x8000 in its fourth word
+    // when it's flagged, the GS's ADC: no triangle drawn at it) and the model made of them (its packet ended, its instances' block
+    // made)
+    void StartScreenModel() RETAIL(FUN_001ab680);
+    void ScreenModelMaterial(Material* material) RETAIL(FUN_001ab7f0);
+    void ScreenModelColour(u32 colour) RETAIL(FUN_001ab6e8);
+    void ScreenModelVertex(const Vector4* place, u32 noDraw) RETAIL(FUN_001ab748);
+    ScreenModel* FinishScreenModel() RETAIL(FUN_001ab800);
 
     // A block of particles drawn with the material (its writer's packet): the system's header with its scale (and a hexagon's
     // distortion) sent before them
@@ -866,4 +917,57 @@ inline Vector4 CameraPosition(const RenderView* view)
     void* node = *reinterpret_cast<void**>(camera + 8);
     RotateAndTranslate(node);
     return *reinterpret_cast<const Vector4*>(static_cast<u8*>(node) + 0x30);
+}
+
+// A packet of up to 256 quadwords for VU0's memory (the culling's views)
+struct BigVu0Packet
+{
+    s32 count;
+    s32 unknown04;
+    s32 capacity;
+    s32 unknown0C;
+    u32 data[0x100][4];
+};
+
+// Four planes as VU0 tests them: their normals' absolute values and their normals a row per axis, then their offsets
+struct PlaneColumns
+{
+    f32 absoluteNormals[3][4];
+    f32 normals[3][4];
+    f32 offsets[4];
+};
+CHECK_SIZE(PlaneColumns, 0x70);
+
+extern "C"
+{
+    extern Vector4 g_ViewPlanes[6] RETAIL(D_003B4900);
+    extern Vector4 g_FarViewPlanes[6] RETAIL(D_003B4960);
+    extern u8 g_Vu0Programs[] RETAIL(G_UnkDmaRelated);
+    // Quadwords copied into VU0's memory at an address by the VU0 programs' copier (vu0programs.cpp), and a set of programs loaded
+    // (waited for when asked)
+    void SendToVu0(u8* programs, const void* data, s32 quadwords, s32 address) RETAIL(FUN_002b2178);
+    void SelectVu0Programs(u8* programs, u32 set, bool wait) RETAIL(FUN_002b20e0);
+    BigVu0Packet* StartBigVu0Packet(BigVu0Packet* packet) RETAIL(FUN_001f3fa0);
+    // A plane put in a column, the side planes of six (the second to the fifth) in the four, columns added to a packet, cleared
+    void SetPlaneColumn(PlaneColumns* columns, const Vector4* plane, s32 column) RETAIL(FUN_001fdef0);
+    void SetSidePlaneColumns(PlaneColumns* columns, const Vector4* planes) RETAIL(FUN_00201298);
+    void AddPlaneColumns(const PlaneColumns* columns, BigVu0Packet* packet) RETAIL(FUN_00201300);
+    void ClearPlaneColumns(PlaneColumns* columns) RETAIL(FUN_00201340);
+    // A frustum's six planes through its eye and near corners, and the camera's from its field of view
+    void FrustumPlanes(f32 depth, Vector4* planes, const Vector4* eye, const Vector4* topRight, const Vector4* bottomRight,
+                       const Vector4* bottomLeft, const Vector4* topLeft) RETAIL_N32(FUN_00201480);
+    void ViewFrustumPlanes(f32 near, f32 far, f32 aspect, f32 scale, Vector4* planes, const s32* fieldOfView)
+        RETAIL_N32(FUN_00201368);
+    // The view's planes taken into a space (the near and far ones apart), the far set's
+    void ViewPlanesIn(const Matrix4x4* matrix, PlaneColumns* columns, Vector4* nearAndFar) RETAIL(FUN_001ef4a0);
+    void FarViewPlanesIn(const Matrix4x4* matrix, PlaneColumns* columns) RETAIL(FUN_001ef550);
+    // The far set's side planes into a space as rows and the near plane, for the decals' view
+    u32* WriteChunkViewRows(u32* nearPlane, const Matrix4x4* matrix, u32* rows) RETAIL(FUN_001ef370);
+    // The view's packet made (the matrices for the particles) and sent into VU0's memory at the index's place, which it returns
+    // and keeps in the word 0x100 bytes past the matrices
+    s32 UploadParticleView(Matrix4x4* matrices, s32 index) RETAIL(FUN_001e91f8);
+    // The clipping of a box's corners loaded in VU0's registers
+    void ClipCorners(u32* flags) RETAIL(FUN_00201d60);
+    // A level of detail's mesh for a squared distance
+    RigidModel* LodMeshAt(Lod* lod, u32 distance) RETAIL(FUN_001c21a0);
 }

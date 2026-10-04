@@ -83,11 +83,24 @@ public:
     void Reset(u32 unknown) RETAIL(FUN_00140808);
 };
 
-// Its flags (2 when made; bit 2 makes the creature's function 23 clear bit 5, which its functions 24 and 25 set and clear)
+// Its flags (2 when made): 0 it snaps to the ground (its state's bit 18), 1 it rests on something (a crate's: landed), 2 on the
+// ground (the creature's function 23 then lands it: 25), 4 moving, 5 falling (its functions 24 and 25 set and clear it), 6-13 its
+// hit points; and a value (the playable character's gravity)
 class CreaturePart : public BasicAgentPart
 {
 public:
-    u32 unknown14;
+    enum Flags : u32
+    {
+        FlagSnapsToGround = 0x1,
+        FlagResting = 0x2,
+        FlagOnGround = 0x4,
+        FlagMoving = 0x10,
+        FlagFalling = 0x20,
+        HitPointsShift = 6,
+        HitPointsMask = 0xFF,
+    };
+
+    u32 flags;
     u32 unknown18;
 
     static CreaturePart* Construct(CreaturePart* part) RETAIL(FUN_00140d88);
@@ -96,26 +109,98 @@ public:
 };
 CHECK_SIZE(CreaturePart, 0x1C);
 
-// The playable characters' (its two vectors made the default box's lowest corner with w 1)
+// The playable characters' (its two vectors made the default box's lowest corner with w 1). Its low byte is the attack kind its
+// moves give (3 walking into something; 4 landing on it, 5 hitting it from below; 6 and 10 spinning, 7 and 11 body slamming, 8 and
+// 12 sliding, 9 tied to the other character, 13 and 14 thrown, 15 and 16 landing on it or hitting it from below while spinning),
+// bit 10 of its bits it's invincible and bit 20 frozen. The value at 0x18 is its gravity's strength, and the word after it bits
+// mirroring its controllers' states, which the conditions read as bits 32-63 of the 64 bits from 0x18 (Bits()): 32 crouching, 33-35
+// and 39-40 the jump's, 36 Nina's claw, 37 the gun, 38 the spin, 41 the crouch's state 3, 42 walking, 43 running, 44 the walk's bit
+// 8, 45 a fall started and 46 it fell far (10 or more, from 45), 47 hurt, 48-52 the move's requests this frame (a turn, forward,
+// sideways and vertical speeds and a speed scale: the first request of each wins), 53 the leader and 54 the second of two
+// characters tied together, 56 no fall events, 57 the scripts' flag. The requests' values, the share of the last move it made, the
+// push its probes give and its average
 class CharacterPart : public CreaturePart
 {
 public:
-    u32 unknown1C;
-    u32 unknown20;
-    u32 unknown24;
-    u32 unknown28;
-    u32 unknown2C;
-    u32 unknown30;
-    u32 unknown34;
+    enum Bits : u32
+    {
+        AttackKindMask = 0xFF,
+        Invincible = 0x400,
+        Frozen = 0x100000,
+    };
+
+    enum MoveBits : u32
+    {
+        Crouching = 0x1,
+        Jumping = 0x2,
+        Clawing = 0x10,
+        Shooting = 0x20,
+        Spinning = 0x40,
+        Walking = 0x400,
+        Running = 0x800,
+        Falling = 0x2000,
+        FellFar = 0x4000,
+        Hurt = 0x8000,
+        TurnRequested = 0x10000,
+        ForwardRequested = 0x20000,
+        SidewaysRequested = 0x40000,
+        VerticalRequested = 0x80000,
+        ScaleRequested = 0x100000,
+        LinkedFirst = 0x200000,
+        LinkedSecond = 0x400000,
+        NoFallEvents = 0x1000000,
+        ScriptFlag = 0x2000000,
+    };
+
+    u32 moveBits;
+    s32 wantedTurn;
+    f32 wantedForward;
+    f32 wantedSideways;
+    f32 wantedVertical;
+    f32 speedScale;
+    f32 moveShare;
     u8 unknown38[8];
-    Vector4 unknown40;
-    Vector4 unknown50;
+    Vector4 push;
+    Vector4 smoothedPush;
+
+    // The 64 bits from 0x18 (its gravity's, then its move bits)
+    u64& Bits()
+    {
+        return *reinterpret_cast<u64*>(&unknown18);
+    }
+
+    const u64& Bits() const
+    {
+        return *reinterpret_cast<const u64*>(&unknown18);
+    }
+
+    f32& Gravity()
+    {
+        return *reinterpret_cast<f32*>(&unknown18);
+    }
 
     static CharacterPart* Construct(CharacterPart* part) RETAIL(FUN_00140070);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001400b8);
     void Reset(u32 unknown) RETAIL(FUN_001401a0);
+
+    // The move's requests: a turn (an angle, 65536ths of a turn), a forward, sideways and vertical speed and a speed scale (the
+    // floats first), each taken unless one was this frame (whether it was), and cleared
+    u32 RequestTurn(const s32* angle) RETAIL(FUN_00140238);
+    u32 RequestForward(f32 speed) RETAIL_N32(FUN_00140278);
+    u32 RequestSideways(f32 speed) RETAIL_N32(FUN_001402a8);
+    u32 RequestVertical(f32 speed) RETAIL_N32(FUN_001402d8);
+    u32 RequestScale(f32 scale) RETAIL_N32(FUN_00140308);
+    void ClearSpeedRequests() RETAIL(FUN_001400e0);
+    void ClearTurnRequest() RETAIL(FUN_00140170);
+    // The push averaged with this frame's (none below 0.1): the average
+    Vector4* SmoothPush() RETAIL(FUN_0013c9d0);
 };
-CHECK_OFFSET(CharacterPart, unknown40, 0x40);
+CHECK_OFFSET(CharacterPart, moveBits, 0x1C);
+CHECK_OFFSET(CharacterPart, wantedTurn, 0x20);
+CHECK_OFFSET(CharacterPart, speedScale, 0x30);
+CHECK_OFFSET(CharacterPart, moveShare, 0x34);
+CHECK_OFFSET(CharacterPart, push, 0x40);
+CHECK_OFFSET(CharacterPart, smoothedPush, 0x50);
 CHECK_SIZE(CharacterPart, 0x60);
 
 class GenericObjectPart : public AgentPartWithValue

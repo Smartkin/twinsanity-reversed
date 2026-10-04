@@ -12,6 +12,7 @@
 #include "game/player.h"
 #include "game/readers.h"
 #include "game/renderer.h"
+#include "game/resources.h"
 #include "game/savemanager.h"
 #include "game/stream.h"
 #include "platform/graphics.h"
@@ -968,9 +969,9 @@ OLEG* OLEG::Construct(OLEG* oleg, Font* font, GameProgress* progress)
         oleg->pictures[picture] = NoPicture[picture] << PictureShift | NoPicture[picture] << WantedPictureShift;
     }
     oleg->pulse.duration = 0x1.333334p-3f;
-    for (u32& value : oleg->unknownB40)
+    for (MaterialResource*& icon : oleg->hudIcons)
     {
-        value = 0;
+        icon = nullptr;
     }
 
     for (u32 gem = 0; gem < 6; gem++)
@@ -1587,7 +1588,7 @@ void OLEG::UpdateHud(PlayerCharacter* character)
     }
 
     SetVisible(&string3F5C, timed);
-    SetVisible(&sprite3FF8, timed && unknownB40[1] != 0);
+    SetVisible(&sprite3FF8, timed && hudIcons[1] != nullptr);
     SetVisible(&string40B4, timed);
     SetVisible(&sprite4150, timed);
     if (!health)
@@ -2304,4 +2305,146 @@ MenuWidget* OLEG::ShownMenu()
     }
 
     return nullptr;
+}
+
+namespace
+{
+// The HUD's icons are its sprites 3 to 5
+constexpr u32 FirstHudIconSprite = 3;
+}
+
+void OLEG::SetHudIcon(u32 slot, const u16* object)
+{
+    Sprite& sprite = sprites[FirstHudIconSprite + slot];
+    if (*object == 0xFFFF)
+    {
+        hudIcons[slot] = nullptr;
+        CallVirtual<void>(&sprite, sprite.vtable, SpriteSetMaterialSlot, Platform::Graphics::FlatMaterial());
+        return;
+    }
+
+    ResourceTable* models = G_GameResourcesObjectPointer->models;
+    u16 id;
+    CopyResourceId(&id, object);
+    auto* ogi = id != 0xFFFF ? static_cast<GameOGI*>(models->items[id & 0x7FFF]) : nullptr;
+    if (ogi == nullptr)
+    {
+        return;
+    }
+
+    RigidModel* model = ogi->rigidModels != nullptr && ogi->rigidModelCount != 0 ? ogi->rigidModels[0] : nullptr;
+    MaterialResource* material = Platform::Graphics::FirstMaterial(model);
+    hudIcons[slot] = material;
+    CallVirtual<void>(&sprite, sprite.vtable, SpriteSetMaterialSlot, material->material);
+}
+
+extern "C"
+{
+    // OLEG's file's start-up: its static initialisation (initialise 1, priority 0xFFFF) and its entry in the static constructors'
+    // table
+    void InitOlegModule(u32 initialise, u32 priority) RETAIL(FUN_00178890);
+    void ConstructOlegModule() RETAIL(FUN_0017ca00);
+    // What the start-up sets that nothing reads: a word made 0, white and white without alpha, and 45 degrees (given as radians)
+    extern u32 g_OlegUnread620 RETAIL(D_0030A620);
+    extern u32 g_OlegWhite668 RETAIL(D_0030A668);
+    extern u32 g_OlegClearWhite670 RETAIL(D_0030A670);
+    extern s32 g_OlegUnreadAngle RETAIL(D_0030A7A0);
+    // The chunks the game starts in and goes to after the credits (Levels\Earth\Hub\Beach, Levels\Ice\Hub\LabExt)
+    extern const char g_StartChunkName[] RETAIL(D_002F5708);
+    extern const char g_PostCreditsChunkName[] RETAIL(D_002F5720);
+}
+
+namespace
+{
+template <typename T> T* AllocatePoints(u32 count)
+{
+    return static_cast<T*>(MemoryAllocate2(count * sizeof(T)));
+}
+
+void SetPlace(Vector2* place, f32 x, f32 y)
+{
+    place->x = x;
+    place->y = y;
+}
+}
+
+void InitOlegModule(u32 initialise, u32 priority)
+{
+    constexpr u32 AllPriorities = 0xFFFF;
+    if (priority != AllPriorities || initialise == 0)
+    {
+        return;
+    }
+
+    g_CrystalColour = {0.0f, 1.0f, 0.0f, 1.0f};
+    SetPlace(&g_OlegShadowOffset, Rounded(0.01), Rounded(0.01));
+    ColourSet(&g_OlegShadowColour, 0.0f, 0.0f, 0.0f, 0.5f);
+    g_OlegUnread620 = 0;
+    StringConstruct(&g_StartChunkPath, g_StartChunkName);
+    StringConstruct(&g_PostCreditsChunkPath, g_PostCreditsChunkName);
+    SetPlace(&g_OlegPlace628, 0.5f, Rounded(0.414));
+    SetPlace(&g_OlegPlace630, 0.5f, Rounded(0.764));
+    SetPlace(&g_OlegPlace638, 0.0f, 0.0f);
+    SetPlace(&g_OlegPlace640, Rounded(0.7), Rounded(0.7));
+    SetPlace(&g_OlegPlace648, 0.5f, Rounded(0.15));
+    SetPlace(&g_OlegPlace650, 0.75f, 0.75f);
+    SetPlace(&g_OlegPlace658, 0.5f, Rounded(0.4));
+    SetPlace(&g_OlegPlace660, 0.625f, 0.625f);
+    ColourSet(&g_OlegWhite668, 1.0f, 1.0f, 1.0f, 1.0f);
+    ColourSet(&g_OlegClearWhite670, 1.0f, 1.0f, 1.0f, 0.0f);
+    GetColor(&g_OlegColour678, 8);
+    SetPlace(&g_OlegPlace680, 0.0f, 0.0f);
+    SetPlace(&g_OlegPlace688, 1.0f, Rounded(0.15));
+    SetPlace(&g_OlegPlace690, 0.0f, Rounded(-0.15));
+    SetPlace(&g_OlegPlace698, 1.0f, 0.0f);
+    SetPlace(&g_OlegPlace6A0, 0.0f, Rounded(0.85));
+    SetPlace(&g_OlegPlace6A8, 1.0f, 1.0f);
+    SetPlace(&g_OlegPlace6B0, 0.0f, 1.0f);
+    SetPlace(&g_OlegPlace6B8, 1.0f, Rounded(1.15));
+    ColourSet(&g_OlegColour6C0, 0.0f, 0.0f, 0.0f, 0.5f);
+    ColourSet(&g_OlegColour6C8, 0.0f, 0.0f, 0.0f, 0.0f);
+    ColourSet(&g_OlegColour6D0, 1.0f, 1.0f, 1.0f, 1.0f);
+    ColourSet(&g_OlegColour6D8, 1.0f, 1.0f, 1.0f, 0.0f);
+    SetPlace(&g_OlegPlace6E0, 1.0f, 1.0f);
+    SetPlace(&g_OlegPlace6E8, 0.0f, Rounded(0.85));
+    SetPlace(&g_OlegPlace6F0, 0.5f, Rounded(0.9));
+    SetPlace(&g_OlegPlace6F8, 0.5f, 0.5f);
+    ColourSet(&g_OlegColour700, 1.0f, 1.0f, 1.0f, 0.0f);
+    ColourSet(&g_OlegColour708, 1.0f, 1.0f, 1.0f, 1.0f);
+    AngleFrom(&g_OlegAngle710, 15.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle718, 21.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle720, 25.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle728, -35.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle730, 120.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle738, -36.0f, AngleDegrees);
+    AngleFrom(&g_OlegAngle740, 122.0f, AngleDegrees);
+    Platform::Graphics::ConstructMaterial(Platform::Graphics::FlatMaterial());
+    ColourSet(&g_OlegColour748, 1.0f, 1.0f, 1.0f, 1.0f);
+    ColourSet(&g_OlegColour750, 1.0f, 1.0f, 1.0f, 0.0f);
+    ColourSet(&g_OlegColour758, Rounded(0.1), Rounded(0.588), 1.0f, 1.0f);
+    ColourSet(&g_OlegColour760, Rounded(0.1), Rounded(0.588), 1.0f, 0.0f);
+    ColourSet(&g_OlegColour768, Rounded(0.325), 1.0f, Rounded(0.9), 1.0f);
+    ColourSet(&g_OlegColour770, 1.0f, 1.0f, 1.0f, 1.0f);
+    ColourSet(&g_OlegColour778, 1.0f, 1.0f, 1.0f, 0.0f);
+    // The titles' breathing: 30 values, not running
+    constexpr u16 ScalerValues = 30;
+    g_OlegScaler.values = AllocatePoints<f32>(ScalerValues);
+    g_OlegScaler.flags = (g_OlegScaler.flags & ~CyclingScale::CountMask) | ScalerValues;
+    g_OlegScaler.flags &= ~CyclingScale::Running;
+    g_OlegCurve780.count = 8;
+    g_OlegCurve780.points = AllocatePoints<Vector2>(g_OlegCurve780.count);
+    g_OlegCurve788.count = 8;
+    g_OlegCurve788.points = AllocatePoints<Vector2>(g_OlegCurve788.count);
+    g_OlegColours790.count = 16;
+    g_OlegColours790.points = AllocatePoints<Vector4>(g_OlegColours790.count);
+    g_OlegColours798.count = 8;
+    g_OlegColours798.points = AllocatePoints<Vector4>(g_OlegColours798.count);
+    AngleFrom(&g_OlegUnreadAngle, Rounded(0.785398163397448), AngleRadians);
+    SetPlace(&g_FontSize, Rounded(0.046), Rounded(0.085));
+    SetPlace(&g_SmallFontSize, Rounded(0.029), Rounded(0.056));
+}
+
+void ConstructOlegModule()
+{
+    InitOlegModule(1, 0xFFFF);
 }

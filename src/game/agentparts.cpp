@@ -6,6 +6,10 @@
 EABI_EXPORT(EventWithinSeconds, static_cast<u32 (AgentPart::*)(const u32*, f32)>(&AgentPart::AttackedWithin));
 EABI_EXPORT(FUN_00263148, static_cast<u32 (AgentPart::*)(u32, const u32*, f32)>(&AgentPart::AttackedWithin));
 EABI_EXPORT(FUN_001416b8, &AgentPart::HitWithin);
+EABI_EXPORT(FUN_00140278, &CharacterPart::RequestForward);
+EABI_EXPORT(FUN_001402a8, &CharacterPart::RequestSideways);
+EABI_EXPORT(FUN_001402d8, &CharacterPart::RequestVertical);
+EABI_EXPORT(FUN_00140308, &CharacterPart::RequestScale);
 
 namespace
 {
@@ -103,6 +107,24 @@ void BasicAgentPart::Reset(u32 unknown)
     ResetBasicValues(this, unknown);
 }
 
+// HitBy's cases splat split off, which the retail jump table (jtbl_002F2E50) points at: kinds 10 to 12 (and the default) and
+// 13 and 14 always reach the part
+extern "C"
+{
+    u32 HitByKinds10To12() RETAIL(FUN_001417a0);
+    u32 HitByKinds13And14() RETAIL(FUN_00141798);
+}
+
+u32 HitByKinds10To12()
+{
+    return 1;
+}
+
+u32 HitByKinds13And14()
+{
+    return 1;
+}
+
 u32 BasicAgentPart::HitBy(u32 kind)
 {
     switch (kind)
@@ -182,13 +204,13 @@ void CreaturePart::Reset(u32 unknown)
 {
     BasicAgentPart::Reset(unknown);
     unknown18 = 0;
-    unknown14 = CreatureValue;
+    flags = CreatureValue;
 }
 
 CharacterPart* CharacterPart::Construct(CharacterPart* part)
 {
     CreaturePart::Construct(part);
-    part->unknown1C = 0;
+    part->moveBits = 0;
     part->vtable = g_CharacterPartVTable;
     part->Reset(Made);
     return part;
@@ -203,17 +225,87 @@ void CharacterPart::Destroy(u32 destroyFlags)
 void CharacterPart::Reset(u32 unknown)
 {
     CreaturePart::Reset(unknown);
-    unknown1C = 0;
-    unknown20 = 0;
-    unknown40 = g_DefaultBox.min;
-    unknown40.w = 1.0f;
-    unknown50 = g_DefaultBox.min;
-    unknown50.w = 1.0f;
-    unknown34 = 0;
-    unknown24 = 0;
-    unknown28 = 0;
-    unknown2C = 0;
-    unknown30 = 0;
+    moveBits = 0;
+    wantedTurn = 0;
+    push = g_DefaultBox.min;
+    push.w = 1.0f;
+    smoothedPush = g_DefaultBox.min;
+    smoothedPush.w = 1.0f;
+    moveShare = 0.0f;
+    wantedForward = 0.0f;
+    wantedSideways = 0.0f;
+    wantedVertical = 0.0f;
+    speedScale = 0.0f;
+}
+
+u32 CharacterPart::RequestTurn(const s32* angle)
+{
+    if ((moveBits & TurnRequested) != 0)
+    {
+        return 0;
+    }
+
+    moveBits |= TurnRequested;
+    wantedTurn = *angle;
+    return 1;
+}
+
+u32 CharacterPart::RequestForward(f32 speed)
+{
+    if ((moveBits & ForwardRequested) != 0)
+    {
+        return 0;
+    }
+
+    wantedForward = speed;
+    moveBits |= ForwardRequested;
+    return 1;
+}
+
+u32 CharacterPart::RequestSideways(f32 speed)
+{
+    if ((moveBits & SidewaysRequested) != 0)
+    {
+        return 0;
+    }
+
+    wantedSideways = speed;
+    moveBits |= SidewaysRequested;
+    return 1;
+}
+
+u32 CharacterPart::RequestVertical(f32 speed)
+{
+    if ((moveBits & VerticalRequested) != 0)
+    {
+        return 0;
+    }
+
+    wantedVertical = speed;
+    moveBits |= VerticalRequested;
+    return 1;
+}
+
+u32 CharacterPart::RequestScale(f32 scale)
+{
+    if ((moveBits & ScaleRequested) != 0)
+    {
+        return 0;
+    }
+
+    speedScale = scale;
+    moveBits |= ScaleRequested;
+    return 1;
+}
+
+void CharacterPart::ClearSpeedRequests()
+{
+    moveBits &= ~(ForwardRequested | SidewaysRequested | VerticalRequested | ScaleRequested);
+}
+
+void CharacterPart::ClearTurnRequest()
+{
+    moveBits &= ~TurnRequested;
 }
 
 GenericObjectPart* GenericObjectPart::Construct(GenericObjectPart* part)

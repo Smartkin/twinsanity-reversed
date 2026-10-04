@@ -33,6 +33,15 @@ extern "C"
     // first argument, as GCC 2.9x returns such a struct)
     s32* SignedAngleAbout(s32* angle, const Vector4* from, const Vector4* to, u32 axis) RETAIL(FUN_00188670);
     s32* SignedAngleAboutY(s32* angle, const Vector4* from, const Vector4* to) RETAIL(FUN_0018e560);
+    // The squared distance from a point to the line through two points (to the first when they're the same: not to the segment
+    // between them, despite the name), and to the segment between them; the point of a segment nearest a point, and the distance
+    // squared to it; and the squared distance between two segments, with the shares of the way along them where they're nearest
+    // (wrong in a few cases)
+    f32 SegmentPointDistanceSquared(const Vector4* segment, const Vector4* point) RETAIL(FUN_00184ad0);
+    f32 PointSegmentDistanceSquared(const Vector4* segment, const Vector4* point) RETAIL(FUN_00184c60);
+    f32 NearestSegmentPoint(const Vector4* segment, const Vector4* point, Vector4* nearest) RETAIL(FUN_00184df8);
+    f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* firstShare, f32* secondShare)
+        RETAIL(FUN_00185088);
 }
 
 // The units AngleFrom takes a value in
@@ -135,21 +144,27 @@ extern "C"
     s32* MultiplyAngle(s32* angle, f32 scale) RETAIL_N32(FUN_0015de00);
     s32* AddRadiansToAngle(s32* angle, f32 radians) RETAIL_N32(FUN_0015ddd0);
 
-    // Rotations are quaternions (x, y, z, w; still asm, VU0's in part). One from three angles about x, y and z
+    // Rotations are quaternions (x, y, z, w; VU0's in part). One from three angles about x, y and z (turning about x, then y,
+    // then z), and from two of them
     void GetRotationXYZ(Vector4* rotation, const s32* x, const s32* y, const s32* z) RETAIL(GetRotationXYZ);
-    // a times b
+    void GetRotationXY(Vector4* rotation, const s32* x, const s32* y) RETAIL(GetRotationXY);
+    void GetRotationXZ(Vector4* rotation, const s32* x, const s32* z) RETAIL(GetRotationXZ);
+    void GetRotationYZ(Vector4* rotation, const s32* y, const s32* z) RETAIL(GetRotationYZ);
+    // a times b (VU0's)
     void MultiplyRotations(Vector4* out, const Vector4* a, const Vector4* b) RETAIL(RotateVecByVec);
-    // The turn about y by an angle (none: the identity), about z, and about an axis (VU0's sine and cosine)
+    // The turn about x, about y and about z by an angle (none: the identity), and about an axis (made a unit one unless it is; the
+    // half angle cut down to whole 65536ths of a turn, even none turning), VU0's sine and cosine
+    void RotationFromPitch(Vector4* rotation, const s32* pitch) RETAIL(FUN_0018dd20);
     void RotationFromYaw(Vector4* rotation, const s32* yaw) RETAIL(FUN_0018ddb0);
     void RotationFromRoll(Vector4* rotation, const s32* roll) RETAIL(FUN_0018de40);
-    void RotationAboutAxis(Vector4* rotation, const Vector4* axis, const s32* angle, u32 unknown) RETAIL(FUN_0018df28);
+    void RotationAboutAxis(Vector4* rotation, const Vector4* axis, const s32* angle, u32 unitAxis) RETAIL(FUN_0018df28);
     // The axis a rotation turns about and the angle (whole 65536ths of a turn: twice the half angle cut down to them; the y axis
     // and none for no turn), the rotation normalized in place first unless it already is
     void AxisAngleOfRotation(Vector4* rotation, Vector4* axis, s32* angle, u32 normalized) RETAIL(FUN_001872e0);
     // The sine and the cosine of half an angle from the angle's (the sine's sign picks the half turn)
     void HalfAngleSinCos(f32* sine, f32* cosine) RETAIL(FUN_0018cc18);
-    // A direction turned toward another by a share of the angle between them (VU0's sine and cosine), and the two axes square to
-    // a direction (a side and an up)
+    // A direction turned toward another by a share of the angle between them (VU0's sine and cosine; the other one itself when
+    // they're parallel, its w the first's otherwise), and the two axes square to a direction (a side and an up)
     void TurnToward(f32 share, Vector4* out, const Vector4* from, const Vector4* to) RETAIL_N32(FUN_00188a90);
     void AxesAround(const Vector4* direction, Vector4* side, Vector4* up) RETAIL(FUN_00188160);
     // The angle about y from z to a direction's x and z
@@ -162,8 +177,17 @@ extern "C"
     void AnglesOfRotation(const Vector4* rotation, s32* x, s32* y, s32* z) RETAIL(FUN_0018ded0);
     // A rotation made the turn about y by its yaw rounded to a multiple of a step (radians)
     void SnapToYaw(Vector4* rotation, f32 step) RETAIL_N32(FUN_00187c48);
-    // The rotation a fraction of the way between two others
+    // The angle between two directions (65536ths of a turn, Abramowitz and Stegun's arc cosine), signed as their cross product's y
+    // (its x when y is within 5e-05 of none, its z when both are; a half turn or none when it has no length): the angle
+    s32* AngleBetweenDirections(s32* angle, const Vector4* from, const Vector4* to) RETAIL(FUN_00188358);
+    // A vector turned about an axis (made a unit one unless it is; nothing when it's too short) by an angle's sine and cosine, and
+    // by an angle (none: nothing)
+    void TurnBySineCosine(f32 sine, f32 cosine, Vector4* vector, const Vector4* axis, u32 unitAxis) RETAIL_N32(FUN_00188950);
+    void TurnAboutAxis(Vector4* vector, const Vector4* axis, const s32* angle, u32 unitAxis) RETAIL(FUN_0018e590);
+    // The rotation a fraction of the way between two others, the shorter way round (along a straight line, made a unit one again,
+    // when they're within 0.05 of each other), and whether two are the same turn (each part within a tolerance, either way round)
     void SlerpRotations(f32 t, Vector4* out, const Vector4* from, const Vector4* to) RETAIL_N32(FUN_00187890);
+    u32 SameRotation(const Vector4* rotation, const Vector4* other, f32 tolerance) RETAIL_N32(FUN_00186930);
     // A matrix's rotation rows set from a rotation (VU0 code)
     void MatrixFromRotation(Matrix4x4* matrix, const Vector4* rotation) RETAIL(Rotate_);
     // A rotation matrix about an axis (made a unit one unless it is; none when it's too short) from the angle's sine and cosine, the
@@ -172,6 +196,8 @@ extern "C"
     // vector (y without one; its position row as retail has it: less the eye along the up and the side, the eye along the forward
     // axis)
     void MatrixAboutAxis(f32 sine, f32 cosine, Matrix4x4* matrix, const Vector4* axis, u32 unitAxis) RETAIL_N32(FUN_001857e8);
+    // The same of an angle (none: the identity; VU0's sine and cosine)
+    void AxisAngleMatrix(Matrix4x4* matrix, const Vector4* axis, const s32* angle, u32 unitAxis) RETAIL(FUN_0018d638);
     void MatrixBetween(Matrix4x4* matrix, const Vector4* from, const Vector4* to) RETAIL(FUN_00185c10);
     void RotationBetween(Vector4* rotation, const Vector4* from, const Vector4* to) RETAIL(FUN_00187d78);
     void LookAtMatrix(Matrix4x4* matrix, const Vector4* eye, const Vector4* target, const Vector4* up) RETAIL(FUN_00185df8);
@@ -183,6 +209,8 @@ extern "C"
     void LookAlong(Matrix4x4* matrix, const Vector4* direction, const Vector4* up) RETAIL(FUN_001860b0);
     // A value kept between two others
     f32 ClampFloat(f32 value, f32 low, f32 high) RETAIL(ClampFloat);
+    // Nothing (the game context's constructor calls it)
+    void UnkDebugFunction3();
     // The cosine and the sine of the angle, and each alone
     void CosSin16(const s32* angle, f32* cosine, f32* sine) RETAIL(FUN_0018c0a8);
     f32 SinOfAngle(const s32* angle) RETAIL(FUN_0018c050);
@@ -244,12 +272,15 @@ extern "C"
     // A matrix of four columns
     void MatrixFromColumns(Matrix4x4* matrix, const Vector4* x, const Vector4* y, const Vector4* z, const Vector4* w)
         RETAIL(FUN_0018c1e8);
-    // A matrix turning about y by an angle (VU0's, still asm), a vector turned by such a matrix's x and z (its y and w kept), a
-    // matrix moved along its own axes, and a vector moved by a matrix's position (its w kept)
+    // A matrix turning about x and about y by an angle (none: the identity; VU0's sine and cosine), a vector turned by such a
+    // matrix's x and z (its y and w kept), a matrix moved along its own axes, and a vector moved by a matrix's position (its w kept)
+    void MatrixAboutX(Matrix4x4* matrix, const s32* angle) RETAIL(FUN_0018c278);
     void MatrixAboutY(Matrix4x4* matrix, const s32* angle) RETAIL(FUN_0018c350);
-    // A rotation matrix of angles about x and y (the turn about x first; still asm, VU0's sine and cosine), and of angles about
-    // x, y and z (VU0's)
+    // A rotation matrix of angles about x and y (the turn about x first; VU0's sine and cosine), about x and z, about y and z,
+    // and of angles about x, y and z
     void MatrixFromPitchYaw(Matrix4x4* matrix, const s32* pitch, const s32* yaw) RETAIL(FUN_00183260);
+    void MatrixFromPitchRoll(Matrix4x4* matrix, const s32* pitch, const s32* roll) RETAIL(FUN_001834d0);
+    void MatrixFromYawRoll(Matrix4x4* matrix, const s32* yaw, const s32* roll) RETAIL(FUN_00183740);
     void MatrixFromAngles(Matrix4x4* matrix, const s32* x, const s32* y, const s32* z) RETAIL(FUN_001839b0);
     void TurnAboutY(const Matrix4x4* matrix, const Vector4* vector, Vector4* out) RETAIL(FUN_0018c650);
     void MoveAlongAxes(Matrix4x4* matrix, const Vector4* move) RETAIL(FUN_0018c6d8);
@@ -277,6 +308,9 @@ extern "C"
     // The angle about x from z to a direction's y and z, and the signed angles between two directions about x and y: the angle
     void PitchOfDirection(s32* pitch, const Vector4* direction) RETAIL(FUN_0018d028);
     s32* SignedAngleAboutX(s32* angle, const Vector4* from, const Vector4* to) RETAIL(FUN_0018e530);
+    // What's left after so many seconds of a half-life: 0.5 to the power of seconds over the half-life (the C library's expf of
+    // the seconds times -ln 2 over the half-life)
+    f32 HalfLifeShare(f32 halfLife, f32 seconds) RETAIL(FUN_0018d090);
     // The point at a parameter of a line (its two ends exactly at 0 and 1), the difference of its ends' dot products with a point,
     // and whether its length squared is at least a product (that length squared kept when asked)
     void LinePointAt(f32 along, const Vector4* line, Vector4* out) RETAIL_N32(FUN_0018d0d8);
@@ -290,7 +324,7 @@ extern "C"
     s32* AngleOfPoint(s32* angle, f32 y, f32 x) RETAIL_N32(FUN_001830a8);
     // A matrix of three axes (rows, their w 0) at the origin, a matrix's position set (its w kept), a matrix multiplied by
     // another from the front (by times it), two multiplied the other way round (b times a), a matrix's angles about x, y and z
-    // (still asm the angles' part), and a matrix turned by a rotation from the front
+    // and a matrix turned by a rotation from the front
     void MatrixFromAxes(Matrix4x4* matrix, const Vector4* x, const Vector4* y, const Vector4* z) RETAIL(FUN_0018d3f0);
     void SetMatrixPosition(Matrix4x4* matrix, const Vector4* position) RETAIL(FillPosition);
     void PreMultiply(Matrix4x4* matrix, const Matrix4x4* by) RETAIL(FUN_0018d5b8);
@@ -313,11 +347,13 @@ extern "C"
     void RemoveComponentAlong(Vector4* vector, const Vector4* normal, u32 unitNormal) RETAIL(FUN_0018e420);
     f32 TripleProduct(const Vector4* a, const Vector4* b, const Vector4* c, Vector4* terms) RETAIL(FUN_0018e288);
     u32 AreParallel(f32 tolerance, const Vector4* a, const Vector4* b, f32* dot) RETAIL_N32(FUN_0018e608);
-    // A matrix's inverse through its cofactors (the size 3 one's rotation's, its translation none; nothing when it has none, still
-    // asm)
+    // A matrix's inverse through its cofactors (the size 3 one's rotation's, its translation none; nothing when it has none, and
+    // not into the matrix itself), and the minor of an element (row times 4 plus column: the determinant of what's left without
+    // its row and column; 0 past the last)
     void InvertMatrix(const Matrix4x4* matrix, s32 size, Matrix4x4* out) RETAIL(FUN_00183b60);
+    f32 MatrixMinor(const Matrix4x4* matrix, u32 element) RETAIL(FUN_00183e48);
     // A vector moved by random amounts up to a spread times a scale along each axis: its x by the second scale's, its y by the
-    // first's, its z by the third's (still asm)
+    // first's, its z by the third's
     void JitterVector(f32 spread, f32 yScale, f32 xScale, f32 zScale, Vector4* vector) RETAIL_N32(FUN_0023cfd8);
     // A vector's part along an axis scaled by a share (the axis taken as a unit one when said, else its part found through its
     // length squared; nothing when it has none along it)
@@ -344,20 +380,30 @@ extern "C"
     extern Vector4 g_YAxis RETAIL(D_00323890);
     extern Vector4 g_ZAxis RETAIL(D_003238A0);
     void InitMathConstants(u32 initialise, u32 priority) RETAIL(FUN_0018b4c0);
+    // The module's global constructor (in the static constructors' table): InitMathConstants(1, 0xFFFF)
+    void MathConstantsConstructor() RETAIL(FUN_0018f7b8);
 
-    // A search for the smallest value of a function of one value (still asm): the most steps, two tolerances, two settings and
-    // what it keeps while it searches. The function (an EABI one, given the argument and the value) is searched from a start
-    // and its value there, both the minimum's when it's done
+    // Brent's search for the smallest value of a function of one value (Numerical Recipes' brent): the most steps, an absolute
+    // tolerance and a relative one (of the best value's size), the bracket it searches, the point that was second best before
+    // the second best and the second best with their values, and the last point tried with its value. The function (an EABI
+    // one, given the argument and the value) is searched from a start and its value there (known, or worked out), both the
+    // minimum's when it's done: 0 when it converged, -1 when the steps ran out
     struct MinimumSearch
     {
         s32 steps;
         f32 tolerance;
         f32 closeness;
-        s32 unknown0C;
-        f32 unknown10;
-        u8 state[0x2C - 0x14];
+        f32 low;
+        f32 high;
+        f32 previous;
+        f32 previousValue;
+        f32 second;
+        f32 secondValue;
+        f32 tried;
+        f32 triedValue;
     };
-    void FindMinimum(MinimumSearch* search, void* argument, const void* function, f32* at, f32* value, u32 unknown)
+    CHECK_SIZE(MinimumSearch, 0x2C);
+    s32 FindMinimum(MinimumSearch* search, void* argument, const void* function, f32* at, f32* value, u32 valueKnown)
         RETAIL(FUN_0018f3d0);
 
     // VU0's half of the library (macro mode, its rounding: the renderer's data has to come out of these). The rotation's rows
@@ -373,4 +419,8 @@ extern "C"
     void MultiplyInPlace(Matrix4x4* matrix, const Matrix4x4* by) RETAIL(MultiplyMatByMat);
     void VuTransformPoint(const Matrix4x4* matrix, const Vector4* point, Vector4* out) RETAIL(MultiplyMatrixByVector);
     void VuRotateVector(const Matrix4x4* matrix, const Vector4* vector, Vector4* out) RETAIL(TransformVector_);
+    // A point through a matrix's four rows (its own w taking the fourth's share), and four quadwords' words transposed in place
+    // (a matrix's rows made its columns)
+    void VuTransformByRows(const Matrix4x4* rows, const Vector4* point, Vector4* out) RETAIL(FUN_0018ecc0);
+    void TransposeQuadwords(void* rows) RETAIL(FUN_0018ee88);
 }

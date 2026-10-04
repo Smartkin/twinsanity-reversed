@@ -113,6 +113,16 @@ extern "C"
         texts->texts.Append(text);
     }
 
+    // Room for one font's texts, growing by one
+    PointerArray<FontTexts>* TextQueueConstruct(PointerArray<FontTexts>* queue)
+    {
+        queue->count = 0;
+        queue->growth = 1;
+        queue->capacity = 1;
+        queue->data = static_cast<FontTexts**>(MemoryAllocate2(sizeof(FontTexts*)));
+        return queue;
+    }
+
     void TextQueueDestroy(PointerArray<FontTexts>* queue, u32 flags)
     {
         for (u32 i = 0; i < queue->count; i++)

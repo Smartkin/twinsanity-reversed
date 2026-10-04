@@ -2,11 +2,16 @@
 
 #include "abi.h"
 #include "common.h"
+#include "game/bindings.h"
 #include "game/camerablender.h"
 #include "game/camerarig.h"
 #include "game/cameras.h"
 
+class CharacterAgent;
+class Vehicle;
+struct ChunkEntry;
 struct CollisionCache;
+struct GamePad;
 struct ObjectPlace;
 struct Reference;
 class Camera1C0E;
@@ -307,6 +312,8 @@ public:
         CurveCubic = 0x80,
         // The trigger's point is its own (no first subtype)
         BitPointFollows = 0x200,
+        // The rig's right stick turns the camera (nothing reads it)
+        BitStickTurns = 0x400,
         BitBoxBlending = 0x1000,
         BitCut = 0x2000,
         BitReset = 0x4000,
@@ -387,4 +394,295 @@ extern "C"
     // The pitch the follow camera goes back to (15 degrees) and how fast its tilt eases (90 degrees a second), set at start-up
     extern s32 g_FollowCameraPitch RETAIL(D_0030A9D8);
     extern s32 g_CameraTiltRate RETAIL(D_0030A9C0);
+}
+
+// A camera rig the pad steers (retail's D_002F3808, 0x50 bytes, abstract; vtable 0x30 bytes in: 1 the destructor, 2-4 the camera
+// rig's, 5 made ready for a character, 6 back to its defaults, 7 put together, 8 its input cleared, 9 its input read from a pad, 10
+// a frame with the character, 11 the look stick ((0, 0) here)): the bindings it reads the pad with. Only the follow camera's rig
+// derives from it
+class PadCameraRig : public CameraRig
+{
+public:
+    ButtonBindings bindings;
+    u32 unknown4C;
+
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0015df20);
+    void LookStick(f32* x, f32* y) RETAIL(FUN_0015df70);
+
+    void PrepareVirtual(void* controller, InstanceContext* camera, InstanceContext* character)
+    {
+        CallVirtual<void>(this, vtable, 5, controller, camera, character);
+    }
+
+    void RestoreDefaultsVirtual(CharacterAgent* character)
+    {
+        CallVirtual<void>(this, vtable, 6, character);
+    }
+
+    void AssembleVirtual()
+    {
+        CallVirtual<void>(this, vtable, 7);
+    }
+
+    void ClearInputVirtual()
+    {
+        CallVirtual<void>(this, vtable, 8);
+    }
+
+    void ReadPadVirtual(GamePad* pad)
+    {
+        CallVirtual<void>(this, vtable, 9, pad);
+    }
+
+    void FrameVirtual(TimeClock* clock, CharacterAgent* character)
+    {
+        CallVirtual<void>(this, vtable, 10, clock, character);
+    }
+
+    void LookStickVirtual(f32* x, f32* y)
+    {
+        CallVirtual<void>(this, vtable, 11, x, y);
+    }
+};
+CHECK_OFFSET(PadCameraRig, bindings, 0x40);
+CHECK_SIZE(PadCameraRig, 0x50);
+
+// The follow camera's rig (retail's D_002F37A0, 0x700 bytes): the pad's input (the shoulders' pressure and two unbound actions;
+// the right stick, an unbound zoom axis, the left stick and the d-pad), its own followers, target and positioner, and the walk's
+// yaw speed. Its bits: the yaw's, pitch's and distance's holds, tilting, the vehicle it's set up for, the stick turning it now and
+// since, the character moving
+class FollowCameraRig : public PadCameraRig
+{
+public:
+    enum Bits : u32
+    {
+        BitYawHolds = 0x1,
+        BitPitchHolds = 0x2,
+        BitDistanceHolds = 0x4,
+        BitTilts = 0x8,
+        // The vehicle's kind & 7 (0 on foot; a passenger's 8 is 0 too)
+        VehicleShift = 4,
+        VehicleMask = 0x7 << VehicleShift,
+        BitStickTurning = 0x100,
+        BitStickTurned = 0x200,
+        BitMoving = 0x400,
+    };
+
+    // pressures[]: action 0 (L1, L2, R1, R2: the yaw's rate scale while the character stands), 1 and 2 (no buttons: the pitch's
+    // and the distance's rate scales)
+    enum Pressure : u32
+    {
+        PressureShoulders = 0,
+        PressurePitch = 1,
+        PressureDistance = 2,
+    };
+
+    // axes[]: the right stick's x and y, nothing bound (the distance's input), the left stick's (and the d-pad's) y and x
+    enum Axis : u32
+    {
+        AxisLookX = 0,
+        AxisLookY = 1,
+        AxisZoom = 2,
+        AxisMoveY = 3,
+        AxisMoveX = 4,
+    };
+
+    u32 bits;
+    f32 pressures[3];
+    f32 axes[5];
+    u8 unknown74[0xC];
+    CameraPointFollower ownTargetFollower;
+    CameraPointFollower ownCameraFollower;
+    FollowCameraTarget ownTarget;
+    FollowCameraPositioner ownPositioner;
+    // 65536ths of a turn a second, eased a tenth of the way a frame toward what the left stick's angle asks
+    s32 walkYawSpeed;
+    u8 unknown6F4[0xC];
+
+    // Its bits' 64 bits (pressures[0] the high half), as retail reads and writes them
+    u64& Bits()
+    {
+        return *reinterpret_cast<u64*>(&bits);
+    }
+
+    static FollowCameraRig* Construct(FollowCameraRig* rig) RETAIL(FUN_00141d08);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0015e090);
+    // The controller and the camera's instance unread
+    void Prepare(void* controller, InstanceContext* camera, InstanceContext* character) RETAIL(FUN_00141ed8);
+    void RestoreDefaults(CharacterAgent* character) RETAIL(FUN_00142260);
+    void Assemble() RETAIL(FUN_0015e120);
+    void ClearInput() RETAIL(FUN_0015e148);
+    void ReadPad(GamePad* pad) RETAIL(FUN_0015e190);
+    // The clock unread
+    void Frame(TimeClock* clock, CharacterAgent* character) RETAIL(FUN_00142360);
+    // The right stick's x and y
+    void LookStick(f32* x, f32* y) RETAIL(FUN_0015e268);
+
+    // Tilting or not; tilting, its ranges, rates and the target's box back to the defaults
+    void SetTilts(u32 tilts) RETAIL(FUN_001425d8);
+    // Set up for what the character rides (bits 4-6), the holds and the yaw stepped, the target given the velocity
+    void FollowRide(CharacterAgent* character) RETAIL(FUN_00142820);
+    void SetMechaView() RETAIL(FUN_00142a88);
+    // The yaw's speed by the Rollerbrawl's (the character unread)
+    void RollerbrawlYaw(CharacterAgent* character, f32 speed) RETAIL_N32(FUN_00142af8);
+    void SetRollerbrawlView() RETAIL(FUN_00142bb0);
+    void SetHumiliskateView() RETAIL(FUN_00142c98);
+    void StepWalkYaw(CharacterAgent* character) RETAIL(FUN_00142e38);
+    void UpdateHolds() RETAIL(FUN_00143240);
+    void SetTarget(InstanceContext* instance) RETAIL(FUN_00143368);
+    // The second argument unread
+    void CheckMoving(CharacterAgent* character, u32 unused) RETAIL(FUN_0015e280);
+    void RollerbrawlFrame(CharacterAgent* character, f32 speed) RETAIL_N32(FUN_0015e330);
+    void SetHoverboardView() RETAIL(FUN_0015e428);
+    // Nothing
+    void HoverboardFrame(CharacterAgent* character) RETAIL(FUN_0015e448);
+    // The vehicle unread
+    void HumiliskateFrame(Vehicle* vehicle) RETAIL(FUN_0015e450);
+    // The linked character left out of the view checks
+    void IgnoreLinked(CharacterAgent* character) RETAIL(FUN_0015e468);
+    // Started again: its parts set back, put together (slot 7, through the vtable)
+    void Restart() RETAIL(FUN_0015e4a8);
+};
+CHECK_OFFSET(FollowCameraRig, bits, 0x50);
+CHECK_OFFSET(FollowCameraRig, axes, 0x60);
+CHECK_OFFSET(FollowCameraRig, ownTargetFollower, 0x80);
+CHECK_OFFSET(FollowCameraRig, ownTarget, 0xE0);
+CHECK_OFFSET(FollowCameraRig, ownPositioner, 0x2F0);
+CHECK_OFFSET(FollowCameraRig, walkYawSpeed, 0x6F0);
+CHECK_SIZE(FollowCameraRig, 0x700);
+
+// The follow node's camera (0x730 bytes, no vtable): its bits, the camera triggers (the one chosen last frame, this frame's, the
+// last step's, the second slot's), the chosen one's priority (its trigger's kind byte), its rig and the rig it put on the camera's
+// lens
+struct FollowCamera
+{
+    enum Bits : u32
+    {
+        BitSmoothed = 0x1,
+        BitSteers = 0x2,
+        BitIgnoresTriggers = 0x4,
+        // Nothing sets bit 3 (a step would flip bit 4 and blend the lens back to its rig); bit 4: its rig isn't the lens's
+        BitSwitchBack = 0x8,
+        BitRigAway = 0x10,
+        BitStepsRig = 0x20,
+        BitCharacterDied = 0x40,
+        // The scripts don't set its target (CameraNodeSetTarget)
+        BitKeepsTarget = 0x80,
+    };
+
+    u32 bits;
+    CameraNode* current;
+    CameraNode* pending;
+    CameraNode* last;
+    CameraNode* second;
+    u32 priority;
+    u8 unknown18[8];
+    FollowCameraRig rig;
+    CameraRig* lensRig;
+    u8 unknown724[0xC];
+
+    // Its bits' 64 bits (current the high half), as retail reads and writes them
+    u64& Bits()
+    {
+        return *reinterpret_cast<u64*>(&bits);
+    }
+};
+CHECK_OFFSET(FollowCamera, rig, 0x20);
+CHECK_OFFSET(FollowCamera, lensRig, 0x720);
+CHECK_SIZE(FollowCamera, 0x730);
+
+// The node of kind 0x16 (retail's UnkNode_0x16_Methods, 0x770 bytes), a playable character's camera: its bits (0: its last update
+// came while its clock was stopped; retail reads them as 64 bits with the chunk), the chunk entry it was made for, the camera's
+// instance, its camera and a countdown nothing reads
+struct FollowNode : GameNode
+{
+    u32 nodeBits;
+    ChunkEntry* chunk;
+    Reference* object;
+    u8 unknown24[0xC];
+    FollowCamera camera;
+    f32 timer;
+    u8 unknown764[0xC];
+
+    // Its vtable's functions (game/characternodes.cpp): 2 the destructor (what it follows released and let go of, its camera
+    // destroyed), 3 given its instance (its camera started for it in its chunk), 4 whether its instance may change chunks, 5 its
+    // kind, 6 its instance left its chunk (what it follows released and let go of), 7 a step (its camera started again in its
+    // instance's chunk), 8 the update, 10 its type
+    void Destroy(u32 destroyFlags) RETAIL(FUN_00172768);
+    void SetOwner(InstanceContext* instance) RETAIL(FUN_0017b438);
+    u32 CanChangeChunk(struct ChunkData* from, struct ChunkLinkData* link) RETAIL(FUN_0017b4b8);
+    u32 Kind() RETAIL(GetNodeIndex_0017B218);
+    void LeftChunk(u32 unknown) RETAIL(FUN_00172838);
+    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_0017b520);
+    u32 Update(TimeClock* clock) RETAIL(FUN_001728b8);
+    u32 Type() RETAIL(FUN_0017b220);
+    // A camera's instance made in a chunk, followed (its clock the chunk's first): the instance
+    InstanceContext* MakeCamera(struct ChunkData* chunk) RETAIL(FUN_00172670);
+    // Out of its instance's nodes, what it follows put to sleep
+    void StopFollowing() RETAIL(FUN_0017b588);
+};
+CHECK_OFFSET(FollowNode, object, 0x20);
+CHECK_OFFSET(FollowNode, camera, 0x30);
+CHECK_OFFSET(FollowNode, timer, 0x760);
+CHECK_SIZE(FollowNode, 0x770);
+
+extern "C"
+{
+    extern const GccVTableEntry g_PadCameraRigVTable[] RETAIL(D_002F3808);
+    extern const GccVTableEntry g_FollowCameraRigVTable[] RETAIL(D_002F37A0);
+
+    // The follow camera rig's constants (65536ths of a turn, speeds a second; set at start-up by
+    // InitCharacterControllerGlobals): the probes' push rates, the stick's pitch and yaw speeds, the pitch's range, the target's
+    // box, the pitch it starts at, an unread backward axis, the yaw's and pitch's speeds and theirs while it tilts, the
+    // Rollerbrawl's yaw speeds (the least, the most and between them), the Humiliskate's, an unread angle and the
+    // Mecha-Bandicoot's view (its field of view, pitch and target box)
+    extern s32 g_RigPitchPushRate RETAIL(D_0030A548);
+    extern s32 g_RigYawPushRate RETAIL(D_0030A550);
+    extern s32 g_RigPitchInputSpeed RETAIL(D_0030A558);
+    extern s32 g_RigYawInputSpeed RETAIL(D_0030A560);
+    extern s32 g_RigPitchLowest RETAIL(D_0030A568);
+    extern s32 g_RigPitchHighest RETAIL(D_0030A570);
+    extern Vector4 g_RigTargetBoxLow RETAIL(D_0030BB30);
+    extern Vector4 g_RigTargetBoxHigh RETAIL(D_0030BB40);
+    extern s32 g_RigStartPitch RETAIL(D_0030A578);
+    extern Vector4 g_UnreadRigBack RETAIL(D_0030BB50);
+    extern s32 g_RigYawSpeed RETAIL(D_0030A580);
+    extern s32 g_RigPitchSpeed RETAIL(D_0030A588);
+    extern s32 g_RigTiltYawSpeed RETAIL(D_0030A590);
+    extern s32 g_RigTiltPitchSpeed RETAIL(D_0030A598);
+    extern s32 g_RollerbrawlYawSpeedLeast RETAIL(D_0030A5A0);
+    extern s32 g_RollerbrawlYawSpeedMost RETAIL(D_0030A5A8);
+    extern s32 g_RollerbrawlYawSpeedRange RETAIL(D_0030A5B0);
+    extern s32 g_HumiliskateYawSpeed RETAIL(D_0030A5B8);
+    extern s32 g_UnreadRigAngle75 RETAIL(D_0030A5C0);
+    extern s32 g_MechaFieldOfView RETAIL(D_0030A5C8);
+    extern s32 g_MechaPitch RETAIL(D_0030A5D0);
+    extern Vector4 g_MechaTargetBox RETAIL(D_0030BB60);
+
+    FollowCamera* ConstructFollowCamera(FollowCamera* follow) RETAIL(FUN_0015e510);
+    void DestroyFollowCamera(FollowCamera* follow, u32 destroyFlags) RETAIL(FUN_0015e560);
+    // For a character: its cameras forgotten, the camera's instance moved to the character's chunk, its rig made ready (the
+    // controller handed on, unread) and put on the camera's lens
+    void RestartFollowCamera(FollowCamera* follow, void* controller, InstanceContext* camera, InstanceContext* character)
+        RETAIL(FUN_0015e610);
+    void RestoreFollowCameraDefaults(FollowCamera* follow, CharacterAgent* character) RETAIL(FUN_0015e738);
+    // Its rig put on the camera's lens (set back when asked) unless bit 4, the lens rig's defaults, the camera chosen taken
+    void ShowFollowCamera(FollowCamera* follow, InstanceContext* camera, InstanceContext* character, u32 reset)
+        RETAIL(FUN_0015e798);
+    void PutFollowCameraOnLens(FollowCamera* follow, InstanceContext* camera) RETAIL(FUN_0015e840);
+    void SetFollowCameraSmoothed(FollowCamera* follow, u32 smoothed) RETAIL(FUN_0015e890);
+    void SetFollowCameraSteers(FollowCamera* follow, u32 steers) RETAIL(FUN_0015e8c0);
+    void SetFollowCameraIgnoresTriggers(FollowCamera* follow, u32 ignores) RETAIL(FUN_0015e910);
+    // The camera chosen last frame made the current one, the choice cleared
+    void TakeChosenCamera(FollowCamera* follow) RETAIL(FUN_0015e948);
+    // A camera trigger the character is in, with its priority (its kind byte)
+    void OfferCamera(FollowCamera* follow, CameraNode* trigger, u32 priority, CharacterAgent* character) RETAIL(FUN_0015e960);
+    void FollowCameraReadPad(FollowCamera* follow, GamePad* pad) RETAIL(FUN_0015e9e8);
+    // Whether it takes the trigger's camera (the second slot's kept, else the second slot cleared)
+    u32 FollowCameraTakes(FollowCamera* follow, CameraNode* trigger, CharacterAgent* character) RETAIL(FUN_001434a0);
+    void StepFollowCamera(FollowCamera* follow, TimeClock* clock, CharacterAgent* character, InstanceContext* camera)
+        RETAIL(FUN_00143618);
+    // The follow node made for a chunk entry (nothing followed), and its camera given its defaults for its instance's character
+    FollowNode* ConstructFollowNode(FollowNode* node, ChunkEntry* chunk) RETAIL(FUN_0017b3e0);
+    void RestoreCameraDefaults(FollowNode* node) RETAIL(FUN_0017b5f0);
 }

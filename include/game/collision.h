@@ -8,7 +8,9 @@
 #include "game/reference.h"
 
 struct ChunkData;
+struct CollisionHull;
 struct CollisionSurface;
+struct InstanceContext;
 
 // A chunk's collision (0x28 bytes, TT Lab's collision data: the game's CheckCollisionRayCast 0x27fb58): its version (3001, read
 // and never checked), its tree's nodes, the groups of triangles its leaves are, the triangles and the vertexes, each read into
@@ -85,7 +87,7 @@ struct CollisionHitBlock
 CHECK_OFFSET(CollisionHitBlock, hits, 0x10);
 CHECK_SIZE(CollisionHitBlock, 0x210);
 
-// The collision's triangles near an object (still asm but its refresh): the object, the box they were gathered in (the object's
+// The collision's triangles near an object: the object, the box they were gathered in (the object's
 // box grown by the margin, gathered again once the object's box leaves it), the surfaces' bits, how many and the iteration's
 // index and block, the first block
 struct CollisionCache
@@ -142,7 +144,7 @@ struct FastRayCast
 };
 CHECK_OFFSET(FastRayCast, mask, 0x40);
 
-// What a ray cast through a chunk's instances hit (still asm), and a box query of them: its distance (1e30 none), a bit set when it
+// What a ray cast through a chunk's instances hit, and a box query of them: its distance (1e30 none), a bit set when it
 // hit, the instance
 struct InstanceRayHit
 {
@@ -213,8 +215,29 @@ extern "C"
     // A surface as the game makes them before reading: no ID, physics values 0.5, no volume scales (-1), no sounds or particles
     // but the surface ID and the scrape sound (left as they were), the bits 12-19 every surface has
     CollisionSurface* ConstructCollisionSurface(CollisionSurface* surface) RETAIL(InitCollisionSurface);
-    // The module's static constructor: the game's surfaces made, none stored, the physics' hull plane cache made
+    // The module's static constructor: the game's surfaces made, none stored, the physics' hull plane cache made; and the
+    // module's global constructor running it
     void InitCollisionStatics(u32 initialise, u32 priority) RETAIL(FUN_00281ff0);
+    void ConstructCollisionModule() RETAIL(FUN_00282980);
+
+    // The velocity on ground of a surface after some seconds: on ground steeper than the surface's slope (the normal's y below
+    // physics9) pulled downhill by physics8 (fully from a slope of 30 degrees), then eased toward the wanted velocity plus the
+    // surface's flow along the ground by at most physics5 a second; its y the wanted's
+    void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* velocity, const Vector4* wanted,
+                             const Vector4* normal) RETAIL_N32(FUN_0027eb40);
+    // Whether a hull at a position overlaps the chunk's collision or its instances of a mask (but the ones left out): the
+    // instances it overlaps (at most so many, and how many) and, when wanted, the way out of them (their pushes out added up and
+    // made unit long). The fourth argument is never read
+    u32 HullOverlaps(ChunkData* chunk, const CollisionHull* hull, const Vector4* position, u32 unused, u32 instanceMask,
+                     ReferencedObject* const* leftOut, s32 leftOutCount, InstanceContext** touched, s32 mostTouched,
+                     s32* touchedCount, Vector4* away) RETAIL(FUN_002814b8);
+    // A hull at a point cast down by a distance through a chunk's collision and its instances of a mask (but the ones left out):
+    // whether it found a place it fits (the hull's half height steps down, halved each time it doesn't fit, until they're below
+    // 0.002), and that place. The fifth argument is never read. The EABI's call of it is a thunk of its own (collision.cpp): n32
+    // passes its ninth argument on the stack
+    u32 CastHullDown(f32 distance, ChunkData* chunk, const CollisionHull* hull, const Vector4* from, u32 unused,
+                     u32 instanceMask, Vector4* found, InstanceContext* const* leftOut, s32 leftOutCount)
+        RETAIL_N32(FUN_002816f8);
 
     // A surface's particle system (the default chunk's, 0xFFFF none) and sound of a contact kind (0 impact, 1 and 2 steps, 3
     // land, 4 hard impact, 5 scrape), the sound with its volume scale
@@ -231,8 +254,9 @@ extern "C"
     // The plane through an edge along a direction (its normal the edge's cross the direction): whether it has one (without, the
     // cross product and the end's W)
     u32 PlaneThroughEdge(Vector4* plane, const Vector4* from, const Vector4* to, const Vector4* direction) RETAIL(FUN_001867e0);
-    // VU0's half (still asm): a triangle's plane through its vertexes (whether it has an area), and the six edge tests of a ray
-    // against a triangle, started (the plane's sides of the ray's ends into the first two) and gathered from VU0's registers
+    // VU0's half: a triangle's plane through its vertexes (whether it has an area: its normal longer than 5e-05 before it was made
+    // a unit one), and the six edge tests of a ray against a triangle (src/platform/ps2/collisionmaths.cpp), started (the plane's
+    // sides of the ray's ends into the first two) and gathered from VU0's registers
     u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* second, const Vector4* third)
         RETAIL(FUN_0018d830);
     void StartTriangleEdgeTests(const Vector4* start, const Vector4* end, const CollisionHit* triangle, f32* values)
@@ -246,10 +270,10 @@ extern "C"
     // fast (the triangles tested on Platform::Math's ray tests, a leaf's from its last)
     void CheckCollisionRayCast(CollisionData* data, s32 node, RayCast* cast, RayCastResult* result);
     void CheckCollisionRayCastFast(CollisionData* data, s32 node, FastRayCast* cast);
-    // A triangle's box: VU0's (still asm), and through a call
+    // A triangle's box: VU0's macro mode (the platform's; its corners' w what VU0's vf11 and vf12 had), and through a call
     void TriangleBounds(Box* box, const Vector4* first, const Vector4* second, const Vector4* third) RETAIL(FUN_00201b90);
     void TriangleBox(Box* box, const Vector4* first, const Vector4* second, const Vector4* third) RETAIL(FUN_001fff90);
-    // A box's eight corners under a matrix (still asm)
+    // A box's eight corners under a matrix: the bottom's (its lowest y) round from its lowest corner along x then z, then the top's
     void BoxCorners(const Box* box, Vector4* corners, const Matrix4x4* matrix) RETAIL(FUN_001fa308);
     // Whether a plane goes through a box (its corners on both sides), whether a box is wholly on the plane's front (none of its
     // corners behind it), whether a triangle touches a box (its plane goes through the box and the box is inside its edges)
@@ -279,6 +303,8 @@ extern "C"
     u32 BoxInsideBox(const Box* box, const Box* outer) RETAIL(FUN_001f8e58);
     void GrowBox(f32 margin, Box* box) RETAIL_N32(FUN_00200088);
     void GrowBoxByVector(Box* box, const Vector4* vector) RETAIL(FUN_001fffb0);
+    // A box grown to hold a point
+    void GrowBoxByPoint(Box* box, const Vector4* point) RETAIL(FUN_001ffe08);
     void MergeBox(Box* into, const Box* box) RETAIL(MergeBBox);
     // A box holding nothing (its min 1e30, its max -1e30), a box made to hold its corners taken through a matrix
     void ResetBox(Box* box) RETAIL(CreateDefaultBBox);
@@ -290,9 +316,24 @@ extern "C"
     f32 GetBoxReach(const Box* box) RETAIL(GetMaxCoordDistInBB);
     u32 BoxContainsRegion(const Box* box, const Vector4* min, const Vector4* max) RETAIL(FUN_002000e0);
     // A segment (two points) cast through the collision of a chunk's awake instances of the bits (the cells they're sorted
-    // into): the share of the way to the nearest hit (1e30 without the cells; the cells' cast is still asm)
+    // into): the share of the way to the nearest hit (1e30 without the cells)
     f32 ChunkInstancesRayCast(ChunkData* chunk, const Vector4* segment, u32 mask, InstanceRayHit* hit, u32 flags) RETAIL(FUN_001f1ed0);
-    f32 InstanceCellsRayCast(u32* cells, const Vector4* segment, u32 mask, InstanceRayHit* hit, u32 flags) RETAIL(FUN_001e98f8);
+    f32 InstanceCellsRayCast(struct InstanceContext** cells, const Vector4* segment, u32 mask, InstanceRayHit* hit, u32 flags) RETAIL(FUN_001e98f8);
+    // The instances of a chunk's cells in a sphere (w its radius, the flag passed on) or a vertical cylinder of a height (still
+    // asm), and of a chunk (none without cells): how many the query got
+    void InstanceCellsInSphere(struct InstanceContext** cells, const Vector4* sphere, u32 kinds, InstanceRayHit* query, u32 flag) RETAIL(FUN_001e9678);
+    void InstanceCellsInCylinder(f32 height, struct InstanceContext** cells, const Vector4* base, u32 kinds, InstanceRayHit* query)
+        RETAIL_N32(FUN_001e97a8);
+    u32 ChunkInstancesInSphere(ChunkData* chunk, const Vector4* sphere, u32 kinds, InstanceRayHit* query, u32 flag)
+        RETAIL(FUN_001f1f08);
+    u32 ChunkInstancesInCylinder(f32 height, ChunkData* chunk, const Vector4* base, u32 kinds, InstanceRayHit* query)
+        RETAIL_N32(FUN_001f2080);
+    // The instances of a chunk in a hull at a matrix, and in a damage hull at an instance's place
+    u32 ChunkInstancesInHull(ChunkData* chunk, struct CollisionHull* hull, const Matrix4x4* matrix, u32 kinds, InstanceRayHit* query,
+                             u32 flag) RETAIL(FUN_001f1f58);
+    u32 InstancesInDamageHull(struct InstanceContext* instance, u32 hull, u32 kinds, InstanceRayHit* query) RETAIL(FUN_001415c8);
+    // The hulls attacks and damage hit with
+    extern struct CollisionHull g_DamageHulls[] RETAIL(D_0030BB00);
     // Whether a segment from start to end hits a chunk's instances: the share of the way and the point when wanted
     u32 SegmentHitsInstances(ChunkData* chunk, const Vector4* start, const Vector4* end, InstanceRayHit* hit, u32 mask, f32* share,
                              Vector4* point, u32 flags) RETAIL(FUN_00282770);
@@ -302,6 +343,8 @@ extern "C"
     // part) and the point when wanted
     u32 SegmentHitsAnything(ChunkData* chunk, const Vector4* start, const Vector4* end, u32 mask, InstanceRayHit* hit,
                             u32 instanceMask, f32* share, Vector4* point, CollisionHit* triangle) RETAIL(FUN_00281c60);
+    // The normal of a hit's triangle (of its three corners)
+    void TriangleNormal(const CollisionHit* hit, Vector4* normal) RETAIL(FUN_0013e4f8);
     // A cache's hits from its first (none when it's empty), and the next one (none past the count)
     CollisionHit* FirstCollisionHit(CollisionCache* cache) RETAIL(FUN_00293298);
     CollisionHit* NextCollisionHit(CollisionCache* cache) RETAIL(FUN_002932c0);
@@ -312,7 +355,7 @@ extern "C"
     // A cache's blocks freed, enough of them (empty) made for so many hits
     void FreeCollisionCacheBlocks(CollisionCache* cache) RETAIL(FUN_00292fb8);
     // An instance's query of the instances around it skips it and the one its collision is attached to; the surface of a hull of
-    // an object's collision (still asm)
+    // an object's collision
     void SkipInQuery(InstanceRayHit* query, ReferencedObject* object) RETAIL(FUN_001f0458);
     // Whether an instance is one a query takes (none of the unwanted flags, a node of a kind of the mask, all or one of the
     // wanted flags), an instance taken (none when the query is full: its bit 0 set), and the ones a list of a cell's instances
@@ -338,6 +381,10 @@ extern "C"
         RETAIL(FUN_002811b0);
     // Whether a ray gets into a node's box (either end inside it, or crossing one of its faces)
     u32 RayCrossesBox(const CollisionNode* node, const Vector4* start, const Vector4* end) RETAIL(FUN_001f97e8);
+    // The node kinds (bit per kind) whose instances stop the lines of sight of the conditions that look for the player: the
+    // start-up sets them (crates, creatures, generic objects and two more; crates, generic objects and two more)
+    extern u32 g_SolidKinds RETAIL(D_0030A118);
+    extern u32 g_CoverKinds RETAIL(D_0030A104);
     // A ray through the collision, precise (when the triangle hit is wanted) or fast. Whether it hit, the distance and the point
     // (its w 1 by the fast one) when wanted
     u32 CheckCollision(CollisionData* data, const Vector4* start, const Vector4* end, u32 mask, f32* distance, Vector4* position,

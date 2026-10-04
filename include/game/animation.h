@@ -510,6 +510,11 @@ extern "C"
     void ReleaseAnimatorOgi(OgiAnimator* animator) RETAIL(FUN_00297d68);
     // Its joints, exit points' animations, callbacks and camera joints freed (the camera joints' array stays named)
     void DestroyOgiAnimator(OgiAnimator* animator, u32 destroyFlags) RETAIL(FUN_002957a8);
+    // An animator made with InitOgiAnimatorService destroyed and freed (its blend shapes' weights and joints' matrices first,
+    // which the retail code inlines)
+    void DeleteOgiAnimator(OgiAnimator* animator);
+    // The animations of the shaders of the OGI's skin's, blend skin's and rigid models' materials started again
+    void RestartOgiAnimations(GameOGI* ogi) RETAIL(FUN_00299330);
     // The instance's place given to it and its exit points' animations, which are in use and moved
     void SetAnimatorPlace(OgiAnimator* animator, void* place) RETAIL(FUN_00295978);
     // The object's callback on the joint taken out. Returns whether it had one

@@ -6,7 +6,7 @@
 #include "game/hull.h"
 #include "game/math.h"
 
-// What the character's solver moves (still asm but for these): its velocity and place
+// What the character's solver moves: its velocity and place
 struct PhysicsBody
 {
     u8 unknown00[0x20];
@@ -200,10 +200,11 @@ extern "C"
                      f32* pushed) RETAIL(FUN_00285220);
 
     // The contacts made (no spaces), emptied (the solid ones' points at the origin); the module's static constructor (the
-    // character's contacts made)
+    // character's contacts made) and its global constructor
     ContactSet* ConstructContactSet(ContactSet* set) RETAIL(FUN_00288608);
     void ClearContacts(ContactSet* set) RETAIL(FUN_002888b8);
     void InitPhysicsStatics(u32 initialise, u32 priority) RETAIL(FUN_00288158);
+    void ConstructPhysicsModule() RETAIL(FUN_00288930);
     // The contacts started (none of either kind, the solid ones' points at the origin) and ended
     ContactSet* BeginContacts() RETAIL(FUN_00288818);
     void EndContacts() RETAIL(FUN_002888b0);
@@ -232,8 +233,9 @@ extern "C"
                           const Matrix4x4* otherMatrix) RETAIL(FUN_002843a8);
     u32 AddAxisPlanes(PlaneSet* space, Vector4* planes, Vector4* differences, s32 count, const Vector4* axes, s32 axisCount)
         RETAIL(FUN_002840d8);
-    // VU0's (still asm): every vertex of the first hull less every vertex of the second (both under their matrices), points made
-    // groups of four (each coordinate's four together), and the range along an axis of so many groups (of 16, 64 points)
+    // VU0's (src/platform/ps2/collisionmaths.cpp): every vertex of the first hull less every vertex of the second (both under
+    // their matrices), points made groups of four (each coordinate's four together), and the range along an axis of so many
+    // groups (of 16, 64 points)
     struct VertexDifferences
     {
         const Matrix4x4* matrix;
@@ -249,7 +251,7 @@ extern "C"
     void GroupPoints(Vector4* points, s32 groups) RETAIL(FUN_00293540);
     void GroupsRange(const Vector4* groups, s32 count, const Vector4* axis, f32* range) RETAIL(FUN_0029359c);
     void SixteenGroupsRange(const Vector4* groups, const Vector4* axis, f32* range) RETAIL(FUN_00293624);
-    // The instances of a chunk whose boxes overlap a box with the bits (how many; still asm)
+    // The instances of a chunk whose boxes overlap a box with the bits (how many)
     // Whether two hulls under their matrices go into each other (no separating axis between their vertexes' differences): the
     // push along the axis they overlap the least on and where they touch (the support point of the hull whose face that axis
     // is, the other one moved by the push, or between two edges)
@@ -263,8 +265,8 @@ extern "C"
     void NearestPointOfSegment(const Vector4* lineStart, const Vector4* lineEnd, const Vector4* start, const Vector4* end,
                                Vector4* out) RETAIL(FUN_00283e98);
     s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceRayHit* query) RETAIL(FUN_001ed750);
-    // VU0's (still asm): a triangle's vertexes and a box hull's 8 loaded, and the range along an axis of the triangle less the
-    // hull (its min and max)
+    // VU0's (src/platform/ps2/collisionmaths.cpp): a triangle's vertexes and a box hull's 8 loaded, and the range along an axis
+    // of the triangle less the hull (its min and max)
     void LoadTriangleHullSupport(const CollisionHit* triangle, const Vector4* hullVertices) RETAIL(FUN_002936d8);
     void TriangleHullSupportRange(const Vector4* axis, f32* range) RETAIL(FUN_002938bc);
 

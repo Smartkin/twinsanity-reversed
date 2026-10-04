@@ -162,7 +162,7 @@ u8* WriteScreenCopy(u8* packet)
     constexpr u64 FrameAsTexture = 0x24020000;
     constexpr u64 FrameTextureSize = 0xE40000000;
     constexpr u64 TestAlways = 0x30000;
-    constexpr u64 Alpha1 = 0x80000000;
+    constexpr u64 Alpha1 = 0x80ull << 32;
     constexpr u64 Bilinear = 0x60;
     constexpr u64 Scissor = 0x400000004000000;
     constexpr u64 TexturedSprite = 0x316;
@@ -321,14 +321,14 @@ extern "C"
     extern u32 g_ShaderType12Program RETAIL(D_00309DDC);
     extern u32 g_ShaderType13Program RETAIL(D_00309DA8);
     extern u32 g_ShaderType1CProgram RETAIL(D_00309DB4);
-    extern u32 g_ShaderType06Program RETAIL(D_00309DC0);
+    extern u32 g_ShaderType03Program RETAIL(D_00309DC0);
     // Type 0x0B takes the second of these
     extern s16 g_ShaderType0BEntries[2] RETAIL(D_002EC39C);
     extern s16 g_ShaderType0DEntry RETAIL(D_002EC356);
     extern s16 g_ShaderType12Entry RETAIL(D_002EC372);
     extern s16 g_ShaderType13Entry RETAIL(D_002EC34A);
     extern s16 g_ShaderType1CEntry RETAIL(D_002EC35E);
-    extern s16 g_ShaderType06Entry RETAIL(D_002EC362);
+    extern s16 g_ShaderType03Entry RETAIL(D_002EC362);
     extern u32 g_ShaderType17Program RETAIL(D_00309DE4);
     extern u32 g_ShaderType1AProgram RETAIL(D_00309DE0);
     extern s16 g_ShaderType17Entry RETAIL(D_002EC37A);
@@ -406,7 +406,7 @@ extern "C"
     u8* ShaderType0FPacket(const Shader* shader, u8* packet, u32* counter, u32) RETAIL(FUN_001d7378);
     u8* ShaderType20Packet(const Shader* shader, u8* packet, u32* counter, u32) RETAIL(FUN_001d7978);
     u8* ShaderType1FPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001cfc88);
-    u8* ShaderType06Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(func_001DB3C8);
+    u8* ShaderType03Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(func_001DB3C8);
     u8* ShaderType0BPacket(const Shader* shader, u8* packet, u32* counter, u32) RETAIL(FUN_001dc878);
     u8* ShaderType0DPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001cf2a0);
     u8* ShaderType12Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001db830);
@@ -436,7 +436,7 @@ extern "C"
     }
 
     // The entry alone, its fourth word left as the buffer had it
-    u8* ShaderType06Packet(const Shader*, u8* packet, u32* counter, u32 withRegisters)
+    u8* ShaderType03Packet(const Shader*, u8* packet, u32* counter, u32 withRegisters)
     {
         if (withRegisters != 0)
         {
@@ -444,9 +444,9 @@ extern "C"
         }
 
         u32* at = Unpack(packet, counter, 1);
-        u32 address = ProgramAddress(g_ShaderType06Program);
+        u32 address = ProgramAddress(g_ShaderType03Program);
         at[0] = address;
-        at[1] = address + g_ShaderType06Entry;
+        at[1] = address + g_ShaderType03Entry;
         at[2] = *counter;
         return reinterpret_cast<u8*>(at + 4);
     }
@@ -780,6 +780,80 @@ extern "C"
         return g_UnusedShaderProgram;
     }
 
+    // The classes nothing makes: type 3 draws with its own program, types 5 to 9 name the renderer's resident programs
+    extern u32 g_Resident8Program RETAIL(G_MicroCode_8_Index);
+    extern u32 g_Resident9Program RETAIL(G_MicroCode_9_Index);
+    extern u32 g_ResidentE1CProgram RETAIL(D_00309E1C);
+
+    u32 ShaderType03ProgramOf(const Shader* shader) RETAIL(FUN_001d94b0);
+    u32 ShaderType05ProgramOf(const Shader* shader) RETAIL(FUN_001d9578);
+    u32 ShaderType06ProgramOf(const Shader* shader) RETAIL(FUN_001d96f8);
+    u32 ShaderType07ProgramOf(const Shader* shader) RETAIL(FUN_001d97b8);
+    u32 ShaderType08ProgramOf(const Shader* shader) RETAIL(FUN_001d9878);
+    u32 ShaderType09ProgramOf(const Shader* shader) RETAIL(FUN_001d9938);
+
+    u32 ShaderType03ProgramOf(const Shader*)
+    {
+        return g_ShaderType03Program;
+    }
+
+    u32 ShaderType05ProgramOf(const Shader*)
+    {
+        return g_ParameterProgram;
+    }
+
+    u32 ShaderType06ProgramOf(const Shader*)
+    {
+        return g_BlendParameterProgram;
+    }
+
+    u32 ShaderType07ProgramOf(const Shader*)
+    {
+        return g_Resident8Program;
+    }
+
+    u32 ShaderType08ProgramOf(const Shader*)
+    {
+        return g_Resident9Program;
+    }
+
+    u32 ShaderType09ProgramOf(const Shader*)
+    {
+        return g_ResidentE1CProgram;
+    }
+
+    // Types 5 to 9 add nothing to the packet
+    u8* ShaderType05Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dcf38);
+    u8* ShaderType06Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dca40);
+    u8* ShaderType07Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dcc10);
+    u8* ShaderType08Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dcd28);
+    u8* ShaderType09Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dce40);
+
+    u8* ShaderType05Packet(const Shader*, u8* packet, u32*, u32)
+    {
+        return packet;
+    }
+
+    u8* ShaderType06Packet(const Shader*, u8* packet, u32*, u32)
+    {
+        return packet;
+    }
+
+    u8* ShaderType07Packet(const Shader*, u8* packet, u32*, u32)
+    {
+        return packet;
+    }
+
+    u8* ShaderType08Packet(const Shader*, u8* packet, u32*, u32)
+    {
+        return packet;
+    }
+
+    u8* ShaderType09Packet(const Shader*, u8* packet, u32*, u32)
+    {
+        return packet;
+    }
+
     // Types 0 and 0x14 add nothing to the material's packet
     u8* ShaderType00Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001db740);
     u8* ShaderType14Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001dac10);
@@ -792,5 +866,100 @@ extern "C"
     u8* ShaderType14Packet(const Shader*, u8* packet, u32*, u32)
     {
         return packet;
+    }
+
+    // Type 0x18's (the distortion's) second entry, and the unused program's
+    extern s16 g_ShaderType18Entry RETAIL(D_002EC396);
+    extern s16 g_UnusedShaderEntry RETAIL(D_002EC392);
+
+    u8* ShaderType18Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001d6aa8);
+    u8* UnusedShaderPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001d5830);
+
+    // The screen copy, then (without its registers: with them it's the copy alone) the entry, VU1's two register values twice,
+    // where the screen's corner is in the frame's texture (its sides the powers of two that hold the screen's) with 2^-17, and
+    // 1 over the texture's sides in the GS's coordinates and the screen's last pixel in it
+    u8* ShaderType18Packet(const Shader*, u8* packet, u32* counter, u32 withRegisters)
+    {
+        constexpr u32 Quadwords = 7;
+        constexpr f32 CornerScale = 0x1p-17f;
+        packet = WriteScreenCopy(packet);
+        if (withRegisters != 0)
+        {
+            return packet;
+        }
+
+        u32* at = Unpack(packet, counter, Quadwords);
+        u32 address = ProgramAddress(g_ShaderType18Program);
+        at[0] = address;
+        at[1] = address + g_ShaderType18Entry;
+        at[2] = *counter;
+        at[3] = 0;
+        at += 4;
+        const u32 values[4] = {g_VuRegisterValue1, g_VuRegisterValue2, g_VuRegisterValue1, g_VuRegisterValue2};
+        for (u32 value : values)
+        {
+            at[0] = value;
+            at[1] = 0;
+            at[2] = 0;
+            at[3] = 0;
+            at += 4;
+        }
+
+        auto* corner = reinterpret_cast<f32*>(at);
+        corner[0] =
+            (static_cast<f32>(g_ScreenWidth) * 8.0f - 32768.0f) / (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * 16.0f);
+        corner[1] =
+            (static_cast<f32>(g_ScreenHeight) * 8.0f - 32768.0f) / (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * 16.0f);
+        corner[2] = CornerScale;
+        at[3] = 0;
+        auto* sizes = reinterpret_cast<f32*>(at + 4);
+        sizes[0] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * 16.0f);
+        sizes[1] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * 16.0f);
+        sizes[2] = (static_cast<f32>(g_ScreenWidth) - 1.0f) / static_cast<f32>(NextPowerOfTwo(g_ScreenWidth));
+        sizes[3] = (static_cast<f32>(g_ScreenHeight) - 1.0f) / static_cast<f32>(NextPowerOfTwo(g_ScreenHeight));
+        return reinterpret_cast<u8*>(at + 8);
+    }
+
+    // A shader packet no type's vtable has (nothing calls it): the entry of the unused program, its colour as floats, its scroll;
+    // with its registers those (and the texture's), without them three quadwords of constants
+    u8* UnusedShaderPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
+    {
+        constexpr u32 QuadwordsWithoutRegisters = 6;
+        u32* at = Unpack(packet, counter, withRegisters != 0 ? EntrySize : QuadwordsWithoutRegisters);
+        u32 address = ProgramAddress(g_UnusedShaderProgram);
+        at[0] = address;
+        at[1] = address + g_UnusedShaderEntry;
+        at[2] = withRegisters != 0 ? NextAfterRegisters(shader, *counter) : *counter;
+        at[3] = withRegisters != 0 ? 1 : 0;
+        auto* colour = reinterpret_cast<f32*>(at + 4);
+        for (u32 channel = 0; channel < 4; channel++)
+        {
+            // Retail bug: each float's integer is masked as though it held all four bytes, so only red survives up to 255
+            u32 shift = channel * 8;
+            u32 bits = static_cast<u32>(static_cast<s32>(shader->shaderColour[channel])) & 0xFFu << shift;
+            colour[channel] = static_cast<f32>(bits >> shift);
+        }
+
+        at = WriteScroll(at + 8, shader, 0.0f);
+        if (withRegisters != 0)
+        {
+            return WriteRegistersToVu(at, shader, counter);
+        }
+
+        auto* values = reinterpret_cast<f32*>(at);
+        for (u32 i = 0; i < 4; i++)
+        {
+            values[i] = 0x1.4p-6f;
+        }
+
+        values[4] = 5.0f;
+        values[5] = 5.0f;
+        values[6] = 5.0f;
+        at[7] = 0;
+        values[8] = 128.0f;
+        values[9] = 0.5f;
+        values[10] = 128.0f;
+        values[11] = 0x1.6A09E6p-1f;
+        return reinterpret_cast<u8*>(at + 12);
     }
 }

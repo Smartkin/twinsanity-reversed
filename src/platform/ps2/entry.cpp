@@ -17,8 +17,6 @@ extern "C"
     extern char* MainARGV[];
 
     int Main(u32 argc, char** argv);
-    // The semaphores of the game's own C library (Sony's newlib: malloc and printf take them)
-    void InitSemaphores();
 
     // Sony's SystemInit set up its kernel helpers here: PS2SDK's (alarms, the timer, threads, the ExecPS2 and TLB patches) take
     // their place. PS2SDK reads the console's ROM version through the IOP from its stack, the first time something asks (its
@@ -26,7 +24,6 @@ extern "C"
     [[noreturn]] void StartProgram()
     {
         SetupHeap(_end, -1);
-        InitSemaphores();
         OnMainMemoryStack(
             []
             {

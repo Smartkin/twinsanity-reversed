@@ -1,8 +1,18 @@
 #include "game/renderer.h"
 
+#include "game/camerarig.h"
+#include "game/chunkdata.h"
 #include "game/controllers.h"
+#include "game/instances.h"
+#include "game/lights.h"
 #include "game/math.h"
+#include "game/memory.h"
 #include "game/movie.h"
+#include "game/overlay.h"
+#include "game/place.h"
+#include "game/reference.h"
+#include "game/scenery.h"
+#include "game/view.h"
 #include "platform/graphics.h"
 
 namespace
@@ -36,6 +46,401 @@ void FinishFrame()
     Platform::Graphics::FinishFrame();
     g_RenderBuffer = g_RenderBuffer == 0;
 }
+
+// The controllers' vtable functions their own call
+constexpr u32 BeforeDrawingSlot = 5;
+constexpr u32 AfterDrawingSlot = 6;
+constexpr u32 FinishSceneSlot = 10;
+constexpr u32 RenderSlot = 13;
+// The colour table's colours of a render target's clear colour and a renderer's texts
+constexpr s32 TargetClearColour = 8;
+constexpr s32 RendererTextColour = 0xF;
+constexpr u32 RendererTextFlags = 0x11;
+constexpr u32 RendererStartFlags = Renderer::FlagDraws | Renderer::FlagClearColour | Renderer::FlagClearDepth;
+// The size of a render target's packet (the platform's)
+constexpr u32 TargetPacketSize = 0x60;
+
+// The renderers in use, in their slots' order (the walk the retail code makes on the stack)
+template <typename Visit>
+void ForEachRenderer(GameRendererController* controller, Visit visit)
+{
+    RendererWalk walk;
+    walk.vtable = g_RendererWalkVTable;
+    walk.index = 0;
+    walk.passed = 0;
+    walk.pool = &controller->renderers;
+    for (walk.First(); walk.IsDone() == 0; walk.Next())
+    {
+        visit(*walk.Current());
+    }
+}
+}
+
+extern "C"
+{
+    extern const GccVTableEntry g_RendererControllerVTable[] RETAIL(D_002F68D0);
+    extern const GccVTableEntry g_GameRendererControllerVTable[] RETAIL(GameRendererController_Methods);
+    // The drawing renderers with a camera the controller's slot 7 counted, which nothing reads
+    extern u32 g_CameraRenderers RETAIL(D_0030AB04);
+}
+
+GameRendererController* GameRendererController::Construct(void* memory, s32 width, s32 height, bool pal)
+{
+    GameRendererController* controller = ConstructBase(static_cast<GameRendererController*>(memory));
+    controller->vtable = g_GameRendererControllerVTable;
+    g_RendererWidth = static_cast<s16>(width);
+    g_RendererHeight = static_cast<s16>(height);
+    Platform::Graphics::StartRenderer(height, pal);
+    controller->MoveScreen(pal ? &g_PalScreenOffset : &g_NtscScreenOffset);
+    Platform::Graphics::FinishRendererStart();
+    return controller;
+}
+
+GameRendererController* GameRendererController::ConstructBase(GameRendererController* controller)
+{
+    controller->vtable = g_RendererControllerVTable;
+    RendererPoolConstruct(&controller->renderers);
+    return controller;
+}
+
+void GameRendererController::BaseDestroy(u32 destroyFlags)
+{
+    vtable = g_RendererControllerVTable;
+    ForEachRenderer(this, [](Renderer* renderer)
+    {
+        if (renderer == nullptr)
+        {
+            return;
+        }
+
+        if (renderer->target != nullptr)
+        {
+            renderer->target->Destroy(3);
+        }
+
+        TextQueueDestroy(&renderer->texts, 2);
+        MemoryDeallocate2_(renderer);
+    });
+    RendererPoolDestroy(&renderers, 2);
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void GameRendererController::Destroy(u32 destroyFlags)
+{
+    vtable = g_GameRendererControllerVTable;
+    BaseDestroy(destroyFlags);
+}
+
+u32 GameRendererController::Unknown2()
+{
+    return 0;
+}
+
+void GameRendererController::ClearFrames()
+{
+    CallVirtual<void>(this, vtable, BeforeDrawingSlot);
+    ForEachRenderer(this, [](Renderer* renderer)
+    {
+        if ((renderer->flags & Renderer::FlagDraws) != 0)
+        {
+            renderer->flags |= Renderer::FlagClearColour | Renderer::FlagClearDepth;
+        }
+    });
+    CallVirtual<void>(this, vtable, AfterDrawingSlot);
+}
+
+void GameRendererController::StepAnimations(TimeClock* clock)
+{
+    Platform::Graphics::StepAnimations(clock);
+}
+
+void GameRendererController::CountCameraRenderers()
+{
+    ForEachRenderer(this, [](Renderer* renderer)
+    {
+        if ((renderer->flags & Renderer::FlagDraws) == 0 || renderer->view == nullptr)
+        {
+            return;
+        }
+
+        Reference* camera = renderer->view->cameraObject;
+        if (camera != nullptr && camera->object != nullptr)
+        {
+            g_CameraRenderers++;
+        }
+    });
+}
+
+void GameRendererController::DrawScenes()
+{
+    ForEachRenderer(this, [](Renderer* renderer)
+    {
+        DrawRendererScene(renderer);
+    });
+}
+
+void GameRendererController::DrawOverlays()
+{
+    ForEachRenderer(this, [](Renderer* renderer)
+    {
+        if ((renderer->flags & Renderer::FlagDraws) != 0)
+        {
+            DrawOverlay(renderer);
+        }
+    });
+}
+
+void GameRendererController::FinishSceneWithEffects()
+{
+    CallVirtual<void>(this, vtable, FinishSceneSlot, 1u);
+}
+
+// Retail reads the renderer at address 0 when no slot but the last has one (RendererPoolFirst gives none then)
+void GameRendererController::PresentOverlay()
+{
+    CallVirtual<void>(this, vtable, BeforeDrawingSlot);
+    DrawOverlay(*RendererPoolFirst(&renderers));
+    CallVirtual<void>(this, vtable, RenderSlot);
+    CallVirtual<void>(this, vtable, AfterDrawingSlot);
+}
+
+void GameRendererController::BaseSetScreenOffset(const Vector2* offset)
+{
+    f32 x = offset->x;
+    if (x < -1.0f)
+    {
+        screenOffset.x = -1.0f;
+    }
+    else if (1.0f < x)
+    {
+        screenOffset.x = 1.0f;
+    }
+    else
+    {
+        screenOffset.x = x;
+    }
+
+    f32 y = offset->y;
+    if (y < -1.0f)
+    {
+        screenOffset.y = -1.0f;
+    }
+    else if (1.0f < y)
+    {
+        screenOffset.y = 1.0f;
+    }
+    else
+    {
+        screenOffset.y = y;
+    }
+}
+
+void GameRendererController::MoveScreen(const Vector2* offset)
+{
+    BaseSetScreenOffset(offset);
+    Platform::Graphics::MoveDisplay(&screenOffset);
+}
+
+Renderer* GameRendererController::MakeRenderer(RenderTargetDescription* description, u32)
+{
+    Renderer* renderer = Renderer::Construct(static_cast<Renderer*>(MemoryAllocate(sizeof(Renderer))), this, description);
+    RendererPoolAdd(&renderers, &renderer);
+    return renderer;
+}
+
+void GameRendererController::Nothing5()
+{
+}
+
+void GameRendererController::Nothing6()
+{
+}
+
+void GameRendererController::Nothing15()
+{
+}
+
+void GameRendererController::Nothing16()
+{
+}
+
+void GameRendererController::Nothing17()
+{
+}
+
+void GameRendererController::Nothing19()
+{
+}
+
+void GameRendererController::Nothing20()
+{
+}
+
+void GameRendererController::Nothing21()
+{
+}
+
+void GameRendererController::BaseNothing10()
+{
+}
+
+void GameRendererController::BaseNothing14()
+{
+}
+
+// The walk's functions, which the controller's loops use (the retail ones inline but for Current, called through the vtable)
+void RendererWalk::Destroy(u32 destroyFlags)
+{
+    vtable = g_RendererWalkBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void RendererWalk::BaseDestroy(u32 destroyFlags)
+{
+    vtable = g_RendererWalkBaseVTable;
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+// The first slot in use; the last one is taken without looking (it's the one in use when no other is)
+void RendererWalk::First()
+{
+    constexpr s16 InUse = -1;
+    index = 0;
+    passed = 0;
+    while (index < pool->capacity - 1 && pool->links[index] != InUse)
+    {
+        index++;
+    }
+}
+
+u32 RendererWalk::IsDone()
+{
+    return passed == pool->used;
+}
+
+Renderer** RendererWalk::Current()
+{
+    return &pool->items[index];
+}
+
+void RendererWalk::Next()
+{
+    constexpr s16 InUse = -1;
+    if (!(passed < pool->used - 1))
+    {
+        passed = pool->used;
+        return;
+    }
+
+    while (passed < pool->used)
+    {
+        s16 counted = passed;
+        index++;
+        if (pool->links[index] == InUse)
+        {
+            passed = static_cast<s16>(counted + 1);
+            return;
+        }
+    }
+}
+
+RendererWalk* RendererWalk::Assign(const RendererWalk* other)
+{
+    index = other->index;
+    passed = other->passed;
+    pool = other->pool;
+    return this;
+}
+
+s32 RendererWalk::Index()
+{
+    return index;
+}
+
+s32 RendererWalk::Count()
+{
+    return pool->used;
+}
+
+Renderer* Renderer::Construct(Renderer* renderer, GameRendererController* controller, const RenderTargetDescription* target)
+{
+    renderer->controller = controller;
+    renderer->view = nullptr;
+    renderer->target = nullptr;
+    GetColor(&renderer->colour, RendererTextColour);
+    TextQueueConstruct(&renderer->texts);
+    renderer->font = nullptr;
+    renderer->textFlags = RendererTextFlags;
+    renderer->textScale.y = 1.0f;
+    renderer->textScale.x = 1.0f;
+    renderer->flags = RendererStartFlags;
+    renderer->target = RenderTargetDescription::Copy(
+        static_cast<RenderTargetDescription*>(MemoryAllocate(sizeof(RenderTargetDescription))), target);
+    for (u32 layer = 0; layer < Renderer::OverlayLayers; layer++)
+    {
+        renderer->layers[layer] = nullptr;
+        renderer->layerEnds[layer] = nullptr;
+    }
+
+    return renderer;
+}
+
+RenderTargetDescription* RenderTargetDescription::Construct(RenderTargetDescription* description,
+                                                            GameRendererController* controller)
+{
+    description->controller = controller;
+    description->offsetX = 0;
+    description->offsetY = 0;
+    description->width = 0;
+    description->height = 0;
+    GetColor(&description->clearColor, TargetClearColour);
+    description->displayWidth = 0;
+    description->displayHeight = 0;
+    description->packet = static_cast<u8*>(MemoryAllocate2(TargetPacketSize));
+    return description;
+}
+
+RenderTargetDescription* RenderTargetDescription::Copy(RenderTargetDescription* description, const RenderTargetDescription* other)
+{
+    description->controller = other->controller;
+    description->offsetX = other->offsetX;
+    description->offsetY = other->offsetY;
+    description->width = other->width;
+    description->height = other->height;
+    description->clearColor = other->clearColor;
+    description->displayWidth = other->displayWidth;
+    description->displayHeight = other->displayHeight;
+    description->packet = static_cast<u8*>(MemoryAllocate2(TargetPacketSize));
+    Platform::Graphics::SetUpRenderTarget(description);
+    return description;
+}
+
+void RenderTargetDescription::Destroy(u32 flags)
+{
+    if (packet != nullptr)
+    {
+        MemoryDeallocate_(packet);
+    }
+
+    if ((flags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+extern "C" void SetRendererView(Renderer* renderer, RenderView* view)
+{
+    view->Update(g_WidescreenTv != 0 ? WideAspect : NarrowAspect);
+    renderer->view = view;
 }
 
 void GameRendererController::PresentFrame()
@@ -106,4 +511,63 @@ extern "C" void FitSizeToScreen(u32 inPixels, Vector2* size)
     {
         ToPixels(size);
     }
+}
+
+// The frame's scene: a movie playing draws itself; else the camera's chunk (its frustum from the lens, its sky or a cleared frame,
+// its scenery and links, then the shadows cast in them), a cleared frame without one; the overlay last
+extern "C" void DrawRendererScene(Renderer* renderer)
+{
+    constexpr u32 NodeLens = 9;
+    constexpr u32 ClearColourShift = 4;
+    constexpr u32 ClearDepthShift = 5;
+    GameMovieController* movie = G_GameMovieController;
+    if (movie != nullptr && (movie->flags & GameMovieController::StateMask) == GameMovieController::StatePlaying)
+    {
+        SetUpFrame(renderer->target, 1, 0);
+        movie->Draw();
+        DrawOverlay(renderer);
+        return;
+    }
+
+    RenderView* view = renderer->view;
+    if (view != nullptr)
+    {
+        Reference* reference = view->cameraObject;
+        auto* camera = reference != nullptr ? static_cast<InstanceContext*>(reference->object) : nullptr;
+        ChunkData* chunk = camera != nullptr ? camera->chunk : nullptr;
+        if (chunk != nullptr)
+        {
+            ObjectPlace* place = camera->place;
+            RotateAndTranslate(place);
+            auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeLens));
+            g_RenderView = renderer->view;
+            g_RenderTarget = renderer->target;
+            Sky* sky = chunk->sky;
+            Matrix4x4* toCamera = &renderer->view->toCamera;
+            Matrix4x4 identity;
+            InitIdentityMatrix(&identity);
+            ClearLightingUnused();
+            s32 fov = lens->fov;
+            f32 aspect = g_WidescreenTv != 0 ? WideAspect : NarrowAspect;
+            Platform::Graphics::SetViewFrustum(lens->nearPlane, lens->farPlane, aspect, &fov);
+            renderer->view->MakeMatrices(renderer->target);
+            chunk->drawMatrix = identity;
+            if (sky != nullptr)
+            {
+                Platform::Graphics::DrawChunkSky(sky, renderer->view);
+            }
+            else
+            {
+                SetUpFrame(renderer->target, renderer->flags >> ClearColourShift & 1, renderer->flags >> ClearDepthShift & 1);
+            }
+
+            DrawScene(chunk, place, renderer->view);
+            DrawShadows(chunk, toCamera, &identity);
+            DrawOverlay(renderer);
+            return;
+        }
+    }
+
+    SetUpFrame(renderer->target, renderer->flags >> ClearColourShift & 1, renderer->flags >> ClearDepthShift & 1);
+    DrawOverlay(renderer);
 }

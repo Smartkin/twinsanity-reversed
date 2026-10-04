@@ -64,6 +64,23 @@ PropertyList* PropertyList::Construct(PropertyList* list, Stream* stream)
     return list;
 }
 
+PropertyList* PropertyList::Construct(PropertyList* list, u32 taggedCount, u32 floatCount, u32 intCount, u32)
+{
+    list->vtable = g_PropertyListVTable;
+    list->state = 0;
+    list->taggedCount = taggedCount;
+    list->tagged = taggedCount != 0 ? static_cast<TaggedValue*>(MemoryAllocate2(taggedCount * sizeof(TaggedValue))) : nullptr;
+    list->floatCount = floatCount;
+    list->floats = floatCount != 0 ? static_cast<f32*>(MemoryAllocate2(floatCount * sizeof(f32))) : nullptr;
+    list->intCount = intCount;
+    list->ints = intCount != 0 ? static_cast<s32*>(MemoryAllocate2(intCount * sizeof(s32))) : nullptr;
+    *reinterpret_cast<u32*>(list->counts) = 0;
+    list->counts[0] = taggedCount;
+    list->counts[1] = floatCount;
+    list->counts[2] = intCount;
+    return list;
+}
+
 void PropertyList::Destroy(u32 destroyFlags)
 {
     vtable = g_PropertyListVTable;
@@ -143,6 +160,23 @@ f32 PropertyList::FloatAt(u32 index)
 s32 PropertyList::IntAt(u32 index)
 {
     return ints[index];
+}
+
+void PropertyList::SetTagged(u32 index, const TaggedValue* value)
+{
+    tagged[index] = *value;
+}
+
+void PropertyList::SetFloat(u32 index, f32 value)
+{
+    floats[index] = value;
+}
+
+EABI_EXPORT(FUN_00263080, &PropertyList::SetFloat);
+
+void PropertyList::SetInt(u32 index, s32 value)
+{
+    ints[index] = value;
 }
 
 PropertyExtras* PropertyExtras::Construct(PropertyExtras* extras, PropertyList* list, PropertyHolder* holder)

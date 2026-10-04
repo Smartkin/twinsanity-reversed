@@ -1,14 +1,33 @@
 #include "game/olegpages.h"
 
 #include "game/clock.h"
+#include "game/colour.h"
 #include "game/controllers.h"
 #include "game/gamecontroller.h"
+#include "game/math.h"
 #include "game/memory.h"
 #include "game/oleg.h"
 #include "game/pads.h"
 #include "game/renderer.h"
+#include "game/savemanager.h"
 #include "game/sound.h"
 #include "game/widgets.h"
+
+extern "C"
+{
+    // The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), 0.01 twice, a black of half
+    // alpha and 45 degrees (65536ths); and its own: (0, 1, -1, 1), (0, 1, 0, 1), 0 and the colour table's 15 and 8
+    extern Vector4 g_OlegPagesUp RETAIL(D_0030BDE0);
+    extern f32 g_OlegPagesSmall RETAIL(D_0030A5D8);
+    extern f32 g_OlegPagesSmall2 RETAIL(D_0030A5DC);
+    extern u32 g_OlegPagesShade RETAIL(D_0030A5E0);
+    extern s32 g_OlegPagesAngle45 RETAIL(D_0030A5E8);
+    extern Vector4 g_OlegPagesUpBack RETAIL(D_0030BDF0);
+    extern Vector4 g_OlegPagesUp2 RETAIL(D_0030BE00);
+    extern u32 g_OlegPagesZero RETAIL(D_0030A5F0);
+    extern u32 g_OlegPagesWhite RETAIL(D_0030A5F8);
+    extern u32 g_OlegPagesColour8 RETAIL(D_0030A5FC);
+}
 
 namespace
 {
@@ -174,6 +193,15 @@ constexpr u32 WhiteColour = 0xF;
 // The widgets' destructor (their vtable's), and a destructor's flags: an object deleted
 constexpr u32 WidgetDestroySlot = 9;
 constexpr u32 Delete = 3;
+// The save slots page: a save code item per slot (IDs from 0x100), and a ring panel (0.2 by 0.075) behind each slot's widget, in
+// two staggered columns (the even slots' sliding in from the left)
+constexpr u32 SaveCodeItemSize = 0x20;
+constexpr u32 SlotItemIds = 0x100;
+constexpr f32 SlotEvenX = Rounded(0.3);
+constexpr f32 SlotOddX = Rounded(0.7);
+constexpr f32 SlotsTop = Rounded(0.26);
+constexpr f32 SlotSpacing = Rounded(0.09);
+constexpr Vector2 SlotPanelRadii = {Rounded(0.2), Rounded(0.075)};
 // The volume groups: the effects' (0, 1 and 3) and the music's (2)
 constexpr s32 MusicGroup = 2;
 
@@ -1130,4 +1158,113 @@ void LevelsPage::Destroy(u32 flags)
     }
 
     OlegPage::Destroy(flags);
+}
+
+MenuPage* SaveSlotsPageConstruct(void* memory, SaveManager* manager, MenuWidget* menu)
+{
+    auto* page = static_cast<SaveSlotsPage*>(memory);
+    SaveCodePage::Construct(page, manager);
+    GameController* controller = G_GameController_00309950;
+    page->vtable = g_SaveSlotsPageVTable;
+    Widget* after = menu->next;
+    // The device's flags are its first word (savedevice.h's SaveSummary clashes with OLEG's, so its class can't be included)
+    page->count = *reinterpret_cast<const u32*>(manager->device) & 0xF;
+    page->widgets = static_cast<SaveSlotWidget**>(MemoryAllocate2(page->count * sizeof(SaveSlotWidget*)));
+    page->rings = static_cast<RingWidget**>(MemoryAllocate2(page->count * sizeof(RingWidget*)));
+    Widget* tail = menu;
+    for (u32 slot = 0; slot < page->count; slot++)
+    {
+        auto* summary = reinterpret_cast<SaveSummary*>(manager->banks[slot]->summary);
+        MenuItem* item = ConstructSaveCodeItem(MemoryAllocate(SaveCodeItemSize), 0, SlotItemIds + slot, 0, manager);
+        bool even = (slot & 1) == 0;
+        Vector2 place = {even ? SlotEvenX : SlotOddX, static_cast<f32>(slot) * SlotSpacing + SlotsTop};
+        Vector2 scale = {1.0f, 1.0f};
+        Vector2 offset = {even ? -1.0f : 1.0f, 0.0f};
+        RingWidget* ring =
+            RingWidget::Construct(Allocate<RingWidget>(), 0.5f, LevelRings, LevelRingSegments, LevelRingSteps, nullptr);
+        page->rings[slot] = ring;
+        SaveSlotWidget* widget = SaveSlotWidget::Construct(Allocate<SaveSlotWidget>(), 0.5f, page, item, controller, summary);
+        page->widgets[slot] = widget;
+        u32 colour;
+        GetColor(&colour, WhiteColour);
+        ring->SlideIn(colour, &place, &scale, &offset);
+        GetColor(&colour, WhiteColour);
+        widget->SlideIn(colour, &place, &scale, &offset);
+        Vector2 radii = SlotPanelRadii;
+        AddPanelRings(&radii, ring);
+        tail->next = ring;
+        ring->next = widget;
+        tail = widget;
+        page->Add(item);
+    }
+
+    tail->next = after;
+    page->AddItems();
+    return page;
+}
+
+void SaveSlotsPage::Destroy(u32 destroyFlags)
+{
+    vtable = g_SaveSlotsPageVTable;
+    for (u32 slot = 0; slot < count; slot++)
+    {
+        if (widgets[slot] != nullptr)
+        {
+            CallVirtual<void>(widgets[slot], widgets[slot]->vtable, WidgetDestroySlot, Delete);
+        }
+
+        if (rings[slot] != nullptr)
+        {
+            CallVirtual<void>(rings[slot], rings[slot]->vtable, WidgetDestroySlot, Delete);
+        }
+    }
+
+    if (widgets != nullptr)
+    {
+        MemoryDeallocate_(widgets);
+    }
+
+    if (rings != nullptr)
+    {
+        MemoryDeallocate_(rings);
+    }
+
+    // Past the save code page's destructor, straight to the menu page's
+    MenuPage::Destroy(destroyFlags);
+}
+
+void InitOlegPagesModule(u32 initialize, u32 priority)
+{
+    constexpr u32 AllPriorities = 0xFFFF;
+    constexpr f32 Small = Rounded(0.01);
+    constexpr s32 Colour8 = 8;
+    if (priority != AllPriorities || initialize == 0)
+    {
+        return;
+    }
+
+    g_OlegPagesUp.x = 0.0f;
+    g_OlegPagesUp.w = 1.0f;
+    g_OlegPagesSmall2 = Small;
+    g_OlegPagesUp.y = 1.0f;
+    g_OlegPagesUp.z = 0.0f;
+    g_OlegPagesSmall = Small;
+    ColourSet(&g_OlegPagesShade, 0.0f, 0.0f, 0.0f, 0.5f);
+    AngleFrom(&g_OlegPagesAngle45, 0x1.921fb6p-1f, AngleRadians);
+    g_OlegPagesUpBack.x = 0.0f;
+    g_OlegPagesUp2.w = 1.0f;
+    g_OlegPagesUpBack.z = -1.0f;
+    g_OlegPagesUpBack.w = 1.0f;
+    g_OlegPagesUp2.x = 0.0f;
+    g_OlegPagesUp2.z = 0.0f;
+    g_OlegPagesUpBack.y = 1.0f;
+    g_OlegPagesUp2.y = 1.0f;
+    g_OlegPagesZero = 0;
+    GetColor(&g_OlegPagesWhite, WhiteColour);
+    GetColor(&g_OlegPagesColour8, Colour8);
+}
+
+void ConstructOlegPagesModule()
+{
+    InitOlegPagesModule(1, 0xFFFF);
 }

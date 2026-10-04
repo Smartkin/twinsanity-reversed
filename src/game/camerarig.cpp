@@ -16,7 +16,6 @@ EABI_EXPORT(FUN_00270040, PushCameraShakeAxes);
 EABI_EXPORT(func_0027E030, &CameraPointFollower::SetRate);
 EABI_EXPORT(FUN_0027cd78, &CutscenePositioner::Take);
 EABI_EXPORT(FUN_0027ca90, &ScriptedCameraPositioner::Take);
-EABI_IMPORT(FUN_0023cfd8, JitterVector);
 
 namespace
 {

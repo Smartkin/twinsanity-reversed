@@ -10,18 +10,24 @@ class CameraTarget;
 class Stream;
 struct TimeClock;
 
-// The splines the spline cameras follow (0x50 bytes, still asm, its vtable 0x10 bytes in: 2 its read): how many samples, a point and
-// a tangent each (their Ws hold flags and values in their bits), the length between two samples, and every sample's arc length
-// from the start
+// The splines the spline cameras follow (0x50 bytes, its vtable 0x10 bytes in: 2 its read): how many segments, the samples at their
+// ends (one more than the segments, a point and a tangent each: their Ws hold flags and values in their bits), the length of a
+// segment and 1 over it, every segment's arc length from the start and 1 over the steps it takes, and a nearest point search's state
+// as a path has it
 struct CameraSpline
 {
     s32 count;
     Vector4* samples;
     f32 step;
-    u32 unknown0C;
+    f32 inverseStep;
     const GccVTableEntry* vtable;
     f32* lengths;
-    u8 unknown18[0x48 - 0x18];
+    f32* steps;
+    u8 unknown1C[4];
+    Vector4 searchPoint;
+    Vector4 nearest;
+    f32 nearestDistance;
+    f32 nearestShare;
     s32 unknown48;
     u32 unknown4C;
 
@@ -30,13 +36,16 @@ struct CameraSpline
         CallVirtual<void>(this, vtable, 2, stream);
     }
 };
+CHECK_OFFSET(CameraSpline, searchPoint, 0x20);
+CHECK_OFFSET(CameraSpline, unknown48, 0x48);
 CHECK_SIZE(CameraSpline, 0x50);
 
-// Where a nearest point search over a path or a spline stands (0x30 bytes): the nearest distance so far 0x20 bytes in, then
-// the share of its segment and the segment (-1 at first)
+// Where a nearest point search over a path or a spline stands (0x30 bytes): the nearest point so far 0x10 bytes in and its
+// distance squared, then the share of its segment and the segment (-1 at first)
 struct CurveSearch
 {
-    u8 unknown00[0x20];
+    u8 unknown00[0x10];
+    Vector4 nearest;
     f32 distance;
     f32 share;
     s32 segment;
@@ -384,6 +393,8 @@ struct MainCamera
     {
         // The second subtype gives its place at the value along the geometry (else for the target)
         FlagSecondAtParameter = 0x1,
+        // The follow camera's switch back may blend to its rig (nothing reaches that)
+        FlagAllowsSwitchBack = 0x2,
         // The follow camera steers around walls with it (made so)
         FlagSteers = 0x10,
         // Its second and its first value given to the rig's point followers as their rate (the camera's place's and where it
@@ -392,10 +403,15 @@ struct MainCamera
         FlagPassesFirstValue = 0x2000,
         // Its yaw extra given to the yaw blender
         FlagSetsYawExtra = 0x8000,
+        // The follow camera takes it only after another the step before; and on foot whatever the character does
+        FlagNeedsRunningCamera = 0x4000000,
+        FlagIgnoresPlayerState = 0x8000000,
     };
 
     enum Switches : u16
     {
+        // Kept apart by the follow camera, which takes it once the character died
+        SwitchSecondSlot = 0x1,
         // Taking it sets the follow camera back to its own camera
         SwitchResetsController = 0x4,
     };
@@ -454,9 +470,12 @@ extern "C"
     extern const GccVTableEntry g_Camera1C0EVTable[] RETAIL(CameraSubtype_0x1C0E_Methods);
     extern const GccVTableEntry g_CameraZoneVTable[] RETAIL(CameraSubtype_0x1C0F_Methods);
     extern const GccVTableEntry g_CameraSplineVTable[] RETAIL(D_002F5C58);
+    extern const GccVTableEntry g_SplineSamplesVTable[] RETAIL(D_002F5C78);
 
-    // The object builder's camera factory: a subtype (or a main camera) of a type, none for another
+    // The object builder's camera factory (a vtable alone, D_00305128, the game context's): a subtype (or a main camera) of a type,
+    // none for another, and its destructor
     CameraSubtype* MakeCameraSubtype(void* factory, u32 type) RETAIL(FUN_0026fa58);
+    void DestroyCameraItemBuilder(void* factory, u32 destroyFlags) RETAIL(FUN_0027b9a0);
     // A sample W's values: its low byte from -5 by 0.0390625s, its bits 8-23 from -50 by 100/65536ths
     f32 SampleByteValue(const u32* word) RETAIL(FUN_0027d960);
     f32 SampleShortValue(const u32* word) RETAIL(FUN_0027d9b8);
@@ -466,20 +485,32 @@ extern "C"
     // they ease)
     Vector4* RotationAt(Vector4* out, const CameraRotationKeys* keys, f32 along) RETAIL_N32(FUN_0027a390);
 
-    // The curves' maths (still asm): the parameter of a line nearest a point and a line read (its two ends); a path's or a
-    // spline's nearest point searched and its parameter, a path's point at a parameter; a spline's segment at a distance along it
-    // (and how far into it), the point that far into a segment; the fractions of a point within a box and the point at fractions
+    // The curves' maths: the parameter of a line nearest a point (0 for a line of no length) and a line read (its two ends); a
+    // path's or a spline's nearest point searched and its parameter, a path's point at a parameter; a spline's segment at a
+    // distance along it (and how far into it), the point that far into a segment (a cubic Hermite one, the w 1); the fractions of
+    // a point within a box (the point taken into its plane, or onto its nearest edge when it's outside: whether it was inside)
+    // and the point at fractions
     f32 NearestLineParameter(const Vector4* line, const Vector4* point) RETAIL(FUN_001849f0);
     void ReadLine(Vector4* line, Stream* stream) RETAIL(FUN_0018d268);
-    void PathNearestSearch(const LayoutPath* path, const Vector4* point, CurveSearch* search) RETAIL(FUN_001892b8);
+    void PathNearestSearch(LayoutPath* path, const Vector4* point, CurveSearch* search) RETAIL(FUN_001892b8);
     f32 PathNearestParameter(const LayoutPath* path, const CurveSearch* search) RETAIL(FUN_0018e890);
     void PathPointAt(f32 along, const LayoutPath* path, Vector4* out) RETAIL_N32(FUN_00189440);
-    void SplineNearestSearch(const CameraSpline* spline, const Vector4* point, CurveSearch* search) RETAIL(FUN_0018af78);
+    void SplineNearestSearch(CameraSpline* spline, const Vector4* point, CurveSearch* search) RETAIL(FUN_0018af78);
     f32 SplineNearestParameter(const CameraSpline* spline, const CurveSearch* search) RETAIL(FUN_0018f300);
     s32 SplineSegmentAt(f32 distance, const CameraSpline* spline, f32* into) RETAIL_N32(FUN_0018f0e8);
     void SplinePointIn(f32 into, const CameraSpline* spline, Vector4* out, s32 segment) RETAIL_N32(FUN_0018a7a8);
     void SplineSamplePoint(const CameraSpline* spline, Vector4* out, s32 segment) RETAIL(FUN_0018f060);
     void DestroySpline(CameraSpline* spline, u32 destroyFlags) RETAIL(FUN_0018f1f0);
-    void BoxFractionsOf(const Vector4* box, const Vector4* point, Vector4* projected, f32* across, f32* along) RETAIL(BoxFractionsOf);
+    // The destructor of the splines' base (its samples; its vtable D_002F5C78), a segment's cubic stepped on by its forward
+    // differences (as a path's), the share of the search's segment nearest the search's point refined by Brent's method between 0
+    // and 1 (4 steps, to 5e-05; the distance squared at the share given, both the nearest's after: whether it converged), and that
+    // distance squared at a share (the method's function)
+    void DestroySplineSamples(CameraSpline* spline, u32 destroyFlags) RETAIL(FUN_0018f088);
+    void SplineDifferencesStep(const CameraSpline* spline, Vector4* differences) RETAIL(FUN_0018f330);
+    s32 RefineSplineNearest(CameraSpline* spline, f32* into, f32* distanceSquared) RETAIL(FUN_0018f278);
+    f32 SplineDistanceSquaredIn(f32 into, CameraSpline* spline) RETAIL_N32(FUN_0018f2d8);
+    // The distance squared from the search's point to its segment's point at a share (of the segment's Hermite cubic)
+    f32 SplineSegmentDistanceSquared(f32 into, CameraSpline* spline) RETAIL_N32(FUN_0018ae68);
+    u32 BoxFractionsOf(const Vector4* box, const Vector4* point, Vector4* projected, f32* across, f32* along) RETAIL(BoxFractionsOf);
     void BoxPointAtFractions(f32 across, f32 along, const Vector4* box, Vector4* out) RETAIL_N32(BoxPointAtFractions);
 }

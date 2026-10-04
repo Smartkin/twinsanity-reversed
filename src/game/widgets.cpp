@@ -1,14 +1,33 @@
 #include "game/widgets.h"
 
+#include "game/bindings.h"
 #include "game/colour.h"
 #include "game/controllers.h"
+#include "game/instances.h"
 #include "game/language.h"
+#include "game/math.h"
 #include "game/memory.h"
 #include "game/menus.h"
 #include "game/overlay.h"
+#include "game/place.h"
+#include "game/reference.h"
 #include "game/renderer.h"
 #include "game/shapes.h"
 #include "game/widgeteffects.h"
+
+extern "C"
+{
+    extern const GccVTableEntry g_PadInstanceMoverVTable[] RETAIL(D_00302858);
+    extern const GccVTableEntry g_PadInstanceMoverBaseVTable[] RETAIL(D_00302878);
+    // The widgets' statics made (the defaults, the resume page), and the static constructor that runs it
+    void InitWidgetStatics(s32 initialise, s32 priority) RETAIL(FUN_0025a018);
+    void WidgetsStaticInit() RETAIL(FUN_0025d078);
+    // The resume page's name
+    extern const char g_ResumePageName[] RETAIL(D_00303238);
+    // How far the widget is shown: 0 hidden, 1 shown, how far it appeared or is still to disappear (a drop shadow's share of its
+    // offset)
+    f32 ShownFraction(const Widget* widget) RETAIL(func_0025A900);
+}
 
 namespace
 {
@@ -95,22 +114,6 @@ void RectangleCorners(const Vector2* middle, const Vector2* size, Vector2* start
     start->y = start->y - half.y;
     end->x = end->x + half.x;
     end->y = end->y + half.y;
-}
-
-// How far the widget is shown: a drop shadow's share of its offset
-f32 ShownFraction(const Widget* widget)
-{
-    switch (widget->State())
-    {
-    case Widget::StateAppearing:
-        return widget->progress;
-    case Widget::StateShown:
-        return 1.0f;
-    case Widget::StateDisappearing:
-        return 1.0f - widget->progress;
-    default:
-        return 0.0f;
-    }
 }
 
 bool HasShadow(const Widget* widget)
@@ -216,6 +219,40 @@ Vector2 Lerp(const Vector2& from, const Vector2& to, f32 t)
 {
     return {to.x * t + from.x * (1.0f - t), to.y * t + from.y * (1.0f - t)};
 }
+
+// The instance turned about one of the world's axes by an angle (not by none): whether it turned
+template <void (*MakeTurn)(Vector4*, const s32*)>
+bool TurnAboutWorld(InstanceContext* instance, s32 angle)
+{
+    ObjectPlace* place = instance->place;
+    if (angle == 0)
+    {
+        return false;
+    }
+
+    place->SyncRotation();
+    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    Vector4 turn;
+    MakeTurn(&turn, &angle);
+    MultiplyRotations(&turn, &turn, &place->rotation);
+    place->rotation = turn;
+    return true;
+}
+}
+
+f32 ShownFraction(const Widget* widget)
+{
+    switch (widget->State())
+    {
+    case Widget::StateAppearing:
+        return widget->progress;
+    case Widget::StateShown:
+        return 1.0f;
+    case Widget::StateDisappearing:
+        return 1.0f - widget->progress;
+    default:
+        return 0.0f;
+    }
 }
 
 void Widget::Destroy(u32 destroyFlags)
@@ -1606,7 +1643,7 @@ void CreditsRoll::SplitLines(char* string)
             continue;
         }
 
-        bits = (bits & ~CountMask) | ((bits & CountMask) + 1 & CountMask);
+        bits = (bits & ~CountMask) | (((bits & CountMask) + 1) & CountMask);
     }
 
     lines = static_cast<const char**>(MemoryAllocate2((bits & CountMask) * sizeof(const char*)));
@@ -1683,3 +1720,118 @@ EABI_EXPORT(FUN_0025a250, TiledPicture::Construct);
 EABI_EXPORT(FUN_0025a9a0, Label::Construct);
 EABI_EXPORT(FUN_0025b670, StringLabel::Construct);
 EABI_EXPORT(FUN_0025ab38, MenuWidget::Construct);
+EABI_EXPORT(FUN_00259420, &PadInstanceMover::Frame);
+EABI_EXPORT(FUN_002592d8, &PadInstanceMover::MoveAlong);
+
+void PadInstanceMover::Destroy(u32 destroyFlags)
+{
+    vtable = g_PadInstanceMoverVTable;
+    BaseDestroy(destroyFlags);
+}
+
+void PadInstanceMover::BaseDestroy(u32 destroyFlags)
+{
+    // An instance's release (its slot 4), handed the flags the destructor got as the retail code leaves them
+    constexpr u32 ReleaseSlot = 4;
+    vtable = g_PadInstanceMoverBaseVTable;
+    CallVirtual<u32>(instance, instance->vtable, ReleaseSlot, destroyFlags);
+    if ((destroyFlags & 1) != 0)
+    {
+        MemoryDeallocate2_(this);
+    }
+}
+
+void WidgetsStaticInit()
+{
+    InitWidgetStatics(1, 0xFFFF);
+}
+
+void InitWidgetStatics(s32 initialise, s32 priority)
+{
+    constexpr s32 AllPriorities = 0xFFFF;
+    constexpr u32 ResumePagePlayers = 1;
+    if (priority != AllPriorities || initialise == 0)
+    {
+        return;
+    }
+
+    GetColor(&g_WidgetColour, DefaultColourIndex);
+    g_WidgetPlace = {0.5f, 0.5f};
+    g_WidgetScale = {1.0f, 1.0f};
+    GetColor(&g_RectangleColour, DefaultColourIndex);
+    g_RectangleStart = {0.0f, 0.0f};
+    g_RectangleEnd = {1.0f, 1.0f};
+    MenuPage::Construct(&g_ResumePage, g_ResumePageName, ResumePagePlayers);
+}
+
+void PadInstanceMover::Frame(f32 seconds, GamePad* pad)
+{
+    // The bindings' actions and axes it reads, and how far they move it a second
+    constexpr u32 ForwardAction = 0;
+    constexpr u32 BackAction = 1;
+    constexpr u32 PitchAxis = 6;
+    constexpr u32 YawAxis = 7;
+    constexpr u32 SideAxis = 9;
+    constexpr u32 UpAxis = 10;
+    constexpr f32 AxisSpeed = 20.0f;
+    constexpr f32 PressureSpeed = 40.0f;
+
+    ObjectPlace* place = instance->place;
+    RotateAndTranslate(place);
+    f32 forward = bindings->Pressure(pad, ForwardAction);
+    f32 along = (forward - bindings->Pressure(pad, BackAction)) * PressureSpeed;
+    f32 side = bindings->AxisValue(pad, SideAxis) * AxisSpeed;
+    f32 up = bindings->AxisValue(pad, UpAxis) * AxisSpeed;
+    s32 pitch;
+    AngleFrom(&pitch, bindings->AxisValue(pad, PitchAxis), AngleRadians);
+    s32 yaw;
+    AngleFrom(&yaw, bindings->AxisValue(pad, YawAxis), AngleRadians);
+    Vector4 axis;
+    if (side != 0.0f)
+    {
+        axis = *RowOf(&place->matrix, 0);
+        MoveAlong(&axis, side, seconds);
+    }
+
+    if (up != 0.0f)
+    {
+        axis = *RowOf(&place->matrix, 1);
+        MoveAlong(&axis, up, seconds);
+    }
+
+    if (along != 0.0f)
+    {
+        axis = *RowOf(&place->matrix, 2);
+        MoveAlong(&axis, along, seconds);
+    }
+
+    s32 turn = pitch;
+    s32 angle = *MultiplyAngle(&turn, seconds);
+    InstanceContext* turned = instance;
+    if (TurnAboutWorld<RotationFromPitch>(turned, angle))
+    {
+        QueueObject(turned);
+    }
+
+    turn = yaw;
+    angle = *MultiplyAngle(&turn, seconds);
+    turned = instance;
+    if (TurnAboutWorld<RotationFromYaw>(turned, angle))
+    {
+        QueueObject(turned);
+    }
+}
+
+void PadInstanceMover::MoveAlong(const Vector4* axis, f32 amount, f32 seconds)
+{
+    f32 scale = seconds * amount;
+    Vector4 move = *axis;
+    move.x = move.x * scale;
+    move.y = move.y * scale;
+    move.z = move.z * scale;
+    InstanceContext* moved = instance;
+    if (moved->place->MoveBy(&move))
+    {
+        QueueObject(moved);
+    }
+}
