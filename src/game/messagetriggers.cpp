@@ -14,15 +14,15 @@ extern "C"
 
 namespace
 {
-constexpr u32 MessageTriggerKind = 7;
 constexpr u32 MessageTriggerItemType = 0x1814;
-// The kinds of nodes the events go to besides the node's own: the agents'
-constexpr u32 AgentEventKind = 0x2;
-// The trigger's header's message bits: each sends one of its messages
-constexpr u32 SendsEntered = 0x800;
-constexpr u32 SendsEnteredSecond = 0x100;
-constexpr u32 SendsEnteredAndStayed = 0x200;
-constexpr u32 SendsLeft = 0x400;
+// The trigger's messages and the node's events of them, by what they're sent for
+enum Message : u32
+{
+    FirstEntryMessage = 0,
+    EveryEntryMessage = 1,
+    EntryOrStayMessage = 2,
+    ExitMessage = 3,
+};
 
 GameEvent* MakeEvent(u16 message, InstanceContext* argument, u32 kinds)
 {
@@ -42,7 +42,7 @@ void Queue(InstanceContext* instance, GameEvent* event)
 void TellInstances(MessageTriggerNode* node, const u16* message, InstanceContext* instance, u32 kinds)
 {
     GameEvent* told = nullptr;
-    for (u32 index = 0; index < node->instanceCount; index++)
+    for (u32 index = 0; index < node->bits.instanceCount; index++)
     {
         if (told == nullptr)
         {
@@ -58,7 +58,7 @@ void TellInstances(MessageTriggerNode* node, const u16* message, InstanceContext
 // messages and the events
 void TellInto(MessageTriggerNode* node, u32 index, InstanceContext* instance)
 {
-    u32 kinds = node->eventKinds | AgentEventKind;
+    u32 kinds = node->eventKinds | ObjectNodeKinds;
     if (node->events[index] == nullptr)
     {
         node->events[index] = MakeEvent(node->messages[index], node->owner, kinds);
@@ -79,7 +79,7 @@ void ResetVector(Vector4* vector)
 
 GameEvent* MessageTriggerNode::Tell(u16 message, InstanceContext* instance, GameEvent* event)
 {
-    u32 kinds = eventKinds | AgentEventKind;
+    u32 kinds = eventKinds | ObjectNodeKinds;
     if (event == nullptr)
     {
         event = MakeEvent(message, owner, kinds);
@@ -96,30 +96,31 @@ TriggerNode* ConstructMessageTriggerNode(void* memory, ChunkData* chunk, LayoutT
     TriggerNode::Construct(node, chunk, layoutTrigger);
     auto* trigger = static_cast<MessageTrigger*>(layoutTrigger);
     node->vtable = g_MessageTriggerNodeVTable;
-    ResetVector(&node->unknown170);
-    node->messageBits &= ~(MessageTriggerNode::Bit0 | MessageTriggerNode::BitAnyCharacter);
-    if ((trigger->header & SendsEntered) != 0)
+    ResetVector(&node->force);
+    node->messageBits.forceOn = 0;
+    node->messageBits.anyCharacter = 0;
+    if (trigger->header.onEnterOnce != 0)
     {
-        node->Bits() |= TriggerNode::TellsEntered;
-        node->messages[0] = trigger->messages[0];
+        node->bits.tellsFirstEntry = 1;
+        node->messages[FirstEntryMessage] = trigger->messages[FirstEntryMessage];
     }
 
-    if ((trigger->header & SendsEnteredSecond) != 0)
+    if (trigger->header.onEnter != 0)
     {
-        node->Bits() |= TriggerNode::TellsEnteredSecond;
-        node->messages[1] = trigger->messages[1];
+        node->bits.tellsEveryEntry = 1;
+        node->messages[EveryEntryMessage] = trigger->messages[EveryEntryMessage];
     }
 
-    if ((trigger->header & SendsEnteredAndStayed) != 0)
+    if (trigger->header.onStay != 0)
     {
-        node->Bits() |= TriggerNode::TellsEnteredAndStayed;
-        node->messages[2] = trigger->messages[2];
+        node->bits.tellsEntryOrStay = 1;
+        node->messages[EntryOrStayMessage] = trigger->messages[EntryOrStayMessage];
     }
 
-    if ((trigger->header & SendsLeft) != 0)
+    if (trigger->header.onExit != 0)
     {
-        node->Bits() |= TriggerNode::TellsLeft;
-        node->messages[3] = trigger->messages[3];
+        node->bits.tellsExit = 1;
+        node->messages[ExitMessage] = trigger->messages[ExitMessage];
     }
 
     return node;
@@ -133,14 +134,14 @@ void MessageTriggerNode::Destroy(u32 destroyFlags)
 
 u32 MessageTriggerNode::Kind()
 {
-    return MessageTriggerKind;
+    return NodeMessageTrigger;
 }
 
 void MessageTriggerNode::Reset()
 {
     TriggerNode::Reset();
-    ResetVector(&unknown170);
-    messageBits &= ~Bit0;
+    ResetVector(&force);
+    messageBits.forceOn = 0;
 }
 
 u32 MessageTriggerNode::ItemType()
@@ -150,28 +151,28 @@ u32 MessageTriggerNode::ItemType()
 
 void MessageTriggerNode::BeginCheck()
 {
-    events[3] = nullptr;
-    events[0] = nullptr;
-    events[1] = nullptr;
-    events[2] = nullptr;
+    events[ExitMessage] = nullptr;
+    events[FirstEntryMessage] = nullptr;
+    events[EveryEntryMessage] = nullptr;
+    events[EntryOrStayMessage] = nullptr;
 }
 
-void MessageTriggerNode::Entered(InstanceContext* instance)
+void MessageTriggerNode::EnteredFirstTime(InstanceContext* instance)
 {
-    events[0] = Tell(messages[0], instance, events[0]);
+    events[FirstEntryMessage] = Tell(messages[FirstEntryMessage], instance, events[FirstEntryMessage]);
 }
 
-void MessageTriggerNode::EnteredSecond(InstanceContext* instance)
+void MessageTriggerNode::EnteredEveryTime(InstanceContext* instance)
 {
-    events[1] = Tell(messages[1], instance, events[1]);
+    events[EveryEntryMessage] = Tell(messages[EveryEntryMessage], instance, events[EveryEntryMessage]);
 }
 
 void MessageTriggerNode::EnteredOrStayed(InstanceContext* instance)
 {
-    TellInto(this, 2, instance);
+    TellInto(this, EntryOrStayMessage, instance);
 }
 
 void MessageTriggerNode::Left(InstanceContext* instance)
 {
-    TellInto(this, 3, instance);
+    TellInto(this, ExitMessage, instance);
 }

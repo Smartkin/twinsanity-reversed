@@ -107,11 +107,23 @@ public:
     void Left(u32 player, u32 mode) RETAIL(FUN_001668f0);
 };
 
-// An item restarting the game a way when it's activated (D_002F4020, a choice item without choices): bit 0 of its word whether it
-// restarts, bits 1-7 the way into the game. It leads nowhere
+// A restart item's word: whether it restarts, and the way into the game
+union RestartBits
+{
+    u32 value;
+    struct
+    {
+        u32 restarts : 1;
+        u32 entry : 7;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(RestartBits, 4);
+
+// An item restarting the game a way when it's activated (D_002F4020, a choice item without choices). It leads nowhere
 struct RestartItem : ChoiceItem
 {
-    u32 restart;
+    RestartBits restart;
 
     static RestartItem* Construct(RestartItem* item, u32 text, u32 id, u32 entry) RETAIL(FUN_00166840);
     void Destroy(u32 flags) RETAIL(FUN_00166360);
@@ -193,7 +205,7 @@ CHECK_SIZE(GameOptionsPage, 0x50);
 class GraphicsOptionsPage : public OlegPage
 {
 public:
-    u32 unknown50;
+    u32 unused50;
 
     void Destroy(u32 flags) RETAIL(FUN_00166b30);
     void Entered(u32 player, u32 mode) RETAIL(FUN_00166ba0);
@@ -263,7 +275,7 @@ struct GalleryItem : LinkItem
 {
     u8 first;
     u8 last;
-    u8 unknown16[2];
+    u8 unused16[2];
     String name;
 
     void Destroy(u32 flags) RETAIL(FUN_001653c8);
@@ -401,14 +413,14 @@ public:
 CHECK_SIZE(SaveChoicesPage, 0x54);
 
 // An item of the save code's pages (retail's vtable D_003063A0): activated it answers the screen (0: the first choice, its id the
-// save slot; 1: back; 2: the third), its text one of the save code's messages
+// save slot; 1: back; 2: continue), its text one of the save code's messages
 struct SaveCodeItem : LinkItem
 {
     enum Answer : u32
     {
         AnswerChoose = 0,
         AnswerBack = 1,
-        AnswerThird = 2,
+        AnswerContinue = 2,
     };
 
     SaveManager* manager;

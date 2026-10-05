@@ -2,12 +2,19 @@
 
 // Sony's libipu: the IPU's set-up, its waits, and its DMA stopped and started again around another use of the IPU
 
+namespace
+{
+// A quantiser matrix: 64 bytes, 4 quadwords
+constexpr u32 MatrixBytes = 0x40;
+constexpr s32 MatrixQuadwords = MatrixBytes / QuadwordBytes;
+}
+
 extern "C"
 {
     // The default intra quantiser matrix, then a row of the flat non-intra one (16s)
-    extern const u8 g_IpuDefaultMatrices[0x50] RETAIL(D_002E8310);
+    extern const u8 g_IpuDefaultMatrices[MatrixBytes + QuadwordBytes] RETAIL(D_002E8310);
     // The VQ colour table (16 colours of 16 bits)
-    extern const u8 g_IpuVqClut[0x20] RETAIL(D_002E8360);
+    extern const u8 g_IpuVqClut[2 * QuadwordBytes] RETAIL(D_002E8360);
 }
 
 namespace
@@ -64,7 +71,7 @@ void sceIpuStopDMA(IpuDmaEnvironment* environment)
     environment->toTadr = *R_EE_D4_TADR;
     environment->toQwc = *R_EE_D4_QWC;
     environment->toChcr = *R_EE_D4_CHCR;
-    while ((*IpuControl & IpuControlOutputCount) != 0)
+    while (IpuControlRegister{*IpuControl}.outputQuadwords != 0)
     {
     }
 
@@ -72,18 +79,18 @@ void sceIpuStopDMA(IpuDmaEnvironment* environment)
     environment->fromMadr = *R_EE_D3_MADR;
     environment->fromQwc = *R_EE_D3_QWC;
     environment->fromChcr = *R_EE_D3_CHCR;
-    environment->bitPosition = *IpuBitPosition;
-    environment->control = *IpuControl;
+    environment->bitPosition.value = *IpuBitPosition;
+    environment->control.value = *IpuControl;
 }
 
 void sceIpuRestartDMA(IpuDmaEnvironment* environment)
 {
-    // IPU_BP: the bit position, the quadwords in the input FIFO and FP (the quadword being read): what the toIPU channel sent and
-    // the IPU didn't read yet goes again
-    u32 bitPosition = environment->bitPosition;
-    u32 unread = ((bitPosition >> 16) & 0x3) + ((bitPosition >> 8) & 0xF);
+    // What the toIPU channel sent and the IPU didn't read yet goes again: the input FIFO's quadwords and the ones the IPU took to
+    // read, from the bit position in them
+    IpuBitPositionRegister position = environment->bitPosition;
+    u32 unread = position.heldQuadwords + position.fifoQuadwords;
     u32 toQwc = environment->toQwc + unread;
-    u32 toMadr = environment->toMadr - (unread << 4);
+    u32 toMadr = environment->toMadr - unread * QuadwordBytes;
     if (environment->fromMadr != 0 && environment->fromQwc != 0)
     {
         *R_EE_D3_MADR = environment->fromMadr;
@@ -92,7 +99,7 @@ void sceIpuRestartDMA(IpuDmaEnvironment* environment)
     }
 
     WaitIpu();
-    *IpuCommand = IpuClearInput | (bitPosition & 0x7F);
+    *IpuCommand = IpuClearInput | position.bitPosition;
     WaitIpu();
     if (toMadr != 0 && toQwc != 0)
     {
@@ -105,15 +112,15 @@ void sceIpuRestartDMA(IpuDmaEnvironment* environment)
 
 s32 sceIpuSync(s32 mode, u16)
 {
-    if (mode == 0)
+    if (mode == IpuSyncWait)
     {
         WaitIpu();
         return 0;
     }
 
-    if (mode == 1)
+    if (mode == IpuSyncPoll)
     {
-        return *IpuControl >> 31;
+        return IpuControlRegister{*IpuControl}.busy;
     }
 
     return 0;
@@ -127,14 +134,14 @@ void sceIpuInit()
     *IpuCommand = IpuClearInput;
     WaitIpu();
     // The intra matrix, then the non-intra one: the same row 4 times
-    for (s32 i = 0; i < 4; i++)
+    for (s32 i = 0; i < MatrixQuadwords; i++)
     {
-        SendQuadword(&g_IpuDefaultMatrices[i * 0x10]);
+        SendQuadword(&g_IpuDefaultMatrices[i * QuadwordBytes]);
     }
 
-    for (s32 i = 0; i < 4; i++)
+    for (s32 i = 0; i < MatrixQuadwords; i++)
     {
-        SendQuadword(&g_IpuDefaultMatrices[0x40]);
+        SendQuadword(&g_IpuDefaultMatrices[MatrixBytes]);
     }
 
     *IpuCommand = IpuSetIntraMatrix;
@@ -142,7 +149,7 @@ void sceIpuInit()
     *IpuCommand = IpuSetNonIntraMatrix;
     WaitIpu();
     SendQuadword(&g_IpuVqClut[0]);
-    SendQuadword(&g_IpuVqClut[0x10]);
+    SendQuadword(&g_IpuVqClut[QuadwordBytes]);
     *IpuCommand = IpuSetVqClut;
     WaitIpu();
     *IpuCommand = IpuSetThresholds;

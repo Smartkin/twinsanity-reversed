@@ -29,9 +29,9 @@ s32 Initialise(s32 channels, void* workMemory);
 s32 Update();
 State GetState();
 
-// The channel's buffer of size bytes. Location 0 lets the platform place it, 1 puts it in the main memory, other values are
-// places in the sound processor's memory, of which only used bytes are used (when not 0)
-void AttachBuffer(s32 channel, u32 size, u32 location, u32 used);
+// The channel's buffer of size bytes (on the PS2's I/O processor). Music plays from soundAddress in the sound processor's
+// memory, soundSize bytes of it (when not 0; the buffer's size otherwise); a channel reading files into memory gives 0 for both
+void AttachBuffer(s32 channel, u32 size, u32 soundAddress, u32 soundSize);
 void DetachBuffer(s32 channel);
 // The memory left for buffers
 u32 FreeBufferMemory();
@@ -46,7 +46,7 @@ void Read(s32 channel, s32 file, u32 offset, u32 size, void* destination);
 // Starts reading them into the sound processor's memory, as the samples of the sound bank
 void ReadSoundBank(s32 channel, u32 bank, s32 file, u32 offset, u32 size);
 bool IsReading(s32 channel);
-// Waits until the channel has read what it started. Returns 1 more than a channel the platform had trouble with, 0 when it
-// had none
+// Waits until the channel has read what it started. Returns 0, or 1 more than a channel whose read the platform left to the
+// caller (never on the PS2, which reads them all itself)
 s32 Wait(s32 channel);
 }

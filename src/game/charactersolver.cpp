@@ -1,6 +1,7 @@
 #include "game/agents.h"
 
 #include "game/animation.h"
+#include "game/attachments.h"
 #include "game/characters.h"
 #include "game/collision.h"
 #include "game/events.h"
@@ -32,72 +33,21 @@ EABI_EXPORT(FUN_00138b00, &CharacterAgent::Probe);
 EABI_EXPORT(FUN_00139678, &CharacterAgent::Solve);
 EABI_EXPORT(FUN_0013a470, &CharacterAgent::SolveLinked);
 
-// An instance's attachments (its kind 6 node): how many instances are linked to it (bits 0-4) and the instances
-struct AttachmentsNode
-{
-    u8 unknown00[0x18];
-    u32 count;
-    u8 unknown1C[4];
-    InstanceContext* linked[16];
-};
-
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 NoHit = Rounded(1e30);
-// 65536ths of a turn in radians
-constexpr f32 RadiansPerUnit = 0x1.921fb6p-14f;
-
-// The kinds of the nodes it uses besides the model and the follow camera: the movement node, the object node, the attachments
-constexpr u32 MovementNodeKind = 0;
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-// The agents' functions told of a contact message and of an instance touched
-constexpr u32 ContactSlot = 9;
-constexpr u32 TouchedSlot = 19;
-
-// Its first integer property: which character it is
-constexpr u32 CharacterProperty = 0;
-constexpr s32 Cortex = 1;
-constexpr s32 Nina = 3;
-// Its second float property: its gravity
-constexpr u32 GravityProperty = 1;
-// Crash, whom Cortex's solver leaves out (the game's progress keeps the characters' instances by the character)
-constexpr u32 Crash = 0;
-
-// The kinds of nodes (a bit each) whose instances the solver collides with: kind 12 (the playable characters') left out while
-// it's thrown, kind 20 added for the two tied together
-constexpr u32 SolidNodeKinds = 0x5B010;
-constexpr u32 ThrownNodeKinds = 0x5A010;
-constexpr u32 LinkedNodeKinds = 0x15B010;
 // A crush: 4 alone, 2 tied, hurt from 8; its contact message (the kinds of hit and the damage)
 constexpr s32 CrushStep = 4;
 constexpr s32 LinkedCrushStep = 2;
 constexpr s32 CrushedAt = 8;
-constexpr u32 CrushHitKinds = 0xC00;
+constexpr u32 CrushHitKinds = HitGeneric | HitCrush;
 constexpr u8 CrushDamage = 100;
 
-// The contact of the hull it rides, left out of the slide's end test (SlideStep's bit 3); the marks of contacts the move touched
-// and of those it was pushed out of (or not, when it would have been)
-constexpr u32 RiddenMark = 0x8;
-constexpr u32 TouchMarks = Contact::Touched | Contact::StoodOn | Contact::Ground;
-constexpr u32 PushMarks = Contact::PushedOut | Contact::PushRefused;
-// The surfaces' bits: contact messages sent to the player (bit 9), soft ground (bit 11: footprints, skid marks, the walls Nina
-// clings to), solid to the player's probes (bit 4)
-constexpr u32 SendsMessageToPlayer = 0x200;
-constexpr u32 SoftSurface = 0x800;
-constexpr u32 SolidToProbes = 0x10;
-// An instance's flags: its collision on (its agent's StateCollisionActive), it moves (what stands on it rides along)
-constexpr u32 CollisionOnFlag = ReferencedObject::FlagSphereContact;
-constexpr u32 MovingFlag = 0x4000;
-// The part's bit 55: no ground ahead of it
-constexpr u64 NoGroundAhead = u64{1} << 55;
-// The jump's bits Nina's wall clinging clears (the part's bits 33, 34, 39 and 40)
-constexpr u64 ClingClearedBits = u64{0x186} << 32;
+// The marks of contacts the move touched and of those it was pushed out of (or not, when it would have been); the contact of the
+// hull it rides (ContactKind::Ridden) is left out of the slide's end test (SlideStep's bit 3)
+constexpr u32 TouchMarks = ContactKind::Touched | ContactKind::StoodOn | ContactKind::Ground;
+constexpr u32 PushMarks = ContactKind::PushedOut | ContactKind::PushRefused;
 // The water an object node is in (its surface ID), none
 constexpr s32 NoWater = -1;
-// The vehicle the wall clinging is
-constexpr u32 WallClingKind = 7;
 
 ReferencedObject* ObjectOf(const Reference* handle)
 {
@@ -125,44 +75,48 @@ bool IsPlaced(const ExitPointAnimation* exit)
 
 u32 AttackKind(const AgentPart* part)
 {
-    return static_cast<u8>(static_cast<const BasicAgentPart*>(part)->bits);
+    return static_cast<const BasicAgentPart*>(part)->bits.attackKind;
 }
 
 // The attack kinds the solver looks at: body slams, spins, being thrown
 bool IsSlam(u32 kind)
 {
-    return kind == 7 || kind == 11;
+    return kind == AttackSlam || kind == AttackSlamVariant;
 }
 
 bool IsSpin(u32 kind)
 {
-    return kind == 6 || kind == 10;
+    return kind == AttackSpin || kind == AttackSpinVariant;
 }
 
 bool IsThrown(u32 kind)
 {
-    return kind == 13 || kind == 14;
+    return kind == AttackThrownFromSpin || kind == AttackThrownFromJump;
+}
+
+s32 CharacterKindOf(const CharacterAgent* agent)
+{
+    return agent->properties->GetInt(CharacterKindProperty);
 }
 
 bool IsCrouching(const AgentPart* part)
 {
-    return (static_cast<const CharacterPart*>(part)->moveBits & CharacterPart::Crouching) != 0;
+    return static_cast<const CharacterPart*>(part)->moveBits.crouching != 0;
 }
 
 bool IsOnGround(const AgentPart* part)
 {
-    return (static_cast<const CreaturePart*>(part)->flags & CreaturePart::FlagOnGround) != 0;
+    return static_cast<const CreaturePart*>(part)->flags.onGround != 0;
 }
 
 u32 StandingOf(CharacterAgent* agent)
 {
-    return agent->state >> CharacterAgent::StandingShift & CharacterAgent::StandingMask;
+    return agent->state.standing;
 }
 
 void SetStanding(CharacterAgent* agent, u32 standing)
 {
-    constexpr u64 Mask = u64{CharacterAgent::StandingMask} << CharacterAgent::StandingShift;
-    agent->StateBits() = (agent->StateBits() & ~Mask) | u64{standing} << CharacterAgent::StandingShift;
+    agent->state.standing = standing;
 }
 
 // The 0x34 bytes the game copies of a hit (the struct is padded to 0x40)
@@ -172,17 +126,17 @@ void CopyHit(CollisionHit* to, const CollisionHit* from)
     to->vertices[1] = from->vertices[1];
     to->vertices[2] = from->vertices[2];
     to->surface = from->surface;
-    to->unknown32 = from->unknown32;
+    to->unused32 = from->unused32;
 }
 
 bool SendsMessage(const CollisionSurface* surface)
 {
-    return (surface->collisionMask & SendsMessageToPlayer) != 0;
+    return surface->flags.sendsContactMessageToPlayer != 0;
 }
 
 void TouchedVirtual(CharacterAgent* agent, InstanceContext* other, const Vector4* normal)
 {
-    CallVirtual<void>(agent, agent->vtable, TouchedSlot, other, normal);
+    CallVirtual<void>(agent, agent->vtable, Agent::TouchedSlot, other, normal);
 }
 
 f32 LengthSquared(const Vector4& vector)
@@ -193,7 +147,7 @@ f32 LengthSquared(const Vector4& vector)
 // The game controller in the title or watching a cutscene (no touches then)
 bool Watching()
 {
-    u32 state = G_GameController_00309914->states >> GameController::CurrentShift & GameController::StateMask;
+    u32 state = g_AgentsGameController->State();
     return state == GameController::StateWatching || state == GameController::StateTitle;
 }
 
@@ -202,7 +156,7 @@ const CollisionHull* SolverHull(CharacterAgent* agent)
 {
     AgentPart* part = agent->part;
     bool crouched = false;
-    if (agent->crouch != nullptr && (agent->crouch->bits & CrouchController::BitCanCrouch) != 0)
+    if (agent->crouch != nullptr && agent->crouch->bits.canCrouch != 0)
     {
         crouched = IsCrouching(part);
     }
@@ -218,7 +172,7 @@ const CollisionHull* SolverHull(CharacterAgent* agent)
 // The instance's place moved by a vector unless it's none (each coordinate within 5e-05), the instance queued when it moved
 bool MoveInstanceBy(InstanceContext* instance, const Vector4* move)
 {
-    constexpr f32 Still = Rounded(5e-05);
+    constexpr f32 Still = Epsilon;
     if (__builtin_fabsf(move->x) <= Still && __builtin_fabsf(move->y) <= Still && __builtin_fabsf(move->z) <= Still)
     {
         return false;
@@ -226,7 +180,7 @@ bool MoveInstanceBy(InstanceContext* instance, const Vector4* move)
 
     ObjectPlace* place = instance->place;
     place->SyncPosition();
-    place->bits = (place->bits | ObjectPlace::BitMoved) & ~u64{ObjectPlace::BitMatrixMoved};
+    place->MarkMoved();
     place->position.x += move->x;
     place->position.y += move->y;
     place->position.z += move->z;
@@ -309,30 +263,30 @@ void ProbeInstance(CharacterAgent* agent, const Vector4* start, const Vector4* e
     constexpr f32 Wall = Rounded(0.707);
     constexpr u16 MostFound = 20;
     void* found[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = found;
     query.count = 0;
     query.most = MostFound;
-    query.distance = NoHit;
-    query.bits = InstanceRayHit::BitAllWanted;
-    query.wantedFlags = CollisionOnFlag;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.distance = Infinite;
+    query.bits.value = InstanceQueryBits::AllWanted;
+    query.wantedFlags = ReferencedObjectFlags::CollisionActive;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.skipped[0] = nullptr;
     query.skipped[1] = nullptr;
     query.instance = nullptr;
     // The cast fills the face it hit through its last argument
-    if (SegmentHitsInstances(agent->instance->chunk, start, end, &query, ThrownNodeKinds, nullptr, hitPoint,
+    if (SegmentHitsInstances(agent->instance->chunk, start, end, &query, SolidObjectNodeKinds, nullptr, hitPoint,
                              reinterpret_cast<std::uintptr_t>(triangle)) == 0)
     {
         return;
     }
 
     auto* hit = static_cast<InstanceContext*>(query.instance);
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, AttachmentsKind));
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, NodeAttachments));
     bool skipped = hit == ObjectOf(agent->pushedBody);
     if (attachments != nullptr)
     {
-        u32 count = attachments->count & 0x1F;
+        u32 count = attachments->LinkedCount();
         for (u32 index = 0; index < count; index++)
         {
             if (attachments->linked[index] == hit)
@@ -349,7 +303,7 @@ void ProbeInstance(CharacterAgent* agent, const Vector4* start, const Vector4* e
 
     u32 mode = agent->MoveModeOf();
     AgentNode* node = AgentNodeOf(hit);
-    if (mode != CharacterAgent::MoveNone && node != nullptr && (node->agent->properties->state & 1u << mode) == 0)
+    if (mode != CharacterAgent::MoveNone && node != nullptr && (node->agent->properties->state.value & 1u << mode) == 0)
     {
         return;
     }
@@ -409,7 +363,7 @@ void CharacterAgent::MarkUnpushable(ContactSet* contacts, u32 mode)
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         ::Contact* contact = &contacts->solid.contacts[index];
-        if ((contact->kind & ::Contact::KindHull) == 0)
+        if (contact->kind.hull == 0)
         {
             continue;
         }
@@ -422,7 +376,7 @@ void CharacterAgent::MarkUnpushable(ContactSet* contacts, u32 mode)
         }
 
         // An agent that stops the move is pushed out of, unless it's a character being thrown
-        if ((node->agent->properties->state & modeBit) != 0)
+        if ((node->agent->properties->state.value & modeBit) != 0)
         {
             CharacterAgent* character = CharacterAgentOf(other);
             if (character == nullptr)
@@ -436,7 +390,7 @@ void CharacterAgent::MarkUnpushable(ContactSet* contacts, u32 mode)
             }
         }
 
-        contact->kind |= ::Contact::NoPush;
+        contact->kind.noPush = 1;
     }
 }
 
@@ -469,7 +423,7 @@ u32 CharacterAgent::RideMove(Vector4* move, f32* turn)
     VuMultiplyMatrices(&rideMatrix, &matrix, &turned);
     s32 angle;
     AngleOfSine(turned.m[0][2], &angle);
-    *turn = static_cast<f32>(-angle) * RadiansPerUnit;
+    *turn = static_cast<f32>(-angle) * AngleToRadians;
     rideTurn = *turn;
     return 1;
 }
@@ -479,22 +433,22 @@ void CharacterAgent::TellTouched(ContactSet* contacts)
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         ::Contact* contact = &contacts->solid.contacts[index];
-        u32 kind = contact->kind;
-        if ((kind & ::Contact::KindHull) == 0)
+        ContactKind kind = contact->kind;
+        if (kind.hull == 0)
         {
             continue;
         }
 
         InstanceContext* other = contact->instance;
         bool told = false;
-        if ((kind & ::Contact::StoodOn) != 0)
+        if (kind.stoodOn != 0)
         {
             Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
             TouchedVirtual(this, other, &up);
             told = true;
         }
 
-        if ((kind & ::Contact::Ground) != 0)
+        if (kind.ground != 0)
         {
             Vector4 down = {0.0f, -1.0f, 0.0f, 1.0f};
             TouchedVirtual(this, other, &down);
@@ -506,17 +460,17 @@ void CharacterAgent::TellTouched(ContactSet* contacts)
             continue;
         }
 
-        if ((kind & ::Contact::Touched) != 0)
+        if (kind.touched != 0)
         {
             TouchedVirtual(this, other, &g_DefaultBox.min);
         }
 
-        if ((kind & ::Contact::PushRefused) != 0)
+        if (kind.pushRefused != 0)
         {
             TouchedVirtual(this, other, &g_DefaultBox.min);
         }
 
-        if ((kind & ::Contact::PushedOut) != 0)
+        if (kind.pushedOut != 0)
         {
             TouchedVirtual(this, other, &g_DefaultBox.min);
         }
@@ -534,11 +488,11 @@ void CharacterAgent::SendSurfaceMessages(ContactSet* contacts)
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         ::Contact* contact = &contacts->solid.contacts[index];
-        u32 kind = contact->kind;
+        ContactKind kind = contact->kind;
         CollisionSurface* surface;
-        if ((kind & ::Contact::KindTriangle) != 0)
+        if (kind.triangle != 0)
         {
-            if ((kind & TouchMarks) == 0)
+            if ((kind.value & TouchMarks) == 0)
             {
                 continue;
             }
@@ -547,7 +501,7 @@ void CharacterAgent::SendSurfaceMessages(ContactSet* contacts)
         }
         else
         {
-            if ((kind & (TouchMarks | ::Contact::PushedOut)) == 0)
+            if ((kind.value & (TouchMarks | ContactKind::PushedOut)) == 0)
             {
                 continue;
             }
@@ -569,18 +523,18 @@ void CharacterAgent::TouchOthers(ContactSet* contacts)
     place->SyncPosition();
     Vector4 middle = place->position;
     middle.y += heightOffset;
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     bool inWater = false;
     for (s32 index = 0; index < contacts->others.count; index++)
     {
         ::Contact* contact = &contacts->others.contacts[index];
         InstanceContext* other = contact->instance;
-        if ((PointInsidePlanes(0.0f, &contact->space, &middle, &contact->outside) & 0xFF) == 0)
+        if (static_cast<u8>(PointInsidePlanes(0.0f, &contact->space, &middle, &contact->outside)) == 0)
         {
             continue;
         }
 
-        if ((contact->kind & ::Contact::KindTriangle) == 0)
+        if (contact->kind.triangle == 0)
         {
             TouchedVirtual(this, other, &g_DefaultBox.min);
             continue;
@@ -603,7 +557,7 @@ void CharacterAgent::TouchOthers(ContactSet* contacts)
 
     if (!inWater)
     {
-        node->unknown134 = NoWater;
+        node->waterSurface = NoWater;
     }
 }
 
@@ -632,13 +586,13 @@ void CharacterAgent::ClingToWall(ContactSet* contacts)
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         ::Contact* contact = &contacts->solid.contacts[index];
-        if ((contact->kind & ::Contact::KindTriangle) == 0)
+        if (contact->kind.triangle == 0)
         {
             continue;
         }
 
         CollisionHit* triangle = &contacts->solid.triangles[index];
-        if ((GetTriangleSurface(triangle)->collisionMask & SoftSurface) == 0)
+        if (GetTriangleSurface(triangle)->flags.soft == 0)
         {
             continue;
         }
@@ -674,46 +628,48 @@ void CharacterAgent::ClingToWall(ContactSet* contacts)
         Vector4 bottom = top;
         top.y += Above;
         bottom.y -= GroundBelow;
-        if (GetCollisionCheck(instance->chunk, &top, &bottom, SolidToProbes, nullptr, nullptr, nullptr) != 0)
+        if (GetCollisionCheck(instance->chunk, &top, &bottom, SurfaceFlags::SolidToPlayerProbes, nullptr, nullptr, nullptr) != 0)
         {
             continue;
         }
 
-        f32 gravity = properties->GetFloat(GravityProperty);
+        f32 gravity = properties->GetFloat(JumpController::PropGravity);
         auto* character = static_cast<CharacterPart*>(part);
-        character->Bits() &= ~ClingClearedBits;
-        character->Gravity() = gravity;
+        // The jump's bits the wall clinging clears
+        character->moveBits.jumping = 0;
+        character->moveBits.doubleJump = 0;
+        character->moveBits.unusedJump = 0;
+        character->moveBits.flyingKick = 0;
+        character->gravity = gravity;
         Vector4 slide = {wall.x * SlideSpeed, wall.y * SlideSpeed, wall.z * SlideSpeed, 1.0f};
         velocity = slide;
-        SetVehicle(WallClingKind, nullptr, 0);
+        SetVehicle(Vehicle::KindWallCling, nullptr, 0);
         static_cast<WallClingVehicle*>(vehicle)->wallNormal = wall;
     }
 }
 
 u32 CharacterAgent::CrushedAgents(ContactSet* contacts)
 {
-    // Agents whose properties' state has bit 11 aren't crushed; the others get attack kind 8 (the slide's)
-    constexpr u32 NotCrushed = 0x800;
-    constexpr u32 CrushAttack = 8;
+    // Agents solid to slides aren't crushed; the others get the slide's attack
     u32 none = 1;
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         ::Contact* contact = &contacts->solid.contacts[index];
-        if ((contact->kind & ::Contact::KindHull) == 0 || (contact->kind & PushMarks) == 0)
+        if (contact->kind.hull == 0 || (contact->kind.value & PushMarks) == 0)
         {
             continue;
         }
 
         InstanceContext* other = contact->instance;
         AgentNode* node = AgentNodeOf(other);
-        if (node == nullptr || (node->agent->properties->state & NotCrushed) != 0)
+        if (node == nullptr || node->agent->properties->state.solidToSlide != 0)
         {
             continue;
         }
 
         u32 kinds = KindOf(other);
         none = 0;
-        QueueAttack(other, CrushAttack, instance, kinds);
+        QueueAttack(other, AttackSlide, instance, kinds);
     }
 
     return none;
@@ -758,10 +714,10 @@ void CharacterAgent::Crushed()
 
     ContactMessage message;
     ContactMessage::Construct(&message);
-    message.word |= CrushHitKinds;
+    message.hitKinds |= CrushHitKinds;
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
-    message.byte = CrushDamage;
+    message.damage = CrushDamage;
     message.point = *RowOf(&place->matrix, 3);
     CallVirtual<void>(this, vtable, ContactSlot, &message, instance, 1u);
 }
@@ -775,14 +731,14 @@ void CharacterAgent::KeepStanding(s32 contact, const Vector4* point, const Vecto
     if (contact != NoContact)
     {
         ::Contact* ground = &contacts->solid.contacts[contact];
-        if ((ground->kind & ::Contact::KindHull) != 0)
+        if (ground->kind.hull != 0)
         {
             AssignReference(&standingOn, ground->instance);
             standingHull = ground->hullIndex;
             standingStamp = HullStamp(ObjectOf(standingOn));
             u32 standing = StandingHull;
             // A moving instance's hull is ridden while its matrix isn't scaled (its axes' lengths within 0.1 of 1)
-            if ((contacts->solid.contacts[contact].instance->flags & MovingFlag) != 0)
+            if (contacts->solid.contacts[contact].instance->flags.carriesRiders)
             {
                 CollisionHull* hull;
                 GetInstanceHull(CollisionOf(ObjectOf(standingOn)), standingHull, &hull, &rideMatrix);
@@ -816,16 +772,16 @@ void CharacterAgent::KeepStanding(s32 contact, const Vector4* point, const Vecto
         groundNormal = *normal;
         if (move->y < Rising)
         {
-            static_cast<CreaturePart*>(part)->flags |= CreaturePart::FlagOnGround;
+            static_cast<CreaturePart*>(part)->flags.onGround = 1;
         }
         else
         {
-            static_cast<CreaturePart*>(part)->flags &= ~CreaturePart::FlagOnGround;
+            static_cast<CreaturePart*>(part)->flags.onGround = 0;
         }
     }
     else
     {
-        static_cast<CreaturePart*>(part)->flags &= ~CreaturePart::FlagOnGround;
+        static_cast<CreaturePart*>(part)->flags.onGround = 0;
     }
 
     if (IsOnGround(part))
@@ -844,13 +800,13 @@ void CharacterAgent::Probe(f32 seconds, const Vector4* move, Vector4* out)
     constexpr u32 SquashedProbe = 3;
     constexpr f32 Squashing = Rounded(0.01);
     constexpr f32 SquashPerPush = 5.0f;
-    constexpr f32 Pushing = Rounded(5e-05);
+    constexpr f32 Pushing = Epsilon;
     constexpr f32 PushPerSecond = 5.0f;
     AssignReference(&probedInstance, nullptr);
     // No probes while its motion drives it (Controlled: its controls node's bit 0) or when it's no character
     if (Controlled() == 0)
     {
-        auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNode::NodeKind));
+        auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
         OgiAnimator* animator = model->animator;
         ObjectPlace* place = instance->place;
         place->SyncPosition();
@@ -952,7 +908,7 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
     constexpr f32 Stuck = Rounded(0.2);
     ContactSet* contacts = BeginContacts();
     auto* character = static_cast<CharacterPart*>(part);
-    u32 onGround = character->flags >> 2 & 1;
+    u32 onGround = character->flags.onGround;
     ChunkData* chunk = instance->chunk;
     ObjectPlace* place = instance->place;
     place->SyncPosition();
@@ -979,38 +935,40 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
     const CollisionHull* hull = SolverHull(this);
     if (GatherTriangleContacts(contacts, chunk, &from, &motion, hull) != 0)
     {
-        auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, Node16));
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
         if (follow != nullptr)
         {
-            follow->timer = 1.0f;
+            follow->unused760 = 1.0f;
         }
     }
 
-    // Itself, Cortex's partner and what's attached to it left out (16 attachments at most)
-    InstanceContext* skipped[2 + 31];
+    // Itself, Cortex's partner (Crash: the game's progress keeps the characters' instances by the character) and what's
+    // attached to it left out (16 attachments at most, room for as many as the count's bits hold)
+    InstanceContext* skipped[2 + AttachmentsNode::CountMask];
     s32 skippedCount = 0;
     skipped[skippedCount++] = instance;
-    if (properties->GetInt(CharacterProperty) == Cortex)
+    if (CharacterKindOf(this) == CharacterCortex)
     {
-        skipped[skippedCount++] = static_cast<InstanceContext*>(ObjectOf(G_GameController_00309914->progress.characters[Crash]));
+        skipped[skippedCount++] =
+            static_cast<InstanceContext*>(ObjectOf(g_AgentsGameController->progress.characters[CharacterCrash]));
     }
 
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, AttachmentsKind));
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, NodeAttachments));
     if (attachments != nullptr)
     {
-        for (u32 index = 0; index < (attachments->count & 0x1F); index++)
+        for (u32 index = 0; index < attachments->LinkedCount(); index++)
         {
             skipped[skippedCount++] = attachments->linked[index];
         }
     }
 
-    u32 kinds = IsThrown(AttackKind(character)) ? ThrownNodeKinds : SolidNodeKinds;
+    u32 kinds = IsThrown(AttackKind(character)) ? SolidObjectNodeKinds : SolidNodeKinds;
     GatherInstanceContacts(contacts, chunk, &from, &motion, &kinds, skipped, skippedCount, hull);
     MarkUnpushable(contacts, mode);
     if (ObjectOf(standingOn) != nullptr && StandingOf(this) == StandingRidden &&
         RideMoving < __builtin_sqrtf(LengthSquared(rideMove)))
     {
-        MarkInstanceContact(contacts, static_cast<InstanceContext*>(ObjectOf(standingOn)), standingHull, RiddenMark);
+        MarkInstanceContact(contacts, static_cast<InstanceContext*>(ObjectOf(standingOn)), standingHull, ContactKind::Ridden);
     }
 
     // In the air, lifted by its height offset's change where there's room
@@ -1028,7 +986,7 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
     {
         Vector4 liftBy = {0.0f, lift, 0.0f, 1.0f};
         Vector4 lifted = {from.x + liftBy.x, from.y + liftBy.y, from.z + liftBy.z, 1.0f};
-        if (PointInsideSolidContact(0.0f, contacts, &lifted, ::Contact::SphereBit) == 0)
+        if (PointInsideSolidContact(0.0f, contacts, &lifted, ContactKind::SphereBit) == 0)
         {
             from.y += lift;
             heightOffset += lift;
@@ -1093,7 +1051,7 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
     }
 
     // A push of the walk's bounced off what the move went into
-    if ((walk->bits & WalkController::StateMask) == WalkController::StatePushed)
+    if (walk->bits.state == WalkController::StatePushed)
     {
         Vector4 bounce = {step.x - motion.x, step.y - motion.y, step.z - motion.z, 1.0f};
         if (Bounced < LengthSquared(bounce))
@@ -1107,7 +1065,7 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
     }
 
     TellTouched(contacts);
-    if ((instance->flags & CollisionOnFlag) != 0 && !Watching())
+    if (instance->flags.collisionActive && !Watching())
     {
         SendSurfaceMessages(contacts);
         TouchOthers(contacts);
@@ -1115,19 +1073,19 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
 
     PushBodies(seconds, contacts);
     // Ground ahead of it on the ground (its facing as the velocity), unless it crouches, slams or spins
-    u64 noGround = 0;
-    if (IsOnGround(part) && (character->moveBits & CharacterPart::Crouching) == 0)
+    u32 noGround = 0;
+    if (IsOnGround(part) && character->moveBits.crouching == 0)
     {
         u32 kind = AttackKind(character);
         if (!IsSlam(kind) && !IsSpin(kind))
         {
             ObjectPlace* facing = instance->place;
             RotateAndTranslate(facing);
-            noGround = GroundAhead(contacts, reinterpret_cast<const PhysicsBody*>(facing)) == 0;
+            noGround = GroundAhead(contacts, reinterpret_cast<const MovingPoint*>(facing)) == 0;
         }
     }
 
-    character->Bits() = (character->Bits() & ~NoGroundAhead) | noGround << 55;
+    character->moveBits.noGroundAhead = noGround;
     // Crushed when a big push moved it less than a fifth of it
     if (Pushing < pushSquared)
     {
@@ -1144,7 +1102,7 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
         }
     }
 
-    if (properties->GetInt(CharacterProperty) == Nina)
+    if (CharacterKindOf(this) == CharacterNina)
     {
         ClingToWall(contacts);
     }
@@ -1159,7 +1117,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
     constexpr f32 PushScale = Rounded(1.001);
     constexpr f32 Pushed = 1.0f;
     constexpr f32 Crushing = 0.25f;
-    constexpr f32 Leaning = Rounded(5e-05);
+    constexpr f32 Leaning = Epsilon;
     constexpr f32 SwingLength = Rounded(1.3);
     constexpr f32 CastAbove = 0.5f;
     constexpr f32 CastBelow = Rounded(0.05);
@@ -1170,7 +1128,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
     constexpr f32 Flat = Rounded(0.99);
     constexpr f32 Pull = 15.0f;
     auto* character = static_cast<CharacterPart*>(part);
-    u32 onGround = character->flags >> 2 & 1;
+    u32 onGround = character->flags.onGround;
     CharacterAgent* second = link->Second();
     f32 stepCount = static_cast<f32>(static_cast<s32>(steps));
     f32 share = 1.0f / stepCount;
@@ -1211,7 +1169,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
     GrowBox(__builtin_sqrtf(LengthSquared(*move)) + Margin, &box);
     GatherBoxTriangleContacts(contacts, chunk, &box, hull);
     InstanceContext* skipped[2] = {instance, second->instance};
-    u32 kinds = LinkedNodeKinds;
+    u32 kinds = SolidOrProjectileNodeKinds;
     Vector4 both = {from.x + swing->x, from.y + swing->y, from.z + swing->z, 1.0f};
     Vector4 middle = {both.x * 0.5f, both.y * 0.5f, both.z * 0.5f, 1.0f};
     Vector4 around = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1283,7 +1241,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
         if (yaw != 0)
         {
             turning->SyncRotation();
-            turning->bits = (turning->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+            turning->MarkTurned();
             s32 angle = yaw;
             Vector4 rotation;
             RotationFromYaw(&rotation, &angle);
@@ -1298,7 +1256,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
         MarkUnpushable(contacts, mode);
         if (ObjectOf(standingOn) != nullptr && StandingOf(this) == StandingRidden)
         {
-            MarkInstanceContact(contacts, static_cast<InstanceContext*>(ObjectOf(standingOn)), standingHull, RiddenMark);
+            MarkInstanceContact(contacts, static_cast<InstanceContext*>(ObjectOf(standingOn)), standingHull, ContactKind::Ridden);
         }
 
         // Retail's one vector for the place pushed out, the push's direction and the move's ground normal: a move that finds no
@@ -1342,7 +1300,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
         }
 
         TellTouched(contacts);
-        if ((instance->flags & CollisionOnFlag) != 0 && !Watching())
+        if (instance->flags.collisionActive && !Watching())
         {
             SendSurfaceMessages(contacts);
             TouchOthers(contacts);
@@ -1368,7 +1326,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
         nextSwing.z = target.z;
         nextSwing.y = swing->y + swingVelocity->y * seconds;
         Vector4 nextVelocity = *swingVelocity;
-        if (drop == NoHit)
+        if (drop == Infinite)
         {
             nextVelocity.y = nextVelocity.y - seconds * SwingGravity;
         }
@@ -1378,7 +1336,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
             nextVelocity.y = 0.0f;
             if (under != nullptr)
             {
-                void* movement = GetGameNode(&under->nodes, MovementNodeKind);
+                void* movement = GetGameNode(&under->nodes, NodeMovement);
                 Vector4 delta = {0.0f, 0.0f, 0.0f, 1.0f};
                 if (movement != nullptr)
                 {
@@ -1406,7 +1364,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
                 nextVelocity.y = swingVelocity->y;
             }
 
-            if (drop == NoHit)
+            if (drop == Infinite)
             {
                 nextSwing.y = highest;
             }
@@ -1452,7 +1410,7 @@ void CharacterAgent::SolveLinked(f32 seconds, const Vector4* move, const f32* tu
         secondLink->swingVelocity = nextVelocity;
     }
 
-    character->Bits() &= ~NoGroundAhead;
+    character->moveBits.noGroundAhead = 0;
     EndContacts();
 }
 

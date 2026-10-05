@@ -1,5 +1,6 @@
 #include "game/behaviours.h"
 
+#include "game/attachments.h"
 #include "game/clock.h"
 #include "game/instances.h"
 #include "game/memory.h"
@@ -9,41 +10,12 @@
 #include "game/reference.h"
 #include "game/resources.h"
 
-extern "C"
-{
-    // The instances the starters' receivers' indexes stand for
-    extern Reference* g_ReceiverInstances[256] RETAIL(G_InstanceContextRefsCounterArray);
-}
-
 namespace
 {
 // The best score of no body
-constexpr f32 NoScore = -0x1.93e594p+99f;
-// A condition's bit 16: the body passes below the threshold
-constexpr u32 ConditionInverted = 0x10000;
-// The state bits: the completion body (the first, run when the packet or child behaviour ends), and the interrupting states;
-// the child behaviour in the high half (0xFFFF none), a slot of the object's behaviours when bit 12 is set
-constexpr u32 StateCompletion = 0x400;
-constexpr u32 StateInterrupting = 0x800;
-constexpr u32 StateChildSlot = 0x1000;
-constexpr u16 NoChild = 0xFFFF;
-// A body's bit 8: it restarts the state it jumps to
-constexpr u32 BodyRestarts = 0x100;
-// A command's vtable function running it, a condition's checking it
-constexpr u32 ExecuteSlot = 3;
-constexpr u32 CheckSlot = 2;
-// The agent node's vtable functions: whether it takes packets, no packet, a packet started
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 NoPacketSlot = 42;
-constexpr u32 PacketStartedSlot = 43;
-// A link's node keeps the instances it links 0x20 bytes in
-constexpr u32 LinksNodeKind = 6;
-constexpr u32 LinksNodeInstances = 0x20;
-
-u16 ChildOf(const GraphState* state)
-{
-    return static_cast<u16>(state->bits >> 16);
-}
+constexpr f32 NoScore = -Infinite;
+// A level's destructor
+constexpr u32 LevelDestroySlot = 1;
 
 GraphState* StartPacket(GraphState* state, BehaviourRunner* runner)
 {
@@ -52,8 +24,8 @@ GraphState* StartPacket(GraphState* state, BehaviourRunner* runner)
     {
         runner->packet = packet;
         GameNode* node = runner->agentNode;
-        CallVirtual<void>(node, node->vtable, PacketStartedSlot, runner);
-        runner->flags |= BehaviourRunner::FlagPacketRuns;
+        CallVirtual<void>(node, node->vtable, ObjectNode::PacketStartedSlot, runner);
+        runner->flags.packetRuns = 1;
     }
 
     return state;
@@ -64,21 +36,21 @@ StateBody* BestBody(GraphState* state, GameNode* node, BehaviourLevel* level, Ti
 {
     f32 best = NoScore;
     StateBody* chosen = nullptr;
-    g_CheckedBody = (state->bits & StateCompletion) != 0 ? state->bodies->next : state->bodies;
+    g_CheckedBody = state->bits.hasCompletion != 0 ? state->bodies->next : state->bodies;
     for (; g_CheckedBody != nullptr; g_CheckedBody = g_CheckedBody->next)
     {
         ScriptCondition* condition = g_CheckedBody->condition;
         g_CheckedCondition = condition;
-        f32 result = CallVirtual<f32>(condition, condition->vtable, CheckSlot, node, level, &clock->time);
+        f32 result = CallVirtual<f32>(condition, condition->vtable, ScriptCondition::CheckSlot, node, level, &clock->time);
         condition = g_CheckedCondition;
-        f32 threshold = condition->values[1];
-        bool inverted = (condition->bits & ConditionInverted) != 0;
+        f32 threshold = condition->threshold;
+        bool inverted = condition->bits.inverted != 0;
         if (inverted ? !(result < threshold) : !(threshold < result))
         {
             continue;
         }
 
-        f32 score = (inverted ? threshold - result : result - threshold) * condition->values[2];
+        f32 score = (inverted ? threshold - result : result - threshold) * condition->weight;
         if (best < score)
         {
             chosen = g_CheckedBody;
@@ -92,16 +64,16 @@ StateBody* BestBody(GraphState* state, GameNode* node, BehaviourLevel* level, Ti
 
 BehaviourLevel* BehaviourLevel::Construct(BehaviourLevel* level)
 {
-    level->bits &= ~Finished;
-    level->bits &= ~Restart;
+    level->bits.finished = 0;
+    level->bits.restart = 0;
     level->vtable = g_BehaviourLevelVTable;
-    reinterpret_cast<u16*>(&level->bits)[1] = 0xFFFF;
+    level->bits.message = NoMessage;
     level->graph = nullptr;
-    level->pendingBody = nullptr;
+    level->elseBody = nullptr;
     level->state = nullptr;
     level->entered = nullptr;
     level->time = 0;
-    reinterpret_cast<u8*>(&level->bits)[0] = 0;
+    level->bits.index = 0;
     return level;
 }
 
@@ -114,36 +86,44 @@ void BehaviourLevel::Destroy(u32 destroyFlags)
     }
 }
 
-void BehaviourLevel::Start(GraphData* data, TimeClock* clock)
+void BehaviourLevel::Start(GraphData* started, TimeClock* clock)
 {
-    graph = data;
-    state = data != nullptr ? data->start : nullptr;
+    graph = started;
+    state = started != nullptr ? started->start : nullptr;
     entered = nullptr;
-    bits &= ~Finished;
-    bits &= ~Restart;
+    bits.finished = 0;
+    bits.restart = 0;
     time = clock->time;
     child = nullptr;
-    pendingBody = nullptr;
-    reinterpret_cast<u8*>(&bits)[0] = 0;
+    elseBody = nullptr;
+    bits.index = 0;
 }
 
 BehaviourRunner* BehaviourRunner::Construct(BehaviourRunner* runner, GameNode* agentNode, u32 slot)
 {
-    constexpr u32 ClearedFlags = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | SlotMask << SlotShift | FlagInterruptFromLevel;
     runner->agentNode = agentNode;
-    runner->unknown24 = 0xFFFF;
+    runner->previousStarter = NoScriptId;
     runner->packet = nullptr;
-    runner->interruptLevel = 0xFF;
-    runner->flags = (runner->flags & ~ClearedFlags) | (slot & SlotMask) << SlotShift;
+    runner->interruptLevel = NoLevel;
+    BehaviourRunnerFlags flags = runner->flags;
+    flags.unused0 = 0;
+    flags.runLevels = 0;
+    flags.unused2 = 0;
+    flags.packetEnded = 0;
+    flags.packetWaiting = 0;
+    flags.packetRuns = 0;
+    flags.slot = slot;
+    flags.interruptFromLevel = 0;
+    runner->flags = flags;
     runner->lastPacket = nullptr;
     runner->tolerance = 0.0f;
     runner->receivers = nullptr;
     runner->nextStarter = nullptr;
     runner->nextOriginator = nullptr;
     runner->originator = nullptr;
-    runner->unknown26 = 0;
+    runner->unused26 = 0;
     runner->depth = 0;
-    runner->unknown4C = 0;
+    runner->unused4C = 0;
     runner->syncUnit = 0;
     runner->packetEnd = 0;
     runner->packetStart = 0;
@@ -160,15 +140,15 @@ BehaviourRunner* BehaviourRunner::Construct(BehaviourRunner* runner, GameNode* a
 
 GraphState* RunBody(StateBody* body, TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level)
 {
-    level->pendingBody = nullptr;
+    level->elseBody = nullptr;
     for (ScriptCommand* command = body->commands; command != nullptr; command = command->next)
     {
-        CallVirtual<void>(command, command->vtable, ExecuteSlot, clock, runner, level);
+        CallVirtual<void>(command, command->vtable, ScriptCommand::ExecuteSlot, clock, runner, level);
     }
 
-    if ((body->bits & BodyRestarts) != 0)
+    if (body->bits.restarts != 0)
     {
-        level->bits |= BehaviourLevel::Restart;
+        level->bits.restart = 1;
     }
 
     level->time = clock->time;
@@ -188,26 +168,25 @@ u32 StartStatePacket(GraphState* state, BehaviourRunner* runner)
 
 GraphData* ChildGraphOf(GraphState* state, void* object)
 {
-    if ((state->bits & StateChildSlot) != 0)
+    if (state->bits.childIsSlot != 0)
     {
         u16 id;
-        GetObjectBehaviourId(&id, static_cast<GameObject*>(object), ChildOf(state));
-        auto* starter = id != 0xFFFF ? static_cast<ScriptStarter*>(g_ScriptTable->items[id & 0x7FFF]) : nullptr;
+        GetObjectBehaviourId(&id, static_cast<GameObject*>(object), state->bits.child);
+        auto* starter = id != NoScriptId ? static_cast<ScriptStarter*>(g_ScriptTable->items[id & ResourceIndexMask]) : nullptr;
         return starter != nullptr ? starter->assigners[0]->graph : nullptr;
     }
 
-    u16 id = ChildOf(state);
-    auto* graph = id != 0xFFFF ? static_cast<ScriptGraph*>(g_ScriptTable->items[id & 0x7FFF]) : nullptr;
+    u16 id = state->bits.child;
+    auto* graph = id != NoScriptId ? static_cast<ScriptGraph*>(g_ScriptTable->items[id & ResourceIndexMask]) : nullptr;
     return graph->data;
 }
 
 void BehaviourRunner::Unwind(BehaviourLevel* level)
 {
-    u8 index = static_cast<u8>(level->bits);
+    u8 index = level->bits.index;
     for (s32 above = index + 1; above < depth; above++)
     {
-        BehaviourLevel* stacked = levels[above];
-        stacked->bits = (stacked->bits & ~BehaviourLevel::Finished) | BehaviourLevel::Finished;
+        levels[above]->bits.finished = 1;
         levels[above]->state = nullptr;
     }
 
@@ -231,7 +210,7 @@ void BehaviourRunner::EnterChild(u32 index, GraphState* state)
     void* object = source != nullptr ? SourceObject(source) : objectNode->object;
     GraphData* graph = ChildGraphOf(state, object);
     level->Start(graph, GetContextClock(agentNode->owner));
-    reinterpret_cast<u8*>(&level->bits)[0] = at;
+    level->bits.index = at;
     level->time = parent->time;
     parent->child = graph;
     depth = at;
@@ -239,12 +218,12 @@ void BehaviourRunner::EnterChild(u32 index, GraphState* state)
 
 void BehaviourRunner::EndPacket()
 {
-    flags &= ~FlagPacketWaiting;
+    flags.packetWaiting = 0;
     ControlPacket* ended = packet;
     packet = nullptr;
     lastPacket = ended;
     GameNode* node = agentNode;
-    if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+    if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
     {
         return;
     }
@@ -257,38 +236,39 @@ void BehaviourRunner::EndPacket()
     }
 
     MotionState* motion = static_cast<ObjectNode*>(node)->motion;
-    if (motion == nullptr || last->MotionKind() == 0)
+    if (motion == nullptr || last->settings.motion == ControlPacket::NoMotion)
     {
         return;
     }
 
     // The other slot's runner's packet: when it has tracks too the animation keeps them
-    u32 other = 1 - (flags >> SlotShift & SlotMask);
+    u32 other = 1 - flags.slot;
     BehaviourRunner* runner = static_cast<ObjectNode*>(node)->runners[other];
     if (runner != nullptr)
     {
         ControlPacket* playing = runner->packet;
-        if (playing != nullptr && playing->MotionKind() != 0)
+        if (playing != nullptr && playing->settings.motion != ControlPacket::NoMotion)
         {
             return;
         }
     }
 
-    motion->bits |= MotionState::TranslationDone | MotionState::RotationDone;
+    motion->bits.translationDone = 1;
+    motion->bits.rotationDone = 1;
 }
 
 GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLevel* level, TimeClock* clock, ControlPacket* ended)
 {
-    u32 bits = state->bits;
+    GraphStateBits bits = state->bits;
     ControlPacket* packet = state->packet;
     GameNode* node = runner->agentNode;
-    u32 completion = bits >> 10 & 1;
+    u32 completion = bits.hasCompletion;
     g_CheckedBody = nullptr;
     g_CheckedCondition = nullptr;
     if (packet != nullptr && ended == packet)
     {
         // The state's packet ended: the completion body runs
-        if ((bits & StateCompletion) == 0)
+        if (bits.hasCompletion == 0)
         {
             return nullptr;
         }
@@ -298,12 +278,12 @@ GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLe
         return StartPacket(next, runner);
     }
 
-    if (completion < (state->bits & GraphState::BodyMask))
+    if (completion < state->bits.bodyCount)
     {
         StateBody* best = BestBody(state, node, level, clock);
         if (best != nullptr)
         {
-            if (ChildOf(state) != NoChild)
+            if (state->bits.child != NoScriptId)
             {
                 runner->Unwind(level);
             }
@@ -316,10 +296,10 @@ GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLe
             return next != nullptr ? StartPacket(next, runner) : nullptr;
         }
 
-        StateBody* pending = level->pendingBody;
-        if (pending != nullptr)
+        StateBody* fallback = level->elseBody;
+        if (fallback != nullptr)
         {
-            GraphState* next = RunBody(pending, clock, runner, level);
+            GraphState* next = RunBody(fallback, clock, runner, level);
             return next != nullptr ? StartPacket(next, runner) : nullptr;
         }
     }
@@ -331,9 +311,9 @@ GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLe
         return state;
     }
 
-    GraphState* completionJump = (state->bits & StateCompletion) != 0 ? state->bodies->jump : nullptr;
-    level->bits = (level->bits & ~BehaviourLevel::Restart) | (state == completionJump ? BehaviourLevel::Restart : 0);
-    if ((level->bits & BehaviourLevel::Finished) != 0)
+    GraphState* completionJump = state->bits.hasCompletion != 0 ? state->bodies->jump : nullptr;
+    level->bits.restart = state == completionJump;
+    if (level->bits.finished != 0)
     {
         return nullptr;
     }
@@ -344,13 +324,13 @@ GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLe
     }
 
     runner->packet = nullptr;
-    CallVirtual<void>(node, node->vtable, NoPacketSlot, runner);
-    if ((state->bits & 0xFFFF0800) != 0xFFFF0000)
+    CallVirtual<void>(node, node->vtable, ObjectNode::PacketEndedSlot, runner);
+    if (state->bits.child != NoScriptId || state->bits.interrupting != 0)
     {
         return state;
     }
 
-    if ((state->bits & StateCompletion) == 0)
+    if (state->bits.hasCompletion == 0)
     {
         return nullptr;
     }
@@ -367,13 +347,15 @@ GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLe
 
 u32 ExecuteInterrupt(GraphState* state, BehaviourRunner* runner, BehaviourLevel* level, TimeClock* clock)
 {
+    // No condition checked yet, even when the state has no bodies to check (ExecuteState clears it before)
+    g_CheckedCondition = nullptr;
     StateBody* best = BestBody(state, runner->agentNode, level, clock);
     if (best == nullptr)
     {
         return 0;
     }
 
-    if (ChildOf(state) != NoChild)
+    if (state->bits.child != NoScriptId)
     {
         runner->Unwind(level);
     }
@@ -382,7 +364,7 @@ u32 ExecuteInterrupt(GraphState* state, BehaviourRunner* runner, BehaviourLevel*
     GraphState* next = RunBody(best, clock, runner, level);
     StartPacket(next, runner);
     level->state = next;
-    level->bits |= BehaviourLevel::Restart;
+    level->bits.restart = 1;
     level->entered = state != next ? state : nullptr;
     return 1;
 }
@@ -391,11 +373,11 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
 {
     u8 at = static_cast<u8>(index);
     u8 interrupt = runner->interruptLevel;
-    if (interrupt != 0xFF && at < interrupt)
+    if (interrupt != BehaviourRunner::NoLevel && at < interrupt)
     {
         // A level above interrupted: it's the one to run
         GraphState* state = level->state;
-        if (state == nullptr || ChildOf(state) == NoChild)
+        if (state == nullptr || state->bits.child == NoScriptId)
         {
             return;
         }
@@ -405,7 +387,7 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
         return;
     }
 
-    if ((level->bits & BehaviourLevel::Finished) != 0)
+    if (level->bits.finished != 0)
     {
         return;
     }
@@ -416,13 +398,13 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
     {
         finishes = true;
     }
-    else if (ChildOf(state) != NoChild || state->packet != nullptr)
+    else if (state->bits.child != NoScriptId || state->packet != nullptr)
     {
         finishes = false;
     }
     else
     {
-        finishes = (state->bits & GraphState::BodyMask) == 0;
+        finishes = state->bits.bodyCount == 0;
         if (finishes)
         {
             state = nullptr;
@@ -431,11 +413,11 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
 
     if (finishes)
     {
-        level->bits |= BehaviourLevel::Finished;
+        level->bits.finished = 1;
         runner->depth = at - 1;
     }
 
-    if ((level->bits & BehaviourLevel::Finished) == 0 && ChildOf(state) != NoChild)
+    if (level->bits.finished == 0 && state->bits.child != NoScriptId)
     {
         u8 next = at + 1;
         if (state != level->entered)
@@ -446,13 +428,13 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
 
         BehaviourLevel* child = runner->levels[next];
         ExecuteLevel(child, runner, clock, next, ended);
-        if ((child->bits & BehaviourLevel::Finished) != 0)
+        if (child->bits.finished != 0)
         {
             // The child behaviour finished: the completion body runs
             state = state->bodies != nullptr ? RunBody(state->bodies, clock, runner, level) : nullptr;
             if (state == nullptr)
             {
-                level->bits |= BehaviourLevel::Finished;
+                level->bits.finished = 1;
                 runner->depth = at - 1;
             }
             else
@@ -462,20 +444,20 @@ void ExecuteLevel(BehaviourLevel* level, BehaviourRunner* runner, TimeClock* clo
         }
     }
 
-    GraphState* entered = (level->bits & BehaviourLevel::Restart) != 0 ? nullptr : level->state;
+    GraphState* entered = level->bits.restart != 0 ? nullptr : level->state;
     level->state = state;
     level->entered = entered;
 }
 
 u32 BehaviourRunner::CheckInterrupts(TimeClock* clock)
 {
-    s32 index = (flags & FlagInterruptFromLevel) != 0 ? interruptLevel : 0;
+    s32 index = flags.interruptFromLevel != 0 ? interruptLevel : 0;
     for (;;)
     {
         BehaviourLevel* level = levels[index];
         GraphState* state = level->state;
         u32 switched = 0;
-        if (state != nullptr && (state->bits >> 11 & 1) != 0)
+        if (state != nullptr && state->bits.interrupting != 0)
         {
             switched = ExecuteInterrupt(state, this, level, clock);
         }
@@ -491,7 +473,7 @@ u32 BehaviourRunner::CheckInterrupts(TimeClock* clock)
 u32 BehaviourRunner::RunLevels(TimeClock* clock, ControlPacket* ended)
 {
     ExecuteLevel(levels[0], this, clock, 0, ended);
-    if ((levels[0]->bits & BehaviourLevel::Finished) == 0)
+    if (levels[0]->bits.finished == 0)
     {
         return 0;
     }
@@ -503,34 +485,34 @@ u32 BehaviourRunner::RunLevels(TimeClock* clock, ControlPacket* ended)
 InstanceContext* InstanceOfConvention(const CallConvention* convention, BehaviourRunner* runner)
 {
     GameNode* node = runner->agentNode;
-    u16 argument = static_cast<u16>(convention->bits >> 16);
-    switch (convention->bits & 0xF)
+    u16 argument = convention->bits.argument;
+    switch (convention->bits.assignee)
     {
-    case 0:
+    case AssignMe:
         return node->owner;
-    case 2:
+    case AssignLinkedObject:
     {
-        if (argument == 0xFFFF)
+        if (argument == CallConvention::NoArgument)
         {
             return nullptr;
         }
 
-        auto* links = static_cast<u8*>(GetGameNode(&node->owner->nodes, LinksNodeKind));
-        return links != nullptr ? reinterpret_cast<InstanceContext**>(links + LinksNodeInstances)[argument] : nullptr;
+        auto* links = static_cast<AttachmentsNode*>(GetGameNode(&node->owner->nodes, NodeAttachments));
+        return links != nullptr ? links->linked[argument] : nullptr;
     }
-    case 3:
+    case AssignGlobalAgent:
     {
-        if (argument == 0xFFFF)
+        if (argument == CallConvention::NoArgument)
         {
             return nullptr;
         }
 
-        Reference* receiver = g_ReceiverInstances[static_cast<u8>(argument)];
-        return receiver != nullptr ? static_cast<InstanceContext*>(receiver->object) : nullptr;
+        Reference* agent = g_GlobalAgents[static_cast<u8>(argument)];
+        return agent != nullptr ? static_cast<InstanceContext*>(agent->object) : nullptr;
     }
-    case 4:
+    case AssignHumanPlayer:
         return g_PlayerInstance != nullptr ? static_cast<InstanceContext*>(g_PlayerInstance->object) : nullptr;
-    case 8:
+    case AssignOriginator:
         return static_cast<InstanceContext*>(runner->originator);
     default:
         return nullptr;
@@ -539,16 +521,13 @@ InstanceContext* InstanceOfConvention(const CallConvention* convention, Behaviou
 
 void BehaviourRunner::Stop(u32 release)
 {
-    constexpr u32 UsersShift = StarterReceivers::UsersShift;
-    constexpr u32 UsersMask = StarterReceivers::FieldMask;
     if (receivers != nullptr)
     {
-        u32& users = receivers->bits;
-        users = (users & ~(UsersMask << UsersShift)) | (((users >> UsersShift & UsersMask) - 1) & UsersMask) << UsersShift;
+        receivers->bits.users--;
         if (release != 0)
         {
             StarterReceivers* used = receivers;
-            if ((used->bits & UsersMask << UsersShift) == 0 && used != nullptr)
+            if (used->bits.users == 0 && used != nullptr)
             {
                 used->Destroy(DestroyAndFree);
             }
@@ -557,8 +536,11 @@ void BehaviourRunner::Stop(u32 release)
 
     levels[0]->graph = nullptr;
     receivers = nullptr;
-    flags &= ~FlagPacketEnded & ~FlagPacketWaiting & ~FlagPacketRuns & ~FlagInterruptFromLevel;
-    interruptLevel = 0xFF;
+    flags.packetEnded = 0;
+    flags.packetWaiting = 0;
+    flags.packetRuns = 0;
+    flags.interruptFromLevel = 0;
+    interruptLevel = NoLevel;
     lastPacket = packet;
     packet = nullptr;
     packetStart = 0;
@@ -594,7 +576,7 @@ u32 BehaviourRunner::Update(TimeClock* clock)
     auto* node = static_cast<ObjectNode*>(agentNode);
     if (CheckInterrupts(clock) == 0)
     {
-        if (packet != nullptr && (flags & FlagPacketWaiting) != 0)
+        if (packet != nullptr && flags.packetWaiting != 0)
         {
             PacketFrame(this, clock);
             if (node->trajectory != nullptr)
@@ -602,23 +584,25 @@ u32 BehaviourRunner::Update(TimeClock* clock)
                 TrajectoryFrame(node->trajectory, node);
             }
 
-            if ((flags & FlagPacketEnded) == 0)
+            if (flags.packetEnded == 0)
             {
                 return 0;
             }
 
-            flags &= ~FlagPacketRuns & ~FlagPacketEnded & ~FlagPacketWaiting;
+            flags.packetRuns = 0;
+            flags.packetEnded = 0;
+            flags.packetWaiting = 0;
             return RunLevels(clock, lastPacket) != 0 ? 1 : 0;
         }
 
-        u32 runLevels = flags & FlagRunLevels;
-        flags &= ~FlagPacketRuns;
+        u32 runLevels = flags.runLevels;
+        flags.packetRuns = 0;
         if (runLevels != 0 && RunLevels(clock, nullptr) != 0)
         {
             return 1;
         }
 
-        if ((flags & FlagPacketRuns) == 0)
+        if (flags.packetRuns == 0)
         {
             if (node->trajectory != nullptr)
             {
@@ -660,52 +644,46 @@ void StarterReceivers::Destroy(u32 destroyFlags)
 void StarterReceivers::Reset(ScriptStarter* made)
 {
     starter = made;
-    u32 priority = made->bits >> ScriptResource::PriorityShift & PriorityMask;
-    bits = (bits & ~PriorityMask) | priority;
-    bits &= ~Restartable;
-    bits = (bits & ~(FieldMask << AssignersShift)) | (made->assignerCount & FieldMask) << AssignersShift;
+    bits.priority = made->bits.priority;
+    bits.restartable = 0;
+    bits.assignerCount = made->assignerCount;
 }
 
 void StarterReceivers::ReleaseAll(BehaviourRunner* runner)
 {
-    // The agent node's vtable function told when its runner lets go
-    constexpr u32 ReleasedSlot = 22;
-    u8& running = reinterpret_cast<u8*>(&bits)[2];
-    for (u8 index = 0; index < (bits >> AssignersShift & FieldMask); index++)
+    for (u8 index = 0; index < bits.assignerCount; index++)
     {
-        if ((running & 1 << index) == 0)
+        if ((bits.running & 1 << index) == 0)
         {
             continue;
         }
 
-        auto* node = static_cast<GameNode*>(GetGameNode(&instances[index]->nodes, 1));
+        auto* node = static_cast<GameNode*>(GetGameNode(&instances[index]->nodes, NodeObject));
         runner->Stop(0);
-        CallVirtual<void>(node, node->vtable, ReleasedSlot);
+        CallVirtual<void>(node, node->vtable, ObjectNode::RunnerFinishedSlot);
     }
 
-    running = 0;
-    bits &= ~(FieldMask << UsersShift);
+    bits.running = 0;
+    bits.users = 0;
 }
 
 void StarterReceivers::Resolve(BehaviourRunner* runner)
 {
-    constexpr u32 UserBits = FieldMask << UsersShift;
-    u8& running = reinterpret_cast<u8*>(&bits)[2];
-    bits &= ~UserBits;
-    running = 0;
+    bits.users = 0;
+    bits.running = 0;
     ScriptStarter* made = starter;
     instances[0] = runner->agentNode->owner;
     originator = runner->originator;
     GraphData* graph = made->assigners[0]->graph;
-    u32 slot = runner->flags >> BehaviourRunner::SlotShift & BehaviourRunner::SlotMask;
+    u32 slot = runner->flags.slot;
     if (graph != nullptr)
     {
-        running = 1;
-        bits = (bits & ~UserBits) | 1 << UsersShift;
+        bits.running = 1;
+        bits.users = 1;
         runner->Start(this, graph);
     }
 
-    for (u8 index = 1; index < (bits >> AssignersShift & FieldMask); index++)
+    for (u8 index = 1; index < bits.assignerCount; index++)
     {
         InstanceContext* instance = InstanceOfConvention(starter->assigners[index]->convention, runner);
         instances[index] = instance;
@@ -715,11 +693,10 @@ void StarterReceivers::Resolve(BehaviourRunner* runner)
             continue;
         }
 
-        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, 1));
+        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, NodeObject));
         static_cast<ObjectNodeBase*>(node)->runners[slot]->Start(this, assigned);
-        running |= 1 << index;
-        u32 users = (bits >> UsersShift & FieldMask) + 1;
-        bits = (bits & ~UserBits) | (users & FieldMask) << UsersShift;
+        bits.running |= 1 << index;
+        bits.users++;
     }
 }
 
@@ -728,9 +705,8 @@ void BehaviourRunner::Start(StarterReceivers* started, GraphData* graph)
     StarterReceivers* old = receivers;
     if (old != nullptr)
     {
-        // The starter's ID of the receivers it had
         ScriptStarter* starter = old->starter;
-        unknown24 = CallVirtual<u16>(starter, starter->vtable, 2);
+        previousStarter = CallVirtual<u16>(starter, starter->vtable, ScriptResource::IdSlot);
         old = receivers;
         if (started != old && old != nullptr)
         {
@@ -739,7 +715,7 @@ void BehaviourRunner::Start(StarterReceivers* started, GraphData* graph)
     }
     else
     {
-        unknown24 = 0xFFFF;
+        previousStarter = NoScriptId;
     }
 
     receivers = started;
@@ -751,19 +727,22 @@ void BehaviourRunner::Start(StarterReceivers* started, GraphData* graph)
         }
     }
 
-    flags &= ~FlagPacketEnded & ~FlagPacketWaiting & ~FlagPacketRuns & ~FlagInterruptFromLevel;
+    flags.packetEnded = 0;
+    flags.packetWaiting = 0;
+    flags.packetRuns = 0;
+    flags.interruptFromLevel = 0;
     lastPacket = nullptr;
     packet = nullptr;
     packetEnd = 0;
     syncUnit = 0;
-    unknown4C = 0;
+    unused4C = 0;
     packetStart = 0;
     nextStarter = nullptr;
     originator = started->originator;
     levels[0]->Start(graph, GetContextClock(agentNode->owner));
-    interruptLevel = 0xFF;
+    interruptLevel = NoLevel;
     depth = 0;
-    flags |= FlagRunLevels;
+    flags.runLevels = 1;
 }
 
 void BehaviourRunner::TakeStarter()
@@ -780,9 +759,9 @@ void BehaviourRunner::TakeStarter()
         receivers = StarterReceivers::Construct(static_cast<StarterReceivers*>(MemoryAllocate(sizeof(StarterReceivers))), nextStarter);
     }
 
-    flags &= ~FlagInterruptFromLevel;
+    flags.interruptFromLevel = 0;
     originator = nextOriginator;
-    interruptLevel = 0xFF;
+    interruptLevel = NoLevel;
     receivers->Resolve(this);
     markedTime = 0;
     nextStarter = nullptr;
@@ -805,12 +784,11 @@ void BehaviourRunner::Destroy(u32 destroyFlags)
 
 void BehaviourRunner::DestroyLevels()
 {
-    constexpr u32 DestructorSlot = 1;
     for (BehaviourLevel*& level : levels)
     {
         if (level != nullptr)
         {
-            CallVirtual<void>(level, level->vtable, DestructorSlot, DestroyAndFree);
+            CallVirtual<void>(level, level->vtable, LevelDestroySlot, DestroyAndFree);
         }
 
         level = nullptr;
@@ -821,16 +799,15 @@ u32 BehaviourRunner::QueueStarter(ScriptStarter* starter, void* originator, u32 
 {
     if (force == 0)
     {
-        auto priorityOf = [](const ScriptResource* script) { return static_cast<u8>(script->bits >> ScriptResource::PriorityShift); };
-        u32 priority = priorityOf(starter);
-        if (nextStarter != nullptr && priority < priorityOf(nextStarter))
+        u32 priority = starter->bits.priority;
+        if (nextStarter != nullptr && priority < nextStarter->bits.priority)
         {
             return 0;
         }
 
         if (receivers != nullptr)
         {
-            u32 running = receivers->bits & StarterReceivers::PriorityMask;
+            u32 running = receivers->bits.priority;
             u32 takes;
             if (running < priority)
             {
@@ -846,7 +823,7 @@ u32 BehaviourRunner::QueueStarter(ScriptStarter* starter, void* originator, u32 
             }
             else
             {
-                takes = (receivers->bits & StarterReceivers::Restartable) != 0;
+                takes = receivers->bits.restartable;
             }
 
             if (takes == 0)
@@ -863,11 +840,10 @@ u32 BehaviourRunner::QueueStarter(ScriptStarter* starter, void* originator, u32 
 
 InstanceContext* BehaviourRunner::InstanceOf(u32 designator)
 {
-    constexpr u32 Originator = 0xFF;
-    if (designator >= Originator)
+    if (designator >= OriginatorDesignator)
     {
         return static_cast<InstanceContext*>(originator);
     }
 
-    return receivers->instances[designator & 0xFF];
+    return receivers->instances[static_cast<u8>(designator)];
 }

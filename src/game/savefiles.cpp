@@ -1,5 +1,6 @@
 #include "game/savedevice.h"
 
+#include "game/colour.h"
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/renderer.h"
@@ -43,34 +44,44 @@ extern "C"
 
 namespace
 {
-// The streams' memory alignment
-constexpr u16 StreamAlignment = 0x40;
 // A file with a tag ends with the tag and the checksum, which leave out the file's last 4 bytes
 constexpr u32 TrailerSize = 8;
 constexpr u32 UnsummedBytes = 4;
 constexpr u8 FillByte = 0xA5;
+// The title's Shift-JIS bytes cleared, and the bytes of a character
 constexpr u32 IconTitleBytes = 0x40;
-// The colours (of g_Colours) of icon.sys's background corners, ambient light and lights, and how its light colours scale
-constexpr s32 CornerColours[] = {9, 0xE, 0xC, 0xD};
-constexpr s32 AmbientColour = 0x13;
-constexpr s32 LightColours[] = {9, 0xA, 0xB};
+constexpr u32 SjisCharacterBytes = 2;
+// The colours of icon.sys's background corners, ambient light and lights
+constexpr ColourIndex CornerColours[] = {ColourRed, ColourMagenta, ColourYellow, ColourCyan};
+constexpr ColourIndex AmbientColour = ColourGrey;
+constexpr ColourIndex LightColours[] = {ColourRed, ColourGreen, ColourBlue};
 // Each light along an axis
 constexpr Vector4 LightDirections[] = {{1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}};
-constexpr f32 LightScale = Rounded(1.0 / 192.0);
-constexpr f32 AlphaScale = 1.0f / 128.0f;
 constexpr f32 IconOpacity = 0.5f;
-// The symbols' groups: a symbol's index is its character less its group's offset plus 0x1F
-constexpr u32 SpaceSymbols = 1;
-constexpr u32 ColonSymbols = 0xB;
-constexpr u32 BracketSymbols = 0x25;
-constexpr u32 BraceSymbols = 0x3F;
+// A symbol's index in g_SjisSymbols is its character less its group's offset and SymbolBase. The groups follow each other in the
+// table (16 from the space, 7 from ":", 6 from "[", 4 from "{"), the base keeping the first group's offset above 0 (no symbol)
 constexpr u32 SymbolBase = 0x1F;
+
+constexpr u32 SymbolGroup(char first, u32 index)
+{
+    return static_cast<u32>(first) - index - SymbolBase;
+}
+
+constexpr u32 SpaceSymbols = SymbolGroup(' ', 0);
+constexpr u32 ColonSymbols = SymbolGroup(':', 16);
+constexpr u32 BracketSymbols = SymbolGroup('[', 23);
+constexpr u32 BraceSymbols = SymbolGroup('{', 29);
 // The ranges: digits, capitals, small letters. A character outside them and the symbols (below the space, past "~") is converted
 // in the last range seen. Retail bug: before any, the range is 0x30, past the table (whatever follows it gives the code)
 constexpr u32 DigitRange = 0;
 constexpr u32 CapitalRange = 1;
 constexpr u32 SmallRange = 2;
 constexpr u32 UnsetRange = 0x30;
+
+bool InRange(s32 character, char first, char last)
+{
+    return static_cast<u32>(character - first) <= static_cast<u32>(last - first);
+}
 
 void DropStream(SaveFile* file)
 {
@@ -94,7 +105,7 @@ void DestroyBase(SaveFile* file, u32 destroyFlags)
     file->vtable = g_SaveFileVTable;
     DropStream(file);
     StringDestroy(&file->name);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(file);
     }
@@ -110,8 +121,8 @@ u32 Checksum(const u8* bytes, u32 size)
     for (u32 i = 0; i < size - UnsummedBytes; i++)
     {
         u32 byte = bytes[0];
-        sum += byte << (addShift & 0x1F);
-        sum ^= byte << (xorShift & 0x1F);
+        sum += byte << (addShift & ShiftMask);
+        sum ^= byte << (xorShift & ShiftMask);
         if (addShift >= 6)
         {
             addShift += 24;
@@ -155,7 +166,7 @@ void FolderSummary::Destroy(u32 destroyFlags)
 {
     vtable = g_FolderSummaryVTable;
     StringDestroy(&name);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -223,13 +234,13 @@ MemoryStream* SaveFile::MakeStream()
     if (buffer == nullptr)
     {
         MemoryStream* allocated = NewStream();
-        made = MemoryStream::ConstructAllocated(allocated, size, 0, StreamAlignment);
+        made = MemoryStream::ConstructAllocated(allocated, size, 0, MemoryStream::FileAlignment);
         memory = made->begin;
     }
     else
     {
         MemoryStream* allocated = NewStream();
-        made = MemoryStream::Construct(allocated, buffer, size, 0, StreamAlignment);
+        made = MemoryStream::Construct(allocated, buffer, size, 0, MemoryStream::FileAlignment);
         memory = buffer;
     }
 
@@ -372,7 +383,7 @@ void FolderFile::ClearSummaries()
 
 MemoryStream* IconSysFile::MakeStream()
 {
-    return MemoryStream::Construct(NewStream(), &iconSys, sizeof(IconSys), 0, StreamAlignment);
+    return MemoryStream::Construct(NewStream(), &iconSys, sizeof(IconSys), 0, MemoryStream::FileAlignment);
 }
 
 void IconSysFile::Gather()
@@ -398,13 +409,13 @@ void IconSysFile::SetTitle(const char* text)
 {
     u32 length = RetailLibc::StringLength(text);
     StringAssign(&title, text);
-    iconSys.lineBreak = static_cast<u16>(length << 1);
+    iconSys.lineBreak = static_cast<u16>(length * SjisCharacterBytes);
     for (u32 i = 0; i < length; i++)
     {
         if (title.string[i] == '~')
         {
             title.string[i] = ' ';
-            iconSys.lineBreak = static_cast<u16>(i << 1);
+            iconSys.lineBreak = static_cast<u16>(i * SjisCharacterBytes);
         }
     }
 
@@ -435,28 +446,31 @@ EABI_EXPORT(FUN_002a8b78, &IconSysFile::SetTransparency);
 
 void IconSysFile::SetBackground(s32 corner, u32 colour)
 {
+    Rgba rgba = {colour};
     s32* to = iconSys.background[corner];
-    to[0] = colour & 0xFF;
-    to[1] = colour >> 8 & 0xFF;
-    to[2] = colour >> 16 & 0xFF;
-    to[3] = colour >> 24;
+    to[0] = rgba.red;
+    to[1] = rgba.green;
+    to[2] = rgba.blue;
+    to[3] = rgba.alpha;
 }
 
 void IconSysFile::SetAmbient(u32 colour)
 {
-    iconSys.ambient[0] = static_cast<f32>(colour & 0xFF) * LightScale;
-    iconSys.ambient[2] = static_cast<f32>(colour >> 16 & 0xFF) * LightScale;
-    iconSys.ambient[3] = static_cast<f32>(colour >> 24) * AlphaScale;
-    iconSys.ambient[1] = static_cast<f32>(colour >> 8 & 0xFF) * LightScale;
+    Rgba rgba = {colour};
+    iconSys.ambient[0] = Colour::ColourFraction(rgba.red);
+    iconSys.ambient[2] = Colour::ColourFraction(rgba.blue);
+    iconSys.ambient[3] = Colour::AlphaFraction(rgba.alpha);
+    iconSys.ambient[1] = Colour::ColourFraction(rgba.green);
 }
 
 void IconSysFile::SetLightColour(s32 light, u32 colour)
 {
+    Rgba rgba = {colour};
     f32* to = iconSys.lightColours[light];
-    to[0] = static_cast<f32>(colour & 0xFF) * LightScale;
-    to[1] = static_cast<f32>(colour >> 8 & 0xFF) * LightScale;
-    to[2] = static_cast<f32>(colour >> 16 & 0xFF) * LightScale;
-    to[3] = static_cast<f32>(colour >> 24) * AlphaScale;
+    to[0] = Colour::ColourFraction(rgba.red);
+    to[1] = Colour::ColourFraction(rgba.green);
+    to[2] = Colour::ColourFraction(rgba.blue);
+    to[3] = Colour::AlphaFraction(rgba.alpha);
 }
 
 extern "C"
@@ -532,9 +546,10 @@ extern "C"
     {
         auto* files = static_cast<SaveIconFiles*>(memory);
         files->iconSys = static_cast<SaveFile*>(iconSys);
-        RetailLibc::MemorySet(files, 0, 4);
+        // The count and the capacity
+        RetailLibc::MemorySet(files, 0, offsetof(SaveIconFiles, iconSys));
         files->capacity = static_cast<u8>(room);
-        files->files = static_cast<SaveFile**>(MemoryAllocate2(room << 2));
+        files->files = static_cast<SaveFile**>(MemoryAllocate2(room * sizeof(SaveFile*)));
         return files;
     }
 
@@ -563,7 +578,7 @@ extern "C"
             MemoryDeallocate_(files->files);
         }
 
-        if ((destroyFlags & 1) != 0)
+        if ((destroyFlags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(files);
         }
@@ -582,7 +597,7 @@ extern "C"
         folder->stream = nullptr;
         folder->count = files;
         folder->vtable = g_FolderFileVTable;
-        folder->summaries = static_cast<FolderSummary**>(MemoryAllocate2(files << 2));
+        folder->summaries = static_cast<FolderSummary**>(MemoryAllocate2(files * sizeof(FolderSummary*)));
         for (u32 i = 0; i < files; i++)
         {
             folder->summaries[i] = nullptr;
@@ -634,33 +649,33 @@ extern "C"
         {
             s32 character = *text++;
             u32 symbols = 0;
-            if (static_cast<u32>(character - ' ') < 0x10)
+            if (InRange(character, ' ', '/'))
             {
                 symbols = SpaceSymbols;
             }
-            else if (static_cast<u32>(character - '0') < 10)
+            else if (InRange(character, '0', '9'))
             {
                 range = DigitRange;
             }
-            else if (static_cast<u32>(character - ':') < 7)
+            else if (InRange(character, ':', '@'))
             {
                 symbols = ColonSymbols;
             }
-            else if (static_cast<u32>(character - 'A') < 26)
+            else if (InRange(character, 'A', 'Z'))
             {
                 range = CapitalRange;
             }
-            else if (static_cast<u32>(character - '[') < 6)
+            else if (InRange(character, '[', '`'))
             {
                 symbols = BracketSymbols;
             }
-            else if (static_cast<u32>(character - 'a') < 26)
+            else if (InRange(character, 'a', 'z'))
             {
                 range = SmallRange;
             }
             else
             {
-                symbols = static_cast<u32>(character - '{') <= 3 ? BraceSymbols : 0;
+                symbols = InRange(character, '{', '~') ? BraceSymbols : 0;
             }
 
             u32 code;

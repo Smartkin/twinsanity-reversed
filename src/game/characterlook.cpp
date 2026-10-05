@@ -20,13 +20,6 @@ EABI_EXPORT(FUN_0015eda8, &LookController::SetCarried);
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-// The characters (their first int property): Crash's second joint takes the yaw about y, the others' about z
-constexpr s32 Crash = 0;
-constexpr s32 MechaBandicoot = 5;
-// The head's exit point
-constexpr u32 HeadExitPoint = 1;
 // The joints the look turns (its angles' joints), the Mecha-Bandicoot's three of them, its gun arm and the joint made with it
 constexpr u32 LookJointCount = 5;
 constexpr u32 MechaLookJointCount = 3;
@@ -35,9 +28,6 @@ constexpr u32 MechaArm = 14;
 constexpr u32 MechaArmEnd = 18;
 constexpr u32 MechaJoints[] = {0, 2, 4, MechaArm, MechaArmEnd};
 
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // How fast the joints' angles follow their targets and the arm its aim, and the pitch and the yaw relax (radians a second)
 constexpr f32 TurnRadiansPerSecond = Rounded(1.6);
 constexpr f32 ArmRadiansPerSecond = Rounded(1.3);
@@ -61,16 +51,16 @@ constexpr f32 FollowCosine = Rounded(0.7);
 // The arm aims this far ahead without an aim point
 constexpr f32 ArmAhead = 1000.0f;
 // AimRotation's turn below this (its axis's length squared) is none
-constexpr f32 AimAxisLeast = Rounded(5e-05);
+constexpr f32 AimAxisLeast = Epsilon;
 
 // The joints' shares of the pitch and the yaw: standing (and relaxing), carrying, the Mecha-Bandicoot's
 constexpr f32 StandingShares[LookJointCount] = {0.25f, Rounded(0.4), Rounded(0.3), Rounded(0.2), Rounded(0.2)};
 constexpr f32 CarryShares[LookJointCount] = {Rounded(-0.3), Rounded(-0.3), Rounded(0.05), Rounded(0.35), Rounded(0.35)};
 constexpr f32 MechaShare = 0.25f;
 
-s32 CharacterOf(const CharacterAgent* agent)
+s32 CharacterKindOf(const CharacterAgent* agent)
 {
-    return agent->properties->GetInt(0);
+    return agent->properties->GetInt(CharacterKindProperty);
 }
 
 ObjectPlace* PlaceOf(const CharacterAgent* agent)
@@ -114,7 +104,7 @@ void StandingTargets(const LookController* look, s32 (*targets)[3])
     s32 yaw = AngleOf(look->yaw);
     s32 yawBack = AngleOf(-look->yaw);
     SetTurn(targets[0], Share(pitch, StandingShares[0]), 0, Share(yawBack, StandingShares[0]));
-    if (CharacterOf(look->agent) == Crash)
+    if (CharacterKindOf(look->agent) == CharacterCrash)
     {
         SetTurn(targets[1], Share(pitch, StandingShares[1]), Share(yaw, StandingShares[1]), 0);
     }
@@ -176,10 +166,10 @@ void RelaxAngle(f32* angle, f32 step)
 bool FollowPoint(LookController* look, f32 seconds)
 {
     CharacterAgent* agent = look->agent;
-    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&agent->instance->nodes, ModelNodeKind))->animator;
+    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&agent->instance->nodes, NodeModel))->animator;
     // Retail asks which character it is and takes the same exit point for each
-    static_cast<void>(CharacterOf(agent));
-    ExitPointAnimation* exitPoint = animator->exitPoints != nullptr ? animator->exitPoints->data[HeadExitPoint] : nullptr;
+    static_cast<void>(CharacterKindOf(agent));
+    ExitPointAnimation* exitPoint = animator->exitPoints != nullptr ? animator->exitPoints->data[ExitPointHead] : nullptr;
     const Matrix4x4* head = &UpdateExitPointMatrix(exitPoint)->matrix;
     const Vector4* at = RowOf(head, 3);
     Vector4 toward = {look->lookPoint.x - at->x, look->lookPoint.y - at->y, look->lookPoint.z - at->z, 1.0f};
@@ -326,7 +316,7 @@ void LookController::Destroy(u32 destroyFlags)
     }
 
     vtable = g_JointHookVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -334,7 +324,7 @@ void LookController::Destroy(u32 destroyFlags)
 
 void LookController::Attach(OgiAnimator* animator)
 {
-    if (CharacterOf(agent) == MechaBandicoot)
+    if (CharacterKindOf(agent) == CharacterMecha)
     {
         for (u32 joint : MechaJoints)
         {
@@ -352,7 +342,7 @@ void LookController::Attach(OgiAnimator* animator)
 
 void LookController::Detach(OgiAnimator* animator)
 {
-    if (CharacterOf(agent) == MechaBandicoot)
+    if (CharacterKindOf(agent) == CharacterMecha)
     {
         for (u32 joint : MechaJoints)
         {
@@ -390,13 +380,13 @@ void LookController::SetAimPoint(const Vector4* point, u32 has)
 
 void LookController::StepLook(TimeClock* clock)
 {
-    if (CharacterOf(agent) == MechaBandicoot && hasAimPoint != 0)
+    if (CharacterKindOf(agent) == CharacterMecha && hasAimPoint != 0)
     {
         looksAtPoint = 1;
         lookPoint = aimPoint;
     }
 
-    u32 state = G_GameController_0030988C->State();
+    u32 state = g_ConditionsGameController->State();
     bool lookingNowhere = state == GameController::StateWatching || state == GameController::StateTitle;
     if (!(restSeconds <= 0.0f))
     {
@@ -412,9 +402,8 @@ void LookController::StepLook(TimeClock* clock)
     }
     else
     {
-        HeadTracking* tracking = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, ObjectNodeKind))->headTracking;
-        if (tracking == nullptr || (tracking->flags & HeadTracking::FlagIgnoredByLook) != 0
-            || (tracking->flags & HeadTracking::FlagTracking) == 0)
+        HeadTracking* tracking = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, NodeObject))->headTracking;
+        if (tracking == nullptr || tracking->flags.ignoredByLook || !tracking->flags.tracking)
         {
             looksAtPoint = 0;
         }
@@ -435,7 +424,7 @@ void LookController::StepLook(TimeClock* clock)
             yawSpeed = freeLookX * FreeLookYawSpeed;
             moved = true;
         }
-        else if (looksAtPoint != 0 && (static_cast<CharacterPart*>(agent->part)->moveBits & CharacterPart::Crouching) == 0)
+        else if (looksAtPoint != 0 && static_cast<CharacterPart*>(agent->part)->moveBits.crouching == 0)
         {
             moved = FollowPoint(this, seconds);
         }
@@ -487,7 +476,7 @@ void LookController::Frame(TimeClock* clock)
 
     StepLook(clock);
     s32 targets[LookJointCount][3];
-    if (CharacterOf(agent) == MechaBandicoot)
+    if (CharacterKindOf(agent) == CharacterMecha)
     {
         s32 pitchTurn = Share(AngleOf(pitch), MechaShare);
         s32 yawTurn = Share(AngleOf(yaw), MechaShare);
@@ -578,7 +567,7 @@ u32 LookController::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
 {
     u32 joint = animator->animation->joint->id;
     s32 turned = -1;
-    if (CharacterOf(agent) == MechaBandicoot)
+    if (CharacterKindOf(agent) == CharacterMecha)
     {
         if (joint == MechaArm || joint == MechaArmEnd)
         {

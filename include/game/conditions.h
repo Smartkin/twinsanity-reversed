@@ -6,10 +6,11 @@
 
 class GameNode;
 
-// The script conditions the builder makes (made once by a script from the retail builder and TT Lab's AgentLabDefsPS2.json,
-// whose names they have, and edited by hand since): the base's word (the ID in its low half, a parameter from bit 17) and floats,
-// which the reader sets, and its vtable, then what a few keep of their own (set by the builder by the ID). A check scores the
-// agent's node for the level at the clock's time (src/game/conditionchecks.cpp and the conditions' own files)
+// The script conditions the builder makes (made once by a script from the retail builder and TT Lab's AgentLabDefsPS2.json, and
+// edited by hand since; named by what their checks do, TT Lab's names where those say it): the base's word (the ID in its low
+// half, a parameter from bit 17) and floats, which the reader sets, and its vtable, then what a few keep of their own (set by the
+// builder by the ID). A check scores the agent's node for the level at the clock's time (src/game/conditionchecks.cpp). The
+// index comments say what the parameter is to the conditions that read it
 
 // 0
 class NextCondition : public ScriptCondition
@@ -66,13 +67,13 @@ public:
 CHECK_SIZE(TimeInUnitCondition, 0x14);
 
 // 6
-class IsInExternalScriptCondition : public ScriptCondition
+class LinkedChunksLoadedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond6_IsInExternalScript_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond6_IsInExternalScript_Check);
 };
-CHECK_SIZE(IsInExternalScriptCondition, 0x14);
+CHECK_SIZE(LinkedChunksLoadedCondition, 0x14);
 
 // 7
 class AnimationFinishedCondition : public ScriptCondition
@@ -281,7 +282,7 @@ public:
 };
 CHECK_SIZE(CameraCanSeeMeCondition, 0x14);
 
-// 40
+// 40 (its parameter the head's exit point slot)
 class HeadLookingAtFocusCondition : public ScriptCondition
 {
 public:
@@ -290,7 +291,7 @@ public:
 };
 CHECK_SIZE(HeadLookingAtFocusCondition, 0x14);
 
-// 41
+// 41 (its parameter the head's exit point slot)
 class HeadCanSeeFocusCondition : public ScriptCondition
 {
 public:
@@ -299,7 +300,7 @@ public:
 };
 CHECK_SIZE(HeadCanSeeFocusCondition, 0x14);
 
-// 42
+// 42 (its parameter the head's exit point slot)
 class HeadLookingAtRouteNodeCondition : public ScriptCondition
 {
 public:
@@ -308,7 +309,7 @@ public:
 };
 CHECK_SIZE(HeadLookingAtRouteNodeCondition, 0x14);
 
-// 43
+// 43 (its parameter the head's exit point slot)
 class FocusHeadLookingAtMeCondition : public ScriptCondition
 {
 public:
@@ -317,7 +318,7 @@ public:
 };
 CHECK_SIZE(FocusHeadLookingAtMeCondition, 0x14);
 
-// 44
+// 44 (its parameter the head's exit point slot)
 class FocusHeadCanSeeMeCondition : public ScriptCondition
 {
 public:
@@ -335,7 +336,7 @@ public:
 };
 CHECK_SIZE(GotAnyFocusCondition, 0x14);
 
-// 46
+// 46 (its parameter an object ID)
 class FocusActorEqualsCondition : public ScriptCondition
 {
 public:
@@ -344,7 +345,7 @@ public:
 };
 CHECK_SIZE(FocusActorEqualsCondition, 0x14);
 
-// 47
+// 47 (its parameter the first integer property's value)
 class ActorSubtypeEqualsCondition : public ScriptCondition
 {
 public:
@@ -380,7 +381,7 @@ public:
 };
 CHECK_SIZE(GotAnyUserMessageCondition, 0x14);
 
-// 51
+// 51 (its parameter the message)
 class GotUserMessageEqualsCondition : public ScriptCondition
 {
 public:
@@ -389,7 +390,7 @@ public:
 };
 CHECK_SIZE(GotUserMessageEqualsCondition, 0x14);
 
-// 52
+// 52 (its parameter the key, counted from 1)
 class CurrentKeyEqualsCondition : public ScriptCondition
 {
 public:
@@ -398,14 +399,14 @@ public:
 };
 CHECK_SIZE(CurrentKeyEqualsCondition, 0x14);
 
-// 53
-class TouchingTerrainCondition : public ScriptCondition
+// 53 (its parameter nonzero: nothing counts without a physics body)
+class TouchingAnythingCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond53_TouchingTerrain_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond53_TouchingTerrain_Check);
 };
-CHECK_SIZE(TouchingTerrainCondition, 0x14);
+CHECK_SIZE(TouchingAnythingCondition, 0x14);
 
 // 54
 class TouchingAnyAgentCondition : public ScriptCondition
@@ -416,7 +417,7 @@ public:
 };
 CHECK_SIZE(TouchingAnyAgentCondition, 0x14);
 
-// 55
+// 55 (its parameter the attachments path's slot)
 class GotAttachmentOnExitCondition : public ScriptCondition
 {
 public:
@@ -452,7 +453,7 @@ public:
 };
 CHECK_SIZE(GotAnimationTimeRemainingCondition, 0x14);
 
-// 59
+// 59 (its parameter the game counter)
 class CounterValueCondition : public ScriptCondition
 {
 public:
@@ -461,7 +462,7 @@ public:
 };
 CHECK_SIZE(CounterValueCondition, 0x14);
 
-// 60
+// 60 (its parameter the game counter)
 class CounterValueEqualsThresholdCondition : public ScriptCondition
 {
 public:
@@ -524,7 +525,7 @@ public:
 };
 CHECK_SIZE(FocusIsBusyCondition, 0x14);
 
-// 67
+// 67 (its parameter the instance state's bit)
 class SoftFlagSetCondition : public ScriptCondition
 {
 public:
@@ -533,7 +534,7 @@ public:
 };
 CHECK_SIZE(SoftFlagSetCondition, 0x14);
 
-// 68, 69
+// 68, 69 (its parameter the key, counted from 1; 0 or 0xFF the current one)
 class MeToCurrentKeySqrDistCondition : public ScriptCondition
 {
 public:
@@ -542,7 +543,7 @@ public:
 };
 CHECK_SIZE(MeToCurrentKeySqrDistCondition, 0x14);
 
-// 70, 71
+// 70, 71 (its parameter the key, counted from 1; 0 or 0xFF the next one)
 class SpeedTowardsNextKeyCondition : public ScriptCondition
 {
 public:
@@ -614,7 +615,7 @@ public:
 };
 CHECK_SIZE(GotAgentRef2Condition, 0x14);
 
-// 79
+// 79 (its parameter an object ID)
 class AgentRef1ActorEqualsCondition : public ScriptCondition
 {
 public:
@@ -623,7 +624,7 @@ public:
 };
 CHECK_SIZE(AgentRef1ActorEqualsCondition, 0x14);
 
-// 80
+// 80 (its parameter an object ID)
 class AgentRef2ActorEqualsCondition : public ScriptCondition
 {
 public:
@@ -633,85 +634,85 @@ public:
 CHECK_SIZE(AgentRef2ActorEqualsCondition, 0x14);
 
 // 81
-class HasInstancePositionCondition : public ScriptCondition
+class HasStoredPlaceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond81_HasInstancePosition_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond81_HasInstancePosition_Check);
 };
-CHECK_SIZE(HasInstancePositionCondition, 0x14);
+CHECK_SIZE(HasStoredPlaceCondition, 0x14);
 
 // 82
-class HasFocusPositionCondition : public ScriptCondition
+class HasStoredPositionCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond82_HasFocusPosition_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond82_HasFocusPosition_Check);
 };
-CHECK_SIZE(HasFocusPositionCondition, 0x14);
+CHECK_SIZE(HasStoredPositionCondition, 0x14);
 
 // 83
-class NodeFlag16Condition : public ScriptCondition
+class FoundCoverCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond83_NodeFlag16_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond83_NodeFlag16_Check);
 };
-CHECK_SIZE(NodeFlag16Condition, 0x14);
+CHECK_SIZE(FoundCoverCondition, 0x14);
 
 // 84
-class NodeFlag17Condition : public ScriptCondition
+class FoundNoCoverCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond84_NodeFlag17_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond84_NodeFlag17_Check);
 };
-CHECK_SIZE(NodeFlag17Condition, 0x14);
+CHECK_SIZE(FoundNoCoverCondition, 0x14);
 
 // 85
-class NodeFlag15Condition : public ScriptCondition
+class CoverSearchEndedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond85_NodeFlag15_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond85_NodeFlag15_Check);
 };
-CHECK_SIZE(NodeFlag15Condition, 0x14);
+CHECK_SIZE(CoverSearchEndedCondition, 0x14);
 
 // 86
-class NodeByte154FractionCondition : public ScriptCondition
+class KnockCountdownCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond86_NodeByte154Fraction_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond86_NodeByte154Fraction_Check);
 };
-CHECK_SIZE(NodeByte154FractionCondition, 0x14);
+CHECK_SIZE(KnockCountdownCondition, 0x14);
 
 // 87
-class PhysicsBodyFlag1Condition : public ScriptCondition
+class RigidBodyOnGroundCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond87_PhysicsBodyFlag1_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond87_PhysicsBodyFlag1_Check);
 };
-CHECK_SIZE(PhysicsBodyFlag1Condition, 0x14);
+CHECK_SIZE(RigidBodyOnGroundCondition, 0x14);
 
 // 88, 123
-class DistanceToTargetCondition : public ScriptCondition
+class MeToAgentRef1SqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond88_DistanceToTarget_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond88_DistanceToTarget_Check);
 };
-CHECK_SIZE(DistanceToTargetCondition, 0x14);
+CHECK_SIZE(MeToAgentRef1SqrDistCondition, 0x14);
 
 // 89
-class FocusPositionDistanceSquaredCondition : public ScriptCondition
+class MeToStoredPositionSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond89_FocusPositionDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond89_FocusPositionDistanceSquared_Check);
 };
-CHECK_SIZE(FocusPositionDistanceSquaredCondition, 0x14);
+CHECK_SIZE(MeToStoredPositionSqrDistCondition, 0x14);
 
 // 90
 class GroundBelowFocusPositionCondition : public ScriptCondition
@@ -722,140 +723,140 @@ public:
 };
 CHECK_SIZE(GroundBelowFocusPositionCondition, 0x14);
 
-// 91
-class ObjectInstanceByteAtCondition : public ScriptCondition
+// 91 (its parameter the agent's counter, 0 to 3)
+class InstanceCounterValueCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond91_ObjectInstanceByteAt_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond91_ObjectInstanceByteAt_Check);
 };
-CHECK_SIZE(ObjectInstanceByteAtCondition, 0x14);
+CHECK_SIZE(InstanceCounterValueCondition, 0x14);
 
-// 92
-class InstanceSubtypeCondition : public ScriptCondition
+// 92 (its parameter the agent's counter, 0 to 3)
+class InstanceCounterEqualsThresholdCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond92_InstanceSubtype_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond92_InstanceSubtype_Check);
 };
-CHECK_SIZE(InstanceSubtypeCondition, 0x14);
+CHECK_SIZE(InstanceCounterEqualsThresholdCondition, 0x14);
 
 // 93
-class HeadTrackingFlag24Condition : public ScriptCondition
+class HeadAtLimitCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond93_HeadTrackingFlag24_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond93_HeadTrackingFlag24_Check);
 };
-CHECK_SIZE(HeadTrackingFlag24Condition, 0x14);
+CHECK_SIZE(HeadAtLimitCondition, 0x14);
 
 // 94
-class HeadTrackingFlag25Condition : public ScriptCondition
+class HeadYawBelowLimitCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond94_HeadTrackingFlag25_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond94_HeadTrackingFlag25_Check);
 };
-CHECK_SIZE(HeadTrackingFlag25Condition, 0x14);
+CHECK_SIZE(HeadYawBelowLimitCondition, 0x14);
 
 // 95
-class HeadTrackingFlag26Condition : public ScriptCondition
+class HeadYawAboveLimitCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond95_HeadTrackingFlag26_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond95_HeadTrackingFlag26_Check);
 };
-CHECK_SIZE(HeadTrackingFlag26Condition, 0x14);
+CHECK_SIZE(HeadYawAboveLimitCondition, 0x14);
 
 // 96
-class HeadTrackingFlag27Condition : public ScriptCondition
+class HeadPitchBelowLimitCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond96_HeadTrackingFlag27_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond96_HeadTrackingFlag27_Check);
 };
-CHECK_SIZE(HeadTrackingFlag27Condition, 0x14);
+CHECK_SIZE(HeadPitchBelowLimitCondition, 0x14);
 
 // 97
-class HeadTrackingFlag28Condition : public ScriptCondition
+class HeadPitchAboveLimitCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond97_HeadTrackingFlag28_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond97_HeadTrackingFlag28_Check);
 };
-CHECK_SIZE(HeadTrackingFlag28Condition, 0x14);
+CHECK_SIZE(HeadPitchAboveLimitCondition, 0x14);
 
 // 102
-class SubPathKeyRawCondition : public ScriptCondition
+class RouteStepUncheckedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond102_SubPathKeyRaw_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond102_SubPathKeyRaw_Check);
 };
-CHECK_SIZE(SubPathKeyRawCondition, 0x14);
+CHECK_SIZE(RouteStepUncheckedCondition, 0x14);
 
 // 103
-class SubPathKeyCondition : public ScriptCondition
+class RouteStepCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond103_SubPathKey_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond103_SubPathKey_Check);
 };
-CHECK_SIZE(SubPathKeyCondition, 0x14);
+CHECK_SIZE(RouteStepCondition, 0x14);
 
 // 104
-class SubPathKeyDistanceSquaredCondition : public ScriptCondition
+class MeToEdgeStartNodeSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond104_SubPathKeyDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond104_SubPathKeyDistanceSquared_Check);
 };
-CHECK_SIZE(SubPathKeyDistanceSquaredCondition, 0x14);
+CHECK_SIZE(MeToEdgeStartNodeSqrDistCondition, 0x14);
 
 // 105
-class PhysicsCount8cCondition : public ScriptCondition
+class RigidBodyHasMotionCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond105_PhysicsCount8c_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond105_PhysicsCount8c_Check);
 };
-CHECK_SIZE(PhysicsCount8cCondition, 0x14);
+CHECK_SIZE(RigidBodyHasMotionCondition, 0x14);
 
 // 106
-class PhysicsHasContactsCondition : public ScriptCondition
+class RigidBodyCollidesCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond106_PhysicsHasContacts_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond106_PhysicsHasContacts_Check);
 };
-CHECK_SIZE(PhysicsHasContactsCondition, 0x14);
+CHECK_SIZE(RigidBodyCollidesCondition, 0x14);
 
 // 107
-class SubPathPreviousKeyDistanceSquaredCondition : public ScriptCondition
+class MeToEdgeEndNodeSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond107_SubPathPreviousKeyDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond107_SubPathPreviousKeyDistanceSquared_Check);
 };
-CHECK_SIZE(SubPathPreviousKeyDistanceSquaredCondition, 0x14);
+CHECK_SIZE(MeToEdgeEndNodeSqrDistCondition, 0x14);
 
 // 108
-class PhysicsHasGroundCondition : public ScriptCondition
+class RigidBodyRidesInstanceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond108_PhysicsHasGround_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond108_PhysicsHasGround_Check);
 };
-CHECK_SIZE(PhysicsHasGroundCondition, 0x14);
+CHECK_SIZE(RigidBodyRidesInstanceCondition, 0x14);
 
 // 109
-class CurrentLinkIndexCondition : public ScriptCondition
+class OnLastLinkedObjectCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond109_CurrentLinkIndex_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond109_CurrentLinkIndex_Check);
 };
-CHECK_SIZE(CurrentLinkIndexCondition, 0x14);
+CHECK_SIZE(OnLastLinkedObjectCondition, 0x14);
 
 // 110
 class HeightAboveStartCondition : public ScriptCondition
@@ -867,40 +868,40 @@ public:
 CHECK_SIZE(HeightAboveStartCondition, 0x14);
 
 // 111
-class HasPerception0Condition : public ScriptCondition
+class Sense0LevelCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond111_HasPerception0_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond111_HasPerception0_Check);
 };
-CHECK_SIZE(HasPerception0Condition, 0x14);
+CHECK_SIZE(Sense0LevelCondition, 0x14);
 
 // 112
-class HasPerception2Condition : public ScriptCondition
+class Sense2LevelCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond112_HasPerception2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond112_HasPerception2_Check);
 };
-CHECK_SIZE(HasPerception2Condition, 0x14);
+CHECK_SIZE(Sense2LevelCondition, 0x14);
 
 // 113
-class HasPerception1Condition : public ScriptCondition
+class Sense1LevelCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond113_HasPerception1_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond113_HasPerception1_Check);
 };
-CHECK_SIZE(HasPerception1Condition, 0x14);
+CHECK_SIZE(Sense1LevelCondition, 0x14);
 
 // 114
-class CharacterAnalogCondition : public ScriptCondition
+class PresenceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond114_CharacterAnalog_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond114_CharacterAnalog_Check);
 };
-CHECK_SIZE(CharacterAnalogCondition, 0x14);
+CHECK_SIZE(PresenceCondition, 0x14);
 
 // 115
 class AlwaysZeroCondition : public ScriptCondition
@@ -912,22 +913,22 @@ public:
 CHECK_SIZE(AlwaysZeroCondition, 0x14);
 
 // 116
-class PhysicsBodyFlag5Condition : public ScriptCondition
+class RigidBodyAgainstWallCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond116_PhysicsBodyFlag5_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond116_PhysicsBodyFlag5_Check);
 };
-CHECK_SIZE(PhysicsBodyFlag5Condition, 0x14);
+CHECK_SIZE(RigidBodyAgainstWallCondition, 0x14);
 
-// 117
-class GotUserMessageOnceEqualsCondition : public ScriptCondition
+// 117 (its parameter the message)
+class GotChildMessageOnceEqualsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond117_GotUserMessageOnceEquals_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond117_GotUserMessageOnceEquals_Check);
 };
-CHECK_SIZE(GotUserMessageOnceEqualsCondition, 0x14);
+CHECK_SIZE(GotChildMessageOnceEqualsCondition, 0x14);
 
 // 118
 class HasXLinksCondition : public ScriptCondition
@@ -966,13 +967,13 @@ public:
 CHECK_SIZE(PositionZCondition, 0x14);
 
 // 122
-class AgentRef1SpawnFlagCondition : public ScriptCondition
+class AgentRef1IsBusyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond122_AgentRef1SpawnFlag_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond122_AgentRef1SpawnFlag_Check);
 };
-CHECK_SIZE(AgentRef1SpawnFlagCondition, 0x14);
+CHECK_SIZE(AgentRef1IsBusyCondition, 0x14);
 
 // 124
 class IsAttachedCondition : public ScriptCondition
@@ -984,13 +985,13 @@ public:
 CHECK_SIZE(IsAttachedCondition, 0x14);
 
 // 125
-class PhysicsImpactCondition : public ScriptCondition
+class TouchedMessageSurfaceCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond125_PhysicsImpact_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond125_PhysicsImpact_Check);
 };
-CHECK_SIZE(PhysicsImpactCondition, 0x14);
+CHECK_SIZE(TouchedMessageSurfaceCondition, 0x14);
 
 // 126
 class FocusForwardDotCondition : public ScriptCondition
@@ -1001,7 +1002,7 @@ public:
 };
 CHECK_SIZE(FocusForwardDotCondition, 0x14);
 
-// 127
+// 127 (its parameter the first integer property's value)
 class FocusObjectProp0EqualsCondition : public ScriptCondition
 {
 public:
@@ -1010,17 +1011,32 @@ public:
 };
 CHECK_SIZE(FocusObjectProp0EqualsCondition, 0x14);
 
-// 128, 129, 130, 131
-class AngleToFocusCondition : public ScriptCondition
+// 128, 129, 130, 131 (the builder gives each its target and side: the focus to the right, to the left, the first agent
+// reference to the right, to the left)
+class TargetToSideCondition : public ScriptCondition
 {
 public:
-    u32 unknown14;
-    u32 unknown18;
+    enum Target : u32
+    {
+        TargetFocus = 0,
+        TargetAgentRef1 = 1,
+    };
+
+    // The side of the instance's x axis the target counts on (on the other: none)
+    enum Side : u32
+    {
+        SideLeft = 0,
+        SideRight = 1,
+    };
+
+    Target targetKind;
+    Side targetSide;
 
     void Destroy(u32 destroyFlags) RETAIL(Cond128_AngleToFocus_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond128_AngleToFocus_Check);
 };
-CHECK_SIZE(AngleToFocusCondition, 0x1C);
+CHECK_OFFSET(TargetToSideCondition, targetKind, 0x14);
+CHECK_SIZE(TargetToSideCondition, 0x1C);
 
 // 132
 class KeyPathOnLastKeyCondition : public ScriptCondition
@@ -1032,13 +1048,13 @@ public:
 CHECK_SIZE(KeyPathOnLastKeyCondition, 0x14);
 
 // 133
-class ContextValue154SetCondition : public ScriptCondition
+class HasInstanceIdCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond133_ContextValue154Set_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond133_ContextValue154Set_Check);
 };
-CHECK_SIZE(ContextValue154SetCondition, 0x14);
+CHECK_SIZE(HasInstanceIdCondition, 0x14);
 
 // 134
 class KeyPathProgressCondition : public ScriptCondition
@@ -1050,22 +1066,22 @@ public:
 CHECK_SIZE(KeyPathProgressCondition, 0x14);
 
 // 135
-class KeyPathByte42Condition : public ScriptCondition
+class KeyPathNumPathsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond135_KeyPathByte42_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond135_KeyPathByte42_Check);
 };
-CHECK_SIZE(KeyPathByte42Condition, 0x14);
+CHECK_SIZE(KeyPathNumPathsCondition, 0x14);
 
 // 136
-class FocusVisibleCondition : public ScriptCondition
+class VisibleFromFocusCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond136_FocusVisible_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond136_FocusVisible_Check);
 };
-CHECK_SIZE(FocusVisibleCondition, 0x14);
+CHECK_SIZE(VisibleFromFocusCondition, 0x14);
 
 // 137
 class KeyPathNumKeysCondition : public ScriptCondition
@@ -1095,112 +1111,112 @@ public:
 CHECK_SIZE(FocusDistanceFromStartSquaredCondition, 0x14);
 
 // 140
-class AgentRef1HeightDifferenceCondition : public ScriptCondition
+class HeightAboveAgentRef1Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond140_AgentRef1HeightDifference_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond140_AgentRef1HeightDifference_Check);
 };
-CHECK_SIZE(AgentRef1HeightDifferenceCondition, 0x14);
+CHECK_SIZE(HeightAboveAgentRef1Condition, 0x14);
 
 // 141
-class FocusOffXAxisDistanceSquaredCondition : public ScriptCondition
+class FocusAlongXAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond141_FocusOffXAxisDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond141_FocusOffXAxisDistanceSquared_Check);
 };
-CHECK_SIZE(FocusOffXAxisDistanceSquaredCondition, 0x14);
+CHECK_SIZE(FocusAlongXAxisSqrDistCondition, 0x14);
 
 // 142
-class FocusHorizontalDistanceSquaredCondition : public ScriptCondition
+class FocusAlongYAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond142_FocusHorizontalDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond142_FocusHorizontalDistanceSquared_Check);
 };
-CHECK_SIZE(FocusHorizontalDistanceSquaredCondition, 0x14);
+CHECK_SIZE(FocusAlongYAxisSqrDistCondition, 0x14);
 
 // 143
-class FocusOffForwardAxisDistanceSquaredCondition : public ScriptCondition
+class FocusAlongZAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond143_FocusOffForwardAxisDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond143_FocusOffForwardAxisDistanceSquared_Check);
 };
-CHECK_SIZE(FocusOffForwardAxisDistanceSquaredCondition, 0x14);
+CHECK_SIZE(FocusAlongZAxisSqrDistCondition, 0x14);
 
 // 144
-class AgentRef1OffXAxisDistanceSquaredCondition : public ScriptCondition
+class AgentRef1AlongXAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond144_AgentRef1OffXAxisDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond144_AgentRef1OffXAxisDistanceSquared_Check);
 };
-CHECK_SIZE(AgentRef1OffXAxisDistanceSquaredCondition, 0x14);
+CHECK_SIZE(AgentRef1AlongXAxisSqrDistCondition, 0x14);
 
 // 145
-class AgentRef1HorizontalDistanceSquaredCondition : public ScriptCondition
+class AgentRef1AlongYAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond145_AgentRef1HorizontalDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond145_AgentRef1HorizontalDistanceSquared_Check);
 };
-CHECK_SIZE(AgentRef1HorizontalDistanceSquaredCondition, 0x14);
+CHECK_SIZE(AgentRef1AlongYAxisSqrDistCondition, 0x14);
 
 // 146
-class AgentRef1OffAxisDistanceSquaredCondition : public ScriptCondition
+class AgentRef1AlongZAxisSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond146_AgentRef1OffAxisDistanceSquared_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond146_AgentRef1OffAxisDistanceSquared_Check);
 };
-CHECK_SIZE(AgentRef1OffAxisDistanceSquaredCondition, 0x14);
+CHECK_SIZE(AgentRef1AlongZAxisSqrDistCondition, 0x14);
 
 // 147
-class PhysicsTouchingCondition : public ScriptCondition
+class TouchingWorldCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond147_PhysicsTouching_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond147_PhysicsTouching_Check);
 };
-CHECK_SIZE(PhysicsTouchingCondition, 0x14);
+CHECK_SIZE(TouchingWorldCondition, 0x14);
 
 // 148
-class AgentRef1SideOffsetCondition : public ScriptCondition
+class MeFacingAgentRef1Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond148_AgentRef1SideOffset_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond148_AgentRef1SideOffset_Check);
 };
-CHECK_SIZE(AgentRef1SideOffsetCondition, 0x14);
+CHECK_SIZE(MeFacingAgentRef1Condition, 0x14);
 
 // 149
-class AgentRef1VisibleCondition : public ScriptCondition
+class VisibleFromAgentRef1Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond149_AgentRef1Visible_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond149_AgentRef1Visible_Check);
 };
-CHECK_SIZE(AgentRef1VisibleCondition, 0x14);
+CHECK_SIZE(VisibleFromAgentRef1Condition, 0x14);
 
-// 150
-class AgentRef1InViewConeCondition : public ScriptCondition
+// 150 (its parameter the head's exit point slot)
+class HeadCanSeeAgentRef1Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond150_AgentRef1InViewCone_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond150_AgentRef1InViewCone_Check);
 };
-CHECK_SIZE(AgentRef1InViewConeCondition, 0x14);
+CHECK_SIZE(HeadCanSeeAgentRef1Condition, 0x14);
 
 // 151
-class FocusFlag10Condition : public ScriptCondition
+class FocusIsVisibleCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond151_FocusFlag10_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond151_FocusFlag10_Check);
 };
-CHECK_SIZE(FocusFlag10Condition, 0x14);
+CHECK_SIZE(FocusIsVisibleCondition, 0x14);
 
 // 152
 class IsInPlayerChunkCondition : public ScriptCondition
@@ -1211,7 +1227,7 @@ public:
 };
 CHECK_SIZE(IsInPlayerChunkCondition, 0x14);
 
-// 153
+// 153 (its parameter the object's behaviour slot)
 class HasScriptInSlotCondition : public ScriptCondition
 {
 public:
@@ -1229,50 +1245,50 @@ public:
 };
 CHECK_SIZE(CurrentKeyIsEvenCondition, 0x14);
 
-// 155
-class FocusFromExitPointCondition : public ScriptCondition
+// 155 (its parameter an exit point slot)
+class ExitPointToFocusSqrDistCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond155_FocusFromExitPoint_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond155_FocusFromExitPoint_Check);
 };
-CHECK_SIZE(FocusFromExitPointCondition, 0x14);
+CHECK_SIZE(ExitPointToFocusSqrDistCondition, 0x14);
 
 // 156
-class VideoStateIs5Condition : public ScriptCondition
+class CutsceneFinishedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond156_VideoStateIs5_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond156_VideoStateIs5_Check);
 };
-CHECK_SIZE(VideoStateIs5Condition, 0x14);
+CHECK_SIZE(CutsceneFinishedCondition, 0x14);
 
 // 157
-class UpVectorXCondition : public ScriptCondition
+class UpAxisYCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond157_UpVectorX_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond157_UpVectorX_Check);
 };
-CHECK_SIZE(UpVectorXCondition, 0x14);
+CHECK_SIZE(UpAxisYCondition, 0x14);
 
 // 158
-class IntProp0Bit0Condition : public ScriptCondition
+class IntProperty0Bit0ClearCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond158_IntProp0Bit0_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond158_IntProp0Bit0_Check);
 };
-CHECK_SIZE(IntProp0Bit0Condition, 0x14);
+CHECK_SIZE(IntProperty0Bit0ClearCondition, 0x14);
 
 // 159
-class VideoReadyCondition : public ScriptCondition
+class CutsceneMusicReadyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond159_VideoReady_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond159_VideoReady_Check);
 };
-CHECK_SIZE(VideoReadyCondition, 0x14);
+CHECK_SIZE(CutsceneMusicReadyCondition, 0x14);
 
 // 160
 class NearestPointEdgeDistanceSquaredCondition : public ScriptCondition
@@ -1293,24 +1309,25 @@ public:
 CHECK_SIZE(FocusIsAgentRef1Condition, 0x14);
 
 // 162
-class PhysicsHasCollisionNodeCondition : public ScriptCondition
+class HasPhysicsBodyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond162_PhysicsHasCollisionNode_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond162_PhysicsHasCollisionNode_Check);
 };
-CHECK_SIZE(PhysicsHasCollisionNodeCondition, 0x14);
+CHECK_SIZE(HasPhysicsBodyCondition, 0x14);
 
-// 163, 164, 165, 166
-class FocusObjectByte0EqualsCondition : public ScriptCondition
+// 163, 164, 165, 166 (the builder gives each the counter it reads, 0 to 3)
+class FocusInstanceCounterEqualsThresholdCondition : public ScriptCondition
 {
 public:
-    u32 unknown14;
+    u32 counter;
 
     void Destroy(u32 destroyFlags) RETAIL(Cond163_FocusObjectByte0Equals_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond163_FocusObjectByte0Equals_Check);
 };
-CHECK_SIZE(FocusObjectByte0EqualsCondition, 0x18);
+CHECK_OFFSET(FocusInstanceCounterEqualsThresholdCondition, counter, 0x14);
+CHECK_SIZE(FocusInstanceCounterEqualsThresholdCondition, 0x18);
 
 // 167
 class SplineDistanceToAgentRef1Condition : public ScriptCondition
@@ -1321,41 +1338,41 @@ public:
 };
 CHECK_SIZE(SplineDistanceToAgentRef1Condition, 0x14);
 
-// 168
-class ObstacleAheadCondition : public ScriptCondition
+// 168 (its parameter 1 looks behind)
+class GroundBelowPointAheadCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond168_ObstacleAhead_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond168_ObstacleAhead_Check);
 };
-CHECK_SIZE(ObstacleAheadCondition, 0x14);
+CHECK_SIZE(GroundBelowPointAheadCondition, 0x14);
 
 // 169
-class NodeValue174CountCondition : public ScriptCondition
+class CountedInstancesCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond169_NodeValue174Count_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond169_NodeValue174Count_Check);
 };
-CHECK_SIZE(NodeValue174CountCondition, 0x14);
+CHECK_SIZE(CountedInstancesCondition, 0x14);
 
 // 170
-class IsFullInstanceNodeCondition : public ScriptCondition
+class CountedValueCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond170_IsFullInstanceNode_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond170_IsFullInstanceNode_Check);
 };
-CHECK_SIZE(IsFullInstanceNodeCondition, 0x14);
+CHECK_SIZE(CountedValueCondition, 0x14);
 
 // 171
-class NodeByte8cMinusGlobalCondition : public ScriptCondition
+class RankAboveGlobalRankCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond171_NodeByte8cMinusGlobal_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond171_NodeByte8cMinusGlobal_Check);
 };
-CHECK_SIZE(NodeByte8cMinusGlobalCondition, 0x14);
+CHECK_SIZE(RankAboveGlobalRankCondition, 0x14);
 
 // 172
 class TimeSinceMarkCondition : public ScriptCondition
@@ -1367,13 +1384,13 @@ public:
 CHECK_SIZE(TimeSinceMarkCondition, 0x14);
 
 // 173
-class AlwaysZero173Condition : public ScriptCondition
+class NoOp173Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond173_AlwaysZero173_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond173_AlwaysZero173_Check);
 };
-CHECK_SIZE(AlwaysZero173Condition, 0x14);
+CHECK_SIZE(NoOp173Condition, 0x14);
 
 // 174
 class AlwaysCondition : public ScriptCondition
@@ -1394,13 +1411,13 @@ public:
 CHECK_SIZE(NeverCondition, 0x14);
 
 // 176
-class ChunksLoadedCondition : public ScriptCondition
+class LinkedChunksQueuedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond176_ChunksLoaded_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond176_ChunksLoaded_Check);
 };
-CHECK_SIZE(ChunksLoadedCondition, 0x14);
+CHECK_SIZE(LinkedChunksQueuedCondition, 0x14);
 
 // 177
 class FocusInSameChunkCondition : public ScriptCondition
@@ -1448,22 +1465,22 @@ public:
 CHECK_SIZE(MeToPlayerSqrDistCondition, 0x14);
 
 // 518
-class AgentIsOnGroundCondition : public ScriptCondition
+class ShadowActiveCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond518_AgentIsOnGround_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond518_AgentIsOnGround_Check);
 };
-CHECK_SIZE(AgentIsOnGroundCondition, 0x14);
+CHECK_SIZE(ShadowActiveCondition, 0x14);
 
 // 519
-class CrateHasRedWumpaCondition : public ScriptCondition
+class CrateHasWumpaCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond519_CrateHasRedWumpa_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond519_CrateHasRedWumpa_Check);
 };
-CHECK_SIZE(CrateHasRedWumpaCondition, 0x14);
+CHECK_SIZE(CrateHasWumpaCondition, 0x14);
 
 // 520
 class AgentWasTouchedCondition : public ScriptCondition
@@ -1520,40 +1537,40 @@ public:
 CHECK_SIZE(CanMoveForwardsCondition, 0x14);
 
 // 526
-class CanMoveBackwardsCondition : public ScriptCondition
+class BlockedBehindCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond526_CanMoveBackwards_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond526_CanMoveBackwards_Check);
 };
-CHECK_SIZE(CanMoveBackwardsCondition, 0x14);
+CHECK_SIZE(BlockedBehindCondition, 0x14);
 
 // 527
-class CanStrafeLeftCondition : public ScriptCondition
+class BlockedLeftCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond527_CanStrafeLeft_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond527_CanStrafeLeft_Check);
 };
-CHECK_SIZE(CanStrafeLeftCondition, 0x14);
+CHECK_SIZE(BlockedLeftCondition, 0x14);
 
 // 528
-class CanStrafeRightCondition : public ScriptCondition
+class BlockedRightCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond528_CanStrafeRight_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond528_CanStrafeRight_Check);
 };
-CHECK_SIZE(CanStrafeRightCondition, 0x14);
+CHECK_SIZE(BlockedRightCondition, 0x14);
 
 // 529
-class CanJumpForwardsCondition : public ScriptCondition
+class WumpaFruitCountCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond529_CanJumpForwards_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond529_CanJumpForwards_Check);
 };
-CHECK_SIZE(CanJumpForwardsCondition, 0x14);
+CHECK_SIZE(WumpaFruitCountCondition, 0x14);
 
 // 530
 class CanFallCondition : public ScriptCondition
@@ -1565,31 +1582,31 @@ public:
 CHECK_SIZE(CanFallCondition, 0x14);
 
 // 531
-class WillHitLowWallCondition : public ScriptCondition
+class NoOpWillHitLowWallCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond531_WillHitLowWall_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond531_WillHitLowWall_Check);
 };
-CHECK_SIZE(WillHitLowWallCondition, 0x14);
+CHECK_SIZE(NoOpWillHitLowWallCondition, 0x14);
 
 // 532
-class WillHitWallCondition : public ScriptCondition
+class AgentWasHitByTiedPairCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond532_WillHitWall_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond532_WillHitWall_Check);
 };
-CHECK_SIZE(WillHitWallCondition, 0x14);
+CHECK_SIZE(AgentWasHitByTiedPairCondition, 0x14);
 
 // 533
-class WillRunOffCliffCondition : public ScriptCondition
+class AgentWasHitByThrownCharacterCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond533_WillRunOffCliff_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond533_WillRunOffCliff_Check);
 };
-CHECK_SIZE(WillRunOffCliffCondition, 0x14);
+CHECK_SIZE(AgentWasHitByThrownCharacterCondition, 0x14);
 
 // 534
 class AgentWasAttackedCondition : public ScriptCondition
@@ -1637,13 +1654,13 @@ public:
 CHECK_SIZE(PlayerToMyFocusSqrDistCondition, 0x14);
 
 // 539
-class WumpaNeededForPayGateCondition : public ScriptCondition
+class PayGateNumberCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond539_WumpaNeededForPayGate_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond539_WumpaNeededForPayGate_Check);
 };
-CHECK_SIZE(WumpaNeededForPayGateCondition, 0x14);
+CHECK_SIZE(PayGateNumberCondition, 0x14);
 
 // 540
 class MeFacingPlayerCondition : public ScriptCondition
@@ -1691,13 +1708,13 @@ public:
 CHECK_SIZE(PlayerCanSeeMeCondition, 0x14);
 
 // 545
-class NodeTrafficCondition : public ScriptCondition
+class PlayerGunShotChargeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond545_NodeTraffic_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond545_NodeTraffic_Check);
 };
-CHECK_SIZE(NodeTrafficCondition, 0x14);
+CHECK_SIZE(PlayerGunShotChargeCondition, 0x14);
 
 // 546
 class NodeIsAirborneCondition : public ScriptCondition
@@ -1753,7 +1770,7 @@ public:
 };
 CHECK_SIZE(HeightAbovePlayerCondition, 0x14);
 
-// 553
+// 553 (its parameter the head's exit point slot)
 class HeadLookingAtPlayerCondition : public ScriptCondition
 {
 public:
@@ -1762,7 +1779,7 @@ public:
 };
 CHECK_SIZE(HeadLookingAtPlayerCondition, 0x14);
 
-// 554
+// 554 (its parameter the head's exit point slot)
 class HeadCanSeePlayerCondition : public ScriptCondition
 {
 public:
@@ -1771,7 +1788,7 @@ public:
 };
 CHECK_SIZE(HeadCanSeePlayerCondition, 0x14);
 
-// 555
+// 555 (its parameter the head's exit point slot)
 class PlayerHeadLookingAtMeCondition : public ScriptCondition
 {
 public:
@@ -1780,7 +1797,7 @@ public:
 };
 CHECK_SIZE(PlayerHeadLookingAtMeCondition, 0x14);
 
-// 556
+// 556 (its parameter the head's exit point slot)
 class PlayerHeadCanSeeMeCondition : public ScriptCondition
 {
 public:
@@ -1817,13 +1834,13 @@ public:
 CHECK_SIZE(PlayerIsRunningCondition, 0x14);
 
 // 560
-class PlayerIsCrawlingCondition : public ScriptCondition
+class PlayerIsWalkingDuplicateCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond560_PlayerIsCrawling_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond560_PlayerIsCrawling_Check);
 };
-CHECK_SIZE(PlayerIsCrawlingCondition, 0x14);
+CHECK_SIZE(PlayerIsWalkingDuplicateCondition, 0x14);
 
 // 561
 class PlayerIsFallingCondition : public ScriptCondition
@@ -1853,13 +1870,13 @@ public:
 CHECK_SIZE(PlayerHoldingMultiToolCondition, 0x14);
 
 // 564
-class PlayerIsSlammingCondition : public ScriptCondition
+class PlayerIsSlammingTiedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond564_PlayerIsSlamming_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond564_PlayerIsSlamming_Check);
 };
-CHECK_SIZE(PlayerIsSlammingCondition, 0x14);
+CHECK_SIZE(PlayerIsSlammingTiedCondition, 0x14);
 
 // 565
 class PlayerIsSpinningCondition : public ScriptCondition
@@ -1871,69 +1888,69 @@ public:
 CHECK_SIZE(PlayerIsSpinningCondition, 0x14);
 
 // 566
-class PlayerIsJumpingCondition : public ScriptCondition
+class PlayerIsSlidingCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond566_PlayerIsJumping_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond566_PlayerIsJumping_Check);
 };
-CHECK_SIZE(PlayerIsJumpingCondition, 0x14);
+CHECK_SIZE(PlayerIsSlidingCondition, 0x14);
 
 // 567
-class HeadCanSeePlayerUnblockedCondition : public ScriptCondition
+class PlayerIsAirborneCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond567_HeadCanSeePlayerUnblocked_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond567_HeadCanSeePlayerUnblocked_Check);
 };
-CHECK_SIZE(HeadCanSeePlayerUnblockedCondition, 0x14);
+CHECK_SIZE(PlayerIsAirborneCondition, 0x14);
 
-// 568
-class AmIHarmfulCondition : public ScriptCondition
+// 568 (its parameter the head's exit point slot)
+class HeadCanSeeNearPlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond568_AmIHarmful_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond568_AmIHarmful_Check);
 };
-CHECK_SIZE(AmIHarmfulCondition, 0x14);
+CHECK_SIZE(HeadCanSeeNearPlayerCondition, 0x14);
 
 // 569
-class AttachedContextFlag8Condition : public ScriptCondition
+class CanDamageCharacterCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond569_AttachedContextFlag8_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond569_AttachedContextFlag8_Check);
 };
-CHECK_SIZE(AttachedContextFlag8Condition, 0x14);
+CHECK_SIZE(CanDamageCharacterCondition, 0x14);
 
 // 570
-class DUMMY_570Condition : public ScriptCondition
+class NoOp570Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond570_DUMMY_570_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond570_DUMMY_570_Check);
 };
-CHECK_SIZE(DUMMY_570Condition, 0x14);
+CHECK_SIZE(NoOp570Condition, 0x14);
 
 // 571
-class DUMMY_571Condition : public ScriptCondition
+class NoOp571Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond571_DUMMY_571_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond571_DUMMY_571_Check);
 };
-CHECK_SIZE(DUMMY_571Condition, 0x14);
+CHECK_SIZE(NoOp571Condition, 0x14);
 
 // 572
-class CutsceneSkippedCondition : public ScriptCondition
+class NoOpCutsceneSkippedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond572_CutsceneSkipped_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond572_CutsceneSkipped_Check);
 };
-CHECK_SIZE(CutsceneSkippedCondition, 0x14);
+CHECK_SIZE(NoOpCutsceneSkippedCondition, 0x14);
 
-// 573
+// 573 (its parameter the player, 1 or 2)
 class IsCirclePressedCondition : public ScriptCondition
 {
 public:
@@ -1942,7 +1959,7 @@ public:
 };
 CHECK_SIZE(IsCirclePressedCondition, 0x14);
 
-// 574
+// 574 (its parameter the player, 1 or 2)
 class IsSquarePressedCondition : public ScriptCondition
 {
 public:
@@ -1951,7 +1968,7 @@ public:
 };
 CHECK_SIZE(IsSquarePressedCondition, 0x14);
 
-// 575
+// 575 (its parameter the player, 1 or 2)
 class IsTrianglePressedCondition : public ScriptCondition
 {
 public:
@@ -1960,7 +1977,7 @@ public:
 };
 CHECK_SIZE(IsTrianglePressedCondition, 0x14);
 
-// 576
+// 576 (its parameter the player, 1 or 2)
 class IsR1PressedCondition : public ScriptCondition
 {
 public:
@@ -1970,31 +1987,31 @@ public:
 CHECK_SIZE(IsR1PressedCondition, 0x14);
 
 // 577
-class CharacterVehiclePointerCondition : public ScriptCondition
+class RidesVehicleCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond577_CharacterVehiclePointer_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond577_CharacterVehiclePointer_Check);
 };
-CHECK_SIZE(CharacterVehiclePointerCondition, 0x14);
+CHECK_SIZE(RidesVehicleCondition, 0x14);
 
 // 578
-class CharacterFlag23Condition : public ScriptCondition
+class NoGroundAheadCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond578_CharacterFlag23_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond578_CharacterFlag23_Check);
 };
-CHECK_SIZE(CharacterFlag23Condition, 0x14);
+CHECK_SIZE(NoGroundAheadCondition, 0x14);
 
 // 579
-class IsChargedShotCondition : public ScriptCondition
+class PlayerJustShotCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond579_IsChargedShot_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond579_IsChargedShot_Check);
 };
-CHECK_SIZE(IsChargedShotCondition, 0x14);
+CHECK_SIZE(PlayerJustShotCondition, 0x14);
 
 // 580
 class IsDownBlastCondition : public ScriptCondition
@@ -2006,13 +2023,13 @@ public:
 CHECK_SIZE(IsDownBlastCondition, 0x14);
 
 // 581
-class GlobalInstanceOp581Condition : public ScriptCondition
+class ShotAtMeCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond581_GlobalInstanceOp581_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond581_GlobalInstanceOp581_Check);
 };
-CHECK_SIZE(GlobalInstanceOp581Condition, 0x14);
+CHECK_SIZE(ShotAtMeCondition, 0x14);
 
 // 582
 class PlayerVisibleCondition : public ScriptCondition
@@ -2024,40 +2041,40 @@ public:
 CHECK_SIZE(PlayerVisibleCondition, 0x14);
 
 // 583
-class SubPathPointFlag0Condition : public ScriptCondition
+class EdgeStartNodeBlockedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond583_SubPathPointFlag0_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond583_SubPathPointFlag0_Check);
 };
-CHECK_SIZE(SubPathPointFlag0Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeBlockedCondition, 0x14);
 
 // 584
-class PlayerVisible2Condition : public ScriptCondition
+class PlayerVisibleFromLeftCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond584_PlayerVisible2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond584_PlayerVisible2_Check);
 };
-CHECK_SIZE(PlayerVisible2Condition, 0x14);
+CHECK_SIZE(PlayerVisibleFromLeftCondition, 0x14);
 
 // 585
-class PlayerVisible3Condition : public ScriptCondition
+class PlayerVisibleFromRightCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond585_PlayerVisible3_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond585_PlayerVisible3_Check);
 };
-CHECK_SIZE(PlayerVisible3Condition, 0x14);
+CHECK_SIZE(PlayerVisibleFromRightCondition, 0x14);
 
 // 586
-class CharacterFlag22Condition : public ScriptCondition
+class IsTiedSecondCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond586_CharacterFlag22_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond586_CharacterFlag22_Check);
 };
-CHECK_SIZE(CharacterFlag22Condition, 0x14);
+CHECK_SIZE(IsTiedSecondCondition, 0x14);
 
 // 587
 class IsPlayerCondition : public ScriptCondition
@@ -2069,49 +2086,49 @@ public:
 CHECK_SIZE(IsPlayerCondition, 0x14);
 
 // 588
-class ObjectContextFlag17Condition : public ScriptCondition
+class HitByKickCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond588_ObjectContextFlag17_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond588_ObjectContextFlag17_Check);
 };
-CHECK_SIZE(ObjectContextFlag17Condition, 0x14);
+CHECK_SIZE(HitByKickCondition, 0x14);
 
 // 589
-class HitByPunchCondition : public ScriptCondition
+class HitBySpinCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond589_HitByPunch_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond589_HitByPunch_Check);
 };
-CHECK_SIZE(HitByPunchCondition, 0x14);
+CHECK_SIZE(HitBySpinCondition, 0x14);
 
 // 590
-class HitByBodySlam2Condition : public ScriptCondition
+class HitByKind18Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond590_HitByBodySlam2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond590_HitByBodySlam2_Check);
 };
-CHECK_SIZE(HitByBodySlam2Condition, 0x14);
+CHECK_SIZE(HitByKind18Condition, 0x14);
 
 // 591
-class HitBySpinHitboxCondition : public ScriptCondition
+class HitByProjectileCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond591_HitBySpinHitbox_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond591_HitBySpinHitbox_Check);
 };
-CHECK_SIZE(HitBySpinHitboxCondition, 0x14);
+CHECK_SIZE(HitByProjectileCondition, 0x14);
 
 // 592
-class HitByBodySlamHitboxCondition : public ScriptCondition
+class HitByKneeDropCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond592_HitByBodySlamHitbox_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond592_HitByBodySlamHitbox_Check);
 };
-CHECK_SIZE(HitByBodySlamHitboxCondition, 0x14);
+CHECK_SIZE(HitByKneeDropCondition, 0x14);
 
 // 593
 class CharacterHasVehicleCondition : public ScriptCondition
@@ -2132,13 +2149,13 @@ public:
 CHECK_SIZE(IsVehicleRollerbrawlCondition, 0x14);
 
 // 595
-class VehicleTypeNot2Condition : public ScriptCondition
+class IsVehicleKind2Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond595_VehicleTypeNot2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond595_VehicleTypeNot2_Check);
 };
-CHECK_SIZE(VehicleTypeNot2Condition, 0x14);
+CHECK_SIZE(IsVehicleKind2Condition, 0x14);
 
 // 596
 class IsVehicleHumiliskateCondition : public ScriptCondition
@@ -2150,175 +2167,175 @@ public:
 CHECK_SIZE(IsVehicleHumiliskateCondition, 0x14);
 
 // 597
-class VehicleTypeNot4Condition : public ScriptCondition
+class IsVehicleKind4Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond597_VehicleTypeNot4_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond597_VehicleTypeNot4_Check);
 };
-CHECK_SIZE(VehicleTypeNot4Condition, 0x14);
+CHECK_SIZE(IsVehicleKind4Condition, 0x14);
 
 // 598
-class IsVehicle3Condition : public ScriptCondition
+class IsVehicleHoverboardCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond598_IsVehicle3_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond598_IsVehicle3_Check);
 };
-CHECK_SIZE(IsVehicle3Condition, 0x14);
+CHECK_SIZE(IsVehicleHoverboardCondition, 0x14);
 
 // 599
-class SubPathPointFlag5Condition : public ScriptCondition
+class EdgeStartNodeFlag5Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond599_SubPathPointFlag5_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond599_SubPathPointFlag5_Check);
 };
-CHECK_SIZE(SubPathPointFlag5Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag5Condition, 0x14);
 
 // 600
-class SubPathPointFlag4Condition : public ScriptCondition
+class EdgeStartNodeFlag4Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond600_SubPathPointFlag4_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond600_SubPathPointFlag4_Check);
 };
-CHECK_SIZE(SubPathPointFlag4Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag4Condition, 0x14);
 
 // 601
-class SubPathPointFlag6Condition : public ScriptCondition
+class EdgeStartNodeFlag6Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond601_SubPathPointFlag6_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond601_SubPathPointFlag6_Check);
 };
-CHECK_SIZE(SubPathPointFlag6Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag6Condition, 0x14);
 
 // 602
-class PathSegmentFlag0Condition : public ScriptCondition
+class EdgeFlag8Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond602_PathSegmentFlag0_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond602_PathSegmentFlag0_Check);
 };
-CHECK_SIZE(PathSegmentFlag0Condition, 0x14);
+CHECK_SIZE(EdgeFlag8Condition, 0x14);
 
 // 603
-class SubPathPreviousPointFlag5Condition : public ScriptCondition
+class EdgeEndNodeFlag5Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond603_SubPathPreviousPointFlag5_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond603_SubPathPreviousPointFlag5_Check);
 };
-CHECK_SIZE(SubPathPreviousPointFlag5Condition, 0x14);
+CHECK_SIZE(EdgeEndNodeFlag5Condition, 0x14);
 
 // 604
-class SubPathPreviousPointFlag4Condition : public ScriptCondition
+class EdgeEndNodeFlag4Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond604_SubPathPreviousPointFlag4_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond604_SubPathPreviousPointFlag4_Check);
 };
-CHECK_SIZE(SubPathPreviousPointFlag4Condition, 0x14);
+CHECK_SIZE(EdgeEndNodeFlag4Condition, 0x14);
 
 // 605
-class SubPathPreviousPointFlag6Condition : public ScriptCondition
+class EdgeEndNodeFlag6Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond605_SubPathPreviousPointFlag6_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond605_SubPathPreviousPointFlag6_Check);
 };
-CHECK_SIZE(SubPathPreviousPointFlag6Condition, 0x14);
+CHECK_SIZE(EdgeEndNodeFlag6Condition, 0x14);
 
 // 606
-class SubPathPointFlag5bCondition : public ScriptCondition
+class EdgeStartNodeFlag5DuplicateCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond606_SubPathPointFlag5b_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond606_SubPathPointFlag5b_Check);
 };
-CHECK_SIZE(SubPathPointFlag5bCondition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag5DuplicateCondition, 0x14);
 
 // 607
-class SubPathPointFlag4bCondition : public ScriptCondition
+class EdgeStartNodeFlag4DuplicateCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond607_SubPathPointFlag4b_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond607_SubPathPointFlag4b_Check);
 };
-CHECK_SIZE(SubPathPointFlag4bCondition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag4DuplicateCondition, 0x14);
 
 // 608
-class SubPathPointFlag6bCondition : public ScriptCondition
+class EdgeStartNodeFlag6DuplicateCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond608_SubPathPointFlag6b_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond608_SubPathPointFlag6b_Check);
 };
-CHECK_SIZE(SubPathPointFlag6bCondition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag6DuplicateCondition, 0x14);
 
 // 609
-class PlayerVectorLengthDifferenceCondition : public ScriptCondition
+class SpeedAbovePlayerCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond609_PlayerVectorLengthDifference_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond609_PlayerVectorLengthDifference_Check);
 };
-CHECK_SIZE(PlayerVectorLengthDifferenceCondition, 0x14);
+CHECK_SIZE(SpeedAbovePlayerCondition, 0x14);
 
 // 610
-class HitByCortexBoltCondition : public ScriptCondition
+class HitByElectricCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond610_HitByCortexBolt_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond610_HitByCortexBolt_Check);
 };
-CHECK_SIZE(HitByCortexBoltCondition, 0x14);
+CHECK_SIZE(HitByElectricCondition, 0x14);
 
 // 611
-class ObjectContextFlag1Condition : public ScriptCondition
+class HitByExplosionCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond611_ObjectContextFlag1_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond611_ObjectContextFlag1_Check);
 };
-CHECK_SIZE(ObjectContextFlag1Condition, 0x14);
+CHECK_SIZE(HitByExplosionCondition, 0x14);
 
 // 612
-class SubPathPointFlag2Condition : public ScriptCondition
+class EdgeStartNodeFlag2Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond612_SubPathPointFlag2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond612_SubPathPointFlag2_Check);
 };
-CHECK_SIZE(SubPathPointFlag2Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag2Condition, 0x14);
 
 // 613
-class SubPathPreviousPointFlag2Condition : public ScriptCondition
+class EdgeEndNodeFlag2Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond613_SubPathPreviousPointFlag2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond613_SubPathPreviousPointFlag2_Check);
 };
-CHECK_SIZE(SubPathPreviousPointFlag2Condition, 0x14);
+CHECK_SIZE(EdgeEndNodeFlag2Condition, 0x14);
 
 // 614
-class SubPathPointFlag2bCondition : public ScriptCondition
+class EdgeStartNodeFlag2DuplicateCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond614_SubPathPointFlag2b_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond614_SubPathPointFlag2b_Check);
 };
-CHECK_SIZE(SubPathPointFlag2bCondition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlag2DuplicateCondition, 0x14);
 
 // 615
-class SubPathPointFlags56Condition : public ScriptCondition
+class EdgeStartNodeFlagsClearCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond615_SubPathPointFlags56_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond615_SubPathPointFlags56_Check);
 };
-CHECK_SIZE(SubPathPointFlags56Condition, 0x14);
+CHECK_SIZE(EdgeStartNodeFlagsClearCondition, 0x14);
 
 // 616
 class FocusPositionToPlayerDistanceSquaredCondition : public ScriptCondition
@@ -2348,40 +2365,40 @@ public:
 CHECK_SIZE(PlayerSideOffsetCondition, 0x14);
 
 // 619
-class PlayerNearCurrentKeyCondition : public ScriptCondition
+class PlayerNearerAnotherKeyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond619_PlayerNearCurrentKey_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond619_PlayerNearCurrentKey_Check);
 };
-CHECK_SIZE(PlayerNearCurrentKeyCondition, 0x14);
+CHECK_SIZE(PlayerNearerAnotherKeyCondition, 0x14);
 
 // 620
-class PlayerSplineVehicleValueCondition : public ScriptCondition
+class PlayerHumiliskateCrouchedCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond620_PlayerSplineVehicleValue_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond620_PlayerSplineVehicleValue_Check);
 };
-CHECK_SIZE(PlayerSplineVehicleValueCondition, 0x14);
+CHECK_SIZE(PlayerHumiliskateCrouchedCondition, 0x14);
 
 // 621
-class CharacterHasHomeChunkCondition : public ScriptCondition
+class PlayerOutsideHomeChunkCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond621_CharacterHasHomeChunk_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond621_CharacterHasHomeChunk_Check);
 };
-CHECK_SIZE(CharacterHasHomeChunkCondition, 0x14);
+CHECK_SIZE(PlayerOutsideHomeChunkCondition, 0x14);
 
 // 622
-class PlayerFlag57ClearCondition : public ScriptCondition
+class PlayerScriptFlagClearCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond622_PlayerFlag57Clear_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond622_PlayerFlag57Clear_Check);
 };
-CHECK_SIZE(PlayerFlag57ClearCondition, 0x14);
+CHECK_SIZE(PlayerScriptFlagClearCondition, 0x14);
 
 // 623
 class HasActorWeightCondition : public ScriptCondition
@@ -2393,103 +2410,103 @@ public:
 CHECK_SIZE(HasActorWeightCondition, 0x14);
 
 // 624
-class GameFlags44Is12Condition : public ScriptCondition
+class GameIsPlayingCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond624_GameFlags44Is12_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond624_GameFlags44Is12_Check);
 };
-CHECK_SIZE(GameFlags44Is12Condition, 0x14);
+CHECK_SIZE(GameIsPlayingCondition, 0x14);
 
 // 625
-class ObjectContextFlag25Condition : public ScriptCondition
+class HitByWaterCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond625_ObjectContextFlag25_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond625_ObjectContextFlag25_Check);
 };
-CHECK_SIZE(ObjectContextFlag25Condition, 0x14);
+CHECK_SIZE(HitByWaterCondition, 0x14);
 
 // 626
-class ObjectContextFlag2Condition : public ScriptCondition
+class HitByFallThroughCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond626_ObjectContextFlag2_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond626_ObjectContextFlag2_Check);
 };
-CHECK_SIZE(ObjectContextFlag2Condition, 0x14);
+CHECK_SIZE(HitByFallThroughCondition, 0x14);
 
 // 627
-class PlayerVehicle1ValueCondition : public ScriptCondition
+class PlayerRidesRollerbrawlCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond627_PlayerVehicle1Value_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond627_PlayerVehicle1Value_Check);
 };
-CHECK_SIZE(PlayerVehicle1ValueCondition, 0x14);
+CHECK_SIZE(PlayerRidesRollerbrawlCondition, 0x14);
 
 // 628
-class BothCharactersFlag14Condition : public ScriptCondition
+class CortexDeadPlayerAliveCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond628_BothCharactersFlag14_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond628_BothCharactersFlag14_Check);
 };
-CHECK_SIZE(BothCharactersFlag14Condition, 0x14);
+CHECK_SIZE(CortexDeadPlayerAliveCondition, 0x14);
 
 // 629
-class GlobalInt3098e8Condition : public ScriptCondition
+class ScriptGlobalFlagCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond629_GlobalInt3098e8_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond629_GlobalInt3098e8_Check);
 };
-CHECK_SIZE(GlobalInt3098e8Condition, 0x14);
+CHECK_SIZE(ScriptGlobalFlagCondition, 0x14);
 
 // 630
-class NodeValue134SetCondition : public ScriptCondition
+class InWaterCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond630_NodeValue134Set_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond630_NodeValue134Set_Check);
 };
-CHECK_SIZE(NodeValue134SetCondition, 0x14);
+CHECK_SIZE(InWaterCondition, 0x14);
 
 // 631
-class GameControllerField500HighCondition : public ScriptCondition
+class TimedPlayCountCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond631_GameControllerField500High_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond631_GameControllerField500High_Check);
 };
-CHECK_SIZE(GameControllerField500HighCondition, 0x14);
+CHECK_SIZE(TimedPlayCountCondition, 0x14);
 
 // 632
-class GameTimer57cCondition : public ScriptCondition
+class TimedPlayTimeLeftCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond632_GameTimer57c_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond632_GameTimer57c_Check);
 };
-CHECK_SIZE(GameTimer57cCondition, 0x14);
+CHECK_SIZE(TimedPlayTimeLeftCondition, 0x14);
 
 // 633
-class SecondCharacterGunStateCondition : public ScriptCondition
+class PlayerGunSecondCountCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond633_SecondCharacterGunState_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond633_SecondCharacterGunState_Check);
 };
-CHECK_SIZE(SecondCharacterGunStateCondition, 0x14);
+CHECK_SIZE(PlayerGunSecondCountCondition, 0x14);
 
 // 634
-class HasAmmoCondition : public ScriptCondition
+class PlayerAmmoCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond634_HasAmmo_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond634_HasAmmo_Check);
 };
-CHECK_SIZE(HasAmmoCondition, 0x14);
+CHECK_SIZE(PlayerAmmoCondition, 0x14);
 
 // 635
 class CameraForwardDistanceCondition : public ScriptCondition
@@ -2501,49 +2518,49 @@ public:
 CHECK_SIZE(CameraForwardDistanceCondition, 0x14);
 
 // 636
-class ObjectContextFlag19Condition : public ScriptCondition
+class HitByHeavyCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond636_ObjectContextFlag19_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond636_ObjectContextFlag19_Check);
 };
-CHECK_SIZE(ObjectContextFlag19Condition, 0x14);
+CHECK_SIZE(HitByHeavyCondition, 0x14);
 
 // 637
-class GameModeIs5Condition : public ScriptCondition
+class PairingIs5Condition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond637_GameModeIs5_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond637_GameModeIs5_Check);
 };
-CHECK_SIZE(GameModeIs5Condition, 0x14);
+CHECK_SIZE(PairingIs5Condition, 0x14);
 
 // 638
-class ObjectContextFlags3or22Condition : public ScriptCondition
+class HitByBurningCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond638_ObjectContextFlags3or22_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond638_ObjectContextFlags3or22_Check);
 };
-CHECK_SIZE(ObjectContextFlags3or22Condition, 0x14);
+CHECK_SIZE(HitByBurningCondition, 0x14);
 
 // 639
-class GlobalProgressionCondition : public ScriptCondition
+class StoryAreaCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond639_GlobalProgression_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond639_GlobalProgression_Check);
 };
-CHECK_SIZE(GlobalProgressionCondition, 0x14);
+CHECK_SIZE(StoryAreaCondition, 0x14);
 
 // 640
-class SecondCharacterVehicleValueCondition : public ScriptCondition
+class PlayerVehicleHeightCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond640_SecondCharacterVehicleValue_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond640_SecondCharacterVehicleValue_Check);
 };
-CHECK_SIZE(SecondCharacterVehicleValueCondition, 0x14);
+CHECK_SIZE(PlayerVehicleHeightCondition, 0x14);
 
 // 641
 class IsMoviePlayingCondition : public ScriptCondition
@@ -2555,22 +2572,22 @@ public:
 CHECK_SIZE(IsMoviePlayingCondition, 0x14);
 
 // 642
-class PlayerFlag14Condition : public ScriptCondition
+class PlayerIsDeadCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond642_PlayerFlag14_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond642_PlayerFlag14_Check);
 };
-CHECK_SIZE(PlayerFlag14Condition, 0x14);
+CHECK_SIZE(PlayerIsDeadCondition, 0x14);
 
-// 643
-class GameStateIsCondition : public ScriptCondition
+// 643 (its parameter the area)
+class PlayAreaIsCondition : public ScriptCondition
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cond643_GameStateIs_Dtor);
     f32 Check(GameNode* node, BehaviourLevel* level, const u32* time) RETAIL(Cond643_GameStateIs_Check);
 };
-CHECK_SIZE(GameStateIsCondition, 0x14);
+CHECK_SIZE(PlayAreaIsCondition, 0x14);
 
 // 644
 class TriggeredByOtherCharacterCondition : public ScriptCondition
@@ -2589,7 +2606,7 @@ extern "C"
     extern const GccVTableEntry g_RandomConditionVTable[] RETAIL(RandFloatCondition_Methods);
     extern const GccVTableEntry g_IsVisibleConditionVTable[] RETAIL(vt_Cond4_IsVisible);
     extern const GccVTableEntry g_TimeInUnitConditionVTable[] RETAIL(AnimationProgressCondition__Methods);
-    extern const GccVTableEntry g_IsInExternalScriptConditionVTable[] RETAIL(vt_Cond6_IsInExternalScript);
+    extern const GccVTableEntry g_LinkedChunksLoadedConditionVTable[] RETAIL(vt_Cond6_IsInExternalScript);
     extern const GccVTableEntry g_AnimationFinishedConditionVTable[] RETAIL(AnimationEndedCondition__Methods);
     extern const GccVTableEntry g_IsPathCompleteConditionVTable[] RETAIL(vt_Cond8_IsPathComplete);
     extern const GccVTableEntry g_MeToInitPosSqrDistConditionVTable[] RETAIL(DistanceFromSpawnCondition_Methods);
@@ -2626,7 +2643,7 @@ extern "C"
     extern const GccVTableEntry g_GotAnyUserMessageConditionVTable[] RETAIL(vt_Cond50_GotAnyUserMessage);
     extern const GccVTableEntry g_GotUserMessageEqualsConditionVTable[] RETAIL(vt_Cond51_GotUserMessageEquals);
     extern const GccVTableEntry g_CurrentKeyEqualsConditionVTable[] RETAIL(vt_Cond52_CurrentKeyEquals);
-    extern const GccVTableEntry g_TouchingTerrainConditionVTable[] RETAIL(vt_Cond53_TouchingTerrain);
+    extern const GccVTableEntry g_TouchingAnythingConditionVTable[] RETAIL(vt_Cond53_TouchingTerrain);
     extern const GccVTableEntry g_TouchingAnyAgentConditionVTable[] RETAIL(vt_Cond54_TouchingAnyAgent);
     extern const GccVTableEntry g_GotAttachmentOnExitConditionVTable[] RETAIL(vt_Cond55_GotAttachmentOnExit);
     extern const GccVTableEntry g_GotFocusObjectConditionVTable[] RETAIL(vt_Cond56_GotFocusObject);
@@ -2652,124 +2669,124 @@ extern "C"
     extern const GccVTableEntry g_GotAgentRef2ConditionVTable[] RETAIL(vt_Cond78_GotAgentRef2);
     extern const GccVTableEntry g_AgentRef1ActorEqualsConditionVTable[] RETAIL(vt_Cond79_AgentRef1ActorEquals);
     extern const GccVTableEntry g_AgentRef2ActorEqualsConditionVTable[] RETAIL(vt_Cond80_AgentRef2ActorEquals);
-    extern const GccVTableEntry g_HasInstancePositionConditionVTable[] RETAIL(vt_Cond81_Unknown);
-    extern const GccVTableEntry g_HasFocusPositionConditionVTable[] RETAIL(vt_Cond82_Unknown);
-    extern const GccVTableEntry g_NodeFlag16ConditionVTable[] RETAIL(vt_Cond83_Unknown);
-    extern const GccVTableEntry g_NodeFlag17ConditionVTable[] RETAIL(vt_Cond84_Unknown);
-    extern const GccVTableEntry g_NodeFlag15ConditionVTable[] RETAIL(vt_Cond85_Unknown);
-    extern const GccVTableEntry g_NodeByte154FractionConditionVTable[] RETAIL(vt_Cond86_Unknown);
-    extern const GccVTableEntry g_PhysicsBodyFlag1ConditionVTable[] RETAIL(vt_Cond87_Unknown);
-    extern const GccVTableEntry g_DistanceToTargetConditionVTable[] RETAIL(vt_Cond88_DistanceToTarget);
-    extern const GccVTableEntry g_FocusPositionDistanceSquaredConditionVTable[] RETAIL(vt_Cond89_Unknown);
+    extern const GccVTableEntry g_HasStoredPlaceConditionVTable[] RETAIL(vt_Cond81_Unknown);
+    extern const GccVTableEntry g_HasStoredPositionConditionVTable[] RETAIL(vt_Cond82_Unknown);
+    extern const GccVTableEntry g_FoundCoverConditionVTable[] RETAIL(vt_Cond83_Unknown);
+    extern const GccVTableEntry g_FoundNoCoverConditionVTable[] RETAIL(vt_Cond84_Unknown);
+    extern const GccVTableEntry g_CoverSearchEndedConditionVTable[] RETAIL(vt_Cond85_Unknown);
+    extern const GccVTableEntry g_KnockCountdownConditionVTable[] RETAIL(vt_Cond86_Unknown);
+    extern const GccVTableEntry g_RigidBodyOnGroundConditionVTable[] RETAIL(vt_Cond87_Unknown);
+    extern const GccVTableEntry g_MeToAgentRef1SqrDistConditionVTable[] RETAIL(vt_Cond88_DistanceToTarget);
+    extern const GccVTableEntry g_MeToStoredPositionSqrDistConditionVTable[] RETAIL(vt_Cond89_Unknown);
     extern const GccVTableEntry g_GroundBelowFocusPositionConditionVTable[] RETAIL(vt_Cond90_Unknown);
-    extern const GccVTableEntry g_ObjectInstanceByteAtConditionVTable[] RETAIL(vt_Cond91_ObjectInstanceByteAt);
-    extern const GccVTableEntry g_InstanceSubtypeConditionVTable[] RETAIL(vt_Cond92_InstanceSubtype);
-    extern const GccVTableEntry g_HeadTrackingFlag24ConditionVTable[] RETAIL(vt_Cond93_Unknown);
-    extern const GccVTableEntry g_HeadTrackingFlag25ConditionVTable[] RETAIL(vt_Cond94_Unknown);
-    extern const GccVTableEntry g_HeadTrackingFlag26ConditionVTable[] RETAIL(vt_Cond95_Unknown);
-    extern const GccVTableEntry g_HeadTrackingFlag27ConditionVTable[] RETAIL(vt_Cond96_Unknown);
-    extern const GccVTableEntry g_HeadTrackingFlag28ConditionVTable[] RETAIL(vt_Cond97_Unknown);
-    extern const GccVTableEntry g_SubPathKeyRawConditionVTable[] RETAIL(vt_Cond102_Unknown);
-    extern const GccVTableEntry g_SubPathKeyConditionVTable[] RETAIL(vt_Cond103_Unknown);
-    extern const GccVTableEntry g_SubPathKeyDistanceSquaredConditionVTable[] RETAIL(vt_Cond104_Unknown);
-    extern const GccVTableEntry g_PhysicsCount8cConditionVTable[] RETAIL(vt_Cond105_Unknown);
-    extern const GccVTableEntry g_PhysicsHasContactsConditionVTable[] RETAIL(vt_Cond106_Unknown);
-    extern const GccVTableEntry g_SubPathPreviousKeyDistanceSquaredConditionVTable[] RETAIL(vt_Cond107_Unknown);
-    extern const GccVTableEntry g_PhysicsHasGroundConditionVTable[] RETAIL(vt_Cond108_Unknown);
-    extern const GccVTableEntry g_CurrentLinkIndexConditionVTable[] RETAIL(vt_Cond109_Unknown);
+    extern const GccVTableEntry g_InstanceCounterValueConditionVTable[] RETAIL(vt_Cond91_ObjectInstanceByteAt);
+    extern const GccVTableEntry g_InstanceCounterEqualsThresholdConditionVTable[] RETAIL(vt_Cond92_InstanceSubtype);
+    extern const GccVTableEntry g_HeadAtLimitConditionVTable[] RETAIL(vt_Cond93_Unknown);
+    extern const GccVTableEntry g_HeadYawBelowLimitConditionVTable[] RETAIL(vt_Cond94_Unknown);
+    extern const GccVTableEntry g_HeadYawAboveLimitConditionVTable[] RETAIL(vt_Cond95_Unknown);
+    extern const GccVTableEntry g_HeadPitchBelowLimitConditionVTable[] RETAIL(vt_Cond96_Unknown);
+    extern const GccVTableEntry g_HeadPitchAboveLimitConditionVTable[] RETAIL(vt_Cond97_Unknown);
+    extern const GccVTableEntry g_RouteStepUncheckedConditionVTable[] RETAIL(vt_Cond102_Unknown);
+    extern const GccVTableEntry g_RouteStepConditionVTable[] RETAIL(vt_Cond103_Unknown);
+    extern const GccVTableEntry g_MeToEdgeStartNodeSqrDistConditionVTable[] RETAIL(vt_Cond104_Unknown);
+    extern const GccVTableEntry g_RigidBodyHasMotionConditionVTable[] RETAIL(vt_Cond105_Unknown);
+    extern const GccVTableEntry g_RigidBodyCollidesConditionVTable[] RETAIL(vt_Cond106_Unknown);
+    extern const GccVTableEntry g_MeToEdgeEndNodeSqrDistConditionVTable[] RETAIL(vt_Cond107_Unknown);
+    extern const GccVTableEntry g_RigidBodyRidesInstanceConditionVTable[] RETAIL(vt_Cond108_Unknown);
+    extern const GccVTableEntry g_OnLastLinkedObjectConditionVTable[] RETAIL(vt_Cond109_Unknown);
     extern const GccVTableEntry g_HeightAboveStartConditionVTable[] RETAIL(vt_Cond110_Unknown);
-    extern const GccVTableEntry g_HasPerception0ConditionVTable[] RETAIL(vt_Cond111_Unknown);
-    extern const GccVTableEntry g_HasPerception2ConditionVTable[] RETAIL(vt_Cond112_Unknown);
-    extern const GccVTableEntry g_HasPerception1ConditionVTable[] RETAIL(vt_Cond113_Unknown);
-    extern const GccVTableEntry g_CharacterAnalogConditionVTable[] RETAIL(vt_Cond114_Unknown);
+    extern const GccVTableEntry g_Sense0LevelConditionVTable[] RETAIL(vt_Cond111_Unknown);
+    extern const GccVTableEntry g_Sense2LevelConditionVTable[] RETAIL(vt_Cond112_Unknown);
+    extern const GccVTableEntry g_Sense1LevelConditionVTable[] RETAIL(vt_Cond113_Unknown);
+    extern const GccVTableEntry g_PresenceConditionVTable[] RETAIL(vt_Cond114_Unknown);
     extern const GccVTableEntry g_AlwaysZeroConditionVTable[] RETAIL(vt_Cond115_AlwaysZero);
-    extern const GccVTableEntry g_PhysicsBodyFlag5ConditionVTable[] RETAIL(vt_Cond116_Unknown);
-    extern const GccVTableEntry g_GotUserMessageOnceEqualsConditionVTable[] RETAIL(vt_Cond117_GotUserMessageOnceEquals);
+    extern const GccVTableEntry g_RigidBodyAgainstWallConditionVTable[] RETAIL(vt_Cond116_Unknown);
+    extern const GccVTableEntry g_GotChildMessageOnceEqualsConditionVTable[] RETAIL(vt_Cond117_GotUserMessageOnceEquals);
     extern const GccVTableEntry g_HasXLinksConditionVTable[] RETAIL(vt_Cond118_HasXLinks);
     extern const GccVTableEntry g_PositionXConditionVTable[] RETAIL(vt_Cond119_Unknown);
     extern const GccVTableEntry g_PositionYConditionVTable[] RETAIL(vt_Cond120_Unknown);
     extern const GccVTableEntry g_PositionZConditionVTable[] RETAIL(vt_Cond121_Unknown);
-    extern const GccVTableEntry g_AgentRef1SpawnFlagConditionVTable[] RETAIL(vt_Cond122_Unknown);
+    extern const GccVTableEntry g_AgentRef1IsBusyConditionVTable[] RETAIL(vt_Cond122_Unknown);
     extern const GccVTableEntry g_IsAttachedConditionVTable[] RETAIL(vt_Cond124_Unknown);
-    extern const GccVTableEntry g_PhysicsImpactConditionVTable[] RETAIL(vt_Cond125_Unknown);
+    extern const GccVTableEntry g_TouchedMessageSurfaceConditionVTable[] RETAIL(vt_Cond125_Unknown);
     extern const GccVTableEntry g_FocusForwardDotConditionVTable[] RETAIL(vt_Cond126_Unknown);
     extern const GccVTableEntry g_FocusObjectProp0EqualsConditionVTable[] RETAIL(vt_Cond127_Unknown);
-    extern const GccVTableEntry g_AngleToFocusConditionVTable[] RETAIL(vt_Cond128_Unknown);
+    extern const GccVTableEntry g_TargetToSideConditionVTable[] RETAIL(vt_Cond128_Unknown);
     extern const GccVTableEntry g_KeyPathOnLastKeyConditionVTable[] RETAIL(vt_Cond132_KeyPathOnLastKey);
-    extern const GccVTableEntry g_ContextValue154SetConditionVTable[] RETAIL(vt_Cond133_Unknown);
+    extern const GccVTableEntry g_HasInstanceIdConditionVTable[] RETAIL(vt_Cond133_Unknown);
     extern const GccVTableEntry g_KeyPathProgressConditionVTable[] RETAIL(vt_Cond134_Unknown);
-    extern const GccVTableEntry g_KeyPathByte42ConditionVTable[] RETAIL(vt_Cond135_Unknown);
-    extern const GccVTableEntry g_FocusVisibleConditionVTable[] RETAIL(vt_Cond136_Unknown);
+    extern const GccVTableEntry g_KeyPathNumPathsConditionVTable[] RETAIL(vt_Cond135_Unknown);
+    extern const GccVTableEntry g_VisibleFromFocusConditionVTable[] RETAIL(vt_Cond136_Unknown);
     extern const GccVTableEntry g_KeyPathNumKeysConditionVTable[] RETAIL(vt_Cond137_KeyPathNumKeys);
     extern const GccVTableEntry g_FocusToAgentRef1DistanceSquaredConditionVTable[] RETAIL(vt_Cond138_Unknown);
     extern const GccVTableEntry g_FocusDistanceFromStartSquaredConditionVTable[] RETAIL(vt_Cond139_Unknown);
-    extern const GccVTableEntry g_AgentRef1HeightDifferenceConditionVTable[] RETAIL(vt_Cond140_Unknown);
-    extern const GccVTableEntry g_FocusOffXAxisDistanceSquaredConditionVTable[] RETAIL(vt_Cond141_Unknown);
-    extern const GccVTableEntry g_FocusHorizontalDistanceSquaredConditionVTable[] RETAIL(vt_Cond142_Unknown);
-    extern const GccVTableEntry g_FocusOffForwardAxisDistanceSquaredConditionVTable[] RETAIL(vt_Cond143_Unknown);
-    extern const GccVTableEntry g_AgentRef1OffXAxisDistanceSquaredConditionVTable[] RETAIL(vt_Cond144_Unknown);
-    extern const GccVTableEntry g_AgentRef1HorizontalDistanceSquaredConditionVTable[] RETAIL(vt_Cond145_Unknown);
-    extern const GccVTableEntry g_AgentRef1OffAxisDistanceSquaredConditionVTable[] RETAIL(vt_Cond146_Unknown);
-    extern const GccVTableEntry g_PhysicsTouchingConditionVTable[] RETAIL(vt_Cond147_Unknown);
-    extern const GccVTableEntry g_AgentRef1SideOffsetConditionVTable[] RETAIL(vt_Cond148_Unknown);
-    extern const GccVTableEntry g_AgentRef1VisibleConditionVTable[] RETAIL(vt_Cond149_Unknown);
-    extern const GccVTableEntry g_AgentRef1InViewConeConditionVTable[] RETAIL(vt_Cond150_Unknown);
-    extern const GccVTableEntry g_FocusFlag10ConditionVTable[] RETAIL(vt_Cond151_Unknown);
+    extern const GccVTableEntry g_HeightAboveAgentRef1ConditionVTable[] RETAIL(vt_Cond140_Unknown);
+    extern const GccVTableEntry g_FocusAlongXAxisSqrDistConditionVTable[] RETAIL(vt_Cond141_Unknown);
+    extern const GccVTableEntry g_FocusAlongYAxisSqrDistConditionVTable[] RETAIL(vt_Cond142_Unknown);
+    extern const GccVTableEntry g_FocusAlongZAxisSqrDistConditionVTable[] RETAIL(vt_Cond143_Unknown);
+    extern const GccVTableEntry g_AgentRef1AlongXAxisSqrDistConditionVTable[] RETAIL(vt_Cond144_Unknown);
+    extern const GccVTableEntry g_AgentRef1AlongYAxisSqrDistConditionVTable[] RETAIL(vt_Cond145_Unknown);
+    extern const GccVTableEntry g_AgentRef1AlongZAxisSqrDistConditionVTable[] RETAIL(vt_Cond146_Unknown);
+    extern const GccVTableEntry g_TouchingWorldConditionVTable[] RETAIL(vt_Cond147_Unknown);
+    extern const GccVTableEntry g_MeFacingAgentRef1ConditionVTable[] RETAIL(vt_Cond148_Unknown);
+    extern const GccVTableEntry g_VisibleFromAgentRef1ConditionVTable[] RETAIL(vt_Cond149_Unknown);
+    extern const GccVTableEntry g_HeadCanSeeAgentRef1ConditionVTable[] RETAIL(vt_Cond150_Unknown);
+    extern const GccVTableEntry g_FocusIsVisibleConditionVTable[] RETAIL(vt_Cond151_Unknown);
     extern const GccVTableEntry g_IsInPlayerChunkConditionVTable[] RETAIL(vt_Cond152_Unknown);
     extern const GccVTableEntry g_HasScriptInSlotConditionVTable[] RETAIL(vt_Cond153_Unknown);
     extern const GccVTableEntry g_CurrentKeyIsEvenConditionVTable[] RETAIL(vt_Cond154_Unknown);
-    extern const GccVTableEntry g_FocusFromExitPointConditionVTable[] RETAIL(vt_Cond155_Unknown);
-    extern const GccVTableEntry g_VideoStateIs5ConditionVTable[] RETAIL(vt_Cond156_Unknown);
-    extern const GccVTableEntry g_UpVectorXConditionVTable[] RETAIL(vt_Cond157_Unknown);
-    extern const GccVTableEntry g_IntProp0Bit0ConditionVTable[] RETAIL(vt_Cond158_Unknown);
-    extern const GccVTableEntry g_VideoReadyConditionVTable[] RETAIL(vt_Cond159_Unknown);
+    extern const GccVTableEntry g_ExitPointToFocusSqrDistConditionVTable[] RETAIL(vt_Cond155_Unknown);
+    extern const GccVTableEntry g_CutsceneFinishedConditionVTable[] RETAIL(vt_Cond156_Unknown);
+    extern const GccVTableEntry g_UpAxisYConditionVTable[] RETAIL(vt_Cond157_Unknown);
+    extern const GccVTableEntry g_IntProperty0Bit0ClearConditionVTable[] RETAIL(vt_Cond158_Unknown);
+    extern const GccVTableEntry g_CutsceneMusicReadyConditionVTable[] RETAIL(vt_Cond159_Unknown);
     extern const GccVTableEntry g_NearestPointEdgeDistanceSquaredConditionVTable[] RETAIL(vt_Cond160_Unknown);
     extern const GccVTableEntry g_FocusIsAgentRef1ConditionVTable[] RETAIL(vt_Cond161_Unknown);
-    extern const GccVTableEntry g_PhysicsHasCollisionNodeConditionVTable[] RETAIL(vt_Cond162_Unknown);
-    extern const GccVTableEntry g_FocusObjectByte0EqualsConditionVTable[] RETAIL(vt_Cond163_Unknown);
+    extern const GccVTableEntry g_HasPhysicsBodyConditionVTable[] RETAIL(vt_Cond162_Unknown);
+    extern const GccVTableEntry g_FocusInstanceCounterEqualsThresholdConditionVTable[] RETAIL(vt_Cond163_Unknown);
     extern const GccVTableEntry g_SplineDistanceToAgentRef1ConditionVTable[] RETAIL(vt_Cond167_Unknown);
-    extern const GccVTableEntry g_ObstacleAheadConditionVTable[] RETAIL(vt_Cond168_Unknown);
-    extern const GccVTableEntry g_NodeValue174CountConditionVTable[] RETAIL(vt_Cond169_Unknown);
-    extern const GccVTableEntry g_IsFullInstanceNodeConditionVTable[] RETAIL(vt_Cond170_Unknown);
-    extern const GccVTableEntry g_NodeByte8cMinusGlobalConditionVTable[] RETAIL(vt_Cond171_Unknown);
+    extern const GccVTableEntry g_GroundBelowPointAheadConditionVTable[] RETAIL(vt_Cond168_Unknown);
+    extern const GccVTableEntry g_CountedInstancesConditionVTable[] RETAIL(vt_Cond169_Unknown);
+    extern const GccVTableEntry g_CountedValueConditionVTable[] RETAIL(vt_Cond170_Unknown);
+    extern const GccVTableEntry g_RankAboveGlobalRankConditionVTable[] RETAIL(vt_Cond171_Unknown);
     extern const GccVTableEntry g_TimeSinceMarkConditionVTable[] RETAIL(vt_Cond172_Unknown);
-    extern const GccVTableEntry g_AlwaysZero173ConditionVTable[] RETAIL(vt_Cond173_Unknown);
+    extern const GccVTableEntry g_NoOp173ConditionVTable[] RETAIL(vt_Cond173_Unknown);
     extern const GccVTableEntry g_AlwaysConditionVTable[] RETAIL(vt_Cond174_Unknown);
     extern const GccVTableEntry g_NeverConditionVTable[] RETAIL(vt_Cond175_Unknown);
-    extern const GccVTableEntry g_ChunksLoadedConditionVTable[] RETAIL(vt_Cond176_ChunksLoaded);
+    extern const GccVTableEntry g_LinkedChunksQueuedConditionVTable[] RETAIL(vt_Cond176_ChunksLoaded);
     extern const GccVTableEntry g_FocusInSameChunkConditionVTable[] RETAIL(vt_Cond177_Unknown);
     extern const GccVTableEntry g_PlayerHitPointsConditionVTable[] RETAIL(vt_Cond512_PlayerHitPoints);
     extern const GccVTableEntry g_PlayerIsCrouchingConditionVTable[] RETAIL(vt_Cond514_PlayerIsCrouching);
     extern const GccVTableEntry g_PlayerIsGroundedConditionVTable[] RETAIL(vt_Cond515_PlayerIsGrounded);
     extern const GccVTableEntry g_MeToPlayerSqrDistConditionVTable[] RETAIL(vt_Cond517_MeToPlayerSqrDist);
-    extern const GccVTableEntry g_AgentIsOnGroundConditionVTable[] RETAIL(vt_Cond518_AgentIsOnGround);
-    extern const GccVTableEntry g_CrateHasRedWumpaConditionVTable[] RETAIL(vt_Cond519_CrateHasRedWumpa);
+    extern const GccVTableEntry g_ShadowActiveConditionVTable[] RETAIL(vt_Cond518_AgentIsOnGround);
+    extern const GccVTableEntry g_CrateHasWumpaConditionVTable[] RETAIL(vt_Cond519_CrateHasRedWumpa);
     extern const GccVTableEntry g_AgentWasTouchedConditionVTable[] RETAIL(vt_Cond520_AgentWasTouched);
     extern const GccVTableEntry g_AgentWasSpunConditionVTable[] RETAIL(vt_Cond521_AgentWasSpun);
     extern const GccVTableEntry g_AgentWasKneeDroppedConditionVTable[] RETAIL(vt_Cond522_AgentWasKneeDropped);
     extern const GccVTableEntry g_AgentWasSlidConditionVTable[] RETAIL(vt_Cond523_AgentWasSlid);
     extern const GccVTableEntry g_AgentHitPointsConditionVTable[] RETAIL(vt_Cond524_AgentHitPoints);
     extern const GccVTableEntry g_CanMoveForwardsConditionVTable[] RETAIL(vt_Cond525_CanMoveForwards);
-    extern const GccVTableEntry g_CanMoveBackwardsConditionVTable[] RETAIL(vt_Cond526_CanMoveBackwards);
-    extern const GccVTableEntry g_CanStrafeLeftConditionVTable[] RETAIL(vt_Cond527_CanStrafeLeft);
-    extern const GccVTableEntry g_CanStrafeRightConditionVTable[] RETAIL(vt_Cond528_CanStrafeRight);
-    extern const GccVTableEntry g_CanJumpForwardsConditionVTable[] RETAIL(vt_Cond529_CanJumpForwards);
+    extern const GccVTableEntry g_BlockedBehindConditionVTable[] RETAIL(vt_Cond526_CanMoveBackwards);
+    extern const GccVTableEntry g_BlockedLeftConditionVTable[] RETAIL(vt_Cond527_CanStrafeLeft);
+    extern const GccVTableEntry g_BlockedRightConditionVTable[] RETAIL(vt_Cond528_CanStrafeRight);
+    extern const GccVTableEntry g_WumpaFruitCountConditionVTable[] RETAIL(vt_Cond529_CanJumpForwards);
     extern const GccVTableEntry g_CanFallConditionVTable[] RETAIL(vt_Cond530_CanFall);
-    extern const GccVTableEntry g_WillHitLowWallConditionVTable[] RETAIL(vt_Cond531_WillHitLowWall);
-    extern const GccVTableEntry g_WillHitWallConditionVTable[] RETAIL(vt_Cond532_WillHitWall);
-    extern const GccVTableEntry g_WillRunOffCliffConditionVTable[] RETAIL(vt_Cond533_WillRunOffCliff);
+    extern const GccVTableEntry g_NoOpWillHitLowWallConditionVTable[] RETAIL(vt_Cond531_WillHitLowWall);
+    extern const GccVTableEntry g_AgentWasHitByTiedPairConditionVTable[] RETAIL(vt_Cond532_WillHitWall);
+    extern const GccVTableEntry g_AgentWasHitByThrownCharacterConditionVTable[] RETAIL(vt_Cond533_WillRunOffCliff);
     extern const GccVTableEntry g_AgentWasAttackedConditionVTable[] RETAIL(vt_Cond534_AgentWasAttacked);
     extern const GccVTableEntry g_AgentWasJumpedOnConditionVTable[] RETAIL(vt_Cond535_AgentWasJumpedOn);
     extern const GccVTableEntry g_AgentWasWalkedIntoConditionVTable[] RETAIL(vt_Cond536_AgentWasWalkedInto);
     extern const GccVTableEntry g_AgentWasHeadbuttedConditionVTable[] RETAIL(vt_Cond537_AgentWasHeadbutted);
     extern const GccVTableEntry g_PlayerToMyFocusSqrDistConditionVTable[] RETAIL(vt_Cond538_PlayerToMyFocusSqrDist);
-    extern const GccVTableEntry g_WumpaNeededForPayGateConditionVTable[] RETAIL(vt_Cond539_WumpaNeededForPayGate);
+    extern const GccVTableEntry g_PayGateNumberConditionVTable[] RETAIL(vt_Cond539_WumpaNeededForPayGate);
     extern const GccVTableEntry g_MeFacingPlayerConditionVTable[] RETAIL(vt_Cond540_MeFacingPlayer);
     extern const GccVTableEntry g_PlayerFacingMeConditionVTable[] RETAIL(vt_Cond541_PlayerFacingMe);
     extern const GccVTableEntry g_ClearLineOfSightToPlayerConditionVTable[] RETAIL(vt_Cond542_ClearLineOfSightToPlayer);
     extern const GccVTableEntry g_CanSeePlayerConditionVTable[] RETAIL(vt_Cond543_CanSeePlayer);
     extern const GccVTableEntry g_PlayerCanSeeMeConditionVTable[] RETAIL(vt_Cond544_PlayerCanSeeMe);
-    extern const GccVTableEntry g_NodeTrafficConditionVTable[] RETAIL(vt_Cond545_NodeTraffic);
+    extern const GccVTableEntry g_PlayerGunShotChargeConditionVTable[] RETAIL(vt_Cond545_NodeTraffic);
     extern const GccVTableEntry g_NodeIsAirborneConditionVTable[] RETAIL(vt_Cond546_NodeIsAirborne);
     extern const GccVTableEntry g_EdgeNeedsJumpConditionVTable[] RETAIL(vt_Cond547_EdgeNeedsJump);
     extern const GccVTableEntry g_EdgeNeedsFlyingConditionVTable[] RETAIL(vt_Cond548_EdgeNeedsFlying);
@@ -2783,90 +2800,90 @@ extern "C"
     extern const GccVTableEntry g_PlayerIsMovingConditionVTable[] RETAIL(vt_Cond557_PlayerIsMoving);
     extern const GccVTableEntry g_PlayerIsWalkingConditionVTable[] RETAIL(vt_Cond558_PlayerIsWalking);
     extern const GccVTableEntry g_PlayerIsRunningConditionVTable[] RETAIL(vt_Cond559_PlayerIsRunning);
-    extern const GccVTableEntry g_PlayerIsCrawlingConditionVTable[] RETAIL(vt_Cond560_PlayerIsCrawling);
+    extern const GccVTableEntry g_PlayerIsWalkingDuplicateConditionVTable[] RETAIL(vt_Cond560_PlayerIsCrawling);
     extern const GccVTableEntry g_PlayerIsFallingConditionVTable[] RETAIL(vt_Cond561_PlayerIsFalling);
     extern const GccVTableEntry g_PlayerIsCoOpLinkedConditionVTable[] RETAIL(vt_Cond562_PlayerIsCoOpLinked);
     extern const GccVTableEntry g_PlayerHoldingMultiToolConditionVTable[] RETAIL(vt_Cond563_PlayerHoldingMultiTool);
-    extern const GccVTableEntry g_PlayerIsSlammingConditionVTable[] RETAIL(vt_Cond564_PlayerIsSlamming);
+    extern const GccVTableEntry g_PlayerIsSlammingTiedConditionVTable[] RETAIL(vt_Cond564_PlayerIsSlamming);
     extern const GccVTableEntry g_PlayerIsSpinningConditionVTable[] RETAIL(vt_Cond565_PlayerIsSpinning);
-    extern const GccVTableEntry g_PlayerIsJumpingConditionVTable[] RETAIL(vt_Cond566_PlayerIsJumping);
-    extern const GccVTableEntry g_HeadCanSeePlayerUnblockedConditionVTable[] RETAIL(vt_Cond567_HeadCanSeePlayerUnblocked);
-    extern const GccVTableEntry g_AmIHarmfulConditionVTable[] RETAIL(vt_Cond568_AmIHarmful);
-    extern const GccVTableEntry g_AttachedContextFlag8ConditionVTable[] RETAIL(vt_Cond569_Unknown);
-    extern const GccVTableEntry g_DUMMY_570ConditionVTable[] RETAIL(vt_Cond570_Unknown);
-    extern const GccVTableEntry g_DUMMY_571ConditionVTable[] RETAIL(vt_Cond571_Unknown);
-    extern const GccVTableEntry g_CutsceneSkippedConditionVTable[] RETAIL(vt_Cond572_CutsceneSkipped);
+    extern const GccVTableEntry g_PlayerIsSlidingConditionVTable[] RETAIL(vt_Cond566_PlayerIsJumping);
+    extern const GccVTableEntry g_PlayerIsAirborneConditionVTable[] RETAIL(vt_Cond567_HeadCanSeePlayerUnblocked);
+    extern const GccVTableEntry g_HeadCanSeeNearPlayerConditionVTable[] RETAIL(vt_Cond568_AmIHarmful);
+    extern const GccVTableEntry g_CanDamageCharacterConditionVTable[] RETAIL(vt_Cond569_Unknown);
+    extern const GccVTableEntry g_NoOp570ConditionVTable[] RETAIL(vt_Cond570_Unknown);
+    extern const GccVTableEntry g_NoOp571ConditionVTable[] RETAIL(vt_Cond571_Unknown);
+    extern const GccVTableEntry g_NoOpCutsceneSkippedConditionVTable[] RETAIL(vt_Cond572_CutsceneSkipped);
     extern const GccVTableEntry g_IsCirclePressedConditionVTable[] RETAIL(vt_Cond573_Unknown);
     extern const GccVTableEntry g_IsSquarePressedConditionVTable[] RETAIL(vt_Cond574_Unknown);
     extern const GccVTableEntry g_IsTrianglePressedConditionVTable[] RETAIL(vt_Cond575_Unknown);
     extern const GccVTableEntry g_IsR1PressedConditionVTable[] RETAIL(vt_Cond576_Unknown);
-    extern const GccVTableEntry g_CharacterVehiclePointerConditionVTable[] RETAIL(vt_Cond577_Unknown);
-    extern const GccVTableEntry g_CharacterFlag23ConditionVTable[] RETAIL(vt_Cond578_Unknown);
-    extern const GccVTableEntry g_IsChargedShotConditionVTable[] RETAIL(vt_Cond579_IsChargedShot);
+    extern const GccVTableEntry g_RidesVehicleConditionVTable[] RETAIL(vt_Cond577_Unknown);
+    extern const GccVTableEntry g_NoGroundAheadConditionVTable[] RETAIL(vt_Cond578_Unknown);
+    extern const GccVTableEntry g_PlayerJustShotConditionVTable[] RETAIL(vt_Cond579_IsChargedShot);
     extern const GccVTableEntry g_IsDownBlastConditionVTable[] RETAIL(vt_Cond580_IsDownBlast);
-    extern const GccVTableEntry g_GlobalInstanceOp581ConditionVTable[] RETAIL(vt_Cond581_Unknown);
+    extern const GccVTableEntry g_ShotAtMeConditionVTable[] RETAIL(vt_Cond581_Unknown);
     extern const GccVTableEntry g_PlayerVisibleConditionVTable[] RETAIL(vt_Cond582_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag0ConditionVTable[] RETAIL(vt_Cond583_Unknown);
-    extern const GccVTableEntry g_PlayerVisible2ConditionVTable[] RETAIL(vt_Cond584_Unknown);
-    extern const GccVTableEntry g_PlayerVisible3ConditionVTable[] RETAIL(vt_Cond585_Unknown);
-    extern const GccVTableEntry g_CharacterFlag22ConditionVTable[] RETAIL(vt_Cond586_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeBlockedConditionVTable[] RETAIL(vt_Cond583_Unknown);
+    extern const GccVTableEntry g_PlayerVisibleFromLeftConditionVTable[] RETAIL(vt_Cond584_Unknown);
+    extern const GccVTableEntry g_PlayerVisibleFromRightConditionVTable[] RETAIL(vt_Cond585_Unknown);
+    extern const GccVTableEntry g_IsTiedSecondConditionVTable[] RETAIL(vt_Cond586_Unknown);
     extern const GccVTableEntry g_IsPlayerConditionVTable[] RETAIL(vt_Cond587_Unknown);
-    extern const GccVTableEntry g_ObjectContextFlag17ConditionVTable[] RETAIL(vt_Cond588_Unknown);
-    extern const GccVTableEntry g_HitByPunchConditionVTable[] RETAIL(vt_Cond589_HitByPunch);
-    extern const GccVTableEntry g_HitByBodySlam2ConditionVTable[] RETAIL(vt_Cond590_HitByBodySlam2);
-    extern const GccVTableEntry g_HitBySpinHitboxConditionVTable[] RETAIL(vt_Cond591_HitBySpinHitbox);
-    extern const GccVTableEntry g_HitByBodySlamHitboxConditionVTable[] RETAIL(vt_Cond592_HitByBodySlamHitbox);
+    extern const GccVTableEntry g_HitByKickConditionVTable[] RETAIL(vt_Cond588_Unknown);
+    extern const GccVTableEntry g_HitBySpinConditionVTable[] RETAIL(vt_Cond589_HitByPunch);
+    extern const GccVTableEntry g_HitByKind18ConditionVTable[] RETAIL(vt_Cond590_HitByBodySlam2);
+    extern const GccVTableEntry g_HitByProjectileConditionVTable[] RETAIL(vt_Cond591_HitBySpinHitbox);
+    extern const GccVTableEntry g_HitByKneeDropConditionVTable[] RETAIL(vt_Cond592_HitByBodySlamHitbox);
     extern const GccVTableEntry g_CharacterHasVehicleConditionVTable[] RETAIL(vt_Cond593_Unknown);
     extern const GccVTableEntry g_IsVehicleRollerbrawlConditionVTable[] RETAIL(vt_Cond594_IsVehicleRollerbrawl);
-    extern const GccVTableEntry g_VehicleTypeNot2ConditionVTable[] RETAIL(vt_Cond595_Unknown);
+    extern const GccVTableEntry g_IsVehicleKind2ConditionVTable[] RETAIL(vt_Cond595_Unknown);
     extern const GccVTableEntry g_IsVehicleHumiliskateConditionVTable[] RETAIL(vt_Cond596_IsVehicleHumiliskate);
-    extern const GccVTableEntry g_VehicleTypeNot4ConditionVTable[] RETAIL(vt_Cond597_Unknown);
-    extern const GccVTableEntry g_IsVehicle3ConditionVTable[] RETAIL(vt_Cond598_IsVehicle3);
-    extern const GccVTableEntry g_SubPathPointFlag5ConditionVTable[] RETAIL(vt_Cond599_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag4ConditionVTable[] RETAIL(vt_Cond600_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag6ConditionVTable[] RETAIL(vt_Cond601_Unknown);
-    extern const GccVTableEntry g_PathSegmentFlag0ConditionVTable[] RETAIL(vt_Cond602_Unknown);
-    extern const GccVTableEntry g_SubPathPreviousPointFlag5ConditionVTable[] RETAIL(vt_Cond603_Unknown);
-    extern const GccVTableEntry g_SubPathPreviousPointFlag4ConditionVTable[] RETAIL(vt_Cond604_Unknown);
-    extern const GccVTableEntry g_SubPathPreviousPointFlag6ConditionVTable[] RETAIL(vt_Cond605_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag5bConditionVTable[] RETAIL(vt_Cond606_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag4bConditionVTable[] RETAIL(vt_Cond607_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag6bConditionVTable[] RETAIL(vt_Cond608_Unknown);
-    extern const GccVTableEntry g_PlayerVectorLengthDifferenceConditionVTable[] RETAIL(vt_Cond609_Unknown);
-    extern const GccVTableEntry g_HitByCortexBoltConditionVTable[] RETAIL(vt_Cond610_HitByCortexBolt);
-    extern const GccVTableEntry g_ObjectContextFlag1ConditionVTable[] RETAIL(vt_Cond611_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag2ConditionVTable[] RETAIL(vt_Cond612_Unknown);
-    extern const GccVTableEntry g_SubPathPreviousPointFlag2ConditionVTable[] RETAIL(vt_Cond613_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlag2bConditionVTable[] RETAIL(vt_Cond614_Unknown);
-    extern const GccVTableEntry g_SubPathPointFlags56ConditionVTable[] RETAIL(vt_Cond615_Unknown);
+    extern const GccVTableEntry g_IsVehicleKind4ConditionVTable[] RETAIL(vt_Cond597_Unknown);
+    extern const GccVTableEntry g_IsVehicleHoverboardConditionVTable[] RETAIL(vt_Cond598_IsVehicle3);
+    extern const GccVTableEntry g_EdgeStartNodeFlag5ConditionVTable[] RETAIL(vt_Cond599_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag4ConditionVTable[] RETAIL(vt_Cond600_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag6ConditionVTable[] RETAIL(vt_Cond601_Unknown);
+    extern const GccVTableEntry g_EdgeFlag8ConditionVTable[] RETAIL(vt_Cond602_Unknown);
+    extern const GccVTableEntry g_EdgeEndNodeFlag5ConditionVTable[] RETAIL(vt_Cond603_Unknown);
+    extern const GccVTableEntry g_EdgeEndNodeFlag4ConditionVTable[] RETAIL(vt_Cond604_Unknown);
+    extern const GccVTableEntry g_EdgeEndNodeFlag6ConditionVTable[] RETAIL(vt_Cond605_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag5DuplicateConditionVTable[] RETAIL(vt_Cond606_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag4DuplicateConditionVTable[] RETAIL(vt_Cond607_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag6DuplicateConditionVTable[] RETAIL(vt_Cond608_Unknown);
+    extern const GccVTableEntry g_SpeedAbovePlayerConditionVTable[] RETAIL(vt_Cond609_Unknown);
+    extern const GccVTableEntry g_HitByElectricConditionVTable[] RETAIL(vt_Cond610_HitByCortexBolt);
+    extern const GccVTableEntry g_HitByExplosionConditionVTable[] RETAIL(vt_Cond611_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag2ConditionVTable[] RETAIL(vt_Cond612_Unknown);
+    extern const GccVTableEntry g_EdgeEndNodeFlag2ConditionVTable[] RETAIL(vt_Cond613_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlag2DuplicateConditionVTable[] RETAIL(vt_Cond614_Unknown);
+    extern const GccVTableEntry g_EdgeStartNodeFlagsClearConditionVTable[] RETAIL(vt_Cond615_Unknown);
     extern const GccVTableEntry g_FocusPositionToPlayerDistanceSquaredConditionVTable[] RETAIL(vt_Cond616_Unknown);
     extern const GccVTableEntry g_IsPushingObjectConditionVTable[] RETAIL(vt_Cond617_IsPushingObject);
     extern const GccVTableEntry g_PlayerSideOffsetConditionVTable[] RETAIL(vt_Cond618_Unknown);
-    extern const GccVTableEntry g_PlayerNearCurrentKeyConditionVTable[] RETAIL(vt_Cond619_Unknown);
-    extern const GccVTableEntry g_PlayerSplineVehicleValueConditionVTable[] RETAIL(vt_Cond620_Unknown);
-    extern const GccVTableEntry g_CharacterHasHomeChunkConditionVTable[] RETAIL(vt_Cond621_Unknown);
-    extern const GccVTableEntry g_PlayerFlag57ClearConditionVTable[] RETAIL(vt_Cond622_Unknown);
+    extern const GccVTableEntry g_PlayerNearerAnotherKeyConditionVTable[] RETAIL(vt_Cond619_Unknown);
+    extern const GccVTableEntry g_PlayerHumiliskateCrouchedConditionVTable[] RETAIL(vt_Cond620_Unknown);
+    extern const GccVTableEntry g_PlayerOutsideHomeChunkConditionVTable[] RETAIL(vt_Cond621_Unknown);
+    extern const GccVTableEntry g_PlayerScriptFlagClearConditionVTable[] RETAIL(vt_Cond622_Unknown);
     extern const GccVTableEntry g_HasActorWeightConditionVTable[] RETAIL(vt_Cond623_HasActorWeight);
-    extern const GccVTableEntry g_GameFlags44Is12ConditionVTable[] RETAIL(vt_Cond624_Unknown);
-    extern const GccVTableEntry g_ObjectContextFlag25ConditionVTable[] RETAIL(vt_Cond625_Unknown);
-    extern const GccVTableEntry g_ObjectContextFlag2ConditionVTable[] RETAIL(vt_Cond626_Unknown);
-    extern const GccVTableEntry g_PlayerVehicle1ValueConditionVTable[] RETAIL(vt_Cond627_Unknown);
-    extern const GccVTableEntry g_BothCharactersFlag14ConditionVTable[] RETAIL(vt_Cond628_Unknown);
-    extern const GccVTableEntry g_GlobalInt3098e8ConditionVTable[] RETAIL(vt_Cond629_Unknown);
-    extern const GccVTableEntry g_NodeValue134SetConditionVTable[] RETAIL(vt_Cond630_Unknown);
-    extern const GccVTableEntry g_GameControllerField500HighConditionVTable[] RETAIL(vt_Cond631_Unknown);
-    extern const GccVTableEntry g_GameTimer57cConditionVTable[] RETAIL(vt_Cond632_Unknown);
-    extern const GccVTableEntry g_SecondCharacterGunStateConditionVTable[] RETAIL(vt_Cond633_Unknown);
-    extern const GccVTableEntry g_HasAmmoConditionVTable[] RETAIL(vt_Cond634_HasAmmo);
+    extern const GccVTableEntry g_GameIsPlayingConditionVTable[] RETAIL(vt_Cond624_Unknown);
+    extern const GccVTableEntry g_HitByWaterConditionVTable[] RETAIL(vt_Cond625_Unknown);
+    extern const GccVTableEntry g_HitByFallThroughConditionVTable[] RETAIL(vt_Cond626_Unknown);
+    extern const GccVTableEntry g_PlayerRidesRollerbrawlConditionVTable[] RETAIL(vt_Cond627_Unknown);
+    extern const GccVTableEntry g_CortexDeadPlayerAliveConditionVTable[] RETAIL(vt_Cond628_Unknown);
+    extern const GccVTableEntry g_ScriptGlobalFlagConditionVTable[] RETAIL(vt_Cond629_Unknown);
+    extern const GccVTableEntry g_InWaterConditionVTable[] RETAIL(vt_Cond630_Unknown);
+    extern const GccVTableEntry g_TimedPlayCountConditionVTable[] RETAIL(vt_Cond631_Unknown);
+    extern const GccVTableEntry g_TimedPlayTimeLeftConditionVTable[] RETAIL(vt_Cond632_Unknown);
+    extern const GccVTableEntry g_PlayerGunSecondCountConditionVTable[] RETAIL(vt_Cond633_Unknown);
+    extern const GccVTableEntry g_PlayerAmmoConditionVTable[] RETAIL(vt_Cond634_HasAmmo);
     extern const GccVTableEntry g_CameraForwardDistanceConditionVTable[] RETAIL(vt_Cond635_Unknown);
-    extern const GccVTableEntry g_ObjectContextFlag19ConditionVTable[] RETAIL(vt_Cond636_Unknown);
-    extern const GccVTableEntry g_GameModeIs5ConditionVTable[] RETAIL(vt_Cond637_Unknown);
-    extern const GccVTableEntry g_ObjectContextFlags3or22ConditionVTable[] RETAIL(vt_Cond638_Unknown);
-    extern const GccVTableEntry g_GlobalProgressionConditionVTable[] RETAIL(vt_Cond639_GlobalProgression);
-    extern const GccVTableEntry g_SecondCharacterVehicleValueConditionVTable[] RETAIL(vt_Cond640_Unknown);
+    extern const GccVTableEntry g_HitByHeavyConditionVTable[] RETAIL(vt_Cond636_Unknown);
+    extern const GccVTableEntry g_PairingIs5ConditionVTable[] RETAIL(vt_Cond637_Unknown);
+    extern const GccVTableEntry g_HitByBurningConditionVTable[] RETAIL(vt_Cond638_Unknown);
+    extern const GccVTableEntry g_StoryAreaConditionVTable[] RETAIL(vt_Cond639_GlobalProgression);
+    extern const GccVTableEntry g_PlayerVehicleHeightConditionVTable[] RETAIL(vt_Cond640_Unknown);
     extern const GccVTableEntry g_IsMoviePlayingConditionVTable[] RETAIL(vt_Cond641_IsMoviePlaying);
-    extern const GccVTableEntry g_PlayerFlag14ConditionVTable[] RETAIL(vt_Cond642_Unknown);
-    extern const GccVTableEntry g_GameStateIsConditionVTable[] RETAIL(vt_Cond643_Unknown);
+    extern const GccVTableEntry g_PlayerIsDeadConditionVTable[] RETAIL(vt_Cond642_Unknown);
+    extern const GccVTableEntry g_PlayAreaIsConditionVTable[] RETAIL(vt_Cond643_Unknown);
     extern const GccVTableEntry g_TriggeredByOtherCharacterConditionVTable[] RETAIL(vt_Cond644_Unknown);
 
     // The conditions' checks' translation unit's start-up: its static initialisation (initialize 1, priority 0xFFFF: the header's

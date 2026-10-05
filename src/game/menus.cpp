@@ -5,6 +5,7 @@
 #include "game/controllers.h"
 #include "game/language.h"
 #include "game/memory.h"
+#include "game/oleg.h"
 #include "game/overlay.h"
 #include "game/renderer.h"
 #include "game/sound.h"
@@ -14,34 +15,8 @@
 
 namespace
 {
-// The page's vtable functions: entered and left; an item's (its vtable after 0x10 bytes) the same
-constexpr u32 PageEnteredSlot = 1;
-constexpr u32 PageLeftSlot = 3;
-constexpr u32 ItemEnteredSlot = 3;
-constexpr u32 ItemLeftSlot = 4;
-
-// The flags a page starts with: bits 24-27 set (still unknown), bit 12 too (wrapping), the first item 31, entered afresh, bit 31
-// set
-constexpr u32 InitialSet = 0x1000000 | 0x2000000 | 0x4000000 | 0x8001000;
-constexpr u32 InitialFirstItemClear = 0xFF03FFFF;
-constexpr u32 InitialFirstItem = 0x7C0000;
-constexpr u32 InitialModeClear = 0x8FFFFFFF;
-constexpr u32 InitialMode = 0x10000000;
-constexpr u32 InitialHigh = 0x80000000;
-
-// The page's vtable functions: a frame of it (for a player, with the input and the sounds), back (for a player: returns whether
-// it took it)
-constexpr u32 PageFrameSlot = 2;
-constexpr u32 PageBackSlot = 5;
-// An item's frame (for a player, on its page, with the input and the sounds): returns where it leads
-constexpr u32 ItemFrameSlot = 5;
-// The menus' sounds: nothing to go up to and up, nothing to go down to and down, the back
-constexpr u32 SoundNotUp = 4;
-constexpr u32 SoundUp = 5;
-constexpr u32 SoundNotDown = 2;
-constexpr u32 SoundDown = 3;
-constexpr u32 SoundBack = 11;
-constexpr u32 ModeBack = 2;
+// The first item a page starts with: more items than a page has, so the selection stays where it was
+constexpr u32 NoFirstItem = 31;
 
 // The nearest page of the ring a link starts (going on by the same link) that shows the player something, none round to the page
 MenuPage* NextShowing(MenuPage* page, u32 link, u32 player)
@@ -80,27 +55,27 @@ void EnterSideways(MenuPage* page, MenuPage* to, u32 link, u32 player)
     to->selections[player] = static_cast<u8>(index);
 }
 
-// A sound played as the menus play theirs: their volumes and pitch, the voice kind and last
-constexpr f32 OwnVolume = -1.0f;
-constexpr f32 OwnPitch = -1.0f;
+// A sound played as the menus play theirs: the voice kind and last, and the volume group they play in by default (one of the
+// groups the effects volume sets)
 constexpr s32 MenuVoiceKind = 0;
 constexpr s32 MenuSoundLast = -1;
+constexpr s32 MenuSoundGroup = MovieGroup;
 
-// An item's text and value: the vtable function writing the value's text (for a player; returns whether it has one), and the
-// most lines a page draws
-constexpr u32 ItemValueTextSlot = 7;
+// The buffer an item's value's text is written into, and the most lines a page draws
+constexpr u32 ValueTextSize = 0x40;
 constexpr u32 MaxLines = 64;
-constexpr f32 TitleEpsilon = 0x1.A36E2Ep-15f;
 
-// Where the items go up from the place: centred on it, or ending at it
-bool CentresItems(u32 flags)
+// Where the items go up from the place, by their alignment: centred on it (the middle ones), or ending at it (the bottom ones)
+bool CentresItems(u32 alignment)
 {
-    return flags == 0x22 || flags == 0x30 || flags == 0x60;
+    return alignment == TextAlignment::Centred || alignment == TextAlignment::MiddleLeft ||
+           alignment == TextAlignment::MiddleRight;
 }
 
-bool EndsItems(u32 flags)
+bool EndsItems(u32 alignment)
 {
-    return flags == 0x06 || flags == 0x14 || flags == 0x44;
+    return alignment == TextAlignment::BottomCentre || alignment == TextAlignment::BottomLeft ||
+           alignment == TextAlignment::BottomRight;
 }
 
 // The fraction of the way from the few-items values to the many-items ones
@@ -126,38 +101,28 @@ f32 ManyItems(const MenuDrawer* drawer, u32 count)
     return static_cast<f32>(count - start) / static_cast<f32>(size - start);
 }
 
-// An item's vtable functions: activated, its value set and got as an int
-constexpr u32 ItemActivateSlot = 1;
-constexpr u32 ItemSetIntSlot = 8;
-constexpr u32 ItemGetIntSlot = 9;
-// The sounds: nothing to select, selected and leading on, selected; a value not stepped down, stepped down, not stepped up, stepped
-// up
-constexpr u32 SoundNothing = 0;
-constexpr u32 SoundSelected = 1;
-constexpr u32 SoundSelectedOn = 10;
-constexpr u32 SoundValueNotDown = 8;
-constexpr u32 SoundValueDown = 9;
-constexpr u32 SoundValueNotUp = 6;
-constexpr u32 SoundValueUp = 7;
 // A choice's text before it's named
 constexpr s32 NoText = -1;
 constexpr u32 PageItemsGrowth = 10;
+// What a link's value getters give: it has none
+constexpr s32 NoIntValue = -1;
+constexpr u32 NoUnsignedValue = 0xFFFFFFFF;
 
-// The players' bits and the id's fields an item starts with
+// The players' bits and the bits an item starts with
 void SetItemBits(MenuItem* item, u32 text, u32 id, u32 players, bool withText)
 {
-    u32 bits = item->id;
-    bits = (bits & ~MenuItem::IdMask) | (id & MenuItem::IdMask);
-    bits = (bits & ~(MenuItem::PlayersMask << MenuItem::PlayersShift)) | (players & MenuItem::PlayersMask) << MenuItem::PlayersShift;
-    bits |= MenuItem::StepsOnPress;
-    bits = bits & ~(MenuItem::TextMask << MenuItem::TextShift);
+    MenuItemBits bits = item->bits;
+    bits.id = id;
+    bits.players = players;
+    bits.stepsOnPress = 1;
+    bits.text = 0;
     if (withText)
     {
-        bits |= (text & MenuItem::TextMask) << MenuItem::TextShift;
+        bits.text = text;
     }
 
     u8 all = static_cast<u8>((1 << players) - 1);
-    item->id = bits;
+    item->bits = bits;
     item->shown = all;
     item->enabled = all;
 }
@@ -166,9 +131,9 @@ void SetItemBits(MenuItem* item, u32 text, u32 id, u32 players, bool withText)
 void ConstructPage(MenuPage* page, u32 players)
 {
     page->vtable = g_MenuPageVTable;
-    page->unknown08 = players;
-    page->unknown04 = players != 0 ? static_cast<u8*>(MemoryAllocate2(players)) : nullptr;
-    page->unknown10 = players;
+    page->unused08 = players;
+    page->unused04 = players != 0 ? static_cast<u8*>(MemoryAllocate2(players)) : nullptr;
+    page->unused10 = players;
     page->selections = players != 0 ? static_cast<u8*>(MemoryAllocate2(players)) : nullptr;
 }
 
@@ -195,18 +160,6 @@ void ConstructChoices(ChoiceItem* item, u32 choices)
     }
 }
 
-// A bit of an action's byte set or cleared
-void SetActionBit(u8* bits, u32 bit, u32 on)
-{
-    if (on != 0)
-    {
-        *bits = static_cast<u8>(*bits | 1 << bit);
-    }
-    else
-    {
-        *bits = static_cast<u8>(*bits & ~(1 << bit));
-    }
-}
 }
 
 MenuInput* MenuInput::Construct(MenuInput* input, ButtonBindings* bindings)
@@ -220,7 +173,7 @@ MenuInput* MenuInput::Construct(MenuInput* input, ButtonBindings* bindings)
 void MenuInput::Destroy(u32 destroyFlags)
 {
     vtable = g_MenuInputVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -228,24 +181,24 @@ void MenuInput::Destroy(u32 destroyFlags)
 
 void MenuInput::Poll(const PadButtons* pad, u32 withLeave)
 {
-    u32 edge = 1;
+    u32 edge = ButtonBindings::OnPress;
     for (s32 pass = 1; pass >= 0; pass--)
     {
         u32 select = bindings->Has(pad, ActionSelect, edge);
-        u32 backPressed = bindings->Has(pad, ActionBack, edge);
+        u32 back = bindings->Has(pad, ActionBack, edge);
         u32 up = bindings->Has(pad, ActionUp, edge);
         u32 down = bindings->Has(pad, ActionDown, edge);
         u32 left = bindings->Has(pad, ActionLeft, edge);
         u32 right = bindings->Has(pad, ActionRight, edge);
         u32 leave = withLeave != 0 ? bindings->Has(pad, ActionLeave, edge) : 0;
-        u8* bits = edge != 0 ? &pressed : &held;
-        SetActionBit(bits, ActionSelect, select);
-        SetActionBit(bits, ActionBack, backPressed);
-        SetActionBit(bits, ActionUp, up);
-        SetActionBit(bits, ActionDown, down);
-        SetActionBit(bits, ActionLeft, left);
-        SetActionBit(bits, ActionRight, right);
-        SetActionBit(bits, ActionLeave, leave);
+        MenuActionBits* actions = edge != ButtonBindings::WhileHeld ? &pressed : &held;
+        actions->select = select != 0;
+        actions->back = back != 0;
+        actions->up = up != 0;
+        actions->down = down != 0;
+        actions->left = left != 0;
+        actions->right = right != 0;
+        actions->leave = leave != 0;
         edge ^= 1;
     }
 }
@@ -256,14 +209,14 @@ void MenuInput::Nothing()
 
 void MenuInput::Clear()
 {
-    held = 0;
-    pressed = 0;
+    held.value = 0;
+    pressed.value = 0;
 }
 
-u32 MenuInput::Has(u32 action, u32 pressedNow)
+u32 MenuInput::Has(u32 action, u32 onPress)
 {
-    u8 bits = pressedNow != 0 ? pressed : held;
-    return (bits & static_cast<u8>(1 << action)) != 0 ? 1 : 0;
+    MenuActionBits actions = onPress != ButtonBindings::WhileHeld ? pressed : held;
+    return (actions.value & static_cast<u8>(1 << action)) != 0 ? 1 : 0;
 }
 
 MenuSounds* MenuSounds::Construct(MenuSounds* menuSounds)
@@ -271,7 +224,7 @@ MenuSounds* MenuSounds::Construct(MenuSounds* menuSounds)
     for (u32 i = 0; i < Count; i++)
     {
         menuSounds->sounds[i] = nullptr;
-        menuSounds->groups[i] = 3;
+        menuSounds->groups[i] = MenuSoundGroup;
     }
 
     return menuSounds;
@@ -281,24 +234,30 @@ void MenuSounds::Play(u32 index)
 {
     if (sounds[index] != nullptr)
     {
-        PlaySound(OwnVolume, OwnPitch, sounds[index], groups[index], MenuVoiceKind, MenuSoundLast);
+        PlaySound(OwnScale, OwnScale, sounds[index], groups[index], MenuVoiceKind, MenuSoundLast);
     }
 }
 
 void MenuPage::Initialise()
 {
-    u32 value = flags | InitialSet;
-    value = (value & InitialFirstItemClear) | InitialFirstItem;
-    value = (value & InitialModeClear) | InitialMode | InitialHigh;
+    MenuPageFlags initial = flags;
+    initial.wraps = 1;
+    initial.takesSelect = 1;
+    initial.takesBack = 1;
+    initial.takesUpDown = 1;
+    initial.takesLeftRight = 1;
+    initial.firstItem = NoFirstItem;
+    initial.mode = EnteredAfresh;
+    initial.takesLeave = 1;
     parent = nullptr;
-    flags = value;
+    flags = initial;
     for (u32 player = 0; player < Players(); player++)
     {
         selections[player] = 0;
-        unknown04[player] = 0;
+        unused04[player] = 0;
     }
 
-    for (u32 link = 0; link < 4; link++)
+    for (u32 link = 0; link < Links; link++)
     {
         links[link] = nullptr;
         linkItems[link] = -1;
@@ -318,12 +277,12 @@ void MenuPage::Destroy(u32 destroyFlags)
         MemoryDeallocate_(selections);
     }
 
-    if (unknown04 != nullptr)
+    if (unused04 != nullptr)
     {
-        MemoryDeallocate_(unknown04);
+        MemoryDeallocate_(unused04);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -362,7 +321,7 @@ u32 MenuPage::SelectPrevious(u32 player)
         }
         else
         {
-            if ((flags & Wraps) == 0)
+            if (flags.wraps == 0)
             {
                 return 0;
             }
@@ -398,7 +357,7 @@ u32 MenuPage::SelectNext(u32 player)
     {
         if (index >= count)
         {
-            if ((flags & Wraps) == 0)
+            if (flags.wraps == 0)
             {
                 return 0;
             }
@@ -483,15 +442,15 @@ s32 MenuPage::ShownCount(u32 player)
 void MenuPage::Enter(MenuPage* from)
 {
     u32 count = items.count;
-    u32 mode = from != nullptr ? from->Mode() : 1;
-    flags = (flags & ~(ModeMask << ModeShift)) | (mode & ModeMask) << ModeShift;
+    u32 mode = from != nullptr ? from->Mode() : EnteredAfresh;
+    flags.mode = mode;
     mode = Mode();
     for (u32 player = 0; player < Players(); player++)
     {
-        CallVirtual<void>(this, vtable, PageEnteredSlot, player, mode);
-        if (mode == 1)
+        CallVirtual<void>(this, vtable, EnteredSlot, player, mode);
+        if (mode == EnteredAfresh)
         {
-            u32 first = (flags >> FirstItemShift) & FirstItemMask;
+            u32 first = flags.firstItem;
             if (first < count)
             {
                 selections[player] = static_cast<u8>(first);
@@ -512,7 +471,7 @@ void MenuPage::Enter(MenuPage* from)
         for (u32 i = 0; i < count; i++)
         {
             MenuItem* item = Item(static_cast<s32>(i));
-            CallVirtual<void>(item, item->vtable, ItemEnteredSlot, player, mode);
+            CallVirtual<void>(item, item->vtable, MenuItem::EnteredSlot, player, mode);
         }
     }
 }
@@ -523,11 +482,11 @@ void MenuPage::Leave()
     u32 mode = Mode();
     for (s32 player = 0; player < static_cast<s32>(Players()); player++)
     {
-        CallVirtual<void>(this, vtable, PageLeftSlot, static_cast<u32>(player), mode);
+        CallVirtual<void>(this, vtable, LeftSlot, static_cast<u32>(player), mode);
         for (s32 i = 0; i < count; i++)
         {
             MenuItem* item = Item(i);
-            CallVirtual<void>(item, item->vtable, ItemLeftSlot, static_cast<u32>(player), mode);
+            CallVirtual<void>(item, item->vtable, MenuItem::LeftSlot, static_cast<u32>(player), mode);
         }
     }
 }
@@ -536,24 +495,24 @@ MenuPage* MenuPage::Step(MenuInput* input, MenuSounds* sounds, u32 player)
 {
     if (g_NextPage == nullptr)
     {
-        if ((flags & TakesLeave) != 0 && input->Has(MenuInput::ActionLeave, 1) != 0)
+        if (flags.takesLeave != 0 && input->Has(MenuInput::ActionLeave, ButtonBindings::OnPress) != 0)
         {
             g_NextPage = &g_ResumePage;
         }
         else
         {
-            if ((flags & AsksSelect) != 0)
+            if (flags.takesSelect != 0)
             {
-                input->Has(MenuInput::ActionSelect, 1);
+                input->Has(MenuInput::ActionSelect, ButtonBindings::OnPress);
             }
 
-            u32 back = (flags & TakesBack) != 0 ? input->Has(MenuInput::ActionBack, 1) : 0;
+            u32 back = flags.takesBack != 0 ? input->Has(MenuInput::ActionBack, ButtonBindings::OnPress) : 0;
             u32 up = 0;
             u32 down = 0;
-            if ((flags & TakesUpDown) != 0)
+            if (flags.takesUpDown != 0)
             {
-                up = input->Has(MenuInput::ActionUp, 1);
-                down = input->Has(MenuInput::ActionDown, 1);
+                up = input->Has(MenuInput::ActionUp, ButtonBindings::OnPress);
+                down = input->Has(MenuInput::ActionDown, ButtonBindings::OnPress);
             }
 
             SkipHidden(player);
@@ -574,7 +533,7 @@ MenuPage* MenuPage::Step(MenuInput* input, MenuSounds* sounds, u32 player)
 
                 if (sounds != nullptr)
                 {
-                    sounds->Play(moved != 0 ? SoundUp : SoundNotUp);
+                    sounds->Play(moved != 0 ? MenuSounds::SoundUp : MenuSounds::SoundNotUp);
                 }
             }
             else if (down != 0)
@@ -595,17 +554,17 @@ MenuPage* MenuPage::Step(MenuInput* input, MenuSounds* sounds, u32 player)
 
                 if (sounds != nullptr)
                 {
-                    sounds->Play(moved != 0 ? SoundDown : SoundNotDown);
+                    sounds->Play(moved != 0 ? MenuSounds::SoundDown : MenuSounds::SoundNotDown);
                 }
             }
 
             MenuItem* item = Item(selections[player]);
             u32 left = 0;
             u32 right = 0;
-            if ((flags & TakesLeftRight) != 0 && up == 0 && down == 0)
+            if (flags.takesLeftRight != 0 && up == 0 && down == 0)
             {
-                left = input->Has(MenuInput::ActionLeft, 0);
-                right = input->Has(MenuInput::ActionRight, 0);
+                left = input->Has(MenuInput::ActionLeft, ButtonBindings::WhileHeld);
+                right = input->Has(MenuInput::ActionRight, ButtonBindings::WhileHeld);
             }
 
             MenuPage* leftPage = NextShowing(this, LinkLeft, player);
@@ -620,30 +579,30 @@ MenuPage* MenuPage::Step(MenuInput* input, MenuSounds* sounds, u32 player)
             }
             else if (back != 0)
             {
-                u32 tookIt = CallVirtual<u32>(this, vtable, PageBackSlot, player);
-                flags = (flags & ~(ModeMask << ModeShift)) | ModeBack << ModeShift;
+                u32 tookIt = CallVirtual<u32>(this, vtable, BackSlot, player);
+                flags.mode = EnteredBack;
                 g_NextPage = parent;
                 if (sounds != nullptr && (tookIt != 0 || (parent != nullptr && parent != this)))
                 {
-                    sounds->Play(SoundBack);
+                    sounds->Play(MenuSounds::SoundBack);
                 }
             }
             else if (item != nullptr)
             {
-                MenuPage* next = CallVirtual<MenuPage*>(item, item->vtable, ItemFrameSlot, player, this, input, sounds);
+                MenuPage* next = CallVirtual<MenuPage*>(item, item->vtable, MenuItem::FrameSlot, player, this, input, sounds);
                 g_NextPage = next;
                 if (next != nullptr && next != this)
                 {
-                    u32 mode = next != parent ? 1 : ModeBack;
-                    flags = (flags & ~(ModeMask << ModeShift)) | mode << ModeShift;
-                    if (sounds != nullptr && Mode() == ModeBack)
+                    u32 mode = next != parent ? EnteredAfresh : EnteredBack;
+                    flags.mode = mode;
+                    if (sounds != nullptr && Mode() == EnteredBack)
                     {
-                        sounds->Play(SoundBack);
+                        sounds->Play(MenuSounds::SoundBack);
                     }
                 }
             }
 
-            CallVirtual<void>(this, vtable, PageFrameSlot, player, input, sounds);
+            CallVirtual<void>(this, vtable, FrameSlot, player, input, sounds);
         }
     }
 
@@ -663,7 +622,7 @@ extern "C"
             renderer->font = drawer->fonts[MenuDrawer::StyleTitle];
             renderer->textScale.y = scale->y;
             renderer->textScale.x = scale->x;
-            renderer->textFlags = drawer->titleFlags;
+            renderer->textAlignment.value = drawer->titleAlignment;
             break;
         case MenuDrawer::StyleSelected:
         {
@@ -672,20 +631,20 @@ extern "C"
             CopyVector2(&size, scale);
             if (drawer->colourPulse != nullptr)
             {
-                ColourScale(&colour, drawer->colourPulse->value);
+                ColourScale(&colour, drawer->colourPulse->scale);
             }
 
             if (drawer->sizePulse != nullptr)
             {
-                size.x = size.x * drawer->sizePulse->value;
-                size.y = size.y * drawer->sizePulse->value;
+                size.x = size.x * drawer->sizePulse->scale;
+                size.y = size.y * drawer->sizePulse->scale;
             }
 
             renderer->colour = colour;
             renderer->textScale.x = size.x;
             renderer->font = drawer->fonts[MenuDrawer::StyleSelected];
             renderer->textScale.y = size.y;
-            renderer->textFlags = drawer->itemFlags;
+            renderer->textAlignment.value = drawer->itemAlignment;
             break;
         }
         case MenuDrawer::StyleShown:
@@ -694,7 +653,7 @@ extern "C"
             renderer->font = drawer->fonts[style];
             renderer->textScale.y = scale->y;
             renderer->textScale.x = scale->x;
-            renderer->textFlags = drawer->itemFlags;
+            renderer->textAlignment.value = drawer->itemAlignment;
             break;
         default:
             break;
@@ -707,26 +666,27 @@ extern "C"
         Vector2 titleScale;
         CopyVector2(&titleScale, &drawer->titleScale);
         MenuItem* selected = page->ItemAgain(page->selections[player]);
-        f32 red = Colour::ColourFraction(colour, 0);
-        f32 alpha = Colour::AlphaFraction(colour);
-        f32 blue = Colour::ColourFraction(colour, 2);
-        f32 green = Colour::ColourFraction(colour, 1);
+        Rgba tint = {colour};
+        f32 red = Colour::ColourFraction(tint.red);
+        f32 alpha = Colour::AlphaFraction(tint.alpha);
+        f32 blue = Colour::ColourFraction(tint.blue);
+        f32 green = Colour::ColourFraction(tint.green);
         const char* name = page->name;
-        u32 colours[4];
+        u32 colours[MenuDrawer::Styles];
         String title = {nullptr, 0, 0};
-        for (u32 style = 0; style < 4; style++)
+        for (u32 style = 0; style < MenuDrawer::Styles; style++)
         {
-            u32 own = drawer->colours[style];
+            Rgba own = {drawer->colours[style]};
             auto* bytes = reinterpret_cast<u8*>(&colours[style]);
-            bytes[0] = Colour::ColourByte(Colour::ColourFraction(own, 0) * red);
-            bytes[1] = Colour::ColourByte(Colour::ColourFraction(own, 1) * green);
-            bytes[2] = Colour::ColourByte(Colour::ColourFraction(own, 2) * blue);
-            bytes[3] = Colour::AlphaByte(Colour::AlphaFraction(own) * alpha);
+            bytes[0] = Colour::ColourByte(Colour::ColourFraction(own.red) * red);
+            bytes[1] = Colour::ColourByte(Colour::ColourFraction(own.green) * green);
+            bytes[2] = Colour::ColourByte(Colour::ColourFraction(own.blue) * blue);
+            bytes[3] = Colour::AlphaByte(Colour::AlphaFraction(own.alpha) * alpha);
         }
 
         titleScale.x = titleScale.x * size->x;
         titleScale.y = titleScale.y * size->y;
-        if (!(__builtin_fabsf(titleScale.x) <= TitleEpsilon && __builtin_fabsf(titleScale.y) <= TitleEpsilon))
+        if (!(__builtin_fabsf(titleScale.x) <= Epsilon && __builtin_fabsf(titleScale.y) <= Epsilon))
         {
             Vector2 place;
             CopyVector2(&place, &drawer->titlePlace);
@@ -734,7 +694,7 @@ extern "C"
             place.y = place.y * size->y + at->y;
             if (name == nullptr)
             {
-                name = GameText(page->flags & 0x3FF);
+                name = GameText(page->flags.title);
             }
 
             StringAssign(&title, name);
@@ -750,7 +710,7 @@ extern "C"
                 line = {nullptr, 0, 0};
             }
 
-            char value[0x40];
+            char value[ValueTextSize];
             MenuItem* drawn[MaxLines];
             u32 count = 0;
             u32 selectedLine = 0;
@@ -761,11 +721,11 @@ extern "C"
                 const char* text = item->text;
                 if (text == nullptr)
                 {
-                    text = GameText((item->id >> 12) & 0xFFF);
+                    text = GameText(item->bits.text);
                 }
 
                 StringAssign(line, text);
-                if (CallVirtual<u32>(item, item->vtable, ItemValueTextSlot, player, value) != 0)
+                if (CallVirtual<u32>(item, item->vtable, MenuItem::ValueTextSlot, player, value) != 0)
                 {
                     StringAppend(line, g_MenuValueSeparator);
                     StringAppend(line, value);
@@ -825,11 +785,11 @@ extern "C"
 
                 itemsPlace.x = itemsPlace.x * size->x + at->x;
                 itemsPlace.y = itemsPlace.y * size->y + at->y;
-                if (CentresItems(drawer->itemFlags))
+                if (CentresItems(drawer->itemAlignment))
                 {
                     itemsPlace.y = itemsPlace.y - (cursor.y - spacing) * 0.5f;
                 }
-                else if (EndsItems(drawer->itemFlags))
+                else if (EndsItems(drawer->itemAlignment))
                 {
                     itemsPlace.y = itemsPlace.y - cursor.y;
                 }
@@ -876,7 +836,7 @@ MenuPage* MenuItem::Activate(u32, MenuPage*)
 void MenuItem::Destroy(u32 destroyFlags)
 {
     vtable = g_MenuItemVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -892,7 +852,7 @@ void MenuItem::Left(u32, u32)
 
 MenuPage* MenuItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSounds* sounds)
 {
-    if ((input->pressed & 1 << MenuInput::ActionSelect) == 0)
+    if (input->pressed.select == 0)
     {
         return nullptr;
     }
@@ -901,12 +861,14 @@ MenuPage* MenuItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSoun
     MenuPage* next = nullptr;
     if (isShown)
     {
-        next = CallVirtual<MenuPage*>(this, vtable, ItemActivateSlot, player, page);
+        next = CallVirtual<MenuPage*>(this, vtable, ActivateSlot, player, page);
     }
 
     if (sounds != nullptr)
     {
-        sounds->Play(!isShown ? SoundNothing : next != nullptr ? SoundSelectedOn : SoundSelected);
+        sounds->Play(!isShown                ? MenuSounds::SoundNothing
+                     : next != nullptr ? MenuSounds::SoundSelectedOn
+                                       : MenuSounds::SoundSelected);
     }
 
     return next;
@@ -914,13 +876,13 @@ MenuPage* MenuItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSoun
 
 u32 MenuItem::SetFlag(u32 player, u32 flag)
 {
-    return CallVirtual<u32>(this, vtable, ItemSetIntSlot, player, flag);
+    return CallVirtual<u32>(this, vtable, SetIntSlot, player, flag);
 }
 
 u32 MenuItem::GetFlag(u32 player, u8* flag)
 {
     s32 value;
-    if (CallVirtual<u32>(this, vtable, ItemGetIntSlot, player, &value) == 0)
+    if (CallVirtual<u32>(this, vtable, GetIntSlot, player, &value) == 0)
     {
         return 0;
     }
@@ -963,7 +925,7 @@ void LinkItem::Destroy(u32 destroyFlags)
     MenuItem::Destroy(destroyFlags);
 }
 
-MenuPage* LinkItem::Unknown6()
+MenuPage* LinkItem::LinkedPage()
 {
     return target;
 }
@@ -981,7 +943,7 @@ u32 LinkItem::SetInt(u32, s32)
 
 u32 LinkItem::GetInt(u32, s32* value)
 {
-    *value = -1;
+    *value = NoIntValue;
     return 0;
 }
 
@@ -992,7 +954,7 @@ u32 LinkItem::SetUnsigned(u32, u32)
 
 u32 LinkItem::GetUnsigned(u32, u32* value)
 {
-    *value = 0xFFFFFFFF;
+    *value = NoUnsignedValue;
     return 0;
 }
 
@@ -1003,7 +965,7 @@ u32 LinkItem::SetFloat(u32, f32)
 
 u32 LinkItem::GetFloat(u32, f32* value)
 {
-    *value = Rounded(1e30);
+    *value = Infinite;
     return 0;
 }
 
@@ -1024,39 +986,44 @@ u32 MenuPage::Back(u32)
     return 0;
 }
 
-void MenuPage::Unknown6(u32)
+void MenuPage::BeginFrame(u32)
 {
 }
 
-void MenuPage::Unknown7(u32)
+void MenuPage::UnusedDoNothing(u32)
 {
 }
 
-void MenuPage::Unknown8(u32)
+void MenuPage::EndFrame(u32)
 {
 }
 
 MenuDrawer* MenuDrawer::Construct(MenuDrawer* drawer, Font* font)
 {
-    constexpr s32 TitleColour = 0xF;
-    constexpr s32 SelectedColour = 0xF;
-    constexpr s32 ShownColour = 0x13;
-    constexpr s32 HiddenColour = 0x15;
+    // The styles' colours
+    constexpr ColourIndex TitleColour = ColourWhite;
+    constexpr ColourIndex SelectedColour = ColourWhite;
+    constexpr ColourIndex ShownColour = ColourGrey;
+    constexpr ColourIndex HiddenColour = ColourDarkGrey;
+    // The items a tenth of the page down, at half size and a twentieth apart
+    constexpr f32 ItemsTop = Rounded(0.1);
+    constexpr f32 ItemScale = 0.5f;
+    constexpr f32 ItemSpacing = Rounded(0.05);
     drawer->colourPulse = nullptr;
     drawer->sizePulse = nullptr;
     drawer->windowStart = 0;
     drawer->windowSize = 0;
-    drawer->titleFlags = 6;
-    drawer->itemFlags = 3;
+    drawer->titleAlignment = TextAlignment::BottomCentre;
+    drawer->itemAlignment = TextAlignment::TopCentre;
     drawer->titlePlace = {0.0f, 0.0f};
     drawer->titleScale = {1.0f, 1.0f};
-    drawer->itemsPlace = {0.0f, Rounded(0.1)};
-    drawer->fewItemsScale = {0.5f, 0.5f};
-    drawer->fewItemsSpacing = Rounded(0.05);
-    drawer->manyItemsScale = {0.5f, 0.5f};
-    drawer->manyItemsSpacing = Rounded(0.05);
-    const s32 colours[4] = {TitleColour, SelectedColour, ShownColour, HiddenColour};
-    for (u32 style = 0; style < 4; style++)
+    drawer->itemsPlace = {0.0f, ItemsTop};
+    drawer->fewItemsScale = {ItemScale, ItemScale};
+    drawer->fewItemsSpacing = ItemSpacing;
+    drawer->manyItemsScale = {ItemScale, ItemScale};
+    drawer->manyItemsSpacing = ItemSpacing;
+    const s32 colours[Styles] = {TitleColour, SelectedColour, ShownColour, HiddenColour};
+    for (u32 style = 0; style < Styles; style++)
     {
         u32 colour;
         GetColor(&colour, colours[style]);
@@ -1076,7 +1043,7 @@ BackItem* BackItem::Construct(BackItem* item, u32 text, u32 id, MenuPage* target
 
 MenuPage* BackItem::Activate(u32 player, MenuPage* page)
 {
-    CallVirtual<u32>(page, page->vtable, PageBackSlot, player);
+    CallVirtual<u32>(page, page->vtable, MenuPage::BackSlot, player);
     return MenuItem::Activate(player, page);
 }
 
@@ -1100,7 +1067,7 @@ void ValueItem::SetRange(s32 newMinimum, s32 newMaximum, u32 newWraps, s32 value
     minimum = newMinimum;
     maximum = newMaximum;
     wraps = static_cast<u8>(newWraps);
-    for (s32 player = 0; player < static_cast<s32>((id >> PlayersShift) & PlayersMask); player++)
+    for (s32 player = 0; player < static_cast<s32>(bits.players); player++)
     {
         values[player] = value;
     }
@@ -1129,7 +1096,7 @@ MenuPage* ValueItem::Activate(u32 player, MenuPage*)
             return nullptr;
         }
 
-        CallVirtual<u32>(this, vtable, ItemSetIntSlot, player, value);
+        CallVirtual<u32>(this, vtable, SetIntSlot, player, value);
     }
 
     return nullptr;
@@ -1143,7 +1110,7 @@ void ValueItem::Destroy(u32 destroyFlags)
 
 MenuPage* ValueItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSounds* sounds)
 {
-    u32 onPress = (id >> 28) & 1;
+    u32 onPress = bits.stepsOnPress;
     u32 left = input->Has(MenuInput::ActionLeft, onPress);
     u32 right = input->Has(MenuInput::ActionRight, onPress);
     if (left != 0)
@@ -1153,13 +1120,13 @@ MenuPage* ValueItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSou
         // Above 0 it always wraps down to the maximum
         if (value > 0 || wraps != 0)
         {
-            CallVirtual<u32>(this, vtable, ItemSetIntSlot, player, minimum < value ? value - 1 : maximum);
+            CallVirtual<u32>(this, vtable, SetIntSlot, player, minimum < value ? value - 1 : maximum);
             stepped = 1;
         }
 
         if (sounds != nullptr)
         {
-            sounds->Play(stepped != 0 ? SoundValueDown : SoundValueNotDown);
+            sounds->Play(stepped != 0 ? MenuSounds::SoundValueDown : MenuSounds::SoundValueNotDown);
         }
 
         return nullptr;
@@ -1171,18 +1138,18 @@ MenuPage* ValueItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSou
         u32 stepped = 0;
         if (value < maximum)
         {
-            CallVirtual<u32>(this, vtable, ItemSetIntSlot, player, value + 1);
+            CallVirtual<u32>(this, vtable, SetIntSlot, player, value + 1);
             stepped = 1;
         }
         else if (wraps != 0)
         {
-            CallVirtual<u32>(this, vtable, ItemSetIntSlot, player, minimum);
+            CallVirtual<u32>(this, vtable, SetIntSlot, player, minimum);
             stepped = 1;
         }
 
         if (sounds != nullptr)
         {
-            sounds->Play(stepped != 0 ? SoundValueUp : SoundValueNotUp);
+            sounds->Play(stepped != 0 ? MenuSounds::SoundValueUp : MenuSounds::SoundValueNotUp);
         }
 
         return nullptr;
@@ -1191,7 +1158,7 @@ MenuPage* ValueItem::Frame(u32 player, MenuPage* page, MenuInput* input, MenuSou
     return MenuItem::Frame(player, page, input, sounds);
 }
 
-MenuPage* ValueItem::Unknown6()
+MenuPage* ValueItem::LinkedPage()
 {
     return nullptr;
 }
@@ -1306,7 +1273,7 @@ MenuPage* MenuPage::Construct(MenuPage* page, const char* name, u32 players)
 {
     ConstructPage(page, players);
     page->name = name;
-    page->flags = (page->flags & ~(PlayersMask << PlayersShift)) | (players & PlayersMask) << PlayersShift;
+    page->flags.players = players;
     ConstructPageItems(page);
     return page;
 }
@@ -1315,7 +1282,8 @@ MenuPage* MenuPage::ConstructTitled(MenuPage* page, u32 title, u32 players)
 {
     ConstructPage(page, players);
     page->name = nullptr;
-    page->flags = (page->flags & ~(PlayersMask << PlayersShift | 0x3FFu)) | (title & 0x3FF) | (players & PlayersMask) << PlayersShift;
+    page->flags.title = title;
+    page->flags.players = players;
     ConstructPageItems(page);
     return page;
 }
@@ -1331,7 +1299,7 @@ void MenuPage::SetFirstItem(u32 id)
     s32 index = IndexOf(id);
     if (index >= 0)
     {
-        flags = (flags & ~(FirstItemMask << FirstItemShift)) | (static_cast<u32>(index) & FirstItemMask) << FirstItemShift;
+        flags.firstItem = static_cast<u32>(index);
     }
 }
 

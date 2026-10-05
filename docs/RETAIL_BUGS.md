@@ -475,8 +475,12 @@ conversion:
   - (conv.) _pictureHeader 0x2C0DC0 tests a 10-bit value for negative.
   - (conv.) _getAllRefs/_getRef0 make 6 references for 4 slots on dual-prime B macroblocks.
   - (conv.) dmaRefImage uses stale tags.
-  - (conv.) unknownFC is never set.
+  - (conv.) The system's forcedBrokenLink (0xFC), which _updateRefImage reads, is only ever set to 0.
   - Effect: none with the game's streams.
+- **Sony's movie decoder sample (the player's decoder), dead:** DecodePicture FUN_002b0a68 sizes each chunk's transfer by the
+  pixels' size (`sll 6` or `sll 5`, 0x2B0DDC/0x2B0DE0) but always moves the picture on by 32 bit macroblocks (`sll 10` at
+  0x2B0E08, added at 0x2B0E14), so a 16 bit picture of more than 1,023 macroblocks gets gaps. Only the IPU's own stream formats
+  are decoded there; the game's movies are PSS.
 - **newlib and scePrintf** (conv.):
   - strncpy's fast path mistakes bytes <= 0x7E for NUL.
   - toupper, tolower and strncasecmp index before _ctype_ for negative chars; strncasecmp returns the unsigned difference.
@@ -513,10 +517,3 @@ conversion:
 - **TearDownCharacter destroying the locks inline:** code structure only.
 - **Dead fetches with no consequence:** FUN_0012e328/FUN_0012fa90, Command 15, CreatureAgent::Collided's normalize,
   GetRotationVec results, Mecha's look targets 3/4, PlaceFeet and query leftover bits.
-
-## The decomp's own bugs found on the way (fixed; not retail's)
-
-- **DismissCharacterCommand::Execute:** passed DismissPlaces only the places.
-- **PlayMusicRequest:** the C++ misread retail's delay slots (bit 19 test, return 0 without a player).
-- **Platform::MemoryCard::ChangeDirectory (PS2SDK port):** PS2SDK's mcChdir always copies the directory out, so the port wrote
-  to address 0 until it was given a buffer.

@@ -6,15 +6,12 @@
 #include "game/memory.h"
 #include "game/place.h"
 #include "game/properties.h"
+#include "game/scenery.h"
 #include "game/stream.h"
 #include "game/view.h"
 
 namespace
 {
-// What point and spot lights fall off by: K / (d² + K)
-constexpr u32 FalloffConstant = 3;
-constexpr u32 AssignSlot = 7;
-
 // The box around the light's position, the extent each way
 void BoxAround(Light* light, f32 scale)
 {
@@ -65,7 +62,7 @@ f32 Attenuated(f32 intensity, s32 power, f32 falloff)
 template <typename T>
 T* AssignLight(T* light, const T* other)
 {
-    CallVirtual<Light*>(static_cast<Light*>(light), light->vtable, AssignSlot, static_cast<const Light*>(other));
+    CallVirtual<Light*>(static_cast<Light*>(light), light->vtable, Light::SlotAssignBase, static_cast<const Light*>(other));
     return light;
 }
 }
@@ -81,27 +78,27 @@ void Light::Destroy(u32 destroyFlags)
 
 void Light::Enable()
 {
-    header |= Enabled;
+    header.enabled = 1;
 }
 
 void Light::Disable()
 {
-    header &= ~static_cast<u32>(Enabled);
+    header.enabled = 0;
 }
 
 void Light::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindNone;
+    header.kind = KindNone;
 }
 
 void Light::SetKind(u32 kind)
 {
-    *reinterpret_cast<u8*>(&header) = kind;
+    header.kind = kind;
 }
 
 u32 Light::GetKind() const
 {
-    return *reinterpret_cast<const u8*>(&header);
+    return header.kind;
 }
 
 Light* Light::AssignBase(const Light* other)
@@ -125,7 +122,7 @@ void Light::Read(Stream* stream)
     stream->Read(&boundsMax, sizeof(Vector4), 1);
 }
 
-void Light::Nothing()
+void Light::Follow()
 {
 }
 
@@ -140,7 +137,7 @@ void AmbientLight::Destroy(u32 destroyFlags)
 
 void AmbientLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindAmbient;
+    header.kind = KindAmbient;
 }
 
 void AmbientLight::LightAt(const Vector4*, Vector4*, f32*, const Vector4*, const Vector4*) const
@@ -169,7 +166,7 @@ void DirectionalLight::Destroy(u32 destroyFlags)
 
 void DirectionalLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindDirectional;
+    header.kind = KindDirectional;
 }
 
 void DirectionalLight::LightAt(const Vector4*, Vector4* out, f32* strength, const Vector4*, const Vector4* towards) const
@@ -209,7 +206,7 @@ void PointLight::Destroy(u32 destroyFlags)
 
 void PointLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindPoint;
+    header.kind = KindPoint;
 }
 
 void PointLight::LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4*) const
@@ -247,7 +244,7 @@ void SpotLight::Destroy(u32 destroyFlags)
 
 void SpotLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindSpot;
+    header.kind = KindSpot;
 }
 
 namespace
@@ -334,17 +331,16 @@ SpotLight* SpotLight::Assign(const SpotLight* other)
 
 void InitLightingConstants(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    static const f32 Values[36] = {
+    static const f32 Values[LightingConstantCount] = {
         0.0f, 0.0f, 0.0f, 25.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f, 0.5f, 1.0f, 0.5f, 0.5f,
         0.5f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, -1.0f, 0.0f, 1.0f,
     };
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
-    for (u32 index = 0; index < 36; index++)
+    for (u32 index = 0; index < LightingConstantCount; index++)
     {
         g_LightingConstants[index] = Values[index];
     }
@@ -382,7 +378,6 @@ namespace
 template <typename T>
 void DestroyList(T* list)
 {
-    constexpr u32 DestroySlot = 1;
     if (list == nullptr)
     {
         return;
@@ -392,7 +387,7 @@ void DestroyList(T* list)
     while (light != list)
     {
         light--;
-        CallVirtual<void>(static_cast<Light*>(light), light->vtable, DestroySlot, 0u);
+        CallVirtual<void>(static_cast<Light*>(light), light->vtable, Light::SlotDestroy, 0u);
     }
 
     DeleteArray(list);
@@ -411,10 +406,10 @@ T* MakeList(s32 count, const GccVTableEntry* vtable)
     for (s32 index = 0; index < count; index++)
     {
         T* light = &list[index];
-        light->header = 0;
-        *reinterpret_cast<u8*>(&light->header) = Light::KindNone;
+        light->header.value = 0;
+        light->header.kind = Light::KindNone;
         light->vtable = vtable;
-        light->header |= Light::Enabled;
+        light->header.enabled = 1;
         light->SetOwnKind();
     }
 
@@ -479,7 +474,7 @@ void ReadSceneryLights(ChunkLights* lights, Stream* stream)
 
 void ClearGatheredLights(ChunkLights* lights)
 {
-    for (u32 index = 0; index < 3; index++)
+    for (u32 index = 0; index < ChunkLights::Strongest; index++)
     {
         lights->strengths[index] = -1.0f;
         lights->colours[index] = g_DefaultBox.min;
@@ -490,8 +485,8 @@ void ClearGatheredLights(ChunkLights* lights)
 
 void FinishGatheredLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, u32 ownLight)
 {
-    // The object's own light keeps the third slot as it is but for its colour, halved by its strength
-    u32 gathered = ownLight == 0 ? 3 : 2;
+    // The object's own light keeps its slot as it is but for its colour, halved by its strength
+    u32 gathered = ownLight == 0 ? ChunkLights::Strongest : ChunkLights::OwnSlot;
     for (u32 index = 0; index < gathered && 0.0f <= lights->strengths[index]; index++)
     {
         VuRotateVector(chunkMatrix, &lights->directions[index], &lights->directions[index]);
@@ -503,10 +498,10 @@ void FinishGatheredLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, u32
 
     if (ownLight != 0)
     {
-        f32 half = lights->strengths[2] * 0.5f;
-        lights->colours[2].x = lights->colours[2].x * half;
-        lights->colours[2].y = lights->colours[2].y * half;
-        lights->colours[2].z = lights->colours[2].z * half;
+        f32 half = lights->strengths[ChunkLights::OwnSlot] * 0.5f;
+        lights->colours[ChunkLights::OwnSlot].x = lights->colours[ChunkLights::OwnSlot].x * half;
+        lights->colours[ChunkLights::OwnSlot].y = lights->colours[ChunkLights::OwnSlot].y * half;
+        lights->colours[ChunkLights::OwnSlot].z = lights->colours[ChunkLights::OwnSlot].z * half;
     }
 
     lights->ambient.x = lights->ambient.x * 0.5f;
@@ -516,9 +511,6 @@ void FinishGatheredLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, u32
 
 namespace
 {
-// The scenery's 16 bytes of light mask bits (128 lights: a bit per reference)
-constexpr u32 SceneryLightMask = 0x34;
-
 // A light's colour times a strength added to the ambient light, the product left in the scratch (the retail stack's)
 void AddAmbient(ChunkLights* lights, const Light* light, f32 strength, Vector4* scratch)
 {
@@ -577,12 +569,10 @@ Light* ReferencedLight(const ChunkLights* lights, const LightReference* referenc
 
 void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Light* ownLight)
 {
-    constexpr f32 Epsilon = Rounded(2.4999998e-09);
-    constexpr u32 OwnSlot = 2;
     // The retail stack's places, which some lights' LightAt leave as they were: the own light's position, then every direction
     // and ambient product of the scenery's lights; the own light's direction, then the ambient product of the 16 more
-    Vector4 scratch;
-    Vector4 scratch2;
+    Vector4 wayScratch;
+    Vector4 directionScratch;
     Vector4 ownDirection;
     f32 ownStrength;
     f32 strength;
@@ -590,14 +580,14 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
     g_LightGathers++;
     u32 own = 0;
     ClearGatheredLights(lights);
-    u32 slots = 2;
+    u32 slots = ChunkLights::OwnSlot;
     if (ownLight == nullptr)
     {
-        slots = 3;
+        slots = ChunkLights::Strongest;
     }
     else if (ownLight->Kind() == Light::KindAmbient)
     {
-        AddAmbient(lights, ownLight, ownLight->intensity, &scratch);
+        AddAmbient(lights, ownLight, ownLight->intensity, &wayScratch);
     }
     else
     {
@@ -605,26 +595,27 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
         own = 1;
         Matrix4x4 fromCamera;
         VuInvertRigid(&fromCamera, &g_RenderView->toClip);
-        scratch = ownLight->position;
-        VuTransformPoint(&fromCamera, &scratch, &scratch);
-        if (ownLight->Kind() == own)
+        wayScratch = ownLight->position;
+        VuTransformPoint(&fromCamera, &wayScratch, &wayScratch);
+        if (ownLight->Kind() == Light::KindDirectional)
         {
-            scratch2 = static_cast<DirectionalLight*>(ownLight)->direction;
-            VuRotateVector(&fromCamera, &scratch2, &scratch2);
-            f32 scale = InverseLength(&scratch2, Epsilon);
-            scratch2.x = scratch2.x * scale;
-            scratch2.y = scratch2.y * scale;
-            scratch2.z = scratch2.z * scale;
+            directionScratch = static_cast<DirectionalLight*>(ownLight)->direction;
+            VuRotateVector(&fromCamera, &directionScratch, &directionScratch);
+            f32 scale = InverseLength(&directionScratch, LengthEpsilon);
+            directionScratch.x = directionScratch.x * scale;
+            directionScratch.y = directionScratch.y * scale;
+            directionScratch.z = directionScratch.z * scale;
         }
 
-        ownLight->LightAt(&lights->position, &ownDirection, &ownStrength, &scratch, &scratch2);
-        lights->strengths[OwnSlot] = ownStrength;
-        lights->directions[OwnSlot] = ownDirection;
-        lights->colours[OwnSlot] = ownLight->colour;
+        ownLight->LightAt(&lights->position, &ownDirection, &ownStrength, &wayScratch, &directionScratch);
+        lights->strengths[ChunkLights::OwnSlot] = ownStrength;
+        lights->directions[ChunkLights::OwnSlot] = ownDirection;
+        lights->colours[ChunkLights::OwnSlot] = ownLight->colour;
     }
 
-    const u8* mask = reinterpret_cast<const u8*>(lights->chunk->scenery) + SceneryLightMask;
-    for (u32 group = 0; group < 16; group++, mask++)
+    // The scenery's root's light bits: a bit per reference
+    const u8* mask = lights->chunk->scenery->lights;
+    for (u32 group = 0; group < sizeof(SceneryCell::lights); group++, mask++)
     {
         if (*mask == 0)
         {
@@ -641,12 +632,12 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
             Light* light = ReferencedLight(lights, &lights->references[group * 8 + bit]);
             if (light->Kind() == Light::KindAmbient)
             {
-                AddAmbient(lights, light, light->intensity, &scratch);
+                AddAmbient(lights, light, light->intensity, &wayScratch);
                 continue;
             }
 
-            light->LightAt(&lights->position, &scratch, &strength, nullptr, nullptr);
-            InsertStrongest(lights, slots, strength, &scratch, light);
+            light->LightAt(&lights->position, &wayScratch, &strength, nullptr, nullptr);
+            InsertStrongest(lights, slots, strength, &wayScratch, light);
         }
     }
 
@@ -657,14 +648,14 @@ void GatherStrongestLights(ChunkLights* lights, const Matrix4x4* chunkMatrix, Li
             continue;
         }
 
-        light->LightAt(&lights->position, &scratch, &extraStrength, nullptr, nullptr);
+        light->LightAt(&lights->position, &wayScratch, &extraStrength, nullptr, nullptr);
         if (light->Kind() == Light::KindAmbient)
         {
-            AddAmbient(lights, light, extraStrength, &scratch2);
+            AddAmbient(lights, light, extraStrength, &directionScratch);
             continue;
         }
 
-        InsertStrongest(lights, slots, extraStrength, &scratch, light);
+        InsertStrongest(lights, slots, extraStrength, &wayScratch, light);
     }
 
     FinishGatheredLights(lights, chunkMatrix, own);
@@ -693,11 +684,6 @@ void DestroyAttached(Light* light, u32 destroyFlags)
     }
 }
 
-// The attached lights' own kinds
-constexpr u8 KindAttachedAmbient = 5;
-constexpr u8 KindAttachedDirectional = 6;
-constexpr u8 KindAttachedPoint = 7;
-constexpr u8 KindAttachedSpot = 8;
 }
 
 void AttachedAmbientLight::Destroy(u32 destroyFlags)
@@ -707,7 +693,7 @@ void AttachedAmbientLight::Destroy(u32 destroyFlags)
 
 void AttachedAmbientLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindAttachedAmbient;
+    header.kind = KindAttachedAmbient;
 }
 
 void AttachedAmbientLight::LightAt(const Vector4* at, Vector4*, f32* strength, const Vector4*, const Vector4*) const
@@ -732,7 +718,7 @@ void AttachedAmbientLight::Follow()
     VuTransformPoint(&place->matrix, &position, &worldPosition);
 }
 
-u32 AttachedAmbientLight::Slot13()
+u32 AttachedAmbientLight::Unused13()
 {
     return 0;
 }
@@ -744,7 +730,7 @@ void AttachedDirectionalLight::Destroy(u32 destroyFlags)
 
 void AttachedDirectionalLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindAttachedDirectional;
+    header.kind = KindAttachedDirectional;
 }
 
 void AttachedDirectionalLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
@@ -770,7 +756,7 @@ void AttachedDirectionalLight::Follow()
     VuRotateVector(&place->matrix, &direction, &worldDirection);
 }
 
-u32 AttachedDirectionalLight::Slot13()
+u32 AttachedDirectionalLight::Unused13()
 {
     return 0;
 }
@@ -782,7 +768,7 @@ void AttachedPointLight::Destroy(u32 destroyFlags)
 
 void AttachedPointLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindAttachedPoint;
+    header.kind = KindAttachedPoint;
 }
 
 void AttachedPointLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
@@ -807,7 +793,7 @@ void AttachedPointLight::Follow()
     VuTransformPoint(&place->matrix, &position, &worldPosition);
 }
 
-u32 AttachedPointLight::Slot13()
+u32 AttachedPointLight::Unused13()
 {
     return 0;
 }
@@ -819,7 +805,7 @@ void AttachedSpotLight::Destroy(u32 destroyFlags)
 
 void AttachedSpotLight::SetOwnKind()
 {
-    *reinterpret_cast<u8*>(&header) = KindAttachedSpot;
+    header.kind = KindAttachedSpot;
 }
 
 void AttachedSpotLight::LightAt(const Vector4* at, Vector4* out, f32* strength, const Vector4*, const Vector4*) const
@@ -844,7 +830,7 @@ void AttachedSpotLight::Follow()
     VuRotateVector(&place->matrix, &direction, &worldDirection);
 }
 
-u32 AttachedSpotLight::Slot13()
+u32 AttachedSpotLight::Unused13()
 {
     return 0;
 }
@@ -857,14 +843,10 @@ void ClearLightingUnused()
 void ComputeSpotLightBounds(SpotLight* light)
 {
     constexpr f32 Reach = 100.0f;
-    constexpr f32 TurnStep = 0x1.921fb6p-14f;
-    constexpr f32 StepsPerRadian = 0x1.45f306p+13f;
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    constexpr u32 Radians = 0;
     f32 reach = light->intensity * Reach;
     s32 angle[4];
-    AngleFrom(angle, static_cast<f32>(light->coneAngle) * TurnStep, Radians);
-    angle[0] = angle[0] + static_cast<s32>(static_cast<f32>(light->falloffAngle) * TurnStep * StepsPerRadian);
+    AngleFrom(angle, static_cast<f32>(light->coneAngle) * AngleToRadians, AngleRadians);
+    angle[0] = angle[0] + static_cast<s32>(static_cast<f32>(light->falloffAngle) * AngleToRadians * RadiansToAngle);
     f32 radius = reach * TanOfAngle(angle);
     // The cone's cross-section's two axes. Retail takes the first's perpendicular of an uninitialized stack vector: the direction
     // is what it means (the box is never read)

@@ -49,15 +49,39 @@ enum VolumeSlot : u32
 };
 
 // A segment whose length squared is below its sphere's radius squared times this has no direction
-constexpr f32 ShortSegment = 0x1.5798ECp-29f;
+constexpr f32 ShortSegment = LengthEpsilon;
 // How far a quadratic's root may be before a segment's start, or past its end, and still be the share where it crosses a sphere
-constexpr f32 RootTolerance = 0x1.A36E2Ep-15f;
+constexpr f32 RootTolerance = Epsilon;
 constexpr f32 LastRoot = 0x1.000346p+0f;
 // How far a point is in front of a hull's plane to be outside it
-constexpr f32 PlaneTolerance = 0x1.A36E2Ep-15f;
+constexpr f32 PlaneTolerance = Epsilon;
+// Further beyond a box than a point ever is
 constexpr f32 NoFace = 1.0e10f;
-constexpr f32 NoDistance = 0x1.93E594p+99f;
-constexpr f32 NormalEpsilon = 0x1.5798ECp-29f;
+
+// Where a point is against a box (an outcode): beyond its max or its min along each axis
+union BoxOutCode
+{
+    // An axis' two bits
+    enum AxisMask : u32
+    {
+        BeyondX = 0x3,
+        BeyondY = 0xC,
+        BeyondZ = 0x30,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 aboveX : 1;
+        u32 belowX : 1;
+        u32 aboveY : 1;
+        u32 belowY : 1;
+        u32 aboveZ : 1;
+        u32 belowZ : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(BoxOutCode, 4);
 
 f32* Axes(Vector4* vector)
 {
@@ -120,17 +144,19 @@ void ClampToBox(f32* point, const f32* extents, s32 axis, f32* squared)
     }
 }
 
-// The bits of the box's faces a point is beyond: 1 and 2 above and below on x, 4 and 8 on y, 0x10 and 0x20 on z
-u32 OutCode(const Vector4* point, const Vector4* low, const Vector4* high)
+// The outcode's bits go above and below for each axis in turn
+BoxOutCode OutCode(const Vector4* point, const Vector4* low, const Vector4* high)
 {
-    u32 code = 0;
-    for (u32 face = 0; face < 6; face++)
+    constexpr u32 Faces = 6;
+    BoxOutCode code = {0};
+    for (u32 face = 0; face < Faces; face++)
     {
         u32 axis = face >> 1;
-        bool beyond = (face & 1) != 0 ? Axes(point)[axis] < Axes(low)[axis] : Axes(high)[axis] < Axes(point)[axis];
+        bool below = (face & 1) != 0;
+        bool beyond = below ? Axes(point)[axis] < Axes(low)[axis] : Axes(high)[axis] < Axes(point)[axis];
         if (beyond)
         {
-            code |= 1u << face;
+            code.value |= 1u << face;
         }
     }
 
@@ -160,7 +186,7 @@ void SphereAroundSegment(CapsuleVolume* capsule)
 void Volume::Destroy(u32 flags)
 {
     vtable = g_VolumeVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -212,7 +238,7 @@ void BoundingVolume::SetBox(const Vector4* low, const Vector4* high)
 void BoundingVolume::Destroy(u32 flags)
 {
     vtable = g_VolumeVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -242,7 +268,7 @@ u32 BoundingVolume::TestPoint(const Vector4* point)
         f32 value = Axes(point)[axis];
         if (Axes(&max)[axis] < value || value < Axes(&min)[axis])
         {
-            return 0;
+            return Apart;
         }
     }
 
@@ -251,10 +277,10 @@ u32 BoundingVolume::TestPoint(const Vector4* point)
     f32 z = point->z - sphere.z;
     if (-halfSize.x < x && -halfSize.y < y && -halfSize.z < z && x < halfSize.x && y < halfSize.y && z < halfSize.z)
     {
-        return 1;
+        return Inside;
     }
 
-    return 2;
+    return Partly;
 }
 
 u32 BoundingVolume::TestSphere(f32 radius, const Vector4* centre)
@@ -286,7 +312,7 @@ s32 BoundingVolume::TestVolume(Volume* other)
 {
     if (!SpheresMeet(this, other))
     {
-        return 0;
+        return Apart;
     }
 
     u32 type = TypeOf(other);
@@ -304,7 +330,7 @@ s32 BoundingVolume::TestVolume(Volume* other)
     case VolumeTypeBySphere:
         return CallVirtual<u32>(this, vtable, SlotTestSphere, other->sphere.w, &other->sphere);
     default:
-        return -1;
+        return Untested;
     }
 }
 
@@ -379,10 +405,10 @@ u32 BoundingVolume::TestSphereInBox(f32 radius, const Vector4* centre, const Vec
 
     if (0.0f < outside)
     {
-        return radiusSquared < outside ? 0 : 2;
+        return radiusSquared < outside ? Apart : Partly;
     }
 
-    return radiusSquared < FaceDistanceSquared(centre, low, high) ? 1 : 2;
+    return radiusSquared < FaceDistanceSquared(centre, low, high) ? Inside : Partly;
 }
 
 u32 BoundingVolume::None18()
@@ -399,48 +425,49 @@ u32 BoundingVolume::None19()
 // whether or not it misses the box, and one from inside the box out of it counts as apart
 u32 BoundingVolume::SegmentInBox(const Vector4* low, const Vector4* high, const Vector4* segment)
 {
-    u32 start = OutCode(&segment[0], low, high);
-    u32 end = OutCode(&segment[1], low, high);
-    if ((start | end) == 0)
+    BoxOutCode start = OutCode(&segment[0], low, high);
+    BoxOutCode end = OutCode(&segment[1], low, high);
+    if ((start.value | end.value) == 0)
     {
-        return 1;
+        return Inside;
     }
 
-    if ((start & end) != 0)
+    // Both ends beyond the same face
+    if ((start.value & end.value) != 0)
     {
-        return 0;
+        return Apart;
     }
 
-    u32 result = 0;
+    u32 result = Apart;
     f32 first;
     f32 second;
-    if ((start & 0x3) != 0)
+    if ((start.value & BoxOutCode::BeyondX) != 0)
     {
-        result = 2;
-        CrossingAt(segment, 0, (start & 0x1) != 0 ? high->x : low->x, 1, 2, &first, &second);
+        result = Partly;
+        CrossingAt(segment, 0, start.aboveX ? high->x : low->x, 1, 2, &first, &second);
         if (low->y <= first && first <= high->y && low->z <= second && second <= high->z)
         {
-            return 2;
+            return Partly;
         }
     }
 
-    if ((start & 0xC) != 0)
+    if ((start.value & BoxOutCode::BeyondY) != 0)
     {
-        result = 2;
-        CrossingAt(segment, 1, (start & 0x4) != 0 ? high->y : low->y, 0, 2, &first, &second);
+        result = Partly;
+        CrossingAt(segment, 1, start.aboveY ? high->y : low->y, 0, 2, &first, &second);
         if (low->x <= first && first <= high->x && low->z <= second && second <= high->z)
         {
-            return 2;
+            return Partly;
         }
     }
 
-    if ((start & 0x30) != 0)
+    if ((start.value & BoxOutCode::BeyondZ) != 0)
     {
-        result = 2;
-        CrossingAt(segment, 2, (start & 0x10) != 0 ? high->z : low->z, 0, 1, &first, &second);
+        result = Partly;
+        CrossingAt(segment, 2, start.aboveZ ? high->z : low->z, 0, 1, &first, &second);
         if (low->x <= first && first <= high->x && low->y <= second && second <= high->y)
         {
-            return 2;
+            return Partly;
         }
     }
 
@@ -460,7 +487,7 @@ u32 BoundingVolume::SegmentFirstInsideBox(const Vector4*, const Vector4*, const 
 f32 BoundingVolume::FaceDistanceSquared(const Vector4* point, const Vector4* low, const Vector4* high)
 {
     f32 outside = 0.0f;
-    f32 nearest = NoDistance;
+    f32 nearest = Infinite;
     for (s32 axis = 0; axis < 3; axis++)
     {
         f32 value = Axes(point)[axis];
@@ -486,16 +513,16 @@ u32 BoundingVolume::TestBox(const BoundingVolume* other)
     if (other->max.x < min.x || max.x < other->min.x || other->max.y < min.y || max.y < other->min.y || other->max.z < min.z
         || max.z < other->min.z)
     {
-        return 0;
+        return Apart;
     }
 
     if (min.x < other->min.x && min.y < other->min.y && min.z < other->min.z && other->max.x < max.x && other->max.y < max.y
         && other->max.z < max.z)
     {
-        return 1;
+        return Inside;
     }
 
-    return 2;
+    return Partly;
 }
 
 u32 BoundingVolume::TestSphereVolume(const SphereVolume* other)
@@ -511,16 +538,16 @@ u32 BoundingVolume::TestCapsule(const CapsuleVolume* other)
     f32 squared = SegmentBoxDistanceSquared(this, &other->start, &share, &nearest);
     if (0.0f < squared)
     {
-        return other->radiusSquared < squared ? 0 : 2;
+        return other->radiusSquared < squared ? Apart : Partly;
     }
 
     f32 radius = other->radius;
-    if (CallVirtual<u32>(this, vtable, SlotTestSphere, radius, &other->start) != 1)
+    if (CallVirtual<u32>(this, vtable, SlotTestSphere, radius, &other->start) != Inside)
     {
-        return 2;
+        return Partly;
     }
 
-    return CallVirtual<u32>(this, vtable, SlotTestSphere, radius, &other->end) == 1 ? 1 : 2;
+    return CallVirtual<u32>(this, vtable, SlotTestSphere, radius, &other->end) == Inside ? Inside : Partly;
 }
 
 void BoundingVolume::TransformIntoBySphere(const Matrix4x4*, Volume*)
@@ -572,7 +599,7 @@ void BoxFacePlane(const BoundingVolume* box, const Vector4* point, Vector4* plan
 
     if (faces >= 2)
     {
-        f32 scale = InverseLength(plane, NormalEpsilon);
+        f32 scale = InverseLength(plane, LengthEpsilon);
         plane->x = plane->x * scale;
         plane->y = plane->y * scale;
         plane->z = plane->z * scale;
@@ -607,20 +634,21 @@ u32 VolumeHoldsCell(SceneryCell* cell, BoundingVolume* volume)
     if (box->max.x < cell->min.x || cell->max.x < box->min.x || box->max.y < cell->min.y || cell->max.y < box->min.y
         || box->max.z < cell->min.z || cell->max.z < box->min.z)
     {
-        return 0;
+        return Volume::Apart;
     }
 
     if (cell->min.x < box->min.x && cell->min.y < box->min.y && cell->min.z < box->min.z && box->max.x < cell->max.x
         && box->max.y < cell->max.y && box->max.z < cell->max.z)
     {
-        return 1;
+        return Volume::Inside;
     }
 
-    return 2;
+    return Volume::Partly;
 }
 
 // Retail bug: the span of a range it compares is OverlappingRangesSpan's, the union of the cell's and the box's ranges, so any
-// box overlapping the cell counts as wholly held (1, never 2 for a box of a positive size) and only one apart on an axis gives 0
+// box overlapping the cell counts as wholly held (Inside, never Partly for a box of a positive size) and only one apart on an
+// axis is Apart
 u32 CellHoldsBox(f32 margin, SceneryCell* cell, const Vector4* min, const Vector4* max)
 {
     Vector4 size = *max;
@@ -633,17 +661,17 @@ u32 CellHoldsBox(f32 margin, SceneryCell* cell, const Vector4* min, const Vector
         spans[axis] = OverlappingRangesSpan(Axes(&cell->min)[axis], Axes(&cell->max)[axis], Axes(min)[axis], Axes(max)[axis]);
         if (spans[axis] <= margin * Axes(&size)[axis])
         {
-            return 0;
+            return Volume::Apart;
         }
     }
 
     f32 share = 1.0f - margin;
     if (size.x * share <= spans[0] && size.y * share <= spans[1] && size.z * share <= spans[2])
     {
-        return 1;
+        return Volume::Inside;
     }
 
-    return 2;
+    return Volume::Partly;
 }
 
 void BoxCorners(const Box* box, Vector4* corners, const Matrix4x4* matrix)
@@ -1118,7 +1146,7 @@ SphereVolume* SphereVolume::Construct(SphereVolume* volume, const Vector4* centr
 void SphereVolume::Destroy(u32 flags)
 {
     vtable = g_VolumeVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1141,10 +1169,10 @@ u32 SphereVolume::TestPoint(const Vector4* point)
     f32 beyond = x * x + y * y + z * z - radiusSquared;
     if (beyond == 0.0f)
     {
-        return 2;
+        return Partly;
     }
 
-    return 0.0f < beyond ? 0 : 1;
+    return 0.0f < beyond ? Apart : Inside;
 }
 
 u32 SphereVolume::TestSphere(f32 radius, const Vector4* centre)
@@ -1156,16 +1184,16 @@ u32 SphereVolume::TestSphere(f32 radius, const Vector4* centre)
     f32 reach = sphere.w + radius;
     if (reach * reach < squared)
     {
-        return 0;
+        return Apart;
     }
 
     f32 inner = sphere.w - radius;
     if (0.0f < inner && squared < inner * inner)
     {
-        return 1;
+        return Inside;
     }
 
-    return 2;
+    return Partly;
 }
 
 u32 SphereVolume::TestSegment(const Vector4* segment, s32 mode)
@@ -1185,25 +1213,25 @@ u32 SphereVolume::TestSegment(const Vector4* segment, s32 mode)
     f32 z = sphere.z - segment[0].z;
     f32 startSquared = x * x + y * y + z * z;
     f32 missSquared = PositivePart(startSquared * lengthSquared - along * along, 0.0f);
-    u32 result = 2;
+    u32 result = Partly;
     if (radiusSquared * lengthSquared < missSquared)
     {
-        result = 0;
+        result = Apart;
     }
 
-    if (mode == SegmentLine || result != 2)
+    if (mode == SegmentLine || result != Partly)
     {
         return result;
     }
 
     if (along < 0.0f)
     {
-        return radiusSquared < startSquared ? 0 : 2;
+        return radiusSquared < startSquared ? Apart : Partly;
     }
 
     if (mode < SegmentBounded)
     {
-        return 2;
+        return Partly;
     }
 
     f32 endX = segment[1].x - sphere.x;
@@ -1212,21 +1240,21 @@ u32 SphereVolume::TestSegment(const Vector4* segment, s32 mode)
     f32 endSquared = endX * endX + endY * endY + endZ * endZ;
     if (lengthSquared < along && radiusSquared < endSquared)
     {
-        return 0;
+        return Apart;
     }
 
     if (!(endSquared < radiusSquared))
     {
-        return 2;
+        return Partly;
     }
 
-    return startSquared < radiusSquared ? 1 : 2;
+    return startSquared < radiusSquared ? Inside : Partly;
 }
 
 u32 SphereVolume::SegmentCrossing(const Vector4* segment, s32 mode, f32* share)
 {
     u32 result = CallVirtual<u32>(this, vtable, SlotTestSegment, segment, mode);
-    if (result != 2)
+    if (result != Partly)
     {
         *share = 0.0f;
         return result;
@@ -1308,7 +1336,7 @@ u32 SphereVolume::SegmentCrossing(const Vector4* segment, s32 mode, f32* share)
     f32 startX = segment[0].x - sphere.x;
     f32 startY = segment[0].y - sphere.y;
     f32 startZ = segment[0].z - sphere.z;
-    result = 0;
+    result = Apart;
     if (startX * startX + startY * startY + startZ * startZ < radiusSquared)
     {
         f32 endX = segment[1].x - sphere.x;
@@ -1316,7 +1344,7 @@ u32 SphereVolume::SegmentCrossing(const Vector4* segment, s32 mode, f32* share)
         f32 endZ = segment[1].z - sphere.z;
         if (endX * endX + endY * endY + endZ * endZ < radiusSquared)
         {
-            result = 1;
+            result = Inside;
         }
     }
 
@@ -1327,9 +1355,9 @@ u32 SphereVolume::SegmentCrossing(const Vector4* segment, s32 mode, f32* share)
 u32 SphereVolume::SegmentFirstInside(const Vector4* segment, s32 mode, f32* share)
 {
     u32 result = CallVirtual<u32>(this, vtable, SlotSegmentCrossing, segment, mode, share);
-    if (result == 0)
+    if (result == Apart)
     {
-        return 0;
+        return Apart;
     }
 
     f32 x = segment[0].x - sphere.x;
@@ -1352,7 +1380,7 @@ s32 SphereVolume::TestVolume(Volume* other)
 {
     if (!SpheresMeet(this, other))
     {
-        return 0;
+        return Apart;
     }
 
     u32 type = TypeOf(other);
@@ -1367,7 +1395,7 @@ s32 SphereVolume::TestVolume(Volume* other)
         return TestSphereVolume(static_cast<SphereVolume*>(other));
     }
 
-    return -1;
+    return Untested;
 }
 
 // Retail bug: the copy's radius is the moved centre's w (1 for an affine matrix), its radius squared the right one
@@ -1408,10 +1436,10 @@ u32 SphereVolume::Contact(Volume* other, VolumeContact* contact)
     u32 type = TypeOf(other);
     if (type == VolumeTypeBox)
     {
-        u32 touches = CallVirtual<s32>(other, other->vtable, SlotTestVolume, this) != 0;
+        u32 touches = CallVirtual<s32>(other, other->vtable, SlotTestVolume, this) != Apart;
         if (touches)
         {
-            contact->kind = 1;
+            contact->kind = VolumeContact::BoxFace;
             BoxFacePlane(static_cast<BoundingVolume*>(other), &sphere, &contact->normal);
         }
 
@@ -1430,7 +1458,7 @@ u32 SphereVolume::Contact(Volume* other, VolumeContact* contact)
     u32 touches = x * x + y * y + z * z <= reach * reach;
     if (touches)
     {
-        contact->kind = 2;
+        contact->kind = VolumeContact::BetweenSpheres;
         contact->normal = {x, y, z, 1.0f};
     }
 
@@ -1450,10 +1478,10 @@ u32 SphereVolume::TestSphereVolume(const SphereVolume* other)
     f32 distance = __builtin_sqrtf(x * x + y * y + z * z);
     if (sphere.w + other->sphere.w < distance)
     {
-        return 0;
+        return Apart;
     }
 
-    return distance + other->sphere.w < sphere.w ? 1 : 2;
+    return distance + other->sphere.w < sphere.w ? Inside : Partly;
 }
 
 // Retail bug: the sphere is the moved end's copy, so its radius is the end's w (1 for an affine matrix)
@@ -1489,7 +1517,7 @@ CapsuleVolume* CapsuleVolume::ConstructCopy(CapsuleVolume* capsule, const Capsul
 void CapsuleVolume::Destroy(u32 flags)
 {
     vtable = g_VolumeVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1507,16 +1535,16 @@ u32 CapsuleVolume::TestPoint(const Vector4* point)
     f32 z = sphere.z - point->z;
     if (sphere.w * sphere.w < x * x + y * y + z * z)
     {
-        return 0;
+        return Apart;
     }
 
     f32 squared = PointSegmentDistanceSquared(&start, point);
     if (radiusSquared < squared)
     {
-        return 0;
+        return Apart;
     }
 
-    return squared < radiusSquared ? 1 : 2;
+    return squared < radiusSquared ? Inside : Partly;
 }
 
 u32 CapsuleVolume::TestSphere(f32 sphereRadius, const Vector4* centre)
@@ -1528,16 +1556,16 @@ u32 CapsuleVolume::TestSphere(f32 sphereRadius, const Vector4* centre)
     f32 bound = halfLength + reach;
     if (bound * bound < x * x + y * y + z * z)
     {
-        return 0;
+        return Apart;
     }
 
     f32 squared = PointSegmentDistanceSquared(&start, centre);
     if (reach * reach < squared)
     {
-        return 0;
+        return Apart;
     }
 
-    return __builtin_sqrtf(squared) + sphereRadius < radius ? 1 : 2;
+    return __builtin_sqrtf(squared) + sphereRadius < radius ? Inside : Partly;
 }
 
 u32 CapsuleVolume::TestSegment(const Vector4*, s32)
@@ -1564,7 +1592,7 @@ s32 CapsuleVolume::TestVolume(Volume* other)
 {
     if (!SpheresMeet(this, other))
     {
-        return 0;
+        return Apart;
     }
 
     u32 type = TypeOf(other);
@@ -1588,7 +1616,7 @@ s32 CapsuleVolume::TestVolume(Volume* other)
         return result;
     }
     default:
-        return -1;
+        return Untested;
     }
 }
 
@@ -1662,9 +1690,9 @@ u32 CapsuleVolume::Contact(Volume* other, VolumeContact* contact)
     {
         SphereVolume probe;
         SphereVolume::Construct(&probe, &at, radius);
-        if (CallVirtual<s32>(other, other->vtable, SlotTestVolume, &probe) != 0)
+        if (CallVirtual<s32>(other, other->vtable, SlotTestVolume, &probe) != Apart)
         {
-            contact->kind = 1;
+            contact->kind = VolumeContact::BoxFace;
             BoxFacePlane(static_cast<BoundingVolume*>(other), &at, &contact->normal);
             probe.Destroy(DestroyOnly);
             return 1;
@@ -1699,7 +1727,7 @@ u32 CapsuleVolume::TestCapsule(const CapsuleVolume* other)
     f32 reach = sphere.w + other->sphere.w;
     if (reach * reach < x * x + y * y + z * z)
     {
-        return 0;
+        return Apart;
     }
 
     u32 touches;
@@ -1713,9 +1741,9 @@ u32 CapsuleVolume::TestCapsule(const CapsuleVolume* other)
         touches = CallVirtual<u32>(other, other->vtable, SlotTestSphere, sphere.w, &sphere);
     }
 
-    if (touches == 0)
+    if (touches == Apart)
     {
-        return 0;
+        return Apart;
     }
 
     f32 radii = radius + other->radius;
@@ -1724,17 +1752,17 @@ u32 CapsuleVolume::TestCapsule(const CapsuleVolume* other)
     f32 squared = SegmentsDistanceSquared(&start, &other->start, &share, &otherShare);
     if (radii * radii < squared)
     {
-        return 0;
+        return Apart;
     }
 
     if (!(squared < radii * radii))
     {
-        return 2;
+        return Partly;
     }
 
     f32 toStart = PointSegmentDistanceSquared(&start, &other->start);
     f32 toEnd = PointSegmentDistanceSquared(&start, &other->end);
-    return __builtin_fmaxf(toEnd, toStart) < radiusSquared ? 1 : 2;
+    return __builtin_fmaxf(toEnd, toStart) < radiusSquared ? Inside : Partly;
 }
 
 u32 CapsuleVolume::TouchesCapsule(const CapsuleVolume* other)
@@ -1792,7 +1820,7 @@ u32 CapsuleVolume::TestSphereVolume(const SphereVolume* other)
 
 u32 CapsuleVolume::TestBox(const BoundingVolume*)
 {
-    return 2;
+    return Partly;
 }
 
 u32 HullRayCast(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* start, const Vector4* end, f32* share,
@@ -1883,16 +1911,16 @@ u32 HullRayCast(const CollisionHull* hull, const Matrix4x4* matrix, const Vector
 void ListIterator::BaseDestroy(u32 flags)
 {
     vtable = g_ListIteratorVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
 }
 
-void ChunkLoadingUtil::BaseDestroy(u32 flags)
+void WantPolicy::BaseDestroy(u32 flags)
 {
     vtable = g_ChunkLoadingUtilBaseVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1903,19 +1931,19 @@ void Sm2Reader::FilePath(u32 kind, String* file)
     StringAssign(file, path.string);
     switch (kind)
     {
-    case 0:
+    case FileSn:
         StringAppend(file, g_SnExtension);
         break;
-    case 2:
+    case FileLvl:
         StringAppend(file, g_LvlExtension);
         break;
-    case 3:
+    case FileLgt:
         StringAppend(file, g_LgtExtension);
         break;
-    case 4:
+    case FileSca:
         StringAppend(file, g_ScaExtension);
         break;
-    case 5:
+    case FileLk:
         StringAppend(file, g_LkExtension);
         break;
     default:
@@ -1929,5 +1957,5 @@ void InitChunkViews(s32, s32)
 
 void ChunkViewsStaticInit()
 {
-    InitChunkViews(1, 0xFFFF);
+    InitChunkViews(1, DefaultInitPriority);
 }

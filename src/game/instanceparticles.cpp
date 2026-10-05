@@ -9,6 +9,11 @@
 
 namespace
 {
+// No value to start an emitter with (it's made without one), and no emitter
+constexpr u32 NoValue = 0;
+// How far a scattered decal goes across the ground
+constexpr f32 ScatterSpread = Rounded(0.4);
+
 void NegateAxis(Vector4* axis)
 {
     axis->x = -axis->x;
@@ -48,25 +53,25 @@ void OrientParticleFrame(u32 turned, u32 axes, const Vector4* offset, Matrix4x4*
 
     switch (axes)
     {
-    case 1:
+    case AxesYNegated:
         NegateAxis(&y);
         MatrixFromAxes(frame, &x, &y, &z);
         break;
-    case 2:
+    case AxesYZSwapped:
         NegateAxis(&y);
         MatrixFromAxes(frame, &x, &z, &y);
         break;
-    case 3:
+    case AxesXNegatedYZSwapped:
         NegateAxis(&x);
         NegateAxis(&z);
         MatrixFromAxes(frame, &x, &z, &y);
         break;
-    case 4:
+    case AxesXYSwappedNegated:
         NegateAxis(&y);
         NegateAxis(&x);
         MatrixFromAxes(frame, &y, &x, &z);
         break;
-    case 5:
+    case AxesXYSwapped:
         MatrixFromAxes(frame, &y, &x, &z);
         break;
     default:
@@ -79,9 +84,8 @@ void OrientParticleFrame(u32 turned, u32 axes, const Vector4* offset, Matrix4x4*
 
 const Matrix4x4* ParticleFrame(InstanceContext* instance, u32 exitPoint)
 {
-    constexpr u32 NoExitPoint = 0x3F;
     const Matrix4x4* frame = nullptr;
-    if (exitPoint != NoExitPoint)
+    if (exitPoint != NoParticleExitPoint)
     {
         auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
         if (model->animator != nullptr)
@@ -107,7 +111,7 @@ const Matrix4x4* ParticleFrame(InstanceContext* instance, u32 exitPoint)
 
 s32 StartEmitter(InstanceContext* instance, s32 system, u32 value, const Vector4* position)
 {
-    s32 emitter = -1;
+    s32 emitter = NoEmitter;
     f32 at[3];
     if (position == nullptr)
     {
@@ -122,7 +126,7 @@ s32 StartEmitter(InstanceContext* instance, s32 system, u32 value, const Vector4
         at[2] = position->z;
     }
 
-    if (value == 0)
+    if (value == NoValue)
     {
         CreateParticleEmitter(at[0], at[1], at[2], &emitter, system + 1, instance->chunk);
     }
@@ -137,7 +141,7 @@ s32 StartEmitter(InstanceContext* instance, s32 system, u32 value, const Vector4
 s32 StartEmitterKeepingTranslation(InstanceContext* instance, s32 system, u32 value, const Vector4* position)
 {
     s32 emitter = StartEmitter(instance, system, value, position);
-    if (emitter != -1)
+    if (emitter != NoEmitter)
     {
         KeepEmitterTranslation(emitter);
     }
@@ -186,7 +190,7 @@ void ScatterDecal(InstanceContext* instance, u32, const Vector4* position, f32 c
     InitIdentityMatrix(&frame);
     *RowOf(&frame, 3) = *position;
     Vector4 jitter = {0.0f, 0.0f, 0.0f, 1.0f};
-    JitterVector(Rounded(0.4), 0.0f, 1.0f, 1.0f, &jitter);
+    JitterVector(ScatterSpread, 0.0f, 1.0f, 1.0f, &jitter);
     Vector4* at = RowOf(&frame, 3);
     at->x = at->x + jitter.x;
     at->y = at->y + jitter.y;

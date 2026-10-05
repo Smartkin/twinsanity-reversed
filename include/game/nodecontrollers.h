@@ -12,13 +12,22 @@ struct ObjectPlace;
 struct String;
 struct TimeClock;
 
-// What command 645 (CreateNodeController) gives an object node, the part it keeps 0x114 bytes in (ObjectNode::unknown114): its
+// What command 645 (CreateNodeController) gives an object node, the part it keeps 0x114 bytes in (ObjectNode::controller): its
 // kind (the command's), its node and its vtable (the base's D_002F03B0, whose functions do nothing): 1 the destructor, 2 started
 // once the node has it, 3 its frame (the node's update, with the clock), 4 the node restarted (the word it's given), 5 stopped
 // before it's destroyed or replaced
 class NodeController
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        StartSlot = 2,
+        FrameSlot = 3,
+        RestartSlot = 4,
+        StopSlot = 5,
+    };
+
     enum Kind : u8
     {
         KindJointAim = 0,
@@ -28,7 +37,7 @@ public:
     };
 
     u8 kind;
-    u8 unknown01[3];
+    u8 unused01[3];
     ObjectNode* node;
     const GccVTableEntry* vtable;
 
@@ -41,60 +50,82 @@ public:
 };
 CHECK_SIZE(NodeController, 0xC);
 
+// A particle trail's bits (the AddTrail command's two words): its kind (TrailArguments::Kind), the frame's space (0 its exit
+// point's, 1 where its instance started, 2 its instance's place, else the origin), how the frame turns (turned and axes:
+// OrientParticleFrame), the sound's group (1 group 1, else 0), kind 1's interval and kind 3's spacing by the spacing (kind 1's
+// spacing over its speed, kind 3 at most once a spacing), the pitch scaled by the threshold, a camera shake, a volume, a pitch, a
+// random pitch and an offset given, the kind of the contact with the surface its node touches (0xFF none: its own system and
+// sounds), how many of its sound slots it picks from, the trails taken away together (ParticleTrails::RemoveKind: 1 a runner's,
+// which its end takes away when its node keeps its particles), the emitter given a gravity frame, how many decals it leaves and
+// no surface sound. Bits 4-9 and 14-17 are 1 when it's made, which nothing reads
+union TrailBits
+{
+    // The bits making a trail keeps as they were
+    static constexpr u64 KeptOnMaking = 0xF8000000E0000000;
+
+    u64 value;
+    struct
+    {
+        u64 kind : 4;
+        u64 unused4 : 6;
+        u64 space : 4;
+        u64 unused14 : 4;
+        u64 turned : 1;
+        u64 axes : 4;
+        u64 soundGroup : 3;
+        u64 bySpacing : 1;
+        u64 pitchByThreshold : 1;
+        u64 unused28 : 4;
+        u64 shakesCamera : 1;
+        u64 unused33 : 1;
+        u64 volumeGiven : 1;
+        u64 pitchGiven : 1;
+        u64 randomPitch : 1;
+        u64 offsetGiven : 1;
+        u64 contact : 8;
+        u64 soundCount : 4;
+        u64 removalKind : 3;
+        u64 gravityFrame : 1;
+        u64 decalCount : 4;
+        u64 noSurfaceSound : 1;
+        u64 unused59 : 5;
+    };
+};
+CHECK_SIZE(TrailBits, 8);
+
 // A particle trail's arguments (0x70 bytes, the AddTrail command's from 0x10 bytes in; game/particletrails.cpp steps it): its
 // bits, the surface its node has to touch for it to play (-1 any), the particle system it plays (0xFFFF none), the sound slots of
-// its node's object it plays one of, the message its instance is sent (0xFFFF none), the exit point it leaves from, what its kind
-// compares with (a squared speed or change of velocity, or a strength; the pitch's scale with bit 27), kind 1's interval and its
-// random extra, the camera shake's strengths along x and y (z the first's) or its strength, and its falloff, the sound's volume,
-// random pitch and pitch, the animation progress kind 7 starts again below, the strength kind 8 asks for (the sound grows louder
-// past it), the spacing (the interval of a speed of 1 with bit 26, kind 3's interval, the decals' spread) and the offset of its
-// frame
+// its node's object it plays one of (a ninth after them, and a count past 9 reads the halfwords after that), the message its
+// instance is sent (0xFFFF none), the exit point it leaves from, what its kind compares with (a squared speed or change of
+// velocity, or a strength; the pitch's scale with pitchByThreshold), kind 1's interval and its random extra, the camera shake's
+// strengths along x and y (z the first's) or its strength, and its falloff, the sound's volume, random pitch and pitch, the
+// animation progress kind 7 starts again below, the strength kind 8 asks for (the sound grows louder past it), the spacing (the
+// interval of a speed of 1 with bySpacing, kind 3's interval, the decals' spread) and the offset of its frame
 struct TrailArguments
 {
-    // 64 bits in retail. Its kind (bits 0-3): 0 it emits every step, 1 every interval (a random extra on top; with bit 26 its
-    // spacing over its speed, once it moves), 3 while it moves faster than a threshold (slower than the threshold's negative; at
-    // most once a spacing with bit 26), 4 while its velocity changed more than that, 5 the same of a vector the retail code never
-    // sets, 7 once when its instance's animation starts again (its surface's effects then too), 8 while its trails are stronger
-    // than a strength; never else. Then the frame's space (bits 10-13: 0 its exit point's, 1 where its instance started, 2 its
-    // instance's place, else the origin), how the frame turns (bit 18 and bits 19-22), the sound's group (bits 23-25: 1 group 1,
-    // else 0), a camera shake (32), a volume (34), a pitch (35), a random pitch (36) and an offset (37) given, the kind of the
-    // contact with the surface its node touches (bits 38-45, 0xFF none), how many sound slots (46-49), the emitter's gravity
-    // frame (53), how many decals (54-57) and no surface sound (58). Bits 4-9 and 14-17 are 1 when it's made
-    enum Bits : u64
+    // When it emits: every step, every interval (a random extra on top; by its spacing over its speed once it moves), while it
+    // moves faster than a threshold (slower than the threshold's negative), while its velocity changed more than that, the same
+    // of a vector the retail code never sets, once when its instance's animation starts again (its surface's effects then too),
+    // while its trails are stronger than a strength; never else
+    enum Kind : u32
     {
-        KindMask = 0xF,
-        SpaceShift = 10,
-        SpaceMask = 0xF,
-        TurnedShift = 18,
-        AxesShift = 19,
-        AxesMask = 0xF,
-        GroupMask = u64{0x7} << 23,
-        GroupOne = u64{0x1} << 23,
-        BySpacing = u64{0x1} << 26,
-        PitchByThreshold = u64{0x1} << 27,
-        ShakesCamera = u64{0x1} << 32,
-        VolumeGiven = u64{0x1} << 34,
-        PitchGiven = u64{0x1} << 35,
-        RandomPitch = u64{0x1} << 36,
-        OffsetGiven = u64{0x1} << 37,
-        ContactShift = 38,
-        ContactMask = 0xFF,
-        SoundsShift = 46,
-        SoundsMask = 0xF,
-        GravityFrame = u64{0x1} << 53,
-        DecalsShift = 54,
-        DecalsMask = 0xF,
-        NoSurfaceSound = u64{0x1} << 58,
+        KindAlways = 0,
+        KindTimed = 1,
+        KindFaster = 3,
+        KindChanging = 4,
+        KindUnsetVector = 5,
+        KindAnimation = 7,
+        KindStronger = 8,
     };
 
-    u64 bits;
+    TrailBits bits;
     s32 surface;
     u16 system;
     u16 sounds[8];
-    u16 unknown1E;
+    u16 extraSound;
     u16 message;
     u8 exitPoint;
-    u8 unknown23;
+    u8 unused23;
     f32 threshold;
     f32 interval;
     f32 randomInterval;
@@ -113,6 +144,7 @@ struct TrailArguments
     f32 offset[4];
 };
 CHECK_OFFSET(TrailArguments, system, 0xC);
+CHECK_OFFSET(TrailArguments, extraSound, 0x1E);
 CHECK_OFFSET(TrailArguments, message, 0x20);
 CHECK_OFFSET(TrailArguments, exitPoint, 0x22);
 CHECK_OFFSET(TrailArguments, threshold, 0x24);
@@ -140,7 +172,7 @@ struct AimedJoint
     f32 scale;
     f32 rate;
     u8 id;
-    u8 unknown11[0xF];
+    u8 unused11[0xF];
     Matrix4x4 matrix;
     Matrix4x4 inverse;
 };
@@ -162,11 +194,11 @@ public:
 
     ObjectNode* node;
     InstanceContext* targetInstance;
-    u8 unknown0C[4];
+    u8 unused0C[4];
     Vector4 targetPosition;
     // Not set by the constructor
     u32 target;
-    u8 unknown24[0xC];
+    u8 unused24[0xC];
     AimedJoint joints[3];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0011de20);
@@ -185,7 +217,7 @@ CHECK_SIZE(JointAimer, 0x210);
 class JointAimController : public NodeController
 {
 public:
-    u8 unknown0C[4];
+    u8 unused0C[4];
     JointAimer aimer;
 
     static JointAimController* Construct(JointAimController* controller, ObjectNode* node, u32 kind);
@@ -197,6 +229,23 @@ public:
 };
 CHECK_OFFSET(JointAimController, aimer, 0x10);
 CHECK_SIZE(JointAimController, 0x220);
+
+// A mask controller's flags: bit 0 (set when the character it found was Cortex, Nina or the Mecha-Bandicoot, cleared for Crash
+// and the tall one, kept without a character; nothing reads it), the mask is on the character, how many IDs command 655 gave,
+// hidden while the game is watched, and bit 7 (whether the character was visible when it was hidden; nothing reads it)
+union MaskControllerFlags
+{
+    u8 value;
+    struct
+    {
+        u8 unused0 : 1;
+        u8 onCharacter : 1;
+        u8 idCount : 4;
+        u8 hidden : 1;
+        u8 unused7 : 1;
+    };
+};
+CHECK_SIZE(MaskControllerFlags, 1);
 
 // Kind 1 (0x6E0 bytes, vtable D_002EE568): Aku Aku's mask, its node's instance, following the character its ID entry links while
 // that's the player, by the player's hit points: it comes down from above the character (2 or more), follows it (2), shines (3
@@ -216,37 +265,26 @@ public:
         StateInvincible = 5,
     };
 
-    // The character's int property 0 was 1, 3 or 5 when it started (4 keeps it; nothing here reads it), the mask is on the
-    // character, the IDs command 655 gave, hidden while the game is watched and the character was visible when it was hidden
-    // (nothing reads it)
-    enum Flags : u8
-    {
-        FlagCharacterProperty = 0x1,
-        FlagOnCharacter = 0x2,
-        IdCountShift = 2,
-        IdCountMask = 0xF,
-        FlagHidden = 0x40,
-        FlagCharacterVisible = 0x80,
-    };
-
+    // Its trails (the invincibility's are the first)
     static constexpr u32 TrailCount = 12;
+    static constexpr u32 InvincibilityTrails = 3;
 
     u8 state;
-    u8 flags;
-    u8 unknown0E[2];
+    MaskControllerFlags flags;
+    u8 unused0E[2];
     u16 ids[3];
-    u8 unknown16[0xA];
+    u8 unused16[0xA];
     TrailArguments boostTrail;
     TrailArguments unusedTrail;
     // Only the first three are used, the invincibility's (with their emitters' slots)
     TrailArguments trails[TrailCount];
     s32 trailSlots[4];
-    u8 unknown650[0x20];
+    u8 unused650[0x20];
     InstanceContext* character;
     // How far through arriving, leaving or flying onto the character it is, and the distance it does it over
     f32 progress;
     f32 distance;
-    u8 unknown67C[4];
+    u8 unused67C[4];
     // Where it follows the character in the character's space, where it leaves to and the character's exit point it flies to
     Vector4 offset;
     Vector4 leavePoint;
@@ -293,16 +331,16 @@ CHECK_SIZE(MaskController, 0x6E0);
 
 // Kind 2 (0x30 bytes, vtable D_002EE530): its instance moved along its node's first path to stay a distance (the offset's z) from
 // where the player is nearest the path, faster the further it is (by the pull), and steered toward the path's way (lowered by the
-// drop) at a rate; command 658 sets them. The offset's x and y and the word at 0x28 aren't used
+// drop) at a rate; command 658 sets them. The offset's x and y and the word at 0x28 (command 658 sets it, the constructor
+// doesn't) aren't used
 class SplineController : public NodeController
 {
 public:
-    u8 unknown0C[4];
+    u8 unused0C[4];
     Vector4 offset;
     f32 pull;
     f32 turnRate;
-    // Not set by the constructor
-    f32 unknown28;
+    f32 unused28;
     f32 drop;
 
     static SplineController* Construct(SplineController* spline, ObjectNode* node, u32 kind) RETAIL(FUN_00121eb8);
@@ -316,46 +354,54 @@ CHECK_OFFSET(SplineController, offset, 0x10);
 CHECK_OFFSET(SplineController, drop, 0x2C);
 CHECK_SIZE(SplineController, 0x30);
 
+// A skate controller's counts of the IDs and the sounds command 661 gave
+union SkateControllerCounts
+{
+    u8 value;
+    struct
+    {
+        u8 idCount : 4;
+        u8 soundCount : 4;
+    };
+};
+CHECK_SIZE(SkateControllerCounts, 1);
+
+// A skate controller's flags: paused while the game is watched, the player's skate grinds this frame and the last
+union SkateControllerFlags
+{
+    u8 value;
+    struct
+    {
+        u8 paused : 1;
+        u8 grinding : 1;
+        u8 wasGrinding : 1;
+        u8 unused3 : 5;
+    };
+};
+CHECK_SIZE(SkateControllerFlags, 1);
+
 // Kind 3 (0x3F0 bytes, vtable D_002EE4B8): the Humiliskate's trails and sounds (command 661 gives their IDs, the vehicle's code
 // uses them), which keeps whether the player's skate grinds this frame and the last; paused while the game is watched
 class SkateController : public NodeController
 {
 public:
-    // The IDs' and the sounds' counts command 661 gave
-    enum Counts : u8
-    {
-        IdCountMask = 0xF,
-        SoundCountShift = 4,
-        SoundCountMask = 0xF,
-    };
-
-    enum Flags : u8
-    {
-        FlagPaused = 0x1,
-        FlagGrinding = 0x2,
-        FlagWasGrinding = 0x4,
-    };
-
     static constexpr u32 TrailCount = 8;
 
-    u8 unknown0C;
-    u8 counts;
-    u8 flags;
-    u8 unknown0F;
+    u8 unused0C;
+    SkateControllerCounts counts;
+    SkateControllerFlags flags;
+    u8 unused0F;
     u16 ids[TrailCount];
     u16 sounds[13];
-    u8 unknown3A[6];
+    u8 unused3A[6];
     TrailArguments trails[TrailCount];
     s32 trailSlots[TrailCount];
     // The surface the character skates on (game/commandscharacters.cpp's SetCharacterSurface sets it): while there's none the
     // node's sound is stopped every frame
-    union
-    {
-        CollisionSurface* surface;
-        u32 unknown3E0;
-    };
-    u32 unknown3E4;
-    u8 unknown3E8[8];
+    CollisionSurface* surface;
+    // Cleared when it starts, never read
+    u32 unused3E4;
+    u8 unused3E8[8];
 
     static SkateController* Construct(SkateController* skate, ObjectNode* node, u32 kind) RETAIL(FUN_00121f40);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0011e108);
@@ -367,7 +413,7 @@ public:
 CHECK_OFFSET(SkateController, sounds, 0x20);
 CHECK_OFFSET(SkateController, trails, 0x40);
 CHECK_OFFSET(SkateController, trailSlots, 0x3C0);
-CHECK_OFFSET(SkateController, unknown3E0, 0x3E0);
+CHECK_OFFSET(SkateController, surface, 0x3E0);
 CHECK_SIZE(SkateController, 0x3F0);
 
 extern "C"

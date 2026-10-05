@@ -17,61 +17,36 @@ namespace
 constexpr char Region[] = "BE";
 constexpr char Product[] = "SLES-52568";
 
-using Platform::Saves::Operation;
+using StorageOperation = Platform::Saves::Operation;
 
-Operation OperationOf(u32 request)
+// The storage's operation of a request
+StorageOperation StorageOperationOf(u32 request)
 {
     switch (request)
     {
     case SaveDevice::RequestFormat:
-        return Operation::Format;
+        return StorageOperation::Format;
     case SaveDevice::RequestMeasureSave:
-        return Operation::MeasureSave;
+        return StorageOperation::MeasureSave;
     case SaveDevice::RequestCreateSave:
-        return Operation::CreateSave;
-    case SaveDevice::RequestWrite:
-    case SaveDevice::RequestWriteAgain:
-        return Operation::Write;
-    case SaveDevice::RequestRead:
-    case SaveDevice::RequestReadAgain:
-        return Operation::Read;
+        return StorageOperation::CreateSave;
+    case SaveDevice::RequestWriteFolder:
+    case SaveDevice::RequestWriteFile:
+        return StorageOperation::Write;
+    case SaveDevice::RequestReadFolder:
+    case SaveDevice::RequestReadFile:
+        return StorageOperation::Read;
     case SaveDevice::RequestFindFile:
-        return Operation::FindFile;
+        return StorageOperation::FindFile;
     default:
-        return Operation::None;
+        return StorageOperation::None;
     }
 }
 
-u32 Failed(SaveDevice* device)
-{
-    device->flags = (device->flags & ~SaveDevice::StateMask) | SaveDevice::StateFailed;
-    return 1;
-}
-
-// The device's operations (asked of it by the save code): the card checked for after the wait, the card formatted, the save
-// measured, the save made (then every file written), the folder's file written, the folder's file found and read, a file found, a
-// file (bits 4-7 of the flags) and the folder's file written, a file read, a wait while there's a card (10 to 12), a wait
-enum DeviceOperation : u32
-{
-    OperationCheck = 1,
-    OperationFormat = 2,
-    OperationMeasure = 3,
-    OperationCreate = 4,
-    OperationWriteFolder = 5,
-    OperationReadFolder = 6,
-    OperationFind = 7,
-    OperationWriteFile = 8,
-    OperationReadFile = 9,
-    OperationWaitCard = 10,
-    OperationWaitCard2 = 11,
-    OperationWaitCard3 = 12,
-    OperationWait = 13,
-};
-
-// The steps the operations go through (bits 20-25 of the flags): an operation's first step asks for its request, the next polls it
-// until it's done, the third ends the operation (back to 0, or 1 when it failed). Reads and writes go through the request files one
-// at a time, the reads after the file was found
-enum Step : u32
+// The steps the operations go through (the flags' step): an operation's first step asks for its request, the next polls it until
+// it's done, the third ends the operation (back to StepDone, or StepFailed when it failed). Reads and writes go through the request
+// files one at a time, the reads after the file was found
+enum OperationStep : u32
 {
     StepDone = 0,
     StepFailed = 1,
@@ -102,17 +77,18 @@ enum Step : u32
     StepReadFile = 26,
     StepReadingFile = 27,
     StepReadFileDone = 28,
-    StepWaitCard = 29,
-    StepWaitCard2 = 30,
-    StepWaitCard3 = 31,
-    StepWait = 32,
+    StepWaitFormatted = 29,
+    StepWaitSaved = 30,
+    StepWaitLoaded = 31,
+    StepWaitCancelled = 32,
 };
 
-// The device's vtable's update (4) and what it does after a step (5)
-constexpr u32 UpdateSlot = 4;
-constexpr u32 SteppedSlot = 5;
-// Bits 27-30 of the flags: how many request files
-constexpr u32 RequestCountMask = 0x78000000;
+// The state failed: the failed step
+u32 Failed(SaveDevice* device)
+{
+    device->flags.state = SaveDevice::StateFailed;
+    return StepFailed;
+}
 
 // The step's wait is over
 u32 Waited(const SaveDevice* device, const TimeClock* clock)
@@ -122,8 +98,8 @@ u32 Waited(const SaveDevice* device, const TimeClock* clock)
 
 void SetRequestFiles(SaveDevice* device, u32 count)
 {
-    device->current &= ~SaveDevice::OperationMask;
-    device->flags = (device->flags & ~RequestCountMask) | (count & 0xF) << SaveDevice::RequestCountShift;
+    device->requestFile.index = 0;
+    device->flags.requestCount = count;
 }
 
 u32 FileThrough(SaveFile* file, u32 slot)
@@ -138,23 +114,27 @@ void* FileData(const SaveFile* file)
 }
 }
 
-SaveDevice* SaveDevice::Construct(SaveDevice* device, u32 fileCount, SaveIconFiles* icons, SaveFile* mainFile, const char* name)
+SaveDevice* SaveDevice::Construct(SaveDevice* device, u32 fileCount, SaveIconFiles* icons, SaveFile* folder, const char* name)
 {
     device->icons = icons;
     device->wait = 0;
-    device->mainFile = mainFile;
+    device->folder = static_cast<FolderFile*>(folder);
     device->vtable = g_SaveDeviceVTable;
-    RetailLibc::MemorySet(device, 0, 8);
-    u32 bits = device->flags & 0xFC0FFFFF & ~0xF00u & 0xFFFF0FFF;
-    device->flags = ((bits | 0xE000) & ~FileCountMask) | (fileCount & FileCountMask);
-    device->files = static_cast<SaveFile**>(MemoryAllocate2(fileCount << 2));
+    // The flags and the request file index
+    RetailLibc::MemorySet(device, 0, sizeof(SaveDeviceFlags) + sizeof(RequestFileIndex));
+    device->flags.step = StepDone;
+    device->flags.running = OperationNone;
+    device->flags.asked = AskTaken;
+    device->flags.fileCount = fileCount;
+    device->files = static_cast<SaveFile**>(MemoryAllocate2(fileCount * sizeof(SaveFile*)));
     for (u32 i = 0; i < fileCount; i++)
     {
         device->files[i] = nullptr;
     }
 
-    u32 requestFiles = fileCount << 1;
-    device->requestFiles = static_cast<SaveFile**>(MemoryAllocate2(requestFiles << 2));
+    // The request files: room for the save's files twice over
+    u32 requestFiles = fileCount * 2;
+    device->requestFiles = static_cast<SaveFile**>(MemoryAllocate2(requestFiles * sizeof(SaveFile*)));
     for (u32 i = 0; i < requestFiles; i++)
     {
         device->requestFiles[i] = nullptr;
@@ -178,7 +158,7 @@ void SaveDevice::FileDate(SaveFile* file)
 {
     SaveDate& date = file->date;
     const u8* modified = fileEntry.modified;
-    date.bits |= 3;
+    date.bits |= SaveDate::Valid;
     date.day = modified[4];
     date.month = modified[5];
     date.year = static_cast<u16>(modified[6] | modified[7] << 8);
@@ -187,17 +167,17 @@ void SaveDevice::FileDate(SaveFile* file)
     date.minute = modified[2];
 }
 
-// Without a memory card the request failed. Not asked: the state
-u32 SaveDevice::Poll(u32 request, u32 next, u32 asked)
+// Without a memory card the request failed. Still waiting, or the request not over: the step it's at
+u32 SaveDevice::Poll(u32 request, u32 next, u32 waited)
 {
-    if (CallVirtual<u32>(this, vtable, 7) == 0)
+    if (CallVirtual<u32>(this, vtable, HasCardSlot) == 0)
     {
         return Failed(this);
     }
 
-    if (asked != 0)
+    if (waited != 0)
     {
-        Platform::Saves::Result result = Platform::Saves::GetResult(OperationOf(request));
+        Platform::Saves::Result result = Platform::Saves::GetResult(StorageOperationOf(request));
         if (result.succeeded == 0)
         {
             return Failed(this);
@@ -209,7 +189,7 @@ u32 SaveDevice::Poll(u32 request, u32 next, u32 asked)
         }
     }
 
-    return flags >> 20 & 0x3F;
+    return flags.step;
 }
 
 u32 SaveDevice::Request(u32 request, u32 next)
@@ -226,23 +206,23 @@ u32 SaveDevice::Request(u32 request, u32 next)
     case RequestCreateSave:
         started = Platform::Saves::CreateSave(port, slot, name.string);
         break;
-    case RequestWrite:
-    case RequestWriteAgain:
+    case RequestWriteFolder:
+    case RequestWriteFile:
     {
-        SaveFile* file = requestFiles[current & 0xF];
+        SaveFile* file = requestFiles[requestFile.index];
         started = Platform::Saves::Write(port, slot, name.string, file->name.string, FileData(file), file->size);
         break;
     }
-    case RequestRead:
-    case RequestReadAgain:
+    case RequestReadFolder:
+    case RequestReadFile:
     {
-        SaveFile* file = requestFiles[current & 0xF];
+        SaveFile* file = requestFiles[requestFile.index];
         started = Platform::Saves::Read(port, slot, name.string, file->name.string, FileData(file), file->size);
         break;
     }
     case RequestFindFile:
     {
-        SaveFile* file = requestFiles[current & 0xF];
+        SaveFile* file = requestFiles[requestFile.index];
         started = Platform::Saves::FindFile(port, slot, file->name.string, name.string, &fileSize, &fileEntry);
         break;
     }
@@ -258,7 +238,7 @@ void SaveDevice::Update()
     operation = Platform::Saves::Update(port, slot, &info);
 }
 
-void SaveDevice::Unknown5()
+void SaveDevice::Stepped()
 {
 }
 
@@ -278,7 +258,7 @@ void SaveDevice::Destroy(u32 destroyFlags)
         MemoryDeallocate_(requestFiles);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -301,7 +281,7 @@ u32 SaveDevice::SaveExists()
 
 u32 SaveDevice::SaveSize()
 {
-    return static_cast<u32>(saveKilobytes) << 10;
+    return static_cast<u32>(saveKilobytes) << KilobyteShift;
 }
 
 s32 SaveDevice::FileSize()
@@ -309,7 +289,7 @@ s32 SaveDevice::FileSize()
     return fileSize;
 }
 
-// The icons, the main file and the save's own files, a directory entry each
+// The icons, the folder's file and the save's own files, a directory entry each
 u32 SaveDevice::SaveSpace()
 {
     u32 kilobytes = 0;
@@ -326,9 +306,9 @@ u32 SaveDevice::SaveSpace()
         count++;
     }
 
-    kilobytes += Platform::Saves::FileKilobytes(mainFile->size);
+    kilobytes += Platform::Saves::FileKilobytes(folder->size);
     count++;
-    for (u32 i = 0; i < (flags & FileCountMask); i++)
+    for (u32 i = 0; i < flags.fileCount; i++)
     {
         kilobytes += Platform::Saves::FileKilobytes(files[i]->size);
         count++;
@@ -339,17 +319,17 @@ u32 SaveDevice::SaveSpace()
 
 u32 SaveDevice::FreeSpace()
 {
-    return static_cast<u32>(info.freeKilobytes) << 10;
+    return static_cast<u32>(info.freeKilobytes) << KilobyteShift;
 }
 
 u32 SaveDevice::Ask(u32 asked, u32 file)
 {
-    if ((flags >> RunningShift & OperationMask) == asked)
+    if (flags.running == asked)
     {
         return 1;
     }
 
-    flags = (flags & ~(OperationMask << AskedShift)) | (asked & OperationMask) << AskedShift;
+    flags.asked = asked;
     u32 step;
     switch (asked)
     {
@@ -375,46 +355,46 @@ u32 SaveDevice::Ask(u32 asked, u32 file)
         step = StepFind;
         break;
     case OperationWriteFile:
-        flags = (flags & ~(OperationMask << FileShift)) | (file & OperationMask) << FileShift;
+        flags.file = file;
         step = StepWriteFile;
         break;
     case OperationReadFile:
-        flags = (flags & ~(OperationMask << FileShift)) | (file & OperationMask) << FileShift;
+        flags.file = file;
         step = StepReadFile;
         break;
-    case OperationWaitCard:
-        step = StepWaitCard;
+    case OperationWaitFormatted:
+        step = StepWaitFormatted;
         break;
-    case OperationWaitCard2:
-        step = StepWaitCard2;
+    case OperationWaitSaved:
+        step = StepWaitSaved;
         break;
-    case OperationWaitCard3:
-        step = StepWaitCard3;
+    case OperationWaitLoaded:
+        step = StepWaitLoaded;
         break;
-    case OperationWait:
-        step = StepWait;
+    case OperationWaitCancelled:
+        step = StepWaitCancelled;
         break;
     default:
         return 0;
     }
 
-    flags = (flags & ~(StepMask << StepShift)) | step << StepShift;
+    flags.step = step;
     return 1;
 }
 
 u32 SaveDevice::Step(TimeClock* clock)
 {
-    u32 step = flags >> StepShift & StepMask;
+    u32 step = flags.step;
     CallVirtual<void>(this, vtable, UpdateSlot);
-    u32 asked = flags >> AskedShift & OperationMask;
+    u32 asked = flags.asked;
     if (asked < AskTaken)
     {
-        flags = (flags & ~(OperationMask << RunningShift)) | asked << RunningShift;
-        flags = (flags & ~(OperationMask << AskedShift)) | AskTaken << AskedShift;
+        flags.running = asked;
+        flags.asked = AskTaken;
         stepStart = clock->time;
     }
 
-    flags &= ~StateMask;
+    flags.state = StateOk;
     switch (step)
     {
     case StepFailed:
@@ -433,7 +413,7 @@ u32 SaveDevice::Step(TimeClock* clock)
     case StepChecking:
         if (Waited(this, clock) == 0)
         {
-            step = flags >> StepShift & StepMask;
+            step = flags.step;
         }
         else if (HasCard() == 0)
         {
@@ -458,34 +438,34 @@ u32 SaveDevice::Step(TimeClock* clock)
         step = PollThrough(RequestMeasureSave, StepMeasured, Waited(this, clock));
         break;
     case StepCreate:
-        static_cast<FolderFile*>(mainFile)->ClearSummaries();
+        folder->ClearSummaries();
         step = RequestThrough(RequestCreateSave, StepCreating);
         break;
     case StepCreating:
         step = PollThrough(RequestCreateSave, StepCreated, Waited(this, clock));
         break;
     case StepCreated:
-        flags |= WritesEverything;
+        flags.writesEverything = 1;
         step = StepWriteFolder;
         break;
     case StepWriteFolder:
         step = StartWritingFiles();
         break;
     case StepWritingFolder:
-        step = PollWrites(RequestWrite, StepWroteFolder, clock);
+        step = PollWrites(RequestWriteFolder, StepWroteFolder, clock);
         break;
     case StepWroteFolder:
-        flags &= ~WritesEverything;
+        flags.writesEverything = 0;
         step = StepDone;
         break;
     case StepReadFolder:
-        static_cast<FolderFile*>(mainFile)->ClearSummaries();
-        requestFiles[0] = mainFile;
+        folder->ClearSummaries();
+        requestFiles[0] = folder;
         SetRequestFiles(this, 1);
         step = RequestThrough(RequestFindFile, StepFinding);
         break;
     case StepReadingFolder:
-        step = PollReads(RequestRead, StepReadFolderDone, clock);
+        step = PollReads(RequestReadFolder, StepReadFolderDone, clock);
         break;
     case StepFind:
         step = RequestThrough(RequestFindFile, StepFinding);
@@ -495,9 +475,9 @@ u32 SaveDevice::Step(TimeClock* clock)
         break;
     case StepWriteFile:
     {
-        SaveFile* file = files[(flags & 0xFF) >> FileShift];
+        SaveFile* file = files[flags.file];
         requestFiles[0] = file;
-        requestFiles[1] = mainFile;
+        requestFiles[1] = folder;
         SetRequestFiles(this, 2);
         if (FileThrough(file, SaveFile::BeginWriteSlot) == 0)
         {
@@ -505,43 +485,43 @@ u32 SaveDevice::Step(TimeClock* clock)
         }
         else
         {
-            step = RequestThrough(RequestWriteAgain, StepWritingFile);
+            step = RequestThrough(RequestWriteFile, StepWritingFile);
         }
 
         break;
     }
     case StepWritingFile:
-        step = PollWrites(RequestWriteAgain, StepWroteFile, clock);
+        step = PollWrites(RequestWriteFile, StepWroteFile, clock);
         break;
     case StepReadFile:
-        requestFiles[0] = files[(flags & 0xFF) >> FileShift];
+        requestFiles[0] = files[flags.file];
         SetRequestFiles(this, 1);
         step = RequestThrough(RequestFindFile, StepFinding);
         break;
     case StepReadingFile:
-        step = PollReads(RequestReadAgain, StepReadFileDone, clock);
+        step = PollReads(RequestReadFile, StepReadFileDone, clock);
         break;
-    case StepWaitCard:
-    case StepWaitCard2:
-    case StepWaitCard3:
+    case StepWaitFormatted:
+    case StepWaitSaved:
+    case StepWaitLoaded:
         if (HasCard() == 0 || Waited(this, clock) != 0)
         {
             step = StepDone;
         }
 
         break;
-    case StepWait:
-        step = Waited(this, clock) != 0 ? StepDone : StepWait;
+    case StepWaitCancelled:
+        step = Waited(this, clock) != 0 ? StepDone : StepWaitCancelled;
         break;
     default:
         break;
     }
 
     CallVirtual<void>(this, vtable, SteppedSlot);
-    flags = (flags & ~(StepMask << StepShift)) | (step & StepMask) << StepShift;
+    flags.step = step;
     if (step == StepDone)
     {
-        flags &= ~(OperationMask << AskedShift);
+        flags.asked = OperationNone;
         return 0;
     }
 
@@ -558,22 +538,22 @@ u32 SaveDevice::PollReads(u32 request, u32 next, TimeClock* clock)
         return step;
     }
 
-    if (FileThrough(requestFiles[current & OperationMask], SaveFile::EndReadSlot) != 0)
+    if (FileThrough(requestFiles[requestFile.index], SaveFile::EndReadSlot) != 0)
     {
-        current = (current & ~OperationMask) | (((current & OperationMask) + 1) & OperationMask);
-        u32 index = current & OperationMask;
-        if (index >= (flags >> RequestCountShift & 0xF))
+        requestFile.index++;
+        u32 index = requestFile.index;
+        if (index >= flags.requestCount)
         {
             return step;
         }
 
         if (FileThrough(requestFiles[index], SaveFile::BeginReadSlot) != 0)
         {
-            return RequestThrough(request, flags >> StepShift & StepMask);
+            return RequestThrough(request, flags.step);
         }
     }
 
-    return SetState(StateFailed >> StateShift);
+    return SetState(StateFailed);
 }
 
 u32 SaveDevice::PollWrites(u32 request, u32 next, TimeClock* clock)
@@ -584,28 +564,28 @@ u32 SaveDevice::PollWrites(u32 request, u32 next, TimeClock* clock)
         return step;
     }
 
-    if (FileThrough(requestFiles[current & OperationMask], SaveFile::EndWriteSlot) != 0)
+    if (FileThrough(requestFiles[requestFile.index], SaveFile::EndWriteSlot) != 0)
     {
-        current = (current & ~OperationMask) | (((current & OperationMask) + 1) & OperationMask);
-        u32 index = current & OperationMask;
-        if (index >= (flags >> RequestCountShift & 0xF))
+        requestFile.index++;
+        u32 index = requestFile.index;
+        if (index >= flags.requestCount)
         {
             return step;
         }
 
         if (FileThrough(requestFiles[index], SaveFile::BeginWriteSlot) != 0)
         {
-            return RequestThrough(request, flags >> StepShift & StepMask);
+            return RequestThrough(request, flags.step);
         }
     }
 
-    return SetState(StateFailed >> StateShift);
+    return SetState(StateFailed);
 }
 
 // Once the file was found, a read of it begun and asked for (the read operations go on to their reading step, a find alone ends)
 u32 SaveDevice::PollFind(TimeClock* clock)
 {
-    u32 running = flags >> RunningShift & OperationMask;
+    u32 running = flags.running;
     u32 next = StepFound;
     if (running == OperationReadFolder)
     {
@@ -622,11 +602,12 @@ u32 SaveDevice::PollFind(TimeClock* clock)
         return step;
     }
 
-    if (FileThrough(requestFiles[current & OperationMask], SaveFile::BeginReadSlot) == 0)
+    if (FileThrough(requestFiles[requestFile.index], SaveFile::BeginReadSlot) == 0)
     {
         return Failed(this);
     }
 
+    // The read operation's request
     return RequestThrough(running, step);
 }
 
@@ -635,7 +616,7 @@ u32 SaveDevice::PollFind(TimeClock* clock)
 u32 SaveDevice::StartWritingFiles()
 {
     u32 count = 0;
-    if ((flags & WritesEverything) != 0)
+    if (flags.writesEverything != 0)
     {
         if (icons->iconSys != nullptr)
         {
@@ -648,16 +629,16 @@ u32 SaveDevice::StartWritingFiles()
             requestFiles[count++] = icons->files[i];
         }
 
-        for (u32 i = 0; i < (flags & FileCountMask); i++)
+        for (u32 i = 0; i < flags.fileCount; i++)
         {
             requestFiles[count++] = files[i];
         }
 
-        requestFiles[count++] = mainFile;
+        requestFiles[count++] = folder;
     }
     else
     {
-        requestFiles[0] = mainFile;
+        requestFiles[0] = folder;
         count = 1;
     }
 
@@ -667,13 +648,13 @@ u32 SaveDevice::StartWritingFiles()
         return Failed(this);
     }
 
-    return RequestThrough(RequestWrite, StepWritingFolder);
+    return RequestThrough(RequestWriteFolder, StepWritingFolder);
 }
 
 u32 SaveDevice::SetState(u32 state)
 {
-    flags = (flags & ~StateMask) | (state & 0xF) << StateShift;
-    return 1;
+    flags.state = state;
+    return StepFailed;
 }
 
 void SaveDevice::DestroyBase(u32 destroyFlags)
@@ -689,7 +670,7 @@ void SaveDevice::DestroyBase(u32 destroyFlags)
         MemoryDeallocate_(requestFiles);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -697,9 +678,9 @@ void SaveDevice::DestroyBase(u32 destroyFlags)
 
 extern "C"
 {
-    void SetIconLightDirection(u8* iconSys, s32 light, const Vector4* direction)
+    void SetIconLightDirection(u8* file, s32 light, const Vector4* direction)
     {
-        f32* to = reinterpret_cast<f32*>(iconSys + (light << 4) + 0x88);
+        f32* to = reinterpret_cast<IconSysFile*>(file)->iconSys.lightDirections[light];
         to[0] = direction->x;
         to[1] = direction->y;
         to[2] = direction->z;

@@ -1,30 +1,49 @@
 #include "game/commands.h"
 
+#include "game/camerarig.h"
 #include "game/math.h"
+#include "game/navigation.h"
+#include "game/nodecontrollers.h"
 #include "game/progress.h"
 #include "game/scripttokens.h"
 
-// The commands' development tools parsers (their vtables' slot 2): each token's kind names an argument, its value goes into the
+// The commands' development tools parsers (their vtables' slot 2): each token's tag names an argument, its value goes into the
 // command's field. The retail game never calls them
+
+namespace
+{
+// The kinds of nodes RequestFocus's keywords take or rule out (a bit per NodeKind): the players' are three
+constexpr u32 PlayerKinds = 1u << NodeControls | 1u << NodeCharacter | 1u << NodeFollow;
+
+// The AI positions' flags GetShortRoute's keywords rule out of its start and end (game/navigation.h's AiPositionFlags)
+constexpr u32 FlaggedPositions =
+    AiPositionFlags::Airborne | AiPositionFlags::AlwaysTaken | AiPositionFlags::NeverTaken | AiPositionFlags::ScriptFlag6;
+
+// Where the bottom text's centre keyword puts it
+constexpr f32 BottomCentreX = 0.5f;
+constexpr f32 BottomCentreY = Rounded(0.92);
+}
 
 void SetChiChiGrassCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // The setting's given bit (low half) and its value (high half): token 0 sets it, 1 clears it
+    // On sets it, Off clears it
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x210)
+        if (token->tag == TagSelectable)
         {
-            if (token->value == 0)
+            if (token->value == KeywordOn)
             {
-                value1 = (value1 | 0x1) | 0x10000;
+                setting.given = 1;
+                setting.on = 1;
             }
-            else if (token->value == 1)
+            else if (token->value == KeywordOff)
             {
-                value1 = (value1 | 0x1) & ~0x10000u;
+                setting.given = 1;
+                setting.on = 0;
             }
         }
 
@@ -32,7 +51,7 @@ void SetChiChiGrassCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void DUMMY_SetRayTestsCommand::ParseTokens(const ScriptTokenList* tokens)
+void NoOpSetRayTestsCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -40,22 +59,22 @@ void DUMMY_SetRayTestsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x211:
-            value1 = static_cast<s32>(token->value);
+        case TagWallRadius:
+            unused1 = static_cast<s32>(token->value);
             break;
-        case 0x212:
-            value2 = static_cast<s32>(token->value);
+        case TagCliffRadius:
+            unused2 = static_cast<s32>(token->value);
             break;
-        case 0x213:
-            value3 = static_cast<s32>(token->value);
+        case TagWallShy:
+            unused3 = static_cast<s32>(token->value);
             break;
-        case 0x214:
-            value4 = static_cast<s32>(token->value);
+        case TagCliffShy:
+            unused4 = static_cast<s32>(token->value);
             break;
-        case 0x57:
-            value5 = static_cast<s32>(token->value);
+        case TagYRaise:
+            unused5 = static_cast<s32>(token->value);
             break;
         default:
             break;
@@ -73,24 +92,24 @@ void BecomeStickyCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x20D:
-                    value1 |= 0x2000;
+                case KeywordGetCrates:
+                    kinds |= 1 << NodeCrate;
                     break;
-                case 0x20E:
-                    value1 |= 0x8000;
+                case KeywordGetCreatures:
+                    kinds |= 1 << NodeCreature;
                     break;
-                case 0x20F:
-                    value1 |= 0x1000;
+                case KeywordGetCharacters:
+                    kinds |= 1 << NodeCharacter;
                     break;
-                case 0x210:
-                    value1 |= 0x10000;
+                case KeywordGetFurniture:
+                    kinds |= 1 << NodeGenericObject;
                     break;
                 default:
                     break;
@@ -98,13 +117,13 @@ void BecomeStickyCommand::ParseTokens(const ScriptTokenList* tokens)
             }
 
             break;
-        case 0x23A:
-            value2 = token->Float();
+        case TagStickStrength:
+            strength = token->Float();
             break;
-        case 0x10:
-            objectId = (objectId & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagActor:
+            object.object = token->value;
             break;
-        case 0x6D:
+        case TagMessage:
             message = static_cast<s32>(token->value);
             break;
         default:
@@ -123,15 +142,15 @@ void BecomeNormalCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
-            if (token->value == 0)
+            if (token->value == KeywordOn)
             {
-                value1 |= 0x1;
+                staysSticky.on = 1;
             }
-            else if (token->value == 1)
+            else if (token->value == KeywordOff)
             {
-                value1 &= ~0x1u;
+                staysSticky.on = 0;
             }
         }
 
@@ -139,7 +158,7 @@ void BecomeNormalCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetObjectFlags587Command::ParseTokens(const ScriptTokenList* tokens)
+void SetAttacksTakenCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -147,22 +166,22 @@ void SetObjectFlags587Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x23C:
-            flags.raw = (flags.raw & ~0x3) | (TokenSetting(token) & 0x3);
+        case TagSpinAttack:
+            settings.spin = TokenSetting(token);
             break;
-        case 0x240:
-            flags.raw = (flags.raw & ~0xC0) | ((TokenSetting(token) & 0x3) << 6);
+        case TagUnused240:
+            settings.unused6 = TokenSetting(token);
             break;
-        case 0x23D:
-            flags.raw = (flags.raw & ~0xC) | ((TokenSetting(token) & 0x3) << 2);
+        case TagUnused23D:
+            settings.unused2 = TokenSetting(token);
             break;
-        case 0x23E:
-            flags.raw = (flags.raw & ~0x30) | ((TokenSetting(token) & 0x3) << 4);
+        case TagSlamAttack:
+            settings.slam = TokenSetting(token);
             break;
-        case 0x23F:
-            flags.raw = (flags.raw & ~0xC00) | ((TokenSetting(token) & 0x3) << 10);
+        case TagWalkIntoAttack:
+            settings.walkInto = TokenSetting(token);
             break;
         default:
             break;
@@ -172,7 +191,7 @@ void SetObjectFlags587Command::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetNode5FlagsCommand::ParseTokens(const ScriptTokenList* tokens)
+void SwitchBodyFlagsCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -180,19 +199,19 @@ void SetNode5FlagsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x220:
-            flags.raw = (flags.raw & ~0x3) | (TokenIsZero(token) ? 1 : 2);
+        case TagHitCrates:
+            switches.unused0 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x221:
-            flags.raw = (flags.raw & ~0xC) | ((TokenIsZero(token) ? 1 : 2) << 2);
+        case TagHitCreatures:
+            switches.unused2 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x222:
-            flags.raw = (flags.raw & ~0x30) | ((TokenIsZero(token) ? 1 : 2) << 4);
+        case TagHitFurniture:
+            switches.unused4 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x223:
-            flags.raw = (flags.raw & ~0xC0) | ((TokenIsZero(token) ? 1 : 2) << 6);
+        case TagHitPlayer:
+            switches.unused6 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
         default:
             break;
@@ -210,19 +229,19 @@ void CreateCrateContentsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x201:
-            value1 = (value1 & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagRedWumpaActor:
+            contents.first = token->value;
             break;
-        case 0x202:
-            value1 = (value1 & 0xFFFF) | (token->value << 16);
+        case TagHealthActor:
+            contents.second = token->value;
             break;
-        case 0x218:
-            value2 = (value2 & ~0xFu) | (token->value & 0xF);
+        case TagMinRedWumpa:
+            count.least = token->value;
             break;
-        case 0x219:
-            value2 = (value2 & ~0xF0u) | ((token->value & 0xF) << 4);
+        case TagMaxRedWumpa:
+            count.most = token->value;
             break;
         default:
             break;
@@ -232,7 +251,7 @@ void CreateCrateContentsCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void CounterPositionOp579Command::ParseTokens(const ScriptTokenList* tokens)
+void CountPlayerApproachCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -240,17 +259,17 @@ void CounterPositionOp579Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x1C:
-            counter &= ~0x20000u;
+        case TagTurn:
+            counter.unused17 = 0;
             break;
-        case 0x6E:
-            counter = (counter & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagCounter:
+            counter.counter = token->value;
             break;
-        case 0xB2:
-            counter = (counter & ~0xFFFFu) | (token->value & 0xFFFF);
-            counter |= 0x10000;
+        case TagAgentCounter:
+            counter.counter = token->value;
+            counter.agentCounter = 1;
             break;
         default:
             break;
@@ -268,15 +287,15 @@ void CharacterSoundProxyCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
-            if (token->value == 0x88)
+            if (token->value == KeywordPlayer)
             {
-                value1 |= 0x100;
+                choice.played = 1;
             }
             else
             {
-                value1 = (value1 & ~0xFFu) | (TokenCharacter(token->value) & 0xFF);
+                choice.character = TokenCharacter(token->value);
             }
         }
 
@@ -292,81 +311,81 @@ void DamageOriginatorCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
+        case TagNone:
             switch (token->value)
             {
-            case 0x21B:
-                contactWord |= 0x2;
+            case KeywordHitExplosion:
+                hitKinds |= HitExplosion;
                 break;
-            case 0x21C:
-                contactWord |= 0x4;
+            case KeywordHitFallingThrough:
+                hitKinds |= HitFallingThrough;
                 break;
-            case 0x21D:
-                contactWord |= 0x8;
+            case KeywordHitBurning:
+                hitKinds |= HitBurning;
                 break;
-            case 0x21E:
-                contactWord |= 0x10;
+            case KeywordHitIceteroid:
+                hitKinds |= HitIceteroid;
                 break;
-            case 0x21F:
-                contactWord |= 0x20;
+            case KeywordHitProjectile:
+                hitKinds |= HitProjectile;
                 break;
-            case 0x220:
-                contactWord |= 0x40;
+            case KeywordHitKind6:
+                hitKinds |= HitKind6;
                 break;
-            case 0x221:
-                contactWord |= 0x80;
+            case KeywordHitElectric:
+                hitKinds |= HitElectric;
                 break;
-            case 0x222:
-                contactWord |= 0x100;
+            case KeywordHitKind8:
+                hitKinds |= HitKind8;
                 break;
-            case 0x224:
-                contactWord |= 0x800;
+            case KeywordHitCrush:
+                hitKinds |= HitCrush;
                 break;
-            case 0x225:
-                contactWord |= 0x1000;
+            case KeywordHitKind12:
+                hitKinds |= HitKind12;
                 break;
-            case 0x226:
-                contactWord |= 0x2000;
+            case KeywordHitKind13:
+                hitKinds |= HitKind13;
                 break;
-            case 0x227:
-                contactWord |= 0x4000;
+            case KeywordHitKind14:
+                hitKinds |= HitKind14;
                 break;
-            case 0x228:
-                contactWord |= 0x8000;
+            case KeywordHitBite:
+                hitKinds |= HitBite;
                 break;
-            case 0x229:
-                contactWord |= 0x10000;
+            case KeywordHitSpin:
+                hitKinds |= HitSpin;
                 break;
-            case 0x22A:
-                contactWord |= 0x20000;
+            case KeywordHitKick:
+                hitKinds |= HitKick;
                 break;
-            case 0x236:
-                contactWord |= 0x1000000;
+            case KeywordHitKneeDrop:
+                hitKinds |= HitKneeDrop;
                 break;
-            case 0x22B:
-                contactWord |= 0x40000;
+            case KeywordHitKind18:
+                hitKinds |= HitKind18;
                 break;
-            case 0x22C:
-                contactWord |= 0x80000;
+            case KeywordHitHeavy:
+                hitKinds |= HitHeavy;
                 break;
-            case 0x22E:
-                contactWord |= 0x400000;
+            case KeywordHitKind22:
+                hitKinds |= HitKind22;
                 break;
-            case 0x22D:
-                contactWord |= 0x200000;
+            case KeywordHitKind21:
+                hitKinds |= HitKind21;
                 break;
-            case 0x22F:
-                contactWord |= 0x800000;
+            case KeywordHitSinking:
+                hitKinds |= HitSinking;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0x204:
-            ParseTaggedValueRecord(token, &hitPoints);
+        case TagHitPoints:
+            ParseTaggedValueRecord(token, &damage);
             break;
         default:
             break;
@@ -378,91 +397,90 @@ void DamageOriginatorCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void HitInstancesInBoxesCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // What commands.h has as the radius is the word the execution puts in its contact message (DamageOriginator's contactWord)
-    auto& contactWord = *reinterpret_cast<u32*>(&radius);
+    // The keywords of the kinds of hit are DamageOriginator's
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6D:
-            flags |= 0x4;
-            event = static_cast<u16>(token->value);
+        case TagMessage:
+            flags.sendsMessage = 1;
+            message.value = static_cast<u16>(token->value);
             break;
-        case 0xFFFF:
+        case TagNone:
             switch (token->value)
             {
-            case 0x206:
-                flags |= 0x1;
+            case KeywordNoCharacters:
+                flags.skipsCharacters = 1;
                 break;
-            case 0x245:
-                flags |= 0x2;
+            case KeywordOnlyCharacters:
+                flags.onlyCharacters = 1;
                 break;
-            case 0x21B:
-                contactWord |= 0x2;
+            case KeywordHitExplosion:
+                hitKinds |= HitExplosion;
                 break;
-            case 0x21C:
-                contactWord |= 0x4;
+            case KeywordHitFallingThrough:
+                hitKinds |= HitFallingThrough;
                 break;
-            case 0x21D:
-                contactWord |= 0x8;
+            case KeywordHitBurning:
+                hitKinds |= HitBurning;
                 break;
-            case 0x21E:
-                contactWord |= 0x10;
+            case KeywordHitIceteroid:
+                hitKinds |= HitIceteroid;
                 break;
-            case 0x21F:
-                contactWord |= 0x20;
+            case KeywordHitProjectile:
+                hitKinds |= HitProjectile;
                 break;
-            case 0x220:
-                contactWord |= 0x40;
+            case KeywordHitKind6:
+                hitKinds |= HitKind6;
                 break;
-            case 0x221:
-                contactWord |= 0x80;
+            case KeywordHitElectric:
+                hitKinds |= HitElectric;
                 break;
-            case 0x222:
-                contactWord |= 0x100;
+            case KeywordHitKind8:
+                hitKinds |= HitKind8;
                 break;
-            case 0x224:
-                contactWord |= 0x800;
+            case KeywordHitCrush:
+                hitKinds |= HitCrush;
                 break;
-            case 0x225:
-                contactWord |= 0x1000;
+            case KeywordHitKind12:
+                hitKinds |= HitKind12;
                 break;
-            case 0x226:
-                contactWord |= 0x2000;
+            case KeywordHitKind13:
+                hitKinds |= HitKind13;
                 break;
-            case 0x227:
-                contactWord |= 0x4000;
+            case KeywordHitKind14:
+                hitKinds |= HitKind14;
                 break;
-            case 0x228:
-                contactWord |= 0x8000;
+            case KeywordHitBite:
+                hitKinds |= HitBite;
                 break;
-            case 0x229:
-                contactWord |= 0x10000;
+            case KeywordHitSpin:
+                hitKinds |= HitSpin;
                 break;
-            case 0x22A:
-                contactWord |= 0x20000;
+            case KeywordHitKick:
+                hitKinds |= HitKick;
                 break;
-            case 0x236:
-                contactWord |= 0x1000000;
+            case KeywordHitKneeDrop:
+                hitKinds |= HitKneeDrop;
                 break;
-            case 0x22B:
-                contactWord |= 0x40000;
+            case KeywordHitKind18:
+                hitKinds |= HitKind18;
                 break;
-            case 0x22C:
-                contactWord |= 0x80000;
+            case KeywordHitHeavy:
+                hitKinds |= HitHeavy;
                 break;
-            case 0x22E:
-                contactWord |= 0x400000;
+            case KeywordHitKind22:
+                hitKinds |= HitKind22;
                 break;
-            case 0x22D:
-                contactWord |= 0x200000;
+            case KeywordHitKind21:
+                hitKinds |= HitKind21;
                 break;
-            case 0x22F:
-                contactWord |= 0x800000;
+            case KeywordHitSinking:
+                hitKinds |= HitSinking;
                 break;
             default:
                 break;
@@ -477,52 +495,51 @@ void HitInstancesInBoxesCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void CutsceneCameraOp583Command::ParseTokens(const ScriptTokenList* tokens)
+void SwingAroundCameraCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr f32 Pi = 0x1.921fb6p+1f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x0:
-            x = token->Float();
+        case TagX:
+            circleX = token->Float();
             break;
-        case 0x1:
-            y = static_cast<s32>(token->value);
+        case TagY:
+            circleY = token->Float();
             break;
-        case 0x2:
-            value2.raw = static_cast<s32>(token->value);
+        case TagZ:
+            depth = token->Float();
             break;
-        case 0x59:
-            value3.raw = static_cast<s32>(token->value);
+        case TagScale:
+            heightRate = token->Float();
             break;
-        case 0x65:
-            value4 = token->Float();
+        case TagRange:
+            heightLimit = token->Float();
             break;
-        case 0xD9:
-            value5 = token->Float();
+        case TagLowest:
+            nearDistanceSquared = token->Float();
             break;
-        case 0xDA:
-            value6 = token->Float();
+        case TagHighest:
+            farDistanceSquared = token->Float();
             break;
-        case 0x26:
-            value7.raw = static_cast<s32>(token->value);
+        case TagXPhase:
+            phaseOffset = token->Float();
             break;
-        case 0x27:
-            value8 = static_cast<s32>(token->value);
+        case TagYPhase:
+            unused2C = token->value;
             break;
-        case 0x20:
-            value9.raw = static_cast<s32>(token->value);
+        case TagXMagnitude:
+            unused30 = token->Float();
             break;
-        case 0x21:
-            value10 = static_cast<s32>(token->value);
+        case TagYMagnitude:
+            unused34 = token->value;
             break;
-        case 0xD8:
-            value11.raw = static_cast<s32>(token->value);
+        case TagSenseInterval:
+            phaseScale = token->Float();
             break;
         default:
             break;
@@ -531,155 +548,161 @@ void CutsceneCameraOp583Command::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    // Most of what the tokens gave is then replaced by random and fixed values (plain floats, the tagged ones too)
-    value7.raw = __builtin_bit_cast(s32, RandomSignedTimes(Pi));
-    value9.raw = __builtin_bit_cast(s32, RandomSignedTimes(0.25f) + 1.0f);
-    value11.raw = __builtin_bit_cast(s32, RandomSignedTimes(0.5f) + 0.5f);
-    value13.raw = __builtin_bit_cast(s32, RandomSignedTimes(1.0f) + 2.0f);
-    value5 = 150.0f;
-    value6 = 200.0f;
-    value3.raw = __builtin_bit_cast(s32, __builtin_bit_cast(f32, value3.raw) * 0.5f);
-    value15 = -2.0f;
-    value4 = 2.0f;
-    value2.raw = __builtin_bit_cast(s32, RandomSignedTimes(1.0f) + 5.5f);
+    // Most of what the tokens gave is then replaced by random and fixed values: the radius and the depth a unit either way of
+    // these, the squared distances, the height and its limit
+    constexpr f32 MiddleRadius = 2.0f;
+    constexpr f32 FixedNearDistanceSquared = 150.0f;
+    constexpr f32 FixedFarDistanceSquared = 200.0f;
+    constexpr f32 FixedHeight = -2.0f;
+    constexpr f32 FixedHeightLimit = 2.0f;
+    constexpr f32 MiddleDepth = 5.5f;
+    phaseOffset = RandomSignedTimes(Pi);
+    unused30 = RandomSignedTimes(0.25f) + 1.0f;
+    phaseScale = RandomSignedTimes(0.5f) + 0.5f;
+    radius = RandomSignedTimes(1.0f) + MiddleRadius;
+    nearDistanceSquared = FixedNearDistanceSquared;
+    farDistanceSquared = FixedFarDistanceSquared;
+    heightRate = heightRate * 0.5f;
+    height = FixedHeight;
+    heightLimit = FixedHeightLimit;
+    depth = RandomSignedTimes(1.0f) + MiddleDepth;
 }
 
 void CutsceneCameraMoveCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr f32 DegreesToAngle = 0x1.6C16C2p+7f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x76:
-            offset1 = token->Float();
+        case TagElevation:
+            pitch = token->Float();
             break;
-        case 0x10D:
-            offset2 = token->Float();
+        case TagExtraDistance:
+            extraDistance = token->Float();
             break;
-        case 0x114:
-            offset5 = token->Float();
+        case TagExtraHeight:
+            extraHeightShare = token->Float();
             break;
-        case 0x115:
-            offset6 = token->Float();
+        case TagCameraYaw:
+            yaw = token->Float();
             break;
-        case 0x241:
-            offset3 = token->Float();
+        case TagTargetSeconds:
+            targetSeconds = token->Float();
             break;
-        case 0x242:
-            offset4 = token->Float();
+        case TagCameraSeconds:
+            cameraSeconds = token->Float();
             break;
-        case 0x245:
-            unused8 = token->value;
+        case TagUnused245:
+            unused28 = token->value;
             break;
-        case 0x246:
-            unused9 = token->value;
+        case TagUnused246:
+            unused2C = token->value;
             break;
-        case 0x247:
-            flagsAndAngle.raw |= 0x200000;
-            value12 = static_cast<s32>(token->Float() * DegreesToAngle);
+        case TagFov:
+            framing.fovGiven = 1;
+            fov = static_cast<s32>(token->Float() * DegreesToAngle);
             break;
-        case 0x13B:
-            value10 = static_cast<s32>(token->value);
+        case TagTargetAlong:
+            targetAlong = token->Float();
             break;
-        case 0x13C:
-            value11 = static_cast<s32>(token->value);
+        case TagCameraAlong:
+            cameraAlong = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x253:
-                    flagsAndAngle.raw &= ~0x7;
+                case KeywordFixedYaw145:
+                    framing.fixedYaw = 0;
                     break;
-                case 0x254:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x7) | 0x1;
+                case KeywordFixedYaw15:
+                    framing.fixedYaw = 1;
                     break;
-                case 0x255:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x7) | 0x2;
+                case KeywordFixedYaw180:
+                    framing.fixedYaw = 2;
                     break;
-                case 0x256:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x7) | 0x3;
+                case KeywordFixedYaw90:
+                    framing.fixedYaw = 3;
                     break;
-                case 0x26A:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x7) | 0x4;
+                case KeywordNoFixedYaw:
+                    framing.fixedYaw = 4;
                     break;
-                case 0x257:
-                    flagsAndAngle.raw &= ~0x38;
+                case KeywordShot0:
+                    framing.shot = 0;
                     break;
-                case 0x258:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x8;
+                case KeywordShot1:
+                    framing.shot = 1;
                     break;
-                case 0x259:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x10;
+                case KeywordShot2:
+                    framing.shot = 2;
                     break;
-                case 0x25A:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x18;
+                case KeywordShot3:
+                    framing.shot = 3;
                     break;
-                case 0x25B:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x20;
+                case KeywordShot4:
+                    framing.shot = 4;
                     break;
-                case 0x25C:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x28;
+                case KeywordShot5:
+                    framing.shot = 5;
                     break;
-                case 0x25D:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x38) | 0x30;
+                case KeywordShot6:
+                    framing.shot = 6;
                     break;
-                case 0x25E:
-                    flagsAndAngle.raw |= 0x38;
+                case KeywordShot7:
+                    framing.shot = 7;
                     break;
-                case 0x25F:
-                    flagsAndAngle.raw &= ~0x1C0;
+                case KeywordNoFramingAngles:
+                    framing.angles = 0;
                     break;
-                case 0x260:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x1C0) | 0x40;
+                case KeywordFramingSixth:
+                    framing.angles = 1;
                     break;
-                case 0x261:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x1C0) | 0x80;
+                case KeywordFramingThird:
+                    framing.angles = 2;
                     break;
-                case 0x267:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x1C0) | 0xC0;
+                case KeywordFramingHalf:
+                    framing.angles = 3;
                     break;
-                case 0x264:
-                    flagsAndAngle.raw &= ~0xE00;
+                case KeywordAimFirst:
+                    framing.aim = AimFirst;
                     break;
-                case 0x265:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0xE00) | 0x200;
+                case KeywordAimSecond:
+                    framing.aim = AimSecond;
                     break;
-                case 0x266:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0xE00) | 0x400;
+                case KeywordAimBetween:
+                    framing.aim = AimBetween;
                     break;
-                case 0x268:
-                    flagsAndAngle.raw &= ~0x7000;
+                case KeywordDistanceFromFirst:
+                    framing.distanceFrom = AimFirst;
                     break;
-                case 0x269:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x7000) | 0x1000;
+                case KeywordDistanceFromSecond:
+                    framing.distanceFrom = AimSecond;
                     break;
-                case 0xF5:
-                    flagsAndAngle.raw |= 0x8000;
+                case KeywordArc:
+                    framing.arcs = 1;
                     break;
-                case 0x26B:
-                    flagsAndAngle.raw |= 0x10000;
+                case KeywordEaseIn:
+                    framing.easesIn = 1;
                     break;
-                case 0x26C:
-                    flagsAndAngle.raw |= 0x20000;
+                case KeywordEaseOut:
+                    framing.easesOut = 1;
                     break;
-                case 0xA8:
-                    flagsAndAngle.raw &= ~0x1C0000;
+                case KeywordEven:
+                    framing.curve = MoveEven;
                     break;
-                case 0xF6:
-                    flagsAndAngle.raw = (flagsAndAngle.raw & ~0x1C0000) | 0x40000;
+                case KeywordSmooth:
+                    framing.curve = MoveSmooth;
                     break;
-                case 0x26D:
-                    flagsAndAngle.raw |= 0x400000;
+                case KeywordUnused26D:
+                    framing.unused22 = 1;
                     break;
-                case 0x26E:
-                    flagsAndAngle.raw |= 0x800000;
+                case KeywordUnused26E:
+                    framing.unused23 = 1;
                     break;
                 default:
                     break;
@@ -703,36 +726,36 @@ void ToggleCutsceneCameraCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x14:
+        case TagBlendSeconds:
             blendTime = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x262:
-                    modeFlags &= ~0x7u;
+                case KeywordFollowCamera:
+                    mode.shown = ShowsFollowCamera;
                     break;
-                case 0x263:
-                    modeFlags = (modeFlags & ~0x7u) | 0x1;
+                case KeywordGameRig:
+                    mode.shown = ShowsGameRig;
                     break;
-                case 0xFA:
-                    modeFlags = (modeFlags & ~0x7u) | 0x2;
+                case KeywordCutsceneRig:
+                    mode.shown = ShowsCutsceneRig;
                     break;
-                case 0xEB:
-                    modeFlags |= 0x10;
+                case KeywordReset:
+                    mode.resets = 1;
                     break;
-                case 0xA8:
-                    modeFlags &= ~0xE0u;
+                case KeywordEven:
+                    mode.curve = CurveEven;
                     break;
-                case 0xF6:
-                    modeFlags = (modeFlags & ~0xE0u) | 0x40;
+                case KeywordSmooth:
+                    mode.curve = CurveSmooth;
                     break;
-                case 0xDB:
-                    modeFlags |= 0x8;
+                case KeywordPlaceFollowCamera:
+                    mode.placesFollowCamera = 1;
                     break;
                 default:
                     break;
@@ -756,36 +779,36 @@ void CutsceneCameraTargetsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x107:
-            targets = (targets & ~0xFFu) | (TokenDesignator(token, targets & 0xFF) & 0xFF);
+        case TagFirstTarget:
+            designators.first = TokenDesignator(token, designators.first);
             break;
-        case 0x108:
-            targets = (targets & ~0xFF00u) | ((TokenDesignator(token, (targets >> 8) & 0xFF) & 0xFF) << 8);
+        case TagSecondTarget:
+            designators.second = TokenDesignator(token, designators.second);
             break;
-        case 0x110:
-            targets = (targets & ~0xFF0000u) | ((TokenDesignator(token, (targets >> 16) & 0xFF) & 0xFF) << 16);
+        case TagFirstTargetPosition:
+            designators.firstPosition = TokenDesignator(token, designators.firstPosition);
             break;
-        case 0x111:
-            targets = (targets & ~0xFF000000u) | ((TokenDesignator(token, targets >> 24) & 0xFF) << 24);
+        case TagSecondTargetPosition:
+            designators.secondPosition = TokenDesignator(token, designators.secondPosition);
             break;
-        case 0x139:
-            keys = (keys & ~0xFFu) | (token->value & 0xFF);
+        case TagTargetPath:
+            paths.target = token->value;
             break;
-        case 0x13A:
-            keys = (keys & ~0xFF00u) | ((token->value & 0xFF) << 8);
+        case TagCameraPath:
+            paths.camera = token->value;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                if (token->value == 0xDC)
+                if (token->value == KeywordMirrored)
                 {
-                    flags |= 0x1;
+                    flags.mirrored = 1;
                 }
-                else if (token->value == 0xDD)
+                else if (token->value == KeywordNoFraming)
                 {
-                    flags &= ~0x2u;
+                    flags.frameWanted = 0;
                 }
             }
 
@@ -798,7 +821,7 @@ void CutsceneCameraTargetsCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetCameraNodeValueCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetFollowCameraRateCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -806,24 +829,24 @@ void SetCameraNodeValueCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                if (token->value == 0x115)
+                if (token->value == KeywordPositionRate)
                 {
-                    mode.raw &= ~0x7;
+                    which.kind = FollowCameraRate::PositionRate;
                 }
-                else if (token->value == 0x116)
+                else if (token->value == KeywordYawSpeed)
                 {
-                    mode.raw = (mode.raw & ~0x7) | 0x1;
+                    which.kind = FollowCameraRate::YawSpeed;
                 }
             }
 
             break;
-        case 0xD6:
-            value = token->Float();
+        case TagRate:
+            rate = token->Float();
             break;
         default:
             break;
@@ -841,24 +864,24 @@ void SetCameraNodeValuesCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x117:
-                    mode.raw &= ~0x7;
+                case KeywordCameraPitch:
+                    mode.which = ValuePitch;
                     break;
-                case 0x118:
-                    mode.raw = (mode.raw & ~0x7) | 0x1;
+                case KeywordCameraDistance:
+                    mode.which = ValueDistance;
                     break;
-                case 0x119:
-                    mode.raw = (mode.raw & ~0x7) | 0x2;
+                case KeywordCameraYaw:
+                    mode.which = ValueYaw;
                     break;
-                case 0x11A:
-                    mode.raw = (mode.raw & ~0x7) | 0x3;
+                case KeywordCameraFov:
+                    mode.which = ValueFov;
                     break;
                 default:
                     break;
@@ -866,11 +889,11 @@ void SetCameraNodeValuesCommand::ParseTokens(const ScriptTokenList* tokens)
             }
 
             break;
-        case 0xD9:
-            value1 = token->Float();
+        case TagLowest:
+            start = token->Float();
             break;
-        case 0xDA:
-            value2 = token->Float();
+        case TagHighest:
+            end = token->Float();
             break;
         default:
             break;
@@ -888,16 +911,16 @@ void SetPlayerModeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x203:
-            value1 = TokenPlayerMode(token->value);
+        case TagPlayerMode:
+            pairing = TokenPlayerMode(token->value);
             break;
-        case 0x249:
-            value2 = TokenCharacter(token->value);
+        case TagFirstCharacter:
+            character = TokenCharacter(token->value);
             break;
-        case 0x248:
-            value3 = TokenCharacter(token->value);
+        case TagSecondCharacter:
+            second = TokenCharacter(token->value);
             break;
         default:
             break;
@@ -909,47 +932,46 @@ void SetPlayerModeCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void FadeoutScreenCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // A colour that isn't 0 sets the flags' bit 3
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
+    // A colour that isn't 0 is set
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                if (token->value == 0x14)
+                if (token->value == KeywordIn)
                 {
-                    flags &= ~0x7u;
+                    flags.mode = ModeHide;
                 }
-                else if (token->value == 0x15)
+                else if (token->value == KeywordOut)
                 {
-                    flags = (flags & ~0x7u) | 0x1;
+                    flags.mode = ModeShow;
                 }
             }
 
             break;
-        case 0xC:
+        case TagDuration:
             duration = token->Float();
             break;
-        case 0x59:
-            unused3 = static_cast<s32>(token->value);
+        case TagScale:
+            unused14 = static_cast<s32>(token->value);
             break;
-        case 0xD:
+        case TagRed:
             red = token->Float();
-            flags |= (__builtin_fabsf(red) <= Epsilon ? 0u : 1u) << 3;
+            flags.setsColour |= __builtin_fabsf(red) <= Epsilon ? 0u : 1u;
             break;
-        case 0xE:
+        case TagGreen:
             green = token->Float();
-            flags |= (__builtin_fabsf(green) <= Epsilon ? 0u : 1u) << 3;
+            flags.setsColour |= __builtin_fabsf(green) <= Epsilon ? 0u : 1u;
             break;
-        case 0xF:
+        case TagBlue:
             blue = token->Float();
-            flags |= (__builtin_fabsf(blue) <= Epsilon ? 0u : 1u) << 3;
+            flags.setsColour |= __builtin_fabsf(blue) <= Epsilon ? 0u : 1u;
             break;
         default:
             break;
@@ -969,47 +991,47 @@ void DisplayBottomTextCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0xEC:
-                    value4 = 1.0f;
+                case KeywordRed:
+                    red = 1.0f;
                     break;
-                case 0xED:
-                    value5 = 1.0f;
+                case KeywordGreen:
+                    green = 1.0f;
                     break;
-                case 0xEE:
-                    value6 = 1.0f;
+                case KeywordBlue:
+                    blue = 1.0f;
                     break;
-                case 0xEF:
-                    value5 = 1.0f;
-                    value6 = 1.0f;
+                case KeywordCyan:
+                    green = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF0:
-                    value4 = 1.0f;
-                    value6 = 1.0f;
+                case KeywordMagenta:
+                    red = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF1:
-                    value4 = 1.0f;
-                    value5 = 1.0f;
+                case KeywordYellow:
+                    red = 1.0f;
+                    green = 1.0f;
                     break;
-                case 0xF2:
-                    value4 = 0.0f;
-                    value5 = 0.0f;
-                    value6 = 0.0f;
+                case KeywordBlack:
+                    red = 0.0f;
+                    green = 0.0f;
+                    blue = 0.0f;
                     break;
-                case 0xF3:
-                    value4 = 1.0f;
-                    value5 = 1.0f;
-                    value6 = 1.0f;
+                case KeywordWhite:
+                    red = 1.0f;
+                    green = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF4:
-                    x = 0.5f;
-                    y = Rounded(0.92);
+                case KeywordBottomCentre:
+                    x = BottomCentreX;
+                    y = BottomCentreY;
                     break;
                 default:
                     break;
@@ -1017,26 +1039,26 @@ void DisplayBottomTextCommand::ParseTokens(const ScriptTokenList* tokens)
             }
 
             break;
-        case 0xE9:
-            value1 = static_cast<s32>(token->value);
+        case TagText:
+            text = static_cast<s32>(token->value);
             break;
-        case 0x0:
+        case TagX:
             x = token->Float();
             break;
-        case 0x1:
+        case TagY:
             y = token->Float();
             break;
-        case 0xD:
-            value4 = token->Float();
+        case TagRed:
+            red = token->Float();
             break;
-        case 0xE:
-            value5 = token->Float();
+        case TagGreen:
+            green = token->Float();
             break;
-        case 0xF:
-            value6 = token->Float();
+        case TagBlue:
+            blue = token->Float();
             break;
-        case 0xC:
-            value7 = token->Float();
+        case TagDuration:
+            seconds = token->Float();
             break;
         default:
             break;
@@ -1056,47 +1078,47 @@ void DisplayBottomTextInstanceCommand::ParseTokens(const ScriptTokenList* tokens
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0xEC:
-                    value3 = 1.0f;
+                case KeywordRed:
+                    red = 1.0f;
                     break;
-                case 0xED:
-                    value4 = 1.0f;
+                case KeywordGreen:
+                    green = 1.0f;
                     break;
-                case 0xEE:
-                    value5 = 1.0f;
+                case KeywordBlue:
+                    blue = 1.0f;
                     break;
-                case 0xEF:
-                    value4 = 1.0f;
-                    value5 = 1.0f;
+                case KeywordCyan:
+                    green = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF0:
-                    value3 = 1.0f;
-                    value5 = 1.0f;
+                case KeywordMagenta:
+                    red = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF1:
-                    value3 = 1.0f;
-                    value4 = 1.0f;
+                case KeywordYellow:
+                    red = 1.0f;
+                    green = 1.0f;
                     break;
-                case 0xF2:
-                    value3 = 0.0f;
-                    value4 = 0.0f;
-                    value5 = 0.0f;
+                case KeywordBlack:
+                    red = 0.0f;
+                    green = 0.0f;
+                    blue = 0.0f;
                     break;
-                case 0xF3:
-                    value3 = 1.0f;
-                    value4 = 1.0f;
-                    value5 = 1.0f;
+                case KeywordWhite:
+                    red = 1.0f;
+                    green = 1.0f;
+                    blue = 1.0f;
                     break;
-                case 0xF4:
-                    x = 0.5f;
-                    y = Rounded(0.92);
+                case KeywordBottomCentre:
+                    x = BottomCentreX;
+                    y = BottomCentreY;
                     break;
                 default:
                     break;
@@ -1104,23 +1126,23 @@ void DisplayBottomTextInstanceCommand::ParseTokens(const ScriptTokenList* tokens
             }
 
             break;
-        case 0x0:
+        case TagX:
             x = token->Float();
             break;
-        case 0x1:
+        case TagY:
             y = token->Float();
             break;
-        case 0xD:
-            value3 = token->Float();
+        case TagRed:
+            red = token->Float();
             break;
-        case 0xE:
-            value4 = token->Float();
+        case TagGreen:
+            green = token->Float();
             break;
-        case 0xF:
-            value5 = token->Float();
+        case TagBlue:
+            blue = token->Float();
             break;
-        case 0xC:
-            value6 = token->Float();
+        case TagDuration:
+            seconds = token->Float();
             break;
         default:
             break;
@@ -1138,21 +1160,21 @@ void PlayMovieCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type != 1)
+        case TagNone:
+            if (token->type != TokenInt)
             {
                 break;
             }
 
             [[fallthrough]];
-        case 0xC3:
-            value.raw &= ~TaggedValue::TypeMask;
-            ParseTaggedValueRecord(token, &value);
+        case TagValue:
+            movie.type = TaggedValue::TypeInt;
+            ParseTaggedValueRecord(token, &movie);
             break;
-        case 0xC:
-            value2 = token->Float();
+        case TagDuration:
+            delay = token->Float();
             break;
         default:
             break;
@@ -1174,46 +1196,46 @@ void RaycastFocusPositionCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x3:
-                    mode.raw = 1;
+                case KeywordInitialSpace:
+                    space = ControlPacket::InitialSpace;
                     break;
-                case 0x4:
-                    mode.raw = 2;
+                case KeywordCurrentSpace:
+                    space = ControlPacket::CurrentSpace;
                     break;
-                case 0x5:
-                    mode.raw = 3;
+                case KeywordTargetSpace:
+                    space = ControlPacket::TargetSpace;
                     break;
                 default:
-                    mode.raw = 0;
+                    space = ControlPacket::WorldSpace;
                     break;
                 }
             }
 
             break;
-        case 0x3C:
+        case TagTolerance:
             distance = -token->Float();
             break;
-        case 0xCD:
-            size = static_cast<s32>(token->value);
+        case TagSize:
+            unused7 = static_cast<s32>(token->value);
             break;
-        case 0x0:
+        case TagX:
             vectorX = token->Float();
             break;
-        case 0x1:
+        case TagY:
             vectorY = token->Float();
             break;
-        case 0x2:
+        case TagZ:
             vectorZ = token->Float();
             break;
-        case 0x104:
-            target = (target & ~0xFFu) | (TokenDesignator(token, target & 0xFF) & 0xFF);
+        case TagFromDesignator:
+            target.designator = TokenDesignator(token, target.designator);
             break;
         default:
             break;
@@ -1225,7 +1247,7 @@ void RaycastFocusPositionCommand::ParseTokens(const ScriptTokenList* tokens)
     x = vectorX;
     y = vectorY;
     z = vectorZ;
-    value5 = 1.0f;
+    w = 1.0f;
 }
 
 void SetFocusPositionToNearestPointCommand::ParseTokens(const ScriptTokenList* tokens)
@@ -1236,14 +1258,14 @@ void SetFocusPositionToNearestPointCommand::ParseTokens(const ScriptTokenList* t
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xC6:
-            unused = token->Float();
-            target |= 0x100;
+        case TagAhead:
+            unused2 = token->Float();
+            target.unused8 = 1;
             break;
-        case 0x6:
-            target = (target & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            target.receiver = token->value;
             break;
         default:
             break;
@@ -1255,159 +1277,159 @@ void SetFocusPositionToNearestPointCommand::ParseTokens(const ScriptTokenList* t
 
 void RequestFocusCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
-    // The first keyword that sets bits of flags11 clears the ones it had
-    bool clearFlags11 = true;
+    // The first keyword that sets kinds clears the ones it had
+    bool clearKinds = true;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        targetFlags = (targetFlags & ~0xFF00u) | ((TokenDesignator(token, (targetFlags >> 8) & 0xFF) & 0xFF) << 8);
-        targetFlags = (targetFlags & ~0xFu) | (TokenSpace(token, targetFlags & 0xF) & 0xF);
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        target.designator = TokenDesignator(token, target.designator);
+        target.space = TokenSpace(token, target.space);
+        TokenVectorComponent(token, &offsetX);
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x47:
-                    targetFlags = (targetFlags & ~0x7800000u) | 0x800000;
+                case KeywordHoldSomething:
+                    target.attachment = Holding;
                     break;
-                case 0x48:
-                    targetFlags = (targetFlags & ~0x7800000u) | 0x1000000;
+                case KeywordHoldNothing:
+                    target.attachment = HoldingNothing;
                     break;
-                case 0x49:
-                    targetFlags = (targetFlags & ~0x7800000u) | 0x1800000;
+                case KeywordHeld:
+                    target.attachment = Hanging;
                     break;
-                case 0x4A:
-                    targetFlags = (targetFlags & ~0x7800000u) | 0x2000000;
+                case KeywordUnheld:
+                    target.attachment = HangingFromNothing;
                     break;
-                case 0x4C:
-                    targetFlags = (targetFlags & ~0x18000000u) | 0x8000000;
+                case KeywordBusy:
+                    target.busy = OnlyBusy;
                     break;
-                case 0x77:
-                    targetFlags |= 0x40000000;
+                case KeywordMakeAgentRef2:
+                    target.alsoAgentRef2 = 1;
                     break;
-                case 0x4B:
-                    targetFlags = (targetFlags & ~0x18000000u) | 0x10000000;
+                case KeywordIdle:
+                    target.busy = NoneBusy;
                     break;
-                case 0x4D:
-                    targetFlags |= 0x20000000;
+                case KeywordMakeBusy:
+                    target.marksBusy = 1;
                     break;
-                case 0xDE:
-                    flags10 |= 0x40;
+                case KeywordVisibleOnly:
+                    choice.visibleOnly = 1;
                     break;
-                case 0x39:
-                    targetFlags = (targetFlags & ~0x80000u) | 0x400000;
+                case KeywordRandomChoice:
+                    target.nearest = 0;
+                    target.random = 1;
                     break;
-                case 0x204:
-                    flags11 &= ~0x2000;
+                case KeywordNoCrates:
+                    kinds &= ~(1u << NodeCrate);
                     break;
-                case 0x205:
-                    flags11 &= ~0x8000;
+                case KeywordNoCreatures:
+                    kinds &= ~(1u << NodeCreature);
                     break;
-                case 0x207:
-                    flags11 &= ~0x10000;
+                case KeywordNoFurniture:
+                    kinds &= ~(1u << NodeGenericObject);
                     break;
-                case 0x208:
-                    flags11 &= ~0x401800;
+                case KeywordNoPlayers:
+                    kinds &= ~PlayerKinds;
                     break;
-                case 0x209:
-                    flags11 &= ~0x4000;
+                case KeywordNoPickups:
+                    kinds &= ~(1u << NodePickup);
                     break;
-                case 0x20A:
-                    flags11 &= ~0x80000;
+                case KeywordNoFoofie:
+                    kinds &= ~(1u << NodeGraple);
                     break;
-                case 0x20B:
-                    flags11 &= ~0x20000;
+                case KeywordNoChiChi:
+                    kinds &= ~(1u << NodeGrabbable);
                     break;
-                case 0x231:
-                    flags11 &= ~0x100000;
+                case KeywordNoProjectiles:
+                    kinds &= ~(1u << NodeProjectile);
                     break;
-                case 0x20C:
-                    flags11 &= ~0x40000;
+                case KeywordNoPayGates:
+                    kinds &= ~(1u << NodePayGate);
                     break;
-                case 0x20D:
-                    if (clearFlags11)
+                case KeywordGetCrates:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x2000;
+                    kinds |= 1u << NodeCrate;
                     break;
-                case 0x20E:
-                    if (clearFlags11)
+                case KeywordGetCreatures:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x8000;
+                    kinds |= 1u << NodeCreature;
                     break;
-                case 0x211:
-                    if (clearFlags11)
+                case KeywordGetPlayers:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x401800;
+                    kinds |= PlayerKinds;
                     break;
-                case 0x230:
-                    if (clearFlags11)
+                case KeywordGetProjectiles:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x100000;
+                    kinds |= 1u << NodeProjectile;
                     break;
-                case 0x212:
-                    if (clearFlags11)
+                case KeywordGetPickups:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x4000;
+                    kinds |= 1u << NodePickup;
                     break;
-                case 0x213:
-                    if (clearFlags11)
+                case KeywordGetFoofie:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x80000;
+                    kinds |= 1u << NodeGraple;
                     break;
-                case 0x214:
-                    if (clearFlags11)
+                case KeywordGetChiChi:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x20000;
+                    kinds |= 1u << NodeGrabbable;
                     break;
-                case 0x215:
-                    if (clearFlags11)
+                case KeywordGetPayGates:
+                    if (clearKinds)
                     {
-                        flags11 = 0;
-                        clearFlags11 = false;
+                        kinds = 0;
+                        clearKinds = false;
                     }
 
-                    flags11 |= 0x40000;
+                    kinds |= 1u << NodePayGate;
                     break;
-                case 0xB0:
-                    flags10 |= 0x4;
+                case KeywordIgnoreSignals:
+                    choice.ignoresSignals = 1;
                     break;
-                case 0x252:
-                    flags10 |= 0x20;
+                case KeywordKeepCurrent:
+                    choice.keepsCurrent = 1;
                     break;
                 default:
                     break;
@@ -1415,27 +1437,27 @@ void RequestFocusCommand::ParseTokens(const ScriptTokenList* tokens)
             }
 
             break;
-        case 0x7B:
+        case TagHoldingActor:
         {
-            // A list of halfwords from ids8 on, its count in flags10's bits 3-4 (past the second, into targetFlags)
-            u32 count = (flags10 >> 3) & 0x3;
-            flags10 = (flags10 & ~0x18u) | (((count + 1) & 0x3) << 3);
-            reinterpret_cast<u16*>(&ids8)[count] = static_cast<u16>(token->value);
-            targetFlags = (targetFlags & ~0x7800000u) | 0x2800000;
+            // The hanging instances' objects (past the second, into the target word)
+            u32 count = choice.hangingCount;
+            choice.hangingCount = count + 1;
+            objects[HangingObjects + count] = token->value;
+            target.attachment = HangingFromObjects;
             break;
         }
-        case 0x6:
-            targetFlags = (targetFlags & ~0xF0u) | ((token->value & 0xF) << 4);
+        case TagAgent:
+            target.receiver = token->value;
             break;
-        case 0x10:
+        case TagActor:
         {
-            // A list of halfwords from ids6 on, its count in targetFlags' bits 16-18 (past the sixth, into targetFlags)
-            u32 count = (targetFlags >> 16) & 0x7;
-            targetFlags = (targetFlags & ~0x70000u) | (((count + 1) & 0x7) << 16);
-            reinterpret_cast<u16*>(&ids6)[count] = static_cast<u16>(token->value);
+            // The objects (past the sixth, into the target word)
+            u32 count = target.objectCount;
+            target.objectCount = count + 1;
+            objects[count] = token->value;
             break;
         }
-        case 0x65:
+        case TagRange:
             radius = token->Float();
             break;
         default:
@@ -1445,9 +1467,9 @@ void RequestFocusCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!(__builtin_fabsf(x) <= Epsilon && __builtin_fabsf(y) <= Epsilon && __builtin_fabsf(z) <= Epsilon))
+    if (!(__builtin_fabsf(offsetX) <= Epsilon && __builtin_fabsf(offsetY) <= Epsilon && __builtin_fabsf(offsetZ) <= Epsilon))
     {
-        targetFlags |= 0x100000;
+        target.offsetGiven = 1;
     }
 }
 
@@ -1459,22 +1481,22 @@ void SetFocusPropertiesCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x207:
-            value1.raw = (value1.raw & ~0x3) | (TokenSetting(token) & 0x3);
+        case TagActive:
+            properties.awake = TokenSetting(token);
             break;
-        case 0x208:
-            value1.raw = (value1.raw & ~0xC) | ((TokenSetting(token) & 0x3) << 2);
+        case TagVisible:
+            properties.visible = TokenSetting(token);
             break;
-        case 0x20B:
-            value1.raw = (value1.raw & ~0x30) | ((TokenSetting(token) & 0x3) << 4);
+        case TagCollidable:
+            properties.collisionActive = TokenSetting(token);
             break;
-        case 0x20A:
-            value1.raw = (value1.raw & ~0xC0) | ((TokenSetting(token) & 0x3) << 6);
+        case TagTangible:
+            properties.receivesTriggerSignals = TokenSetting(token);
             break;
-        case 0x216:
-            value1.raw = (value1.raw & ~0x300) | ((TokenSetting(token) & 0x3) << 8);
+        case TagHarmful:
+            properties.canDamageCharacter = TokenSetting(token);
             break;
         default:
             break;
@@ -1492,75 +1514,75 @@ void CreateHeadTrackingCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
+        case TagNone:
             switch (token->value)
             {
-            case 0xE1:
-                animations |= 0x1000000;
+            case KeywordSteerInstance:
+                settings.bits.steering |= HeadTrackingSettings::SteersInstance;
                 break;
-            case 0xE2:
-                animations |= 0x2000000;
+            case KeywordSteerFacing:
+                settings.bits.steering |= HeadTrackingSettings::SteersFacing;
                 break;
-            case 0xE3:
-                animations |= 0x4000000;
+            case KeywordIgnoreNoises:
+                settings.bits.ignoresNoises = 1;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0x65:
-            range = token->Float() * token->Float();
+        case TagRange:
+            settings.range = token->Float() * token->Float();
             break;
-        case 0xB9:
-            value0 = static_cast<s32>(token->value);
+        case TagUnusedB9:
+            settings.unused00 = token->value;
             break;
-        case 0xB8:
-            value2 = token->Float();
+        case TagTrackingStiffness:
+            settings.stiffness = token->Float();
             break;
-        case 0xB7:
-            SetHeadTrackingAngle3(&value0, token->Float());
+        case TagYawLimit:
+            SetHeadTrackingYawLimit(&settings, token->Float());
             break;
-        case 0xB5:
-            SetHeadTrackingAngle1(&value0, token->Float());
+        case TagNegativePitchLimit:
+            SetHeadTrackingNegativePitch(&settings, token->Float());
             break;
-        case 0xB6:
-            SetHeadTrackingAngle2(&value0, token->Float());
+        case TagPositivePitchLimit:
+            SetHeadTrackingPositivePitch(&settings, token->Float());
             break;
-        case 0xBA:
-            value9 = static_cast<s32>(token->value);
+        case TagUnusedBA:
+            settings.unused24[0] = token->value;
             break;
-        case 0xBB:
-            value10 = static_cast<s32>(token->value);
+        case TagUnusedBB:
+            settings.unused24[1] = token->value;
             break;
-        case 0xBC:
-            value11 = static_cast<s32>(token->value);
+        case TagUnusedBC:
+            settings.unused24[2] = token->value;
             break;
-        case 0xBD:
-            value12 = static_cast<s32>(token->value);
+        case TagUnusedBD:
+            settings.unused24[3] = token->value;
             break;
-        case 0xBE:
-            value13 = static_cast<s32>(token->value);
+        case TagUnusedBE:
+            settings.unused24[4] = token->value;
             break;
-        case 0xBF:
-            value14 = static_cast<s32>(token->value);
+        case TagUnusedBF:
+            settings.unused24[5] = token->value;
             break;
-        case 0xB3:
-            animations = (animations & ~0xFFu) | (token->value & 0xFF);
+        case TagHeadJoint:
+            settings.bits.joint = token->value;
             break;
-        case 0xB4:
-            animations = (animations & ~0xFF00u) | ((token->value & 0xFF) << 8);
+        case TagSecondHeadJoint:
+            settings.bits.secondJoint = token->value;
             break;
-        case 0x12:
-            animations = (animations & ~0xFF0000u) | ((token->value & 0xFF) << 16);
+        case TagExitPoint:
+            settings.bits.exitPoint = token->value;
             break;
-        case 0x3F:
-            speed = token->Float();
+        case TagDamping:
+            settings.damping = token->Float();
             break;
-        case 0x9B:
-            flags = token->value * token->value;
+        case TagLodBoost:
+            settings.unseenLimit = token->value * token->value;
             break;
         default:
             break;
@@ -1572,35 +1594,36 @@ void CreateHeadTrackingCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void SetKeyNearestPlayerCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr f32 Epsilon = Rounded(1e-05);
+    // A distance of this or less is taken for none
+    constexpr f32 LeastDistance = Rounded(1e-05);
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x3C:
-            if (Epsilon < token->Float())
+        case TagTolerance:
+            if (LeastDistance < token->Float())
             {
-                value1 = token->Float() * token->Float();
+                nearDistanceSquared = token->Float() * token->Float();
             }
 
             break;
-        case 0x11B:
-            value2 = token->Float();
+        case TagLeadSeconds:
+            leadSeconds = token->Float();
             break;
-        case 0x5A:
-            value3 = (value3 & ~0xFF00u) | (((token->value - 1) & 0xFF) << 8);
+        case TagMinKey:
+            keys.first = token->value - 1;
             break;
-        case 0x5B:
-            value3 = (value3 & ~0xFF0000u) | (((token->value - 1) & 0xFF) << 16);
+        case TagMaxKey:
+            keys.last = token->value - 1;
             break;
-        case 0xFFFF:
-            if (token->value == 0x252)
+        case TagNone:
+            if (token->value == KeywordKeepCurrent)
             {
-                value3 = (value3 & ~0xFFu) | 0x1;
+                keys.takesCurrent = 1;
             }
 
             break;
@@ -1614,137 +1637,155 @@ void SetKeyNearestPlayerCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void GetShortRouteCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        targetFlags = (targetFlags & ~0xF0000000u) | ((TokenSpace(token, targetFlags >> 28) & 0xF) << 28);
-        targetFlags = (targetFlags & ~0xFF00u) | ((TokenDesignator(token, (targetFlags >> 8) & 0xFF) & 0xFF) << 8);
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        target.space = TokenSpace(token, target.space);
+        target.designator = TokenDesignator(token, target.designator);
+        TokenVectorComponent(token, &offsetX);
+        switch (token->tag)
         {
-        case 0xFFFF:
+        case TagNone:
             switch (token->value)
             {
-            case 0x21A:
-                flags7 &= ~0x2u;
-                targetFlags &= ~0x4000000u;
+            case KeywordNoPathFlag6:
+                options.takesPathFlag6 = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x239:
-                flags7 &= ~0x10u;
-                targetFlags &= ~0x4000000u;
+            case KeywordNoPlainPaths:
+                options.takesPlainPaths = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x23A:
-                targetFlags &= ~(0x20000u | 0x4000000u);
+            case KeywordNoJumps:
+                target.takesJumps = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x218:
-                targetFlags &= ~(0x40000u | 0x4000000u);
-                if ((targetFlags & 0x80000) == 0)
+            case KeywordNoLongJumps:
+                target.takesLongJumps = 0;
+                target.distanceOnly = 0;
+                if (!target.takesHighJumps)
                 {
-                    targetFlags &= ~0x20000u;
+                    target.takesJumps = 0;
                 }
 
                 break;
-            case 0x219:
-                targetFlags &= ~(0x80000u | 0x4000000u);
-                if ((targetFlags & 0x40000) == 0)
+            case KeywordNoHighJumps:
+                target.takesHighJumps = 0;
+                target.distanceOnly = 0;
+                if (!target.takesLongJumps)
                 {
-                    targetFlags &= ~0x20000u;
+                    target.takesJumps = 0;
                 }
 
                 break;
-            case 0x238:
-                flags7 &= ~0x8u;
-                targetFlags &= ~0x4000000u;
+            case KeywordNoPathFlag8:
+                options.takesPathFlag8 = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x237:
-                flags7 &= ~0x4u;
-                targetFlags &= ~0x4000000u;
+            case KeywordNoPathFlag7:
+                options.takesPathFlag7 = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x217:
-                targetFlags &= ~(0x100000u | 0x4000000u);
+            case KeywordNoFlights:
+                target.takesFlights = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x23B:
-                flags7 &= ~(0x4u | 0x8u | 0x10u);
-                targetFlags &= ~(0x20000u | 0x100000u | 0x4000000u);
+            case KeywordOnlyPathFlag6:
+                options.takesPathFlag7 = 0;
+                options.takesPathFlag8 = 0;
+                options.takesPlainPaths = 0;
+                target.takesJumps = 0;
+                target.takesFlights = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x23D:
-                flags7 &= ~(0x2u | 0x4u | 0x8u);
-                targetFlags &= ~(0x100000u | 0x4000000u);
+            case KeywordPlainAndJumpsOnly:
+                options.takesPathFlag6 = 0;
+                options.takesPathFlag7 = 0;
+                options.takesPathFlag8 = 0;
+                target.takesFlights = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x23C:
-                flags7 &= ~(0x2u | 0x4u | 0x8u | 0x10u);
-                targetFlags &= ~(0x20000u | 0x4000000u);
+            case KeywordOnlyFlights:
+                options.takesPathFlag6 = 0;
+                options.takesPathFlag7 = 0;
+                options.takesPathFlag8 = 0;
+                options.takesPlainPaths = 0;
+                target.takesJumps = 0;
+                target.distanceOnly = 0;
                 break;
-            case 0x23E:
-                unknown14 |= 0x56;
+            case KeywordEndUnflagged:
+                positionFlags.endRuledOut |= FlaggedPositions;
                 break;
-            case 0x23F:
-                keyAndObject |= 0x40000;
+            case KeywordEndAlwaysTaken:
+                endFlags.endRequired |= AiPositionFlags::AlwaysTaken;
                 break;
-            case 0x240:
-                keyAndObject |= 0x20000;
+            case KeywordEndAirborne:
+                endFlags.endRequired |= AiPositionFlags::Airborne;
                 break;
-            case 0x241:
-                keyAndObject |= 0x100000;
+            case KeywordEndFlag4:
+                endFlags.endRequired |= AiPositionFlags::NeverTaken;
                 break;
-            case 0x242:
-                keyAndObject |= 0x400000;
+            case KeywordEndFlag6:
+                endFlags.endRequired |= AiPositionFlags::ScriptFlag6;
                 break;
-            case 0x24D:
-                unknown15 |= 0x56;
+            case KeywordStartUnflagged:
+                startFlags.startRuledOut |= FlaggedPositions;
                 break;
-            case 0x24E:
-                unknown14 |= 0x40000;
+            case KeywordStartAlwaysTaken:
+                positionFlags.startRequired |= AiPositionFlags::AlwaysTaken;
                 break;
-            case 0x24F:
-                unknown14 |= 0x20000;
+            case KeywordStartAirborne:
+                positionFlags.startRequired |= AiPositionFlags::Airborne;
                 break;
-            case 0x250:
-                unknown14 |= 0x100000;
+            case KeywordStartFlag4:
+                positionFlags.startRequired |= AiPositionFlags::NeverTaken;
                 break;
-            case 0x251:
-                unknown14 |= 0x400000;
+            case KeywordStartFlag6:
+                positionFlags.startRequired |= AiPositionFlags::ScriptFlag6;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0x6:
-            targetFlags = (targetFlags & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            target.receiver = token->value;
             break;
-        case 0xA6:
-            ParseTaggedValueRecord(token, &value8);
-            targetFlags = (targetFlags | 0x1000000) & ~0x4000000u;
+        case TagAvoidFocus:
+            ParseTaggedValueRecord(token, &avoidFocusWeight);
+            target.avoidsFocus = 1;
+            target.distanceOnly = 0;
             break;
-        case 0xA7:
-            ParseTaggedValueRecord(token, &value9);
-            targetFlags = (targetFlags | 0x800000) & ~0x4000000u;
+        case TagNearFocus:
+            ParseTaggedValueRecord(token, &nearFocusWeight);
+            target.nearFocus = 1;
+            target.distanceOnly = 0;
             break;
-        case 0x63:
-            ParseTaggedValueRecord(token, &value10);
-            targetFlags = (targetFlags | 0x400000) & ~0x4000000u;
+        case TagSharpTurn:
+            ParseTaggedValueRecord(token, &weight);
+            target.givesWeight = 1;
+            target.distanceOnly = 0;
             break;
-        case 0xAD:
-            ParseTaggedValueRecord(token, &value11);
-            targetFlags = (targetFlags | 0x8000000) & ~0x4000000u;
+        case TagPositionCostWeight:
+            ParseTaggedValueRecord(token, &positionCostWeight);
+            target.positionCosts = 1;
+            target.distanceOnly = 0;
             break;
-        case 0xC6:
-            ParseTaggedValueRecord(token, &value12);
-            flags7 |= 0x1;
+        case TagAhead:
+            ParseTaggedValueRecord(token, &ahead);
+            options.startsAhead = 1;
             break;
-        case 0xF7:
-            value16 = token->Float();
+        case TagStartRange:
+            startRange = token->Float();
             break;
-        case 0xF8:
-            value17 = token->Float();
+        case TagEndRange:
+            endRange = token->Float();
             break;
-        case 0x62:
-            keyAndObject = (keyAndObject & ~0xFFu) | (token->value & 0xFF);
+        case TagMaxNodes:
+            endFlags.kind = token->value;
             break;
         default:
             break;
@@ -1753,14 +1794,14 @@ void GetShortRouteCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!(__builtin_fabsf(x) <= Epsilon && __builtin_fabsf(y) <= Epsilon && __builtin_fabsf(z) <= Epsilon))
+    if (!(__builtin_fabsf(offsetX) <= Epsilon && __builtin_fabsf(offsetY) <= Epsilon && __builtin_fabsf(offsetZ) <= Epsilon))
     {
-        targetFlags |= 0x2000000;
+        target.offsetGiven = 1;
     }
 
-    if ((targetFlags & 0xC0000) == 0)
+    if (!target.takesLongJumps && !target.takesHighJumps)
     {
-        targetFlags &= ~0x20000u;
+        target.takesJumps = 0;
     }
 }
 
@@ -1772,24 +1813,24 @@ void SetNearestPointFlagsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xAF:
-            flags.raw = (flags.raw & ~0x3) | (TokenIsZero(token) ? 1 : 2);
+        case TagPointPassable:
+            switches.blocked = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0xB0:
-            flags.raw = (flags.raw & ~0xC) | ((TokenIsZero(token) ? 1 : 2) << 2);
+        case TagPointAirborne:
+            switches.airborne = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0xB1:
-            flags.raw = (flags.raw & ~0x30) | ((TokenIsZero(token) ? 1 : 2) << 4);
+        case TagPointAlwaysTaken:
+            switches.alwaysTaken = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x65:
-            range = static_cast<s32>(token->value);
-            flags.raw |= 0x40;
+        case TagRange:
+            unused2 = static_cast<s32>(token->value);
+            switches.unused6 = 1;
             break;
-        case 0xAE:
-            value = static_cast<s32>(token->value);
-            flags.raw |= 0x40;
+        case TagHalfHeight:
+            unused3 = static_cast<s32>(token->value);
+            switches.unused6 = 1;
             break;
         default:
             break;
@@ -1807,24 +1848,24 @@ void CreateNodeControllerCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF)
+        if (token->tag == TagNone)
         {
             switch (token->value)
             {
-            case 0x29A:
-                controller &= ~0xFFu;
+            case KeywordJointAimController:
+                controller.kind = NodeController::KindJointAim;
                 break;
-            case 0x29B:
-                controller = (controller & ~0xFFu) | 0x1;
+            case KeywordMaskController:
+                controller.kind = NodeController::KindMask;
                 break;
-            case 0x29C:
-                controller = (controller & ~0xFFu) | 0x2;
+            case KeywordSplineController:
+                controller.kind = NodeController::KindSpline;
                 break;
-            case 0x29D:
-                controller = (controller & ~0xFFu) | 0x3;
+            case KeywordSkateController:
+                controller.kind = NodeController::KindSkate;
                 break;
-            case 0xFD:
-                controller |= 0x100;
+            case KeywordKeep:
+                controller.keepsExisting = 1;
                 break;
             default:
                 break;
@@ -1843,64 +1884,65 @@ void AddPerceptionCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
+        case TagNone:
             switch (token->value)
             {
-            case 0xAD:
-                type.raw &= ~0x7;
+            case KeywordSenseInstances:
+                sense.bits.kind = PerceptionSense::KindInstances;
                 break;
-            case 0xAF:
-                type.raw = (type.raw & ~0x7) | 0x2;
+            case KeywordSenseSpeed:
+                sense.bits.kind = PerceptionSense::KindSpeed;
                 break;
-            case 0xAE:
-                type.raw = (type.raw & ~0x7) | 0x1;
+            case KeywordSenseRising:
+                sense.bits.kind = PerceptionSense::KindRising;
                 break;
-            case 0xB3:
-                type.raw = (type.raw & ~0x7) | 0x3;
+            case KeywordUnusedSense:
+                sense.bits.kind = PerceptionSense::KindUnused;
                 break;
-            case 0x211:
-                type.raw |= 0x8;
+            case KeywordGetPlayers:
+                sense.bits.noticesPlayer = 1;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0xD3:
-            value1 = token->Float();
+        case TagSenseDivisor:
+            sense.divisor = token->Float();
             break;
-        case 0x65:
-            // The range and its square, as floats
-            range = static_cast<s32>(token->value);
-            range2 = __builtin_bit_cast(u32, token->Float() * token->Float());
+        case TagRange:
+            // The radius and its square
+            sense.radius = __builtin_bit_cast(f32, token->value);
+            sense.falloff = token->Float() * token->Float();
             break;
-        case 0xD8:
-            value11 = token->Float();
+        case TagSenseInterval:
+            sense.interval = token->Float();
             break;
-        case 0xD4:
-            value10 = static_cast<s32>(token->value);
+        case TagSenseDecay:
+            sense.decay = __builtin_bit_cast(f32, token->value);
             break;
-        case 0x10:
+        case TagActor:
         {
-            // A list of halfwords from objectId on, its count the bytes' first (past the eighth, into the bytes)
-            u32 count = bytes & 0xFF;
-            bytes = (bytes & ~0xFFu) | ((count + 1) & 0xFF);
-            reinterpret_cast<u16*>(&objectId)[count] = static_cast<u16>(token->value);
+            // A list of the objects, counted (past the eighth, into the count and on)
+            u32 count = sense.objectCount;
+            sense.objectCount = count + 1;
+            u16* objects = sense.objects;
+            objects[count] = static_cast<u16>(token->value);
             break;
         }
-        case 0xD9:
-            value12 = static_cast<s32>(token->value);
+        case TagLowest:
+            sense.lowest = __builtin_bit_cast(f32, token->value);
             break;
-        case 0xDA:
-            value13 = token->Float();
+        case TagHighest:
+            sense.highest = token->Float();
             break;
-        case 0xDB:
-            value14 = static_cast<s32>(token->value);
+        case TagSpeedScale:
+            sense.speedScale = __builtin_bit_cast(f32, token->value);
             break;
-        case 0x243:
-            value15 = token->Float();
+        case TagAttentionWeight:
+            sense.attentionWeight = token->Float();
             break;
         default:
             break;

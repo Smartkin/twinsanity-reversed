@@ -41,7 +41,7 @@ void TimeInUnitCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void IsInExternalScriptCondition::Destroy(u32 destroyFlags)
+void LinkedChunksLoadedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -226,7 +226,7 @@ void CurrentKeyEqualsCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void TouchingTerrainCondition::Destroy(u32 destroyFlags)
+void TouchingAnythingCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -356,47 +356,47 @@ void AgentRef2ActorEqualsCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasInstancePositionCondition::Destroy(u32 destroyFlags)
+void HasStoredPlaceCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasFocusPositionCondition::Destroy(u32 destroyFlags)
+void HasStoredPositionCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeFlag16Condition::Destroy(u32 destroyFlags)
+void FoundCoverCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeFlag17Condition::Destroy(u32 destroyFlags)
+void FoundNoCoverCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeFlag15Condition::Destroy(u32 destroyFlags)
+void CoverSearchEndedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeByte154FractionCondition::Destroy(u32 destroyFlags)
+void KnockCountdownCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsBodyFlag1Condition::Destroy(u32 destroyFlags)
+void RigidBodyOnGroundCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void DistanceToTargetCondition::Destroy(u32 destroyFlags)
+void MeToAgentRef1SqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusPositionDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void MeToStoredPositionSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -406,77 +406,77 @@ void GroundBelowFocusPositionCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectInstanceByteAtCondition::Destroy(u32 destroyFlags)
+void InstanceCounterValueCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void InstanceSubtypeCondition::Destroy(u32 destroyFlags)
+void InstanceCounterEqualsThresholdCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadTrackingFlag24Condition::Destroy(u32 destroyFlags)
+void HeadAtLimitCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadTrackingFlag25Condition::Destroy(u32 destroyFlags)
+void HeadYawBelowLimitCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadTrackingFlag26Condition::Destroy(u32 destroyFlags)
+void HeadYawAboveLimitCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadTrackingFlag27Condition::Destroy(u32 destroyFlags)
+void HeadPitchBelowLimitCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadTrackingFlag28Condition::Destroy(u32 destroyFlags)
+void HeadPitchAboveLimitCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathKeyRawCondition::Destroy(u32 destroyFlags)
+void RouteStepUncheckedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathKeyCondition::Destroy(u32 destroyFlags)
+void RouteStepCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathKeyDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void MeToEdgeStartNodeSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsCount8cCondition::Destroy(u32 destroyFlags)
+void RigidBodyHasMotionCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsHasContactsCondition::Destroy(u32 destroyFlags)
+void RigidBodyCollidesCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPreviousKeyDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void MeToEdgeEndNodeSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsHasGroundCondition::Destroy(u32 destroyFlags)
+void RigidBodyRidesInstanceCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CurrentLinkIndexCondition::Destroy(u32 destroyFlags)
+void OnLastLinkedObjectCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -486,22 +486,22 @@ void HeightAboveStartCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasPerception0Condition::Destroy(u32 destroyFlags)
+void Sense0LevelCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasPerception2Condition::Destroy(u32 destroyFlags)
+void Sense2LevelCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasPerception1Condition::Destroy(u32 destroyFlags)
+void Sense1LevelCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CharacterAnalogCondition::Destroy(u32 destroyFlags)
+void PresenceCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -511,12 +511,12 @@ void AlwaysZeroCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsBodyFlag5Condition::Destroy(u32 destroyFlags)
+void RigidBodyAgainstWallCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GotUserMessageOnceEqualsCondition::Destroy(u32 destroyFlags)
+void GotChildMessageOnceEqualsCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -541,7 +541,7 @@ void PositionZCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1SpawnFlagCondition::Destroy(u32 destroyFlags)
+void AgentRef1IsBusyCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -551,7 +551,7 @@ void IsAttachedCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsImpactCondition::Destroy(u32 destroyFlags)
+void TouchedMessageSurfaceCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -566,7 +566,7 @@ void FocusObjectProp0EqualsCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AngleToFocusCondition::Destroy(u32 destroyFlags)
+void TargetToSideCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -576,7 +576,7 @@ void KeyPathOnLastKeyCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ContextValue154SetCondition::Destroy(u32 destroyFlags)
+void HasInstanceIdCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -586,12 +586,12 @@ void KeyPathProgressCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void KeyPathByte42Condition::Destroy(u32 destroyFlags)
+void KeyPathNumPathsCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusVisibleCondition::Destroy(u32 destroyFlags)
+void VisibleFromFocusCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -611,62 +611,62 @@ void FocusDistanceFromStartSquaredCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1HeightDifferenceCondition::Destroy(u32 destroyFlags)
+void HeightAboveAgentRef1Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusOffXAxisDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void FocusAlongXAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusHorizontalDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void FocusAlongYAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusOffForwardAxisDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void FocusAlongZAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1OffXAxisDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void AgentRef1AlongXAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1HorizontalDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void AgentRef1AlongYAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1OffAxisDistanceSquaredCondition::Destroy(u32 destroyFlags)
+void AgentRef1AlongZAxisSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsTouchingCondition::Destroy(u32 destroyFlags)
+void TouchingWorldCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1SideOffsetCondition::Destroy(u32 destroyFlags)
+void MeFacingAgentRef1Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1VisibleCondition::Destroy(u32 destroyFlags)
+void VisibleFromAgentRef1Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentRef1InViewConeCondition::Destroy(u32 destroyFlags)
+void HeadCanSeeAgentRef1Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusFlag10Condition::Destroy(u32 destroyFlags)
+void FocusIsVisibleCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -686,27 +686,27 @@ void CurrentKeyIsEvenCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusFromExitPointCondition::Destroy(u32 destroyFlags)
+void ExitPointToFocusSqrDistCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void VideoStateIs5Condition::Destroy(u32 destroyFlags)
+void CutsceneFinishedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void UpVectorXCondition::Destroy(u32 destroyFlags)
+void UpAxisYCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void IntProp0Bit0Condition::Destroy(u32 destroyFlags)
+void IntProperty0Bit0ClearCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void VideoReadyCondition::Destroy(u32 destroyFlags)
+void CutsceneMusicReadyCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -721,12 +721,12 @@ void FocusIsAgentRef1Condition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PhysicsHasCollisionNodeCondition::Destroy(u32 destroyFlags)
+void HasPhysicsBodyCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void FocusObjectByte0EqualsCondition::Destroy(u32 destroyFlags)
+void FocusInstanceCounterEqualsThresholdCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -736,22 +736,22 @@ void SplineDistanceToAgentRef1Condition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObstacleAheadCondition::Destroy(u32 destroyFlags)
+void GroundBelowPointAheadCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeValue174CountCondition::Destroy(u32 destroyFlags)
+void CountedInstancesCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void IsFullInstanceNodeCondition::Destroy(u32 destroyFlags)
+void CountedValueCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeByte8cMinusGlobalCondition::Destroy(u32 destroyFlags)
+void RankAboveGlobalRankCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -761,7 +761,7 @@ void TimeSinceMarkCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AlwaysZero173Condition::Destroy(u32 destroyFlags)
+void NoOp173Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -776,7 +776,7 @@ void NeverCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ChunksLoadedCondition::Destroy(u32 destroyFlags)
+void LinkedChunksQueuedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -806,12 +806,12 @@ void MeToPlayerSqrDistCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AgentIsOnGroundCondition::Destroy(u32 destroyFlags)
+void ShadowActiveCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CrateHasRedWumpaCondition::Destroy(u32 destroyFlags)
+void CrateHasWumpaCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -846,22 +846,22 @@ void CanMoveForwardsCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CanMoveBackwardsCondition::Destroy(u32 destroyFlags)
+void BlockedBehindCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CanStrafeLeftCondition::Destroy(u32 destroyFlags)
+void BlockedLeftCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CanStrafeRightCondition::Destroy(u32 destroyFlags)
+void BlockedRightCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CanJumpForwardsCondition::Destroy(u32 destroyFlags)
+void WumpaFruitCountCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -871,17 +871,17 @@ void CanFallCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void WillHitLowWallCondition::Destroy(u32 destroyFlags)
+void NoOpWillHitLowWallCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void WillHitWallCondition::Destroy(u32 destroyFlags)
+void AgentWasHitByTiedPairCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void WillRunOffCliffCondition::Destroy(u32 destroyFlags)
+void AgentWasHitByThrownCharacterCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -911,7 +911,7 @@ void PlayerToMyFocusSqrDistCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void WumpaNeededForPayGateCondition::Destroy(u32 destroyFlags)
+void PayGateNumberCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -941,7 +941,7 @@ void PlayerCanSeeMeCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeTrafficCondition::Destroy(u32 destroyFlags)
+void PlayerGunShotChargeCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1011,7 +1011,7 @@ void PlayerIsRunningCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerIsCrawlingCondition::Destroy(u32 destroyFlags)
+void PlayerIsWalkingDuplicateCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1031,7 +1031,7 @@ void PlayerHoldingMultiToolCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerIsSlammingCondition::Destroy(u32 destroyFlags)
+void PlayerIsSlammingTiedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1041,37 +1041,37 @@ void PlayerIsSpinningCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerIsJumpingCondition::Destroy(u32 destroyFlags)
+void PlayerIsSlidingCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HeadCanSeePlayerUnblockedCondition::Destroy(u32 destroyFlags)
+void PlayerIsAirborneCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AmIHarmfulCondition::Destroy(u32 destroyFlags)
+void HeadCanSeeNearPlayerCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void AttachedContextFlag8Condition::Destroy(u32 destroyFlags)
+void CanDamageCharacterCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void DUMMY_570Condition::Destroy(u32 destroyFlags)
+void NoOp570Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void DUMMY_571Condition::Destroy(u32 destroyFlags)
+void NoOp571Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CutsceneSkippedCondition::Destroy(u32 destroyFlags)
+void NoOpCutsceneSkippedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1096,17 +1096,17 @@ void IsR1PressedCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CharacterVehiclePointerCondition::Destroy(u32 destroyFlags)
+void RidesVehicleCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CharacterFlag23Condition::Destroy(u32 destroyFlags)
+void NoGroundAheadCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void IsChargedShotCondition::Destroy(u32 destroyFlags)
+void PlayerJustShotCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1116,7 +1116,7 @@ void IsDownBlastCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GlobalInstanceOp581Condition::Destroy(u32 destroyFlags)
+void ShotAtMeCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1126,22 +1126,22 @@ void PlayerVisibleCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag0Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeBlockedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerVisible2Condition::Destroy(u32 destroyFlags)
+void PlayerVisibleFromLeftCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerVisible3Condition::Destroy(u32 destroyFlags)
+void PlayerVisibleFromRightCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CharacterFlag22Condition::Destroy(u32 destroyFlags)
+void IsTiedSecondCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1151,27 +1151,27 @@ void IsPlayerCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlag17Condition::Destroy(u32 destroyFlags)
+void HitByKickCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HitByPunchCondition::Destroy(u32 destroyFlags)
+void HitBySpinCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HitByBodySlam2Condition::Destroy(u32 destroyFlags)
+void HitByKind18Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HitBySpinHitboxCondition::Destroy(u32 destroyFlags)
+void HitByProjectileCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HitByBodySlamHitboxCondition::Destroy(u32 destroyFlags)
+void HitByKneeDropCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1186,7 +1186,7 @@ void IsVehicleRollerbrawlCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void VehicleTypeNot2Condition::Destroy(u32 destroyFlags)
+void IsVehicleKind2Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1196,97 +1196,97 @@ void IsVehicleHumiliskateCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void VehicleTypeNot4Condition::Destroy(u32 destroyFlags)
+void IsVehicleKind4Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void IsVehicle3Condition::Destroy(u32 destroyFlags)
+void IsVehicleHoverboardCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag5Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag5Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag4Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag4Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag6Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag6Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PathSegmentFlag0Condition::Destroy(u32 destroyFlags)
+void EdgeFlag8Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPreviousPointFlag5Condition::Destroy(u32 destroyFlags)
+void EdgeEndNodeFlag5Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPreviousPointFlag4Condition::Destroy(u32 destroyFlags)
+void EdgeEndNodeFlag4Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPreviousPointFlag6Condition::Destroy(u32 destroyFlags)
+void EdgeEndNodeFlag6Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag5bCondition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag5DuplicateCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag4bCondition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag4DuplicateCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag6bCondition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag6DuplicateCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerVectorLengthDifferenceCondition::Destroy(u32 destroyFlags)
+void SpeedAbovePlayerCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HitByCortexBoltCondition::Destroy(u32 destroyFlags)
+void HitByElectricCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlag1Condition::Destroy(u32 destroyFlags)
+void HitByExplosionCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag2Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag2Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPreviousPointFlag2Condition::Destroy(u32 destroyFlags)
+void EdgeEndNodeFlag2Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlag2bCondition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlag2DuplicateCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SubPathPointFlags56Condition::Destroy(u32 destroyFlags)
+void EdgeStartNodeFlagsClearCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1306,22 +1306,22 @@ void PlayerSideOffsetCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerNearCurrentKeyCondition::Destroy(u32 destroyFlags)
+void PlayerNearerAnotherKeyCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerSplineVehicleValueCondition::Destroy(u32 destroyFlags)
+void PlayerHumiliskateCrouchedCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void CharacterHasHomeChunkCondition::Destroy(u32 destroyFlags)
+void PlayerOutsideHomeChunkCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerFlag57ClearCondition::Destroy(u32 destroyFlags)
+void PlayerScriptFlagClearCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1331,57 +1331,57 @@ void HasActorWeightCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GameFlags44Is12Condition::Destroy(u32 destroyFlags)
+void GameIsPlayingCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlag25Condition::Destroy(u32 destroyFlags)
+void HitByWaterCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlag2Condition::Destroy(u32 destroyFlags)
+void HitByFallThroughCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerVehicle1ValueCondition::Destroy(u32 destroyFlags)
+void PlayerRidesRollerbrawlCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void BothCharactersFlag14Condition::Destroy(u32 destroyFlags)
+void CortexDeadPlayerAliveCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GlobalInt3098e8Condition::Destroy(u32 destroyFlags)
+void ScriptGlobalFlagCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void NodeValue134SetCondition::Destroy(u32 destroyFlags)
+void InWaterCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GameControllerField500HighCondition::Destroy(u32 destroyFlags)
+void TimedPlayCountCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GameTimer57cCondition::Destroy(u32 destroyFlags)
+void TimedPlayTimeLeftCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SecondCharacterGunStateCondition::Destroy(u32 destroyFlags)
+void PlayerGunSecondCountCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void HasAmmoCondition::Destroy(u32 destroyFlags)
+void PlayerAmmoCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1391,27 +1391,27 @@ void CameraForwardDistanceCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlag19Condition::Destroy(u32 destroyFlags)
+void HitByHeavyCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GameModeIs5Condition::Destroy(u32 destroyFlags)
+void PairingIs5Condition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void ObjectContextFlags3or22Condition::Destroy(u32 destroyFlags)
+void HitByBurningCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GlobalProgressionCondition::Destroy(u32 destroyFlags)
+void StoryAreaCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void SecondCharacterVehicleValueCondition::Destroy(u32 destroyFlags)
+void PlayerVehicleHeightCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1421,12 +1421,12 @@ void IsMoviePlayingCondition::Destroy(u32 destroyFlags)
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void PlayerFlag14Condition::Destroy(u32 destroyFlags)
+void PlayerIsDeadCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
 
-void GameStateIsCondition::Destroy(u32 destroyFlags)
+void PlayAreaIsCondition::Destroy(u32 destroyFlags)
 {
     ScriptCondition::Destroy(destroyFlags);
 }
@@ -1458,7 +1458,7 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 5:
         return MakeCondition(NewScriptObject<TimeInUnitCondition>(), 0x5, g_TimeInUnitConditionVTable);
     case 6:
-        return MakeCondition(NewScriptObject<IsInExternalScriptCondition>(), 0x6, g_IsInExternalScriptConditionVTable);
+        return MakeCondition(NewScriptObject<LinkedChunksLoadedCondition>(), 0x6, g_LinkedChunksLoadedConditionVTable);
     case 7:
         return MakeCondition(NewScriptObject<AnimationFinishedCondition>(), 0x7, g_AnimationFinishedConditionVTable);
     case 8:
@@ -1532,7 +1532,7 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 52:
         return MakeCondition(NewScriptObject<CurrentKeyEqualsCondition>(), 0x34, g_CurrentKeyEqualsConditionVTable);
     case 53:
-        return MakeCondition(NewScriptObject<TouchingTerrainCondition>(), 0x35, g_TouchingTerrainConditionVTable);
+        return MakeCondition(NewScriptObject<TouchingAnythingCondition>(), 0x35, g_TouchingAnythingConditionVTable);
     case 54:
         return MakeCondition(NewScriptObject<TouchingAnyAgentCondition>(), 0x36, g_TouchingAnyAgentConditionVTable);
     case 55:
@@ -1588,71 +1588,71 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 80:
         return MakeCondition(NewScriptObject<AgentRef2ActorEqualsCondition>(), 0x50, g_AgentRef2ActorEqualsConditionVTable);
     case 81:
-        return MakeCondition(NewScriptObject<HasInstancePositionCondition>(), 0x51, g_HasInstancePositionConditionVTable);
+        return MakeCondition(NewScriptObject<HasStoredPlaceCondition>(), 0x51, g_HasStoredPlaceConditionVTable);
     case 82:
-        return MakeCondition(NewScriptObject<HasFocusPositionCondition>(), 0x52, g_HasFocusPositionConditionVTable);
+        return MakeCondition(NewScriptObject<HasStoredPositionCondition>(), 0x52, g_HasStoredPositionConditionVTable);
     case 83:
-        return MakeCondition(NewScriptObject<NodeFlag16Condition>(), 0x53, g_NodeFlag16ConditionVTable);
+        return MakeCondition(NewScriptObject<FoundCoverCondition>(), 0x53, g_FoundCoverConditionVTable);
     case 84:
-        return MakeCondition(NewScriptObject<NodeFlag17Condition>(), 0x54, g_NodeFlag17ConditionVTable);
+        return MakeCondition(NewScriptObject<FoundNoCoverCondition>(), 0x54, g_FoundNoCoverConditionVTable);
     case 85:
-        return MakeCondition(NewScriptObject<NodeFlag15Condition>(), 0x55, g_NodeFlag15ConditionVTable);
+        return MakeCondition(NewScriptObject<CoverSearchEndedCondition>(), 0x55, g_CoverSearchEndedConditionVTable);
     case 86:
-        return MakeCondition(NewScriptObject<NodeByte154FractionCondition>(), 0x56, g_NodeByte154FractionConditionVTable);
+        return MakeCondition(NewScriptObject<KnockCountdownCondition>(), 0x56, g_KnockCountdownConditionVTable);
     case 87:
-        return MakeCondition(NewScriptObject<PhysicsBodyFlag1Condition>(), 0x57, g_PhysicsBodyFlag1ConditionVTable);
+        return MakeCondition(NewScriptObject<RigidBodyOnGroundCondition>(), 0x57, g_RigidBodyOnGroundConditionVTable);
     case 88:
-        return MakeCondition(NewScriptObject<DistanceToTargetCondition>(), 0x58, g_DistanceToTargetConditionVTable);
+        return MakeCondition(NewScriptObject<MeToAgentRef1SqrDistCondition>(), 0x58, g_MeToAgentRef1SqrDistConditionVTable);
     case 89:
-        return MakeCondition(NewScriptObject<FocusPositionDistanceSquaredCondition>(), 0x59, g_FocusPositionDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<MeToStoredPositionSqrDistCondition>(), 0x59, g_MeToStoredPositionSqrDistConditionVTable);
     case 90:
         return MakeCondition(NewScriptObject<GroundBelowFocusPositionCondition>(), 0x5A, g_GroundBelowFocusPositionConditionVTable);
     case 91:
-        return MakeCondition(NewScriptObject<ObjectInstanceByteAtCondition>(), 0x5B, g_ObjectInstanceByteAtConditionVTable);
+        return MakeCondition(NewScriptObject<InstanceCounterValueCondition>(), 0x5B, g_InstanceCounterValueConditionVTable);
     case 92:
-        return MakeCondition(NewScriptObject<InstanceSubtypeCondition>(), 0x5C, g_InstanceSubtypeConditionVTable);
+        return MakeCondition(NewScriptObject<InstanceCounterEqualsThresholdCondition>(), 0x5C, g_InstanceCounterEqualsThresholdConditionVTable);
     case 93:
-        return MakeCondition(NewScriptObject<HeadTrackingFlag24Condition>(), 0x5D, g_HeadTrackingFlag24ConditionVTable);
+        return MakeCondition(NewScriptObject<HeadAtLimitCondition>(), 0x5D, g_HeadAtLimitConditionVTable);
     case 94:
-        return MakeCondition(NewScriptObject<HeadTrackingFlag25Condition>(), 0x5E, g_HeadTrackingFlag25ConditionVTable);
+        return MakeCondition(NewScriptObject<HeadYawBelowLimitCondition>(), 0x5E, g_HeadYawBelowLimitConditionVTable);
     case 95:
-        return MakeCondition(NewScriptObject<HeadTrackingFlag26Condition>(), 0x5F, g_HeadTrackingFlag26ConditionVTable);
+        return MakeCondition(NewScriptObject<HeadYawAboveLimitCondition>(), 0x5F, g_HeadYawAboveLimitConditionVTable);
     case 96:
-        return MakeCondition(NewScriptObject<HeadTrackingFlag27Condition>(), 0x60, g_HeadTrackingFlag27ConditionVTable);
+        return MakeCondition(NewScriptObject<HeadPitchBelowLimitCondition>(), 0x60, g_HeadPitchBelowLimitConditionVTable);
     case 97:
-        return MakeCondition(NewScriptObject<HeadTrackingFlag28Condition>(), 0x61, g_HeadTrackingFlag28ConditionVTable);
+        return MakeCondition(NewScriptObject<HeadPitchAboveLimitCondition>(), 0x61, g_HeadPitchAboveLimitConditionVTable);
     case 102:
-        return MakeCondition(NewScriptObject<SubPathKeyRawCondition>(), 0x66, g_SubPathKeyRawConditionVTable);
+        return MakeCondition(NewScriptObject<RouteStepUncheckedCondition>(), 0x66, g_RouteStepUncheckedConditionVTable);
     case 103:
-        return MakeCondition(NewScriptObject<SubPathKeyCondition>(), 0x67, g_SubPathKeyConditionVTable);
+        return MakeCondition(NewScriptObject<RouteStepCondition>(), 0x67, g_RouteStepConditionVTable);
     case 104:
-        return MakeCondition(NewScriptObject<SubPathKeyDistanceSquaredCondition>(), 0x68, g_SubPathKeyDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<MeToEdgeStartNodeSqrDistCondition>(), 0x68, g_MeToEdgeStartNodeSqrDistConditionVTable);
     case 105:
-        return MakeCondition(NewScriptObject<PhysicsCount8cCondition>(), 0x69, g_PhysicsCount8cConditionVTable);
+        return MakeCondition(NewScriptObject<RigidBodyHasMotionCondition>(), 0x69, g_RigidBodyHasMotionConditionVTable);
     case 106:
-        return MakeCondition(NewScriptObject<PhysicsHasContactsCondition>(), 0x6A, g_PhysicsHasContactsConditionVTable);
+        return MakeCondition(NewScriptObject<RigidBodyCollidesCondition>(), 0x6A, g_RigidBodyCollidesConditionVTable);
     case 107:
-        return MakeCondition(NewScriptObject<SubPathPreviousKeyDistanceSquaredCondition>(), 0x6B, g_SubPathPreviousKeyDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<MeToEdgeEndNodeSqrDistCondition>(), 0x6B, g_MeToEdgeEndNodeSqrDistConditionVTable);
     case 108:
-        return MakeCondition(NewScriptObject<PhysicsHasGroundCondition>(), 0x6C, g_PhysicsHasGroundConditionVTable);
+        return MakeCondition(NewScriptObject<RigidBodyRidesInstanceCondition>(), 0x6C, g_RigidBodyRidesInstanceConditionVTable);
     case 109:
-        return MakeCondition(NewScriptObject<CurrentLinkIndexCondition>(), 0x6D, g_CurrentLinkIndexConditionVTable);
+        return MakeCondition(NewScriptObject<OnLastLinkedObjectCondition>(), 0x6D, g_OnLastLinkedObjectConditionVTable);
     case 110:
         return MakeCondition(NewScriptObject<HeightAboveStartCondition>(), 0x6E, g_HeightAboveStartConditionVTable);
     case 111:
-        return MakeCondition(NewScriptObject<HasPerception0Condition>(), 0x6F, g_HasPerception0ConditionVTable);
+        return MakeCondition(NewScriptObject<Sense0LevelCondition>(), 0x6F, g_Sense0LevelConditionVTable);
     case 112:
-        return MakeCondition(NewScriptObject<HasPerception2Condition>(), 0x70, g_HasPerception2ConditionVTable);
+        return MakeCondition(NewScriptObject<Sense2LevelCondition>(), 0x70, g_Sense2LevelConditionVTable);
     case 113:
-        return MakeCondition(NewScriptObject<HasPerception1Condition>(), 0x71, g_HasPerception1ConditionVTable);
+        return MakeCondition(NewScriptObject<Sense1LevelCondition>(), 0x71, g_Sense1LevelConditionVTable);
     case 114:
-        return MakeCondition(NewScriptObject<CharacterAnalogCondition>(), 0x72, g_CharacterAnalogConditionVTable);
+        return MakeCondition(NewScriptObject<PresenceCondition>(), 0x72, g_PresenceConditionVTable);
     case 115:
         return MakeCondition(NewScriptObject<AlwaysZeroCondition>(), 0x73, g_AlwaysZeroConditionVTable);
     case 116:
-        return MakeCondition(NewScriptObject<PhysicsBodyFlag5Condition>(), 0x74, g_PhysicsBodyFlag5ConditionVTable);
+        return MakeCondition(NewScriptObject<RigidBodyAgainstWallCondition>(), 0x74, g_RigidBodyAgainstWallConditionVTable);
     case 117:
-        return MakeCondition(NewScriptObject<GotUserMessageOnceEqualsCondition>(), 0x75, g_GotUserMessageOnceEqualsConditionVTable);
+        return MakeCondition(NewScriptObject<GotChildMessageOnceEqualsCondition>(), 0x75, g_GotChildMessageOnceEqualsConditionVTable);
     case 118:
         return MakeCondition(NewScriptObject<HasXLinksCondition>(), 0x76, g_HasXLinksConditionVTable);
     case 119:
@@ -1662,55 +1662,55 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 121:
         return MakeCondition(NewScriptObject<PositionZCondition>(), 0x79, g_PositionZConditionVTable);
     case 122:
-        return MakeCondition(NewScriptObject<AgentRef1SpawnFlagCondition>(), 0x7A, g_AgentRef1SpawnFlagConditionVTable);
+        return MakeCondition(NewScriptObject<AgentRef1IsBusyCondition>(), 0x7A, g_AgentRef1IsBusyConditionVTable);
     case 123:
-        return MakeCondition(NewScriptObject<DistanceToTargetCondition>(), 0x58, g_DistanceToTargetConditionVTable);
+        return MakeCondition(NewScriptObject<MeToAgentRef1SqrDistCondition>(), 0x58, g_MeToAgentRef1SqrDistConditionVTable);
     case 124:
         return MakeCondition(NewScriptObject<IsAttachedCondition>(), 0x7C, g_IsAttachedConditionVTable);
     case 125:
-        return MakeCondition(NewScriptObject<PhysicsImpactCondition>(), 0x7D, g_PhysicsImpactConditionVTable);
+        return MakeCondition(NewScriptObject<TouchedMessageSurfaceCondition>(), 0x7D, g_TouchedMessageSurfaceConditionVTable);
     case 126:
         return MakeCondition(NewScriptObject<FocusForwardDotCondition>(), 0x7E, g_FocusForwardDotConditionVTable);
     case 127:
         return MakeCondition(NewScriptObject<FocusObjectProp0EqualsCondition>(), 0x7F, g_FocusObjectProp0EqualsConditionVTable);
     case 128:
     {
-        auto* condition = MakeCondition(NewScriptObject<AngleToFocusCondition>(), 0x80, g_AngleToFocusConditionVTable);
-        condition->unknown14 = 0;
-        condition->unknown18 = 1;
+        auto* condition = MakeCondition(NewScriptObject<TargetToSideCondition>(), 0x80, g_TargetToSideConditionVTable);
+        condition->targetKind = TargetToSideCondition::TargetFocus;
+        condition->targetSide = TargetToSideCondition::SideRight;
         return condition;
     }
     case 129:
     {
-        auto* condition = MakeCondition(NewScriptObject<AngleToFocusCondition>(), 0x81, g_AngleToFocusConditionVTable);
-        condition->unknown14 = 0;
-        condition->unknown18 = 0;
+        auto* condition = MakeCondition(NewScriptObject<TargetToSideCondition>(), 0x81, g_TargetToSideConditionVTable);
+        condition->targetKind = TargetToSideCondition::TargetFocus;
+        condition->targetSide = TargetToSideCondition::SideLeft;
         return condition;
     }
     case 130:
     {
-        auto* condition = MakeCondition(NewScriptObject<AngleToFocusCondition>(), 0x82, g_AngleToFocusConditionVTable);
-        condition->unknown14 = 1;
-        condition->unknown18 = 1;
+        auto* condition = MakeCondition(NewScriptObject<TargetToSideCondition>(), 0x82, g_TargetToSideConditionVTable);
+        condition->targetKind = TargetToSideCondition::TargetAgentRef1;
+        condition->targetSide = TargetToSideCondition::SideRight;
         return condition;
     }
     case 131:
     {
-        auto* condition = MakeCondition(NewScriptObject<AngleToFocusCondition>(), 0x83, g_AngleToFocusConditionVTable);
-        condition->unknown14 = 1;
-        condition->unknown18 = 0;
+        auto* condition = MakeCondition(NewScriptObject<TargetToSideCondition>(), 0x83, g_TargetToSideConditionVTable);
+        condition->targetKind = TargetToSideCondition::TargetAgentRef1;
+        condition->targetSide = TargetToSideCondition::SideLeft;
         return condition;
     }
     case 132:
         return MakeCondition(NewScriptObject<KeyPathOnLastKeyCondition>(), 0x84, g_KeyPathOnLastKeyConditionVTable);
     case 133:
-        return MakeCondition(NewScriptObject<ContextValue154SetCondition>(), 0x85, g_ContextValue154SetConditionVTable);
+        return MakeCondition(NewScriptObject<HasInstanceIdCondition>(), 0x85, g_HasInstanceIdConditionVTable);
     case 134:
         return MakeCondition(NewScriptObject<KeyPathProgressCondition>(), 0x86, g_KeyPathProgressConditionVTable);
     case 135:
-        return MakeCondition(NewScriptObject<KeyPathByte42Condition>(), 0x87, g_KeyPathByte42ConditionVTable);
+        return MakeCondition(NewScriptObject<KeyPathNumPathsCondition>(), 0x87, g_KeyPathNumPathsConditionVTable);
     case 136:
-        return MakeCondition(NewScriptObject<FocusVisibleCondition>(), 0x88, g_FocusVisibleConditionVTable);
+        return MakeCondition(NewScriptObject<VisibleFromFocusCondition>(), 0x88, g_VisibleFromFocusConditionVTable);
     case 137:
         return MakeCondition(NewScriptObject<KeyPathNumKeysCondition>(), 0x89, g_KeyPathNumKeysConditionVTable);
     case 138:
@@ -1718,29 +1718,29 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 139:
         return MakeCondition(NewScriptObject<FocusDistanceFromStartSquaredCondition>(), 0x8B, g_FocusDistanceFromStartSquaredConditionVTable);
     case 140:
-        return MakeCondition(NewScriptObject<AgentRef1HeightDifferenceCondition>(), 0x8C, g_AgentRef1HeightDifferenceConditionVTable);
+        return MakeCondition(NewScriptObject<HeightAboveAgentRef1Condition>(), 0x8C, g_HeightAboveAgentRef1ConditionVTable);
     case 141:
-        return MakeCondition(NewScriptObject<FocusOffXAxisDistanceSquaredCondition>(), 0x8D, g_FocusOffXAxisDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<FocusAlongXAxisSqrDistCondition>(), 0x8D, g_FocusAlongXAxisSqrDistConditionVTable);
     case 142:
-        return MakeCondition(NewScriptObject<FocusHorizontalDistanceSquaredCondition>(), 0x8E, g_FocusHorizontalDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<FocusAlongYAxisSqrDistCondition>(), 0x8E, g_FocusAlongYAxisSqrDistConditionVTable);
     case 143:
-        return MakeCondition(NewScriptObject<FocusOffForwardAxisDistanceSquaredCondition>(), 0x8F, g_FocusOffForwardAxisDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<FocusAlongZAxisSqrDistCondition>(), 0x8F, g_FocusAlongZAxisSqrDistConditionVTable);
     case 144:
-        return MakeCondition(NewScriptObject<AgentRef1OffXAxisDistanceSquaredCondition>(), 0x90, g_AgentRef1OffXAxisDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<AgentRef1AlongXAxisSqrDistCondition>(), 0x90, g_AgentRef1AlongXAxisSqrDistConditionVTable);
     case 145:
-        return MakeCondition(NewScriptObject<AgentRef1HorizontalDistanceSquaredCondition>(), 0x91, g_AgentRef1HorizontalDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<AgentRef1AlongYAxisSqrDistCondition>(), 0x91, g_AgentRef1AlongYAxisSqrDistConditionVTable);
     case 146:
-        return MakeCondition(NewScriptObject<AgentRef1OffAxisDistanceSquaredCondition>(), 0x92, g_AgentRef1OffAxisDistanceSquaredConditionVTable);
+        return MakeCondition(NewScriptObject<AgentRef1AlongZAxisSqrDistCondition>(), 0x92, g_AgentRef1AlongZAxisSqrDistConditionVTable);
     case 147:
-        return MakeCondition(NewScriptObject<PhysicsTouchingCondition>(), 0x93, g_PhysicsTouchingConditionVTable);
+        return MakeCondition(NewScriptObject<TouchingWorldCondition>(), 0x93, g_TouchingWorldConditionVTable);
     case 148:
-        return MakeCondition(NewScriptObject<AgentRef1SideOffsetCondition>(), 0x94, g_AgentRef1SideOffsetConditionVTable);
+        return MakeCondition(NewScriptObject<MeFacingAgentRef1Condition>(), 0x94, g_MeFacingAgentRef1ConditionVTable);
     case 149:
-        return MakeCondition(NewScriptObject<AgentRef1VisibleCondition>(), 0x95, g_AgentRef1VisibleConditionVTable);
+        return MakeCondition(NewScriptObject<VisibleFromAgentRef1Condition>(), 0x95, g_VisibleFromAgentRef1ConditionVTable);
     case 150:
-        return MakeCondition(NewScriptObject<AgentRef1InViewConeCondition>(), 0x96, g_AgentRef1InViewConeConditionVTable);
+        return MakeCondition(NewScriptObject<HeadCanSeeAgentRef1Condition>(), 0x96, g_HeadCanSeeAgentRef1ConditionVTable);
     case 151:
-        return MakeCondition(NewScriptObject<FocusFlag10Condition>(), 0x97, g_FocusFlag10ConditionVTable);
+        return MakeCondition(NewScriptObject<FocusIsVisibleCondition>(), 0x97, g_FocusIsVisibleConditionVTable);
     case 152:
         return MakeCondition(NewScriptObject<IsInPlayerChunkCondition>(), 0x98, g_IsInPlayerChunkConditionVTable);
     case 153:
@@ -1748,65 +1748,65 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 154:
         return MakeCondition(NewScriptObject<CurrentKeyIsEvenCondition>(), 0x9A, g_CurrentKeyIsEvenConditionVTable);
     case 155:
-        return MakeCondition(NewScriptObject<FocusFromExitPointCondition>(), 0x9B, g_FocusFromExitPointConditionVTable);
+        return MakeCondition(NewScriptObject<ExitPointToFocusSqrDistCondition>(), 0x9B, g_ExitPointToFocusSqrDistConditionVTable);
     case 156:
-        return MakeCondition(NewScriptObject<VideoStateIs5Condition>(), 0x9C, g_VideoStateIs5ConditionVTable);
+        return MakeCondition(NewScriptObject<CutsceneFinishedCondition>(), 0x9C, g_CutsceneFinishedConditionVTable);
     case 157:
-        return MakeCondition(NewScriptObject<UpVectorXCondition>(), 0x9D, g_UpVectorXConditionVTable);
+        return MakeCondition(NewScriptObject<UpAxisYCondition>(), 0x9D, g_UpAxisYConditionVTable);
     case 158:
-        return MakeCondition(NewScriptObject<IntProp0Bit0Condition>(), 0x9E, g_IntProp0Bit0ConditionVTable);
+        return MakeCondition(NewScriptObject<IntProperty0Bit0ClearCondition>(), 0x9E, g_IntProperty0Bit0ClearConditionVTable);
     case 159:
-        return MakeCondition(NewScriptObject<VideoReadyCondition>(), 0x9F, g_VideoReadyConditionVTable);
+        return MakeCondition(NewScriptObject<CutsceneMusicReadyCondition>(), 0x9F, g_CutsceneMusicReadyConditionVTable);
     case 160:
         return MakeCondition(NewScriptObject<NearestPointEdgeDistanceSquaredCondition>(), 0xA0, g_NearestPointEdgeDistanceSquaredConditionVTable);
     case 161:
         return MakeCondition(NewScriptObject<FocusIsAgentRef1Condition>(), 0xA1, g_FocusIsAgentRef1ConditionVTable);
     case 162:
-        return MakeCondition(NewScriptObject<PhysicsHasCollisionNodeCondition>(), 0xA2, g_PhysicsHasCollisionNodeConditionVTable);
+        return MakeCondition(NewScriptObject<HasPhysicsBodyCondition>(), 0xA2, g_HasPhysicsBodyConditionVTable);
     case 163:
     {
-        auto* condition = MakeCondition(NewScriptObject<FocusObjectByte0EqualsCondition>(), 0xA3, g_FocusObjectByte0EqualsConditionVTable);
-        condition->unknown14 = 0;
+        auto* condition = MakeCondition(NewScriptObject<FocusInstanceCounterEqualsThresholdCondition>(), 0xA3, g_FocusInstanceCounterEqualsThresholdConditionVTable);
+        condition->counter = 0;
         return condition;
     }
     case 164:
     {
-        auto* condition = MakeCondition(NewScriptObject<FocusObjectByte0EqualsCondition>(), 0xA4, g_FocusObjectByte0EqualsConditionVTable);
-        condition->unknown14 = 1;
+        auto* condition = MakeCondition(NewScriptObject<FocusInstanceCounterEqualsThresholdCondition>(), 0xA4, g_FocusInstanceCounterEqualsThresholdConditionVTable);
+        condition->counter = 1;
         return condition;
     }
     case 165:
     {
-        auto* condition = MakeCondition(NewScriptObject<FocusObjectByte0EqualsCondition>(), 0xA5, g_FocusObjectByte0EqualsConditionVTable);
-        condition->unknown14 = 2;
+        auto* condition = MakeCondition(NewScriptObject<FocusInstanceCounterEqualsThresholdCondition>(), 0xA5, g_FocusInstanceCounterEqualsThresholdConditionVTable);
+        condition->counter = 2;
         return condition;
     }
     case 166:
     {
-        auto* condition = MakeCondition(NewScriptObject<FocusObjectByte0EqualsCondition>(), 0xA6, g_FocusObjectByte0EqualsConditionVTable);
-        condition->unknown14 = 3;
+        auto* condition = MakeCondition(NewScriptObject<FocusInstanceCounterEqualsThresholdCondition>(), 0xA6, g_FocusInstanceCounterEqualsThresholdConditionVTable);
+        condition->counter = 3;
         return condition;
     }
     case 167:
         return MakeCondition(NewScriptObject<SplineDistanceToAgentRef1Condition>(), 0xA7, g_SplineDistanceToAgentRef1ConditionVTable);
     case 168:
-        return MakeCondition(NewScriptObject<ObstacleAheadCondition>(), 0xA8, g_ObstacleAheadConditionVTable);
+        return MakeCondition(NewScriptObject<GroundBelowPointAheadCondition>(), 0xA8, g_GroundBelowPointAheadConditionVTable);
     case 169:
-        return MakeCondition(NewScriptObject<NodeValue174CountCondition>(), 0xA9, g_NodeValue174CountConditionVTable);
+        return MakeCondition(NewScriptObject<CountedInstancesCondition>(), 0xA9, g_CountedInstancesConditionVTable);
     case 170:
-        return MakeCondition(NewScriptObject<IsFullInstanceNodeCondition>(), 0xAA, g_IsFullInstanceNodeConditionVTable);
+        return MakeCondition(NewScriptObject<CountedValueCondition>(), 0xAA, g_CountedValueConditionVTable);
     case 171:
-        return MakeCondition(NewScriptObject<NodeByte8cMinusGlobalCondition>(), 0xAB, g_NodeByte8cMinusGlobalConditionVTable);
+        return MakeCondition(NewScriptObject<RankAboveGlobalRankCondition>(), 0xAB, g_RankAboveGlobalRankConditionVTable);
     case 172:
         return MakeCondition(NewScriptObject<TimeSinceMarkCondition>(), 0xAC, g_TimeSinceMarkConditionVTable);
     case 173:
-        return MakeCondition(NewScriptObject<AlwaysZero173Condition>(), 0xAD, g_AlwaysZero173ConditionVTable);
+        return MakeCondition(NewScriptObject<NoOp173Condition>(), 0xAD, g_NoOp173ConditionVTable);
     case 174:
         return MakeCondition(NewScriptObject<AlwaysCondition>(), 0xAE, g_AlwaysConditionVTable);
     case 175:
         return MakeCondition(NewScriptObject<NeverCondition>(), 0xAF, g_NeverConditionVTable);
     case 176:
-        return MakeCondition(NewScriptObject<ChunksLoadedCondition>(), 0xB0, g_ChunksLoadedConditionVTable);
+        return MakeCondition(NewScriptObject<LinkedChunksQueuedCondition>(), 0xB0, g_LinkedChunksQueuedConditionVTable);
     case 177:
         return MakeCondition(NewScriptObject<FocusInSameChunkCondition>(), 0xB1, g_FocusInSameChunkConditionVTable);
     case 512:
@@ -1818,9 +1818,9 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 517:
         return MakeCondition(NewScriptObject<MeToPlayerSqrDistCondition>(), 0x205, g_MeToPlayerSqrDistConditionVTable);
     case 518:
-        return MakeCondition(NewScriptObject<AgentIsOnGroundCondition>(), 0x206, g_AgentIsOnGroundConditionVTable);
+        return MakeCondition(NewScriptObject<ShadowActiveCondition>(), 0x206, g_ShadowActiveConditionVTable);
     case 519:
-        return MakeCondition(NewScriptObject<CrateHasRedWumpaCondition>(), 0x207, g_CrateHasRedWumpaConditionVTable);
+        return MakeCondition(NewScriptObject<CrateHasWumpaCondition>(), 0x207, g_CrateHasWumpaConditionVTable);
     case 520:
         return MakeCondition(NewScriptObject<AgentWasTouchedCondition>(), 0x208, g_AgentWasTouchedConditionVTable);
     case 521:
@@ -1834,21 +1834,21 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 525:
         return MakeCondition(NewScriptObject<CanMoveForwardsCondition>(), 0x20D, g_CanMoveForwardsConditionVTable);
     case 526:
-        return MakeCondition(NewScriptObject<CanMoveBackwardsCondition>(), 0x20E, g_CanMoveBackwardsConditionVTable);
+        return MakeCondition(NewScriptObject<BlockedBehindCondition>(), 0x20E, g_BlockedBehindConditionVTable);
     case 527:
-        return MakeCondition(NewScriptObject<CanStrafeLeftCondition>(), 0x20F, g_CanStrafeLeftConditionVTable);
+        return MakeCondition(NewScriptObject<BlockedLeftCondition>(), 0x20F, g_BlockedLeftConditionVTable);
     case 528:
-        return MakeCondition(NewScriptObject<CanStrafeRightCondition>(), 0x210, g_CanStrafeRightConditionVTable);
+        return MakeCondition(NewScriptObject<BlockedRightCondition>(), 0x210, g_BlockedRightConditionVTable);
     case 529:
-        return MakeCondition(NewScriptObject<CanJumpForwardsCondition>(), 0x211, g_CanJumpForwardsConditionVTable);
+        return MakeCondition(NewScriptObject<WumpaFruitCountCondition>(), 0x211, g_WumpaFruitCountConditionVTable);
     case 530:
         return MakeCondition(NewScriptObject<CanFallCondition>(), 0x212, g_CanFallConditionVTable);
     case 531:
-        return MakeCondition(NewScriptObject<WillHitLowWallCondition>(), 0x213, g_WillHitLowWallConditionVTable);
+        return MakeCondition(NewScriptObject<NoOpWillHitLowWallCondition>(), 0x213, g_NoOpWillHitLowWallConditionVTable);
     case 532:
-        return MakeCondition(NewScriptObject<WillHitWallCondition>(), 0x214, g_WillHitWallConditionVTable);
+        return MakeCondition(NewScriptObject<AgentWasHitByTiedPairCondition>(), 0x214, g_AgentWasHitByTiedPairConditionVTable);
     case 533:
-        return MakeCondition(NewScriptObject<WillRunOffCliffCondition>(), 0x215, g_WillRunOffCliffConditionVTable);
+        return MakeCondition(NewScriptObject<AgentWasHitByThrownCharacterCondition>(), 0x215, g_AgentWasHitByThrownCharacterConditionVTable);
     case 534:
         return MakeCondition(NewScriptObject<AgentWasAttackedCondition>(), 0x216, g_AgentWasAttackedConditionVTable);
     case 535:
@@ -1860,7 +1860,7 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 538:
         return MakeCondition(NewScriptObject<PlayerToMyFocusSqrDistCondition>(), 0x21A, g_PlayerToMyFocusSqrDistConditionVTable);
     case 539:
-        return MakeCondition(NewScriptObject<WumpaNeededForPayGateCondition>(), 0x21B, g_WumpaNeededForPayGateConditionVTable);
+        return MakeCondition(NewScriptObject<PayGateNumberCondition>(), 0x21B, g_PayGateNumberConditionVTable);
     case 540:
         return MakeCondition(NewScriptObject<MeFacingPlayerCondition>(), 0x21C, g_MeFacingPlayerConditionVTable);
     case 541:
@@ -1872,7 +1872,7 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 544:
         return MakeCondition(NewScriptObject<PlayerCanSeeMeCondition>(), 0x220, g_PlayerCanSeeMeConditionVTable);
     case 545:
-        return MakeCondition(NewScriptObject<NodeTrafficCondition>(), 0x221, g_NodeTrafficConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerGunShotChargeCondition>(), 0x221, g_PlayerGunShotChargeConditionVTable);
     case 546:
         return MakeCondition(NewScriptObject<NodeIsAirborneCondition>(), 0x222, g_NodeIsAirborneConditionVTable);
     case 547:
@@ -1900,7 +1900,7 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 559:
         return MakeCondition(NewScriptObject<PlayerIsRunningCondition>(), 0x22F, g_PlayerIsRunningConditionVTable);
     case 560:
-        return MakeCondition(NewScriptObject<PlayerIsCrawlingCondition>(), 0x230, g_PlayerIsCrawlingConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerIsWalkingDuplicateCondition>(), 0x230, g_PlayerIsWalkingDuplicateConditionVTable);
     case 561:
         return MakeCondition(NewScriptObject<PlayerIsFallingCondition>(), 0x231, g_PlayerIsFallingConditionVTable);
     case 562:
@@ -1908,23 +1908,23 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 563:
         return MakeCondition(NewScriptObject<PlayerHoldingMultiToolCondition>(), 0x233, g_PlayerHoldingMultiToolConditionVTable);
     case 564:
-        return MakeCondition(NewScriptObject<PlayerIsSlammingCondition>(), 0x234, g_PlayerIsSlammingConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerIsSlammingTiedCondition>(), 0x234, g_PlayerIsSlammingTiedConditionVTable);
     case 565:
         return MakeCondition(NewScriptObject<PlayerIsSpinningCondition>(), 0x235, g_PlayerIsSpinningConditionVTable);
     case 566:
-        return MakeCondition(NewScriptObject<PlayerIsJumpingCondition>(), 0x236, g_PlayerIsJumpingConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerIsSlidingCondition>(), 0x236, g_PlayerIsSlidingConditionVTable);
     case 567:
-        return MakeCondition(NewScriptObject<HeadCanSeePlayerUnblockedCondition>(), 0x237, g_HeadCanSeePlayerUnblockedConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerIsAirborneCondition>(), 0x237, g_PlayerIsAirborneConditionVTable);
     case 568:
-        return MakeCondition(NewScriptObject<AmIHarmfulCondition>(), 0x238, g_AmIHarmfulConditionVTable);
+        return MakeCondition(NewScriptObject<HeadCanSeeNearPlayerCondition>(), 0x238, g_HeadCanSeeNearPlayerConditionVTable);
     case 569:
-        return MakeCondition(NewScriptObject<AttachedContextFlag8Condition>(), 0x239, g_AttachedContextFlag8ConditionVTable);
+        return MakeCondition(NewScriptObject<CanDamageCharacterCondition>(), 0x239, g_CanDamageCharacterConditionVTable);
     case 570:
-        return MakeCondition(NewScriptObject<DUMMY_570Condition>(), 0x23A, g_DUMMY_570ConditionVTable);
+        return MakeCondition(NewScriptObject<NoOp570Condition>(), 0x23A, g_NoOp570ConditionVTable);
     case 571:
-        return MakeCondition(NewScriptObject<DUMMY_571Condition>(), 0x23B, g_DUMMY_571ConditionVTable);
+        return MakeCondition(NewScriptObject<NoOp571Condition>(), 0x23B, g_NoOp571ConditionVTable);
     case 572:
-        return MakeCondition(NewScriptObject<CutsceneSkippedCondition>(), 0x23C, g_CutsceneSkippedConditionVTable);
+        return MakeCondition(NewScriptObject<NoOpCutsceneSkippedCondition>(), 0x23C, g_NoOpCutsceneSkippedConditionVTable);
     case 573:
         return MakeCondition(NewScriptObject<IsCirclePressedCondition>(), 0x23D, g_IsCirclePressedConditionVTable);
     case 574:
@@ -1934,83 +1934,83 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 576:
         return MakeCondition(NewScriptObject<IsR1PressedCondition>(), 0x240, g_IsR1PressedConditionVTable);
     case 577:
-        return MakeCondition(NewScriptObject<CharacterVehiclePointerCondition>(), 0x241, g_CharacterVehiclePointerConditionVTable);
+        return MakeCondition(NewScriptObject<RidesVehicleCondition>(), 0x241, g_RidesVehicleConditionVTable);
     case 578:
-        return MakeCondition(NewScriptObject<CharacterFlag23Condition>(), 0x242, g_CharacterFlag23ConditionVTable);
+        return MakeCondition(NewScriptObject<NoGroundAheadCondition>(), 0x242, g_NoGroundAheadConditionVTable);
     case 579:
-        return MakeCondition(NewScriptObject<IsChargedShotCondition>(), 0x243, g_IsChargedShotConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerJustShotCondition>(), 0x243, g_PlayerJustShotConditionVTable);
     case 580:
         return MakeCondition(NewScriptObject<IsDownBlastCondition>(), 0x244, g_IsDownBlastConditionVTable);
     case 581:
-        return MakeCondition(NewScriptObject<GlobalInstanceOp581Condition>(), 0x245, g_GlobalInstanceOp581ConditionVTable);
+        return MakeCondition(NewScriptObject<ShotAtMeCondition>(), 0x245, g_ShotAtMeConditionVTable);
     case 582:
         return MakeCondition(NewScriptObject<PlayerVisibleCondition>(), 0x246, g_PlayerVisibleConditionVTable);
     case 583:
-        return MakeCondition(NewScriptObject<SubPathPointFlag0Condition>(), 0x247, g_SubPathPointFlag0ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeBlockedCondition>(), 0x247, g_EdgeStartNodeBlockedConditionVTable);
     case 584:
-        return MakeCondition(NewScriptObject<PlayerVisible2Condition>(), 0x248, g_PlayerVisible2ConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerVisibleFromLeftCondition>(), 0x248, g_PlayerVisibleFromLeftConditionVTable);
     case 585:
-        return MakeCondition(NewScriptObject<PlayerVisible3Condition>(), 0x249, g_PlayerVisible3ConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerVisibleFromRightCondition>(), 0x249, g_PlayerVisibleFromRightConditionVTable);
     case 586:
-        return MakeCondition(NewScriptObject<CharacterFlag22Condition>(), 0x24A, g_CharacterFlag22ConditionVTable);
+        return MakeCondition(NewScriptObject<IsTiedSecondCondition>(), 0x24A, g_IsTiedSecondConditionVTable);
     case 587:
         return MakeCondition(NewScriptObject<IsPlayerCondition>(), 0x24B, g_IsPlayerConditionVTable);
     case 588:
-        return MakeCondition(NewScriptObject<ObjectContextFlag17Condition>(), 0x24C, g_ObjectContextFlag17ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByKickCondition>(), 0x24C, g_HitByKickConditionVTable);
     case 589:
-        return MakeCondition(NewScriptObject<HitByPunchCondition>(), 0x24D, g_HitByPunchConditionVTable);
+        return MakeCondition(NewScriptObject<HitBySpinCondition>(), 0x24D, g_HitBySpinConditionVTable);
     case 590:
-        return MakeCondition(NewScriptObject<HitByBodySlam2Condition>(), 0x24E, g_HitByBodySlam2ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByKind18Condition>(), 0x24E, g_HitByKind18ConditionVTable);
     case 591:
-        return MakeCondition(NewScriptObject<HitBySpinHitboxCondition>(), 0x24F, g_HitBySpinHitboxConditionVTable);
+        return MakeCondition(NewScriptObject<HitByProjectileCondition>(), 0x24F, g_HitByProjectileConditionVTable);
     case 592:
-        return MakeCondition(NewScriptObject<HitByBodySlamHitboxCondition>(), 0x250, g_HitByBodySlamHitboxConditionVTable);
+        return MakeCondition(NewScriptObject<HitByKneeDropCondition>(), 0x250, g_HitByKneeDropConditionVTable);
     case 593:
         return MakeCondition(NewScriptObject<CharacterHasVehicleCondition>(), 0x251, g_CharacterHasVehicleConditionVTable);
     case 594:
         return MakeCondition(NewScriptObject<IsVehicleRollerbrawlCondition>(), 0x252, g_IsVehicleRollerbrawlConditionVTable);
     case 595:
-        return MakeCondition(NewScriptObject<VehicleTypeNot2Condition>(), 0x253, g_VehicleTypeNot2ConditionVTable);
+        return MakeCondition(NewScriptObject<IsVehicleKind2Condition>(), 0x253, g_IsVehicleKind2ConditionVTable);
     case 596:
         return MakeCondition(NewScriptObject<IsVehicleHumiliskateCondition>(), 0x254, g_IsVehicleHumiliskateConditionVTable);
     case 597:
-        return MakeCondition(NewScriptObject<VehicleTypeNot4Condition>(), 0x255, g_VehicleTypeNot4ConditionVTable);
+        return MakeCondition(NewScriptObject<IsVehicleKind4Condition>(), 0x255, g_IsVehicleKind4ConditionVTable);
     case 598:
-        return MakeCondition(NewScriptObject<IsVehicle3Condition>(), 0x256, g_IsVehicle3ConditionVTable);
+        return MakeCondition(NewScriptObject<IsVehicleHoverboardCondition>(), 0x256, g_IsVehicleHoverboardConditionVTable);
     case 599:
-        return MakeCondition(NewScriptObject<SubPathPointFlag5Condition>(), 0x257, g_SubPathPointFlag5ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag5Condition>(), 0x257, g_EdgeStartNodeFlag5ConditionVTable);
     case 600:
-        return MakeCondition(NewScriptObject<SubPathPointFlag4Condition>(), 0x258, g_SubPathPointFlag4ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag4Condition>(), 0x258, g_EdgeStartNodeFlag4ConditionVTable);
     case 601:
-        return MakeCondition(NewScriptObject<SubPathPointFlag6Condition>(), 0x259, g_SubPathPointFlag6ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag6Condition>(), 0x259, g_EdgeStartNodeFlag6ConditionVTable);
     case 602:
-        return MakeCondition(NewScriptObject<PathSegmentFlag0Condition>(), 0x25A, g_PathSegmentFlag0ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeFlag8Condition>(), 0x25A, g_EdgeFlag8ConditionVTable);
     case 603:
-        return MakeCondition(NewScriptObject<SubPathPreviousPointFlag5Condition>(), 0x25B, g_SubPathPreviousPointFlag5ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeEndNodeFlag5Condition>(), 0x25B, g_EdgeEndNodeFlag5ConditionVTable);
     case 604:
-        return MakeCondition(NewScriptObject<SubPathPreviousPointFlag4Condition>(), 0x25C, g_SubPathPreviousPointFlag4ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeEndNodeFlag4Condition>(), 0x25C, g_EdgeEndNodeFlag4ConditionVTable);
     case 605:
-        return MakeCondition(NewScriptObject<SubPathPreviousPointFlag6Condition>(), 0x25D, g_SubPathPreviousPointFlag6ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeEndNodeFlag6Condition>(), 0x25D, g_EdgeEndNodeFlag6ConditionVTable);
     case 606:
-        return MakeCondition(NewScriptObject<SubPathPointFlag5bCondition>(), 0x25E, g_SubPathPointFlag5bConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag5DuplicateCondition>(), 0x25E, g_EdgeStartNodeFlag5DuplicateConditionVTable);
     case 607:
-        return MakeCondition(NewScriptObject<SubPathPointFlag4bCondition>(), 0x25F, g_SubPathPointFlag4bConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag4DuplicateCondition>(), 0x25F, g_EdgeStartNodeFlag4DuplicateConditionVTable);
     case 608:
-        return MakeCondition(NewScriptObject<SubPathPointFlag6bCondition>(), 0x260, g_SubPathPointFlag6bConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag6DuplicateCondition>(), 0x260, g_EdgeStartNodeFlag6DuplicateConditionVTable);
     case 609:
-        return MakeCondition(NewScriptObject<PlayerVectorLengthDifferenceCondition>(), 0x261, g_PlayerVectorLengthDifferenceConditionVTable);
+        return MakeCondition(NewScriptObject<SpeedAbovePlayerCondition>(), 0x261, g_SpeedAbovePlayerConditionVTable);
     case 610:
-        return MakeCondition(NewScriptObject<HitByCortexBoltCondition>(), 0x262, g_HitByCortexBoltConditionVTable);
+        return MakeCondition(NewScriptObject<HitByElectricCondition>(), 0x262, g_HitByElectricConditionVTable);
     case 611:
-        return MakeCondition(NewScriptObject<ObjectContextFlag1Condition>(), 0x263, g_ObjectContextFlag1ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByExplosionCondition>(), 0x263, g_HitByExplosionConditionVTable);
     case 612:
-        return MakeCondition(NewScriptObject<SubPathPointFlag2Condition>(), 0x264, g_SubPathPointFlag2ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag2Condition>(), 0x264, g_EdgeStartNodeFlag2ConditionVTable);
     case 613:
-        return MakeCondition(NewScriptObject<SubPathPreviousPointFlag2Condition>(), 0x265, g_SubPathPreviousPointFlag2ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeEndNodeFlag2Condition>(), 0x265, g_EdgeEndNodeFlag2ConditionVTable);
     case 614:
-        return MakeCondition(NewScriptObject<SubPathPointFlag2bCondition>(), 0x266, g_SubPathPointFlag2bConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlag2DuplicateCondition>(), 0x266, g_EdgeStartNodeFlag2DuplicateConditionVTable);
     case 615:
-        return MakeCondition(NewScriptObject<SubPathPointFlags56Condition>(), 0x267, g_SubPathPointFlags56ConditionVTable);
+        return MakeCondition(NewScriptObject<EdgeStartNodeFlagsClearCondition>(), 0x267, g_EdgeStartNodeFlagsClearConditionVTable);
     case 616:
         return MakeCondition(NewScriptObject<FocusPositionToPlayerDistanceSquaredCondition>(), 0x268, g_FocusPositionToPlayerDistanceSquaredConditionVTable);
     case 617:
@@ -2018,55 +2018,55 @@ void* BuildScriptCondition(void*, s32 id, s32 kind)
     case 618:
         return MakeCondition(NewScriptObject<PlayerSideOffsetCondition>(), 0x26A, g_PlayerSideOffsetConditionVTable);
     case 619:
-        return MakeCondition(NewScriptObject<PlayerNearCurrentKeyCondition>(), 0x26B, g_PlayerNearCurrentKeyConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerNearerAnotherKeyCondition>(), 0x26B, g_PlayerNearerAnotherKeyConditionVTable);
     case 620:
-        return MakeCondition(NewScriptObject<PlayerSplineVehicleValueCondition>(), 0x26C, g_PlayerSplineVehicleValueConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerHumiliskateCrouchedCondition>(), 0x26C, g_PlayerHumiliskateCrouchedConditionVTable);
     case 621:
-        return MakeCondition(NewScriptObject<CharacterHasHomeChunkCondition>(), 0x26D, g_CharacterHasHomeChunkConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerOutsideHomeChunkCondition>(), 0x26D, g_PlayerOutsideHomeChunkConditionVTable);
     case 622:
-        return MakeCondition(NewScriptObject<PlayerFlag57ClearCondition>(), 0x26E, g_PlayerFlag57ClearConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerScriptFlagClearCondition>(), 0x26E, g_PlayerScriptFlagClearConditionVTable);
     case 623:
         return MakeCondition(NewScriptObject<HasActorWeightCondition>(), 0x26F, g_HasActorWeightConditionVTable);
     case 624:
-        return MakeCondition(NewScriptObject<GameFlags44Is12Condition>(), 0x270, g_GameFlags44Is12ConditionVTable);
+        return MakeCondition(NewScriptObject<GameIsPlayingCondition>(), 0x270, g_GameIsPlayingConditionVTable);
     case 625:
-        return MakeCondition(NewScriptObject<ObjectContextFlag25Condition>(), 0x271, g_ObjectContextFlag25ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByWaterCondition>(), 0x271, g_HitByWaterConditionVTable);
     case 626:
-        return MakeCondition(NewScriptObject<ObjectContextFlag2Condition>(), 0x272, g_ObjectContextFlag2ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByFallThroughCondition>(), 0x272, g_HitByFallThroughConditionVTable);
     case 627:
-        return MakeCondition(NewScriptObject<PlayerVehicle1ValueCondition>(), 0x273, g_PlayerVehicle1ValueConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerRidesRollerbrawlCondition>(), 0x273, g_PlayerRidesRollerbrawlConditionVTable);
     case 628:
-        return MakeCondition(NewScriptObject<BothCharactersFlag14Condition>(), 0x274, g_BothCharactersFlag14ConditionVTable);
+        return MakeCondition(NewScriptObject<CortexDeadPlayerAliveCondition>(), 0x274, g_CortexDeadPlayerAliveConditionVTable);
     case 629:
-        return MakeCondition(NewScriptObject<GlobalInt3098e8Condition>(), 0x275, g_GlobalInt3098e8ConditionVTable);
+        return MakeCondition(NewScriptObject<ScriptGlobalFlagCondition>(), 0x275, g_ScriptGlobalFlagConditionVTable);
     case 630:
-        return MakeCondition(NewScriptObject<NodeValue134SetCondition>(), 0x276, g_NodeValue134SetConditionVTable);
+        return MakeCondition(NewScriptObject<InWaterCondition>(), 0x276, g_InWaterConditionVTable);
     case 631:
-        return MakeCondition(NewScriptObject<GameControllerField500HighCondition>(), 0x277, g_GameControllerField500HighConditionVTable);
+        return MakeCondition(NewScriptObject<TimedPlayCountCondition>(), 0x277, g_TimedPlayCountConditionVTable);
     case 632:
-        return MakeCondition(NewScriptObject<GameTimer57cCondition>(), 0x278, g_GameTimer57cConditionVTable);
+        return MakeCondition(NewScriptObject<TimedPlayTimeLeftCondition>(), 0x278, g_TimedPlayTimeLeftConditionVTable);
     case 633:
-        return MakeCondition(NewScriptObject<SecondCharacterGunStateCondition>(), 0x279, g_SecondCharacterGunStateConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerGunSecondCountCondition>(), 0x279, g_PlayerGunSecondCountConditionVTable);
     case 634:
-        return MakeCondition(NewScriptObject<HasAmmoCondition>(), 0x27A, g_HasAmmoConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerAmmoCondition>(), 0x27A, g_PlayerAmmoConditionVTable);
     case 635:
         return MakeCondition(NewScriptObject<CameraForwardDistanceCondition>(), 0x27B, g_CameraForwardDistanceConditionVTable);
     case 636:
-        return MakeCondition(NewScriptObject<ObjectContextFlag19Condition>(), 0x27C, g_ObjectContextFlag19ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByHeavyCondition>(), 0x27C, g_HitByHeavyConditionVTable);
     case 637:
-        return MakeCondition(NewScriptObject<GameModeIs5Condition>(), 0x27D, g_GameModeIs5ConditionVTable);
+        return MakeCondition(NewScriptObject<PairingIs5Condition>(), 0x27D, g_PairingIs5ConditionVTable);
     case 638:
-        return MakeCondition(NewScriptObject<ObjectContextFlags3or22Condition>(), 0x27E, g_ObjectContextFlags3or22ConditionVTable);
+        return MakeCondition(NewScriptObject<HitByBurningCondition>(), 0x27E, g_HitByBurningConditionVTable);
     case 639:
-        return MakeCondition(NewScriptObject<GlobalProgressionCondition>(), 0x27F, g_GlobalProgressionConditionVTable);
+        return MakeCondition(NewScriptObject<StoryAreaCondition>(), 0x27F, g_StoryAreaConditionVTable);
     case 640:
-        return MakeCondition(NewScriptObject<SecondCharacterVehicleValueCondition>(), 0x280, g_SecondCharacterVehicleValueConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerVehicleHeightCondition>(), 0x280, g_PlayerVehicleHeightConditionVTable);
     case 641:
         return MakeCondition(NewScriptObject<IsMoviePlayingCondition>(), 0x281, g_IsMoviePlayingConditionVTable);
     case 642:
-        return MakeCondition(NewScriptObject<PlayerFlag14Condition>(), 0x282, g_PlayerFlag14ConditionVTable);
+        return MakeCondition(NewScriptObject<PlayerIsDeadCondition>(), 0x282, g_PlayerIsDeadConditionVTable);
     case 643:
-        return MakeCondition(NewScriptObject<GameStateIsCondition>(), 0x283, g_GameStateIsConditionVTable);
+        return MakeCondition(NewScriptObject<PlayAreaIsCondition>(), 0x283, g_PlayAreaIsConditionVTable);
     case 644:
         return MakeCondition(NewScriptObject<TriggeredByOtherCharacterCondition>(), 0x284, g_TriggeredByOtherCharacterConditionVTable);
     default:

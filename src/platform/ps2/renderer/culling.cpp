@@ -19,15 +19,19 @@ namespace
 // Where the culling's data goes in VU0's memory
 constexpr s32 PlanesAddress = 0x80;
 constexpr s32 ViewAddress = 0x98;
+// A plane columns' quadwords
+constexpr s32 PlaneColumnRows = sizeof(PlaneColumns) / sizeof(Vector4);
+// The far set's sides are five times as far out
+constexpr f32 FarSidesScale = 5.0f;
 }
 
 extern "C"
 {
 BigVu0Packet* StartBigVu0Packet(BigVu0Packet* packet)
 {
-    packet->capacity = 0x100;
+    packet->capacity = BigVu0Packet::Capacity;
     packet->count = 0;
-    packet->unknown04 = 0;
+    packet->unused04 = 0;
     return packet;
 }
 
@@ -52,19 +56,19 @@ void SetPlaneColumn(PlaneColumns* columns, const Vector4* plane, s32 column)
 
 void SetSidePlaneColumns(PlaneColumns* columns, const Vector4* planes)
 {
-    for (u32 column = 0; column < 4; column++)
+    for (u32 column = 0; column < SidePlaneCount; column++)
     {
-        SetPlaneColumn(columns, &planes[column + 1], static_cast<s32>(column));
+        SetPlaneColumn(columns, &planes[column + FirstSidePlane], static_cast<s32>(column));
     }
 }
 
 void AddPlaneColumns(const PlaneColumns* columns, BigVu0Packet* packet)
 {
     const auto* rows = reinterpret_cast<const Vector4*>(columns);
-    for (s32 row = 0; row < 7; row++)
+    for (s32 row = 0; row < PlaneColumnRows; row++)
     {
         *reinterpret_cast<Vector4*>(packet->data[packet->count]) = rows[row];
-        packet->unknown04 = 0;
+        packet->unused04 = 0;
         packet->count++;
     }
 }
@@ -72,7 +76,7 @@ void AddPlaneColumns(const PlaneColumns* columns, BigVu0Packet* packet)
 void ClearPlaneColumns(PlaneColumns* columns)
 {
     auto* rows = reinterpret_cast<Vector4*>(columns);
-    for (s32 row = 0; row < 7; row++)
+    for (s32 row = 0; row < PlaneColumnRows; row++)
     {
         rows[row] = {0.0f, 0.0f, 0.0f, 0.0f};
     }
@@ -87,17 +91,18 @@ void ClearPlaneColumns(PlaneColumns* columns)
 void FrustumPlanes(f32 depth, Vector4* planes, const Vector4* eye, const Vector4* topRight, const Vector4* bottomRight,
                    const Vector4* bottomLeft, const Vector4* topLeft)
 {
-    PlaneFromTriangle(&planes[0], topRight, bottomLeft, bottomRight);
+    PlaneFromTriangle(&planes[NearPlane], topRight, bottomLeft, bottomRight);
     Vector4 along = {0.0f, 0.0f, depth, 1.0f};
-    PlaneAlongNormal(&planes[0], &along, &planes[5]);
-    planes[5].x = -planes[5].x;
-    planes[5].y = -planes[5].y;
-    planes[5].z = -planes[5].z;
-    planes[5].w = -planes[5].w;
-    PlaneFromTriangle(&planes[1], eye, bottomRight, topRight);
-    PlaneFromTriangle(&planes[2], eye, topLeft, bottomLeft);
-    PlaneFromTriangle(&planes[3], eye, topRight, topLeft);
-    PlaneFromTriangle(&planes[4], eye, bottomLeft, bottomRight);
+    PlaneAlongNormal(&planes[NearPlane], &along, &planes[FarPlane]);
+    planes[FarPlane].x = -planes[FarPlane].x;
+    planes[FarPlane].y = -planes[FarPlane].y;
+    planes[FarPlane].z = -planes[FarPlane].z;
+    planes[FarPlane].w = -planes[FarPlane].w;
+    // The sides: right, left, top and bottom
+    PlaneFromTriangle(&planes[FirstSidePlane], eye, bottomRight, topRight);
+    PlaneFromTriangle(&planes[FirstSidePlane + 1], eye, topLeft, bottomLeft);
+    PlaneFromTriangle(&planes[FirstSidePlane + 2], eye, topRight, topLeft);
+    PlaneFromTriangle(&planes[FirstSidePlane + 3], eye, bottomLeft, bottomRight);
 }
 
 // The near rectangle's half sizes are the near distance times the tangent of half the field of view (and the aspect across),
@@ -119,22 +124,22 @@ void ViewFrustumPlanes(f32 near, f32 far, f32 aspect, f32 scale, Vector4* planes
 // The view's planes taken into a space: the side planes as columns, the near and far ones as they are
 void ViewPlanesIn(const Matrix4x4* matrix, PlaneColumns* columns, Vector4* nearAndFar)
 {
-    Vector4 planes[6];
-    for (u32 plane = 0; plane < 6; plane++)
+    Vector4 planes[FrustumPlaneCount];
+    for (u32 plane = 0; plane < FrustumPlaneCount; plane++)
     {
         planes[plane] = g_ViewPlanes[plane];
     }
 
     TransformPlanes(planes, matrix);
     SetSidePlaneColumns(columns, planes);
-    nearAndFar[0] = planes[0];
-    nearAndFar[1] = planes[5];
+    nearAndFar[0] = planes[NearPlane];
+    nearAndFar[1] = planes[FarPlane];
 }
 
 void FarViewPlanesIn(const Matrix4x4* matrix, PlaneColumns* columns)
 {
-    Vector4 planes[6];
-    for (u32 plane = 0; plane < 6; plane++)
+    Vector4 planes[FrustumPlaneCount];
+    for (u32 plane = 0; plane < FrustumPlaneCount; plane++)
     {
         planes[plane] = g_FarViewPlanes[plane];
     }
@@ -147,14 +152,14 @@ void FarViewPlanesIn(const Matrix4x4* matrix, PlaneColumns* columns)
 u32* WriteChunkViewRows(u32* nearPlane, const Matrix4x4* matrix, u32* rows)
 {
     auto* row = reinterpret_cast<Vector4*>(rows);
-    for (s32 plane = 1; plane < 5; plane++)
+    for (s32 plane = FirstSidePlane; plane < static_cast<s32>(FarPlane); plane++)
     {
         TransformPlaneOf(g_FarViewPlanes, plane, matrix, row);
         row++;
     }
 
     Vector4 near;
-    TransformPlaneOf(g_ViewPlanes, 0, matrix, &near);
+    TransformPlaneOf(g_ViewPlanes, NearPlane, matrix, &near);
     *reinterpret_cast<Vector4*>(nearPlane) = near;
     return nearPlane;
 }
@@ -173,16 +178,16 @@ s32 UploadParticleView(Matrix4x4* matrices, s32 index)
     SetPlaneColumn(&columns, &nearAndFar[0], 0);
     SetPlaneColumn(&columns, &nearAndFar[1], 1);
     AddPlaneColumns(&columns, &packet);
-    const auto* rows = reinterpret_cast<const Vector4*>(matrices);
-    *reinterpret_cast<Vector4*>(packet.data[packet.count]) = rows[3];
-    packet.unknown04 = 0;
+    // The camera's place (its matrix's fourth row) and the second matrix
+    *reinterpret_cast<Vector4*>(packet.data[packet.count]) = *RowOf(&matrices[0], 3);
+    packet.unused04 = 0;
     packet.count++;
     for (s32 row = 0; row < 4; row++)
     {
-        *reinterpret_cast<Vector4*>(packet.data[packet.count + row]) = rows[4 + row];
+        *reinterpret_cast<Vector4*>(packet.data[packet.count + row]) = *RowOf(&matrices[1], row);
     }
 
-    packet.unknown04 = 0;
+    packet.unused04 = 0;
     packet.count += 4;
     s32 address = index * packet.count;
     SendToVu0(g_Vu0Programs, packet.data, packet.count, address);
@@ -374,7 +379,7 @@ void SetViewFrustum(f32 near, f32 far, f32 aspect, const s32* fieldOfView)
     s32 angle = *fieldOfView;
     ViewFrustumPlanes(near, far, aspect, 1.0f, g_ViewPlanes, &angle);
     angle = *fieldOfView;
-    ViewFrustumPlanes(near, far, aspect, 5.0f, g_FarViewPlanes, &angle);
+    ViewFrustumPlanes(near, far, aspect, FarSidesScale, g_FarViewPlanes, &angle);
 }
 
 void LoadChunkPlanes(const Matrix4x4* place)
@@ -405,7 +410,7 @@ void LoadPortalPlanes(const Matrix4x4* place, const Vector4* portal)
     FarViewPlanesIn(place, &columns);
     AddPlaneColumns(&columns, &packet);
     ClearPlaneColumns(&columns);
-    TransformPlaneOf(g_ViewPlanes, 0, place, &near);
+    TransformPlaneOf(g_ViewPlanes, NearPlane, place, &near);
     SetPlaneColumn(&columns, &near, 0);
     AddPlaneColumns(&columns, &packet);
     SendToVu0(g_Vu0Programs, packet.data, packet.count, PlanesAddress);
@@ -422,20 +427,20 @@ void LoadCullingView(const Matrix4x4* toClip, const Matrix4x4* toScreen, const V
         *reinterpret_cast<Vector4*>(packet.data[packet.count + row]) = reinterpret_cast<const Vector4*>(toClip)[row];
     }
 
-    packet.unknown04 = 0;
+    packet.unused04 = 0;
     packet.count += 4;
     for (s32 row = 0; row < 4; row++)
     {
         *reinterpret_cast<Vector4*>(packet.data[packet.count + row]) = reinterpret_cast<const Vector4*>(toScreen)[row];
     }
 
-    packet.unknown04 = 0;
+    packet.unused04 = 0;
     packet.count += 4;
     *reinterpret_cast<Vector4*>(packet.data[packet.count]) = *camera;
-    packet.unknown04 = 0;
+    packet.unused04 = 0;
     packet.count++;
     SendToVu0(g_Vu0Programs, packet.data, packet.count, ViewAddress);
-    SelectVu0Programs(g_Vu0Programs, 2, true);
+    SelectVu0Programs(g_Vu0Programs, CullingPrograms, true);
     Matrix4x4 identity;
     InitIdentityMatrix(&identity);
     CullLoadLink(&identity, &identity);

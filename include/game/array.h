@@ -41,8 +41,9 @@ struct PointerArray
 };
 CHECK_SIZE(PointerArray<void>, 0x10);
 
-// The retail iterators over the pointer arrays (two instances of the template's: D_00302A10, its base D_00302A68, and D_00302988,
-// its base D_003029D8, which has no second Current): the array and the index it's at, done outside the array
+// The retail iterators over the pointer arrays (two instances of the template's over a menu page's items: D_00302A10, its base
+// D_00302A68, the page's lookups', and DrawMenuPage's D_00302988, its base D_003029D8, which has no second Current): the array
+// and the index it's at, done outside the array
 struct ArrayIterator
 {
     const GccVTableEntry* vtable;
@@ -83,15 +84,15 @@ struct ArrayIterator
     void** TextsCurrentAgain() RETAIL(FUN_001ad0d0);
     ArrayIterator* TextsAssign(const ArrayIterator* other) RETAIL(func_001AD0E8);
 
-    void OtherDestroy(u32 flags) RETAIL(FUN_0025c138);
-    void OtherBaseDestroy(u32 flags) RETAIL(FUN_0025c108);
-    void OtherFirst() RETAIL(FUN_0025c168);
-    u32 OtherIsDone() RETAIL(FUN_0025c170);
-    void** OtherCurrent() RETAIL(FUN_0025c1b0);
-    void OtherNext() RETAIL(FUN_0025c1a0);
-    void OtherPrevious() RETAIL(FUN_0025cfc0);
-    void OtherLast() RETAIL(FUN_0025cfd0);
-    ArrayIterator* OtherAssign(const ArrayIterator* other) RETAIL(func_0025CFE8);
+    void DrawnItemsDestroy(u32 flags) RETAIL(FUN_0025c138);
+    void DrawnItemsBaseDestroy(u32 flags) RETAIL(FUN_0025c108);
+    void DrawnItemsFirst() RETAIL(FUN_0025c168);
+    u32 DrawnItemsIsDone() RETAIL(FUN_0025c170);
+    void** DrawnItemsCurrent() RETAIL(FUN_0025c1b0);
+    void DrawnItemsNext() RETAIL(FUN_0025c1a0);
+    void DrawnItemsPrevious() RETAIL(FUN_0025cfc0);
+    void DrawnItemsLast() RETAIL(FUN_0025cfd0);
+    ArrayIterator* DrawnItemsAssign(const ArrayIterator* other) RETAIL(func_0025CFE8);
 
     // The instances module's iterator over the reference arrays (the queued objects, the instances with events: D_002F5F80, its
     // base the handle walk's D_002F2DE0), and the renderer's over a renderer's text queue (D_002F6398, its base D_002F63E8) and
@@ -315,7 +316,7 @@ extern "C"
 {
     extern const GccVTableEntry g_SizedArrayIteratorBaseVTable[] RETAIL(D_00305900);
     extern const GccVTableEntry g_ArrayIteratorBaseVTable[] RETAIL(D_00302A68);
-    extern const GccVTableEntry g_OtherArrayIteratorBaseVTable[] RETAIL(D_003029D8);
+    extern const GccVTableEntry g_DrawnItemsIteratorBaseVTable[] RETAIL(D_003029D8);
     extern const GccVTableEntry g_FontsIteratorBaseVTable[] RETAIL(D_002F6C78);
     extern const GccVTableEntry g_TextsIteratorBaseVTable[] RETAIL(D_002F6BE8);
     extern const GccVTableEntry g_RendererFontsIteratorBaseVTable[] RETAIL(D_002F63E8);

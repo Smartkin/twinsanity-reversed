@@ -17,11 +17,11 @@ EABI_EXPORT(BossCameraLimitTurn, &BossCamera::LimitTurn);
 EABI_EXPORT(CameraSplineAtParameter, &CameraSplineCamera::AtParameter);
 EABI_EXPORT(FUN_00279f80, &CameraSplineCamera::OffsetAt);
 EABI_EXPORT(FUN_00279d78, &CameraSplineCamera::PointBetween);
-EABI_EXPORT(FUN_0027a248, &Camera1C09::AtParameter);
+EABI_EXPORT(FUN_0027a248, &SplineArmCamera::AtParameter);
 EABI_EXPORT(FUN_0027d880, &CameraPoint2::AtParameter);
-EABI_EXPORT(FUN_0027da20, &Camera1C0C::AtParameter);
+EABI_EXPORT(FUN_0027da20, &OrbitCamera::AtParameter);
 EABI_EXPORT(CameraLine2AtParameter, &CameraLine2::AtParameter);
-EABI_EXPORT(FUN_0027dbf8, &Camera1C0E::AtParameter);
+EABI_EXPORT(FUN_0027dbf8, &KeyedCamera::AtParameter);
 EABI_EXPORT(FUN_0027ddb0, &CameraZone::AtParameter);
 EABI_EXPORT(FUN_0027e148, EaseInOut);
 EABI_EXPORT(FUN_0027a390, RotationAt);
@@ -34,8 +34,6 @@ extern "C"
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-
 // The main camera's angles are tagged values' (65536ths of a turn)
 void ReadAngle(u32* angle, Stream* stream)
 {
@@ -47,12 +45,23 @@ void ReadVector(Stream* stream, Vector4* vector)
     stream->Read(vector, sizeof(Vector4), 1);
 }
 
+// A new spline camera's offset along its spline, a new second point camera's share of the way
+constexpr f32 SplineCameraOffset = 6.0f;
+constexpr f32 HalfWay = 0.5f;
+
 // What every subtype's read starts with
 void ReadBase(CameraSubtype* camera, Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&camera->flags));
+    stream->ReadS32(reinterpret_cast<s32*>(&camera->flags.value));
     stream->ReadF32(&camera->rate);
     stream->ReadF32(&camera->offset);
+}
+
+// A new subtype's flags: its followers go their own way
+void SetInitialFlags(CameraSubtype* camera)
+{
+    camera->flags.value = 0;
+    camera->flags.follow = CameraSubtype::FollowOwnWay;
 }
 
 // The base's destructor's part every subtype's has
@@ -106,9 +115,10 @@ s32 SampleBefore(const CameraSpline* spline, f32 along)
     return sample;
 }
 
-f32 SampleShare(u32 sample, const CameraSpline* spline)
+// The share of the samples' vectors before an index among them
+f32 IndexShare(u32 index, const CameraSpline* spline)
 {
-    return static_cast<f32>(sample) / static_cast<f32>(spline->count * 2 + 2);
+    return static_cast<f32>(index) / static_cast<f32>((spline->count + 1) * CameraSpline::VectorsPerSample);
 }
 }
 
@@ -120,7 +130,7 @@ void ReadLine(Vector4* line, Stream* stream)
 
 CameraSubtype* CameraSubtype::Construct(CameraSubtype* camera)
 {
-    camera->flags = 1;
+    SetInitialFlags(camera);
     camera->vtable = g_CameraSubtypeVTable;
     camera->offset = 0.0f;
     return camera;
@@ -131,7 +141,7 @@ void CameraSubtype::Destroy(u32 destroyFlags)
     DestroyBase(this, destroyFlags);
 }
 
-void CameraSubtype::Nothing()
+void CameraSubtype::TakeLast()
 {
 }
 
@@ -142,7 +152,7 @@ void CameraSubtype::Read(Stream* stream)
 
 CameraPoint* CameraPoint::Construct(CameraPoint* camera)
 {
-    camera->flags = 1;
+    SetInitialFlags(camera);
     camera->vtable = g_CameraPointVTable;
     camera->offset = 0.0f;
     return camera;
@@ -177,7 +187,7 @@ void CameraPoint::Read(Stream* stream)
 
 CameraLine* CameraLine::Construct(CameraLine* camera)
 {
-    camera->flags = 1;
+    SetInitialFlags(camera);
     camera->vtable = g_CameraLineVTable;
     camera->offset = 0.0f;
     return camera;
@@ -217,20 +227,19 @@ void CameraLine::Read(Stream* stream)
 
 CameraPath* CameraPath::Construct(CameraPath* camera)
 {
-    camera->flags = 1;
+    SetInitialFlags(camera);
     camera->vtable = g_CameraPathVTable;
     camera->offset = 0.0f;
     // (Its point count is what the memory had)
     camera->path.vtable = g_LayoutPathVTable;
     camera->path.lengths = nullptr;
     camera->path.points = nullptr;
-    camera->path.unknown48 = -1;
+    camera->path.searchSegment = -1;
     return camera;
 }
 
 void CameraPath::Destroy(u32 destroyFlags)
 {
-    constexpr u32 DestroyOnly = 2;
     vtable = g_CameraPathVTable;
     path.Destroy(DestroyOnly);
     DestroyBase(this, destroyFlags);
@@ -248,6 +257,7 @@ f32 CameraPath::At(const Vector4* target, CameraTarget*, Vector4* out)
 
 void CameraPath::AtParameter(f32 along, Vector4* out)
 {
+    // The path's length: its last segment's arc length from the start (a B-spline's segments are 3 fewer than its points)
     f32 length = path.lengths[path.count - 4];
     PathPointAt(Clamped(along + offset / length), &path, out);
 }
@@ -259,9 +269,8 @@ u32 CameraPath::Type()
 
 void CameraPath::Read(Stream* stream)
 {
-    constexpr u32 ReadSlot = 3;
     ReadBase(this, stream);
-    CallVirtual<void>(&path, path.vtable, ReadSlot, stream);
+    CallVirtual<void>(&path, path.vtable, LayoutPath::ReadSlot, stream);
 }
 
 void BossCamera::Destroy(u32 destroyFlags)
@@ -308,9 +317,9 @@ void BossCamera::AtParameter(f32, Vector4*)
 {
 }
 
-void BossCamera::TakeLast(const Vector4* point)
+void BossCamera::TakeLast(const Vector4* place)
 {
-    last = *point;
+    last = *place;
     VuTransformPoint(&worldToArena, &last, &last);
 }
 
@@ -357,8 +366,7 @@ f32 BossCamera::HeightAt(const Vector4* place)
 
 void BossCamera::LimitTurn(f32 radius, Vector4* place)
 {
-    constexpr f32 NoLimit = Rounded(5e-5);
-    constexpr f32 AnglePerRadian = 0x1.45f306p+13f;
+    constexpr f32 NoLimit = Epsilon;
     f32 limit = turnLimit;
     if (limit < -NoLimit || NoLimit < limit)
     {
@@ -367,7 +375,7 @@ void BossCamera::LimitTurn(f32 radius, Vector4* place)
         f32 cosine = (place->x * last.x + place->z * last.z) / lengths;
         s32 angle;
         AngleOfCosine(cosine, &angle);
-        if (static_cast<s32>(turn * AnglePerRadian) < angle)
+        if (static_cast<s32>(turn * RadiansToAngle) < angle)
         {
             // Turned the limit either way from the last place: the nearer one
             f32 step = turnLimit / radius;
@@ -400,11 +408,10 @@ void BossCamera::LimitTurn(f32 radius, Vector4* place)
 
 void CameraSplineCamera::Destroy(u32 destroyFlags)
 {
-    constexpr u32 DestroyAndFree = 3;
     vtable = g_CameraSplineCameraVTable;
     if (spline != nullptr)
     {
-        CallVirtual<void>(spline, spline->vtable, 1, DestroyAndFree);
+        spline->DestroyVirtual(DestroyAndFree);
     }
 
     DestroyBase(this, destroyFlags);
@@ -443,19 +450,19 @@ void CameraSplineCamera::Read(Stream* stream)
 {
     ReadBase(this, stream);
     auto* made = static_cast<CameraSpline*>(MemoryAllocate(sizeof(CameraSpline)));
-    made->unknown48 = -1;
+    made->searchSegment = -1;
     made->vtable = g_CameraSplineVTable;
     made->samples = nullptr;
     made->lengths = nullptr;
     spline = made;
     made->Read(stream);
     // Into the flags' low half (their high half is what the memory had)
-    stream->ReadS16(reinterpret_cast<s16*>(&splineFlags));
+    stream->ReadS16(reinterpret_cast<s16*>(&splineFlags.value));
 }
 
 f32 CameraSplineCamera::OffsetAt(f32 along)
 {
-    if ((splineFlags & FlagTakesOffset) != 0)
+    if (splineFlags.takesOffset != 0)
     {
         return offset;
     }
@@ -468,15 +475,15 @@ f32 CameraSplineCamera::OffsetAt(f32 along)
 
     Vector4 point;
     SplineSamplePoint(spline, &point, sample);
-    u32 pair = static_cast<u32>(sample) << 1;
+    u32 index = static_cast<u32>(sample) * CameraSpline::VectorsPerSample;
     f32 before = 0.0f;
-    u32 beforeSample = 0;
-    SampleShort(pair, &before, &beforeSample, 1);
+    u32 beforeIndex = 0;
+    KeyOffsetAt(index, &before, &beforeIndex, 1);
     f32 after = 0.0f;
-    u32 afterSample = 0;
-    SampleShort(pair, &after, &afterSample, 0);
-    f32 afterShare = SampleShare(afterSample, spline);
-    f32 beforeShare = SampleShare(beforeSample, spline);
+    u32 afterIndex = 0;
+    KeyOffsetAt(index, &after, &afterIndex, 0);
+    f32 afterShare = IndexShare(afterIndex, spline);
+    f32 beforeShare = IndexShare(beforeIndex, spline);
     f32 past = along - beforeShare;
     if (past < 0.0f)
     {
@@ -497,15 +504,15 @@ void CameraSplineCamera::PointBetween(f32 along, const Vector4* target, Vector4*
 
     Vector4 point;
     SplineSamplePoint(spline, &point, sample);
-    u32 pair = static_cast<u32>(sample) << 1;
+    u32 index = static_cast<u32>(sample) * CameraSpline::VectorsPerSample;
     f32 before = 0.0f;
-    u32 beforeSample = 0;
-    SampleByte(pair, &before, &beforeSample, 1);
+    u32 beforeIndex = 0;
+    KeyShareAt(index, &before, &beforeIndex, 1);
     f32 after = 0.0f;
-    u32 afterSample = 0;
-    SampleByte(pair, &after, &afterSample, 0);
-    f32 afterShare = SampleShare(afterSample, spline);
-    f32 beforeShare = SampleShare(beforeSample, spline);
+    u32 afterIndex = 0;
+    KeyShareAt(index, &after, &afterIndex, 0);
+    f32 afterShare = IndexShare(afterIndex, spline);
+    f32 beforeShare = IndexShare(beforeIndex, spline);
     f32 past = along - beforeShare;
     if (past < 0.0f)
     {
@@ -520,32 +527,35 @@ void CameraSplineCamera::PointBetween(f32 along, const Vector4* target, Vector4*
     LinePointAt((after - before) * past + before, line, out);
 }
 
-void CameraSplineCamera::SampleByte(u32 sample, f32* value, u32* found, u32 backwards)
+void CameraSplineCamera::KeyShareAt(u32 index, f32* share, u32* found, u32 backwards)
 {
-    u32 word = 0;
-    SampleWord(sample, &word, found, backwards);
-    *value = SampleByteValue(&word);
+    u32 key = 0;
+    KeyAt(index, &key, found, backwards);
+    *share = KeyShare(&key);
 }
 
-void CameraSplineCamera::SampleShort(u32 sample, f32* value, u32* found, u32 backwards)
+void CameraSplineCamera::KeyOffsetAt(u32 index, f32* offset, u32* found, u32 backwards)
 {
-    u32 word = 0;
-    SampleWord(sample, &word, found, backwards);
-    *value = SampleShortValue(&word);
+    u32 key = 0;
+    KeyAt(index, &key, found, backwards);
+    *offset = KeyOffset(&key);
 }
 
-void CameraSplineCamera::SampleWord(u32 sample, u32* word, u32* found, u32 backwards)
+// (Without a key the last W walked past stays in the key, the index found unset)
+void CameraSplineCamera::KeyAt(u32 index, u32* key, u32* found, u32 backwards)
 {
-    constexpr u32 Skipped = 1u << 24;
+    constexpr s32 Stride = CameraSpline::VectorsPerSample;
     const CameraSpline* followed = spline;
-    u32 at = backwards != 0 ? sample : sample + 2;
-    u32 end = followed->count * 2 + 2;
-    s32 step = backwards != 0 ? -2 : 2;
+    u32 at = backwards != 0 ? index : index + Stride;
+    u32 end = (followed->count + 1) * Stride;
+    s32 step = backwards != 0 ? -Stride : Stride;
     const Vector4* samples = followed->samples;
     while (at < end)
     {
-        *word = __builtin_bit_cast(u32, samples[at].w);
-        if ((*word & Skipped) == 0)
+        CameraSplineKey read;
+        read.value = __builtin_bit_cast(u32, samples[at].w);
+        *key = read.value;
+        if (read.passedOver == 0)
         {
             *found = at;
             return;
@@ -555,28 +565,33 @@ void CameraSplineCamera::SampleWord(u32 sample, u32* word, u32* found, u32 backw
     }
 }
 
-f32 SampleByteValue(const u32* word)
+f32 KeyShare(const u32* key)
 {
-    constexpr f32 Unit = 0x1.4p-5f;
-    return static_cast<f32>(*word & 0xFF) * Unit + -5.0f;
+    constexpr f32 ShareUnit = 0x1.4p-5f;
+    constexpr f32 LeastShare = -5.0f;
+    CameraSplineKey read;
+    read.value = *key;
+    return static_cast<f32>(read.towardTarget) * ShareUnit + LeastShare;
 }
 
-f32 SampleShortValue(const u32* word)
+f32 KeyOffset(const u32* key)
 {
-    constexpr f32 Unit = 0x1.9p-10f;
-    return static_cast<f32>((*word >> 8) & 0xFFFF) * Unit + -50.0f;
+    constexpr f32 OffsetUnit = 0x1.9p-10f;
+    constexpr f32 LeastOffset = -50.0f;
+    CameraSplineKey read;
+    read.value = *key;
+    return static_cast<f32>(read.offset) * OffsetUnit + LeastOffset;
 }
 
-void Camera1C09::Destroy(u32 destroyFlags)
+void SplineArmCamera::Destroy(u32 destroyFlags)
 {
-    constexpr u32 DestroyOnly = 2;
-    vtable = g_Camera1C09VTable;
+    vtable = g_SplineArmCameraVTable;
     DestroySpline(&spline, DestroyOnly);
     FreeKeys(&rotations);
     DestroyBase(this, destroyFlags);
 }
 
-f32 Camera1C09::At(const Vector4* target, CameraTarget*, Vector4* out)
+f32 SplineArmCamera::At(const Vector4* target, CameraTarget*, Vector4* out)
 {
     CurveSearch search;
     search.segment = -1;
@@ -586,9 +601,9 @@ f32 Camera1C09::At(const Vector4* target, CameraTarget*, Vector4* out)
     return along + offset / spline.lengths[spline.count - 1];
 }
 
-void Camera1C09::AtParameter(f32 along, Vector4* out)
+void SplineArmCamera::AtParameter(f32 along, Vector4* out)
 {
-    constexpr f32 Out = 5.0f;
+    constexpr f32 ArmLength = 5.0f;
     f32 at = Clamped(along + offset / spline.lengths[spline.count - 1]);
     f32 into;
     s32 segment = SplineSegmentAt(at * (static_cast<f32>(spline.count) * spline.step), &spline, &into);
@@ -598,15 +613,15 @@ void Camera1C09::AtParameter(f32 along, Vector4* out)
     Matrix4x4 turned;
     InitIdentityMatrix(&turned);
     MatrixFromRotation(&turned, &rotation);
-    *reinterpret_cast<Vector4*>(turned.m[3]) = *out;
-    Vector4 ahead = {0.0f, 0.0f, Out, 1.0f};
+    *RowOf(&turned, 3) = *out;
+    Vector4 ahead = {0.0f, 0.0f, ArmLength, 1.0f};
     VuTransformPoint(&turned, &ahead, &ahead);
     *out = ahead;
 }
 
-u32 Camera1C09::Type()
+u32 SplineArmCamera::Type()
 {
-    return Type1C09;
+    return TypeSplineArm;
 }
 
 void CameraPoint2::Destroy(u32 destroyFlags)
@@ -617,25 +632,18 @@ void CameraPoint2::Destroy(u32 destroyFlags)
 
 f32 CameraPoint2::At(const Vector4* target, CameraTarget*, Vector4* out)
 {
-    enum Modes : u32
-    {
-        ShareOfTheWay = 0,
-        FromTheTarget = 1,
-        NoFurtherThanThePoint = 2,
-    };
-
     // The line from the target to the point
     Vector4 line[2];
     line[0] = *target;
     line[1] = point;
     s32 how = static_cast<s32>(mode);
-    if (how == ShareOfTheWay)
+    if (how == ModeShareOfTheWay)
     {
         LinePointAt(distance, line, out);
         return 1.0f;
     }
 
-    if (how != FromTheTarget && how != NoFurtherThanThePoint)
+    if (how != ModeFromTheTarget && how != ModeNoFurtherThanThePoint)
     {
         return 1.0f;
     }
@@ -651,7 +659,7 @@ f32 CameraPoint2::At(const Vector4* target, CameraTarget*, Vector4* out)
     out->z = out->z * distance + line[0].z;
     out->x = out->x * distance + line[0].x;
     out->y = out->y * distance + line[0].y;
-    if (how == NoFurtherThanThePoint && 1.0f < NearestLineParameter(line, out))
+    if (how == ModeNoFurtherThanThePoint && 1.0f < NearestLineParameter(line, out))
     {
         *out = line[1];
     }
@@ -679,12 +687,12 @@ void CameraPoint2::Read(Stream* stream)
     mode = static_cast<u8>(how);
 }
 
-void Camera1C0C::Destroy(u32 destroyFlags)
+void OrbitCamera::Destroy(u32 destroyFlags)
 {
     DestroyBase(this, destroyFlags);
 }
 
-f32 Camera1C0C::At(const Vector4*, CameraTarget* follower, Vector4* out)
+f32 OrbitCamera::At(const Vector4*, CameraTarget* follower, Vector4* out)
 {
     Vector4 target = follower->objectPosition;
     target.y = centre.y;
@@ -727,19 +735,19 @@ f32 Camera1C0C::At(const Vector4*, CameraTarget* follower, Vector4* out)
     return 0.0f;
 }
 
-void Camera1C0C::AtParameter(f32, Vector4*)
+void OrbitCamera::AtParameter(f32, Vector4*)
 {
 }
 
-u32 Camera1C0C::Type()
+u32 OrbitCamera::Type()
 {
-    return Type1C0C;
+    return TypeOrbit;
 }
 
-void Camera1C0C::Read(Stream* stream)
+void OrbitCamera::Read(Stream* stream)
 {
     // Four bytes over its flags
-    stream->Read(this, 4, 1);
+    stream->Read(&flags, sizeof(flags), 1);
 }
 
 void CameraLine2::Destroy(u32 destroyFlags)
@@ -786,38 +794,37 @@ void CameraLine2::Read(Stream* stream)
     stream->ReadF32(&farDistance);
 }
 
-void Camera1C0E::Destroy(u32 destroyFlags)
+void KeyedCamera::Destroy(u32 destroyFlags)
 {
-    constexpr u32 DestroyAndFree = 3;
-    vtable = g_Camera1C0EVTable;
+    vtable = g_KeyedCameraVTable;
     if (spline != nullptr)
     {
-        CallVirtual<void>(spline, spline->vtable, 1, DestroyAndFree);
+        spline->DestroyVirtual(DestroyAndFree);
     }
 
     FreeKeys(&keys);
     DestroyBase(this, destroyFlags);
 }
 
-f32 Camera1C0E::At(const Vector4*, CameraTarget*, Vector4*)
+f32 KeyedCamera::At(const Vector4*, CameraTarget*, Vector4*)
 {
     return 0.0f;
 }
 
-void Camera1C0E::AtParameter(f32, Vector4*)
+void KeyedCamera::AtParameter(f32, Vector4*)
 {
 }
 
-u32 Camera1C0E::Type()
+u32 KeyedCamera::Type()
 {
-    return Type1C0E;
+    return TypeKeyed;
 }
 
-void Camera1C0E::Read(Stream*)
+void KeyedCamera::Read(Stream*)
 {
 }
 
-u32 Camera1C0E::Play(TimeClock* clock, Vector4* position, Vector4* rotation)
+u32 KeyedCamera::Play(TimeClock* clock, Vector4* position, Vector4* rotation)
 {
     constexpr f32 Speed = 20.0f;
     if (playing == 0)
@@ -900,38 +907,39 @@ CameraSubtype* MakeCameraSubtype(void*, u32 type)
         auto* camera = static_cast<CameraSplineCamera*>(
             CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(CameraSplineCamera)))));
         camera->vtable = g_CameraSplineCameraVTable;
-        camera->offset = 6.0f;
-        camera->splineFlags |= CameraSplineCamera::FlagTakesOffset;
+        camera->offset = SplineCameraOffset;
+        camera->splineFlags.takesOffset = 1;
         camera->spline = nullptr;
         return camera;
     }
-    case CameraSubtype::Type1C09:
+    case CameraSubtype::TypeSplineArm:
     {
-        auto* camera = static_cast<Camera1C09*>(CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(Camera1C09)))));
+        auto* camera = static_cast<SplineArmCamera*>(
+            CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(SplineArmCamera)))));
         camera->rotations.keys = nullptr;
-        camera->vtable = g_Camera1C09VTable;
+        camera->vtable = g_SplineArmCameraVTable;
         camera->rotations.eases = 1;
-        camera->rotations.growth = 0x40;
+        camera->rotations.growth = CameraRotationKeys::Growth;
         camera->rotations.count = 0;
         camera->rotations.capacity = 0;
         camera->spline.vtable = g_CameraSplineVTable;
         camera->spline.lengths = nullptr;
         camera->spline.samples = nullptr;
-        camera->spline.unknown48 = -1;
+        camera->spline.searchSegment = -1;
         return camera;
     }
     case CameraSubtype::TypePoint2:
     {
         auto* camera = static_cast<CameraPoint2*>(CameraPoint::Construct(static_cast<CameraPoint*>(MemoryAllocate(sizeof(CameraPoint2)))));
         camera->vtable = g_CameraPoint2VTable;
-        camera->distance = 0.5f;
-        camera->mode = 0;
+        camera->distance = HalfWay;
+        camera->mode = CameraPoint2::ModeShareOfTheWay;
         return camera;
     }
-    case CameraSubtype::Type1C0C:
+    case CameraSubtype::TypeOrbit:
     {
-        CameraSubtype* camera = CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(Camera1C0C))));
-        camera->vtable = g_Camera1C0CVTable;
+        CameraSubtype* camera = CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(OrbitCamera))));
+        camera->vtable = g_OrbitCameraVTable;
         return camera;
     }
     case CameraSubtype::TypeLine2:
@@ -940,14 +948,14 @@ CameraSubtype* MakeCameraSubtype(void*, u32 type)
         camera->vtable = g_CameraLine2VTable;
         return camera;
     }
-    case CameraSubtype::Type1C0E:
+    case CameraSubtype::TypeKeyed:
     {
-        auto* camera = static_cast<Camera1C0E*>(CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(Camera1C0E)))));
+        auto* camera = static_cast<KeyedCamera*>(CameraSubtype::Construct(static_cast<CameraSubtype*>(MemoryAllocate(sizeof(KeyedCamera)))));
         camera->spline = nullptr;
-        camera->vtable = g_Camera1C0EVTable;
+        camera->vtable = g_KeyedCameraVTable;
         camera->keys.keys = nullptr;
         camera->keys.eases = 1;
-        camera->keys.growth = 0x40;
+        camera->keys.growth = CameraRotationKeys::Growth;
         camera->keys.count = 0;
         camera->keys.capacity = 0;
         camera->playing = 0;
@@ -976,12 +984,10 @@ void DestroyCameraItemBuilder(void* factory, u32 destroyFlags)
 
 f32 EaseInOut(f32 share, const f32* sharpness)
 {
-    constexpr f32 QuarterTurn = 0x1.921fb6p+0f;
-    constexpr f32 HalfTurn = 0x1.921fb6p+1f;
     s32 angle;
-    AngleFrom(&angle, *sharpness * QuarterTurn, AngleRadians);
+    AngleFrom(&angle, *sharpness * HalfPi, AngleRadians);
     f32 scale = 1.0f / SinOfAngle(&angle);
-    AngleFrom(&angle, (share - 0.5f) * *sharpness * HalfTurn, AngleRadians);
+    AngleFrom(&angle, (share - 0.5f) * *sharpness * Pi, AngleRadians);
     return (SinOfAngle(&angle) * scale + 1.0f) * 0.5f;
 }
 
@@ -1024,10 +1030,10 @@ Vector4* RotationAt(Vector4* out, const CameraRotationKeys* keys, f32 along)
 
 MainCamera* MainCamera::Construct(MainCamera* camera)
 {
-    camera->flags = 0;
-    camera->switches = 0;
+    camera->flags.value = 0;
+    camera->switches.value = 0;
     camera->blendTime = 1.0f;
-    camera->flags = (camera->flags & ~FlagSteers) | FlagSteers;
+    camera->flags.steers = 1;
     camera->first = nullptr;
     camera->second = nullptr;
     camera->group = 0;
@@ -1079,13 +1085,13 @@ void MainCamera::Read(Stream* stream)
     }
 
     ObjectBuilder* builder = g_ObjectBuilder;
-    stream->ReadS32(reinterpret_cast<s32*>(&flags));
-    stream->ReadS16(reinterpret_cast<s16*>(&switches));
+    stream->ReadS32(reinterpret_cast<s32*>(&flags.value));
+    stream->ReadS16(reinterpret_cast<s16*>(&switches.value));
     stream->ReadF32(&blendTime);
-    ReadVector(stream, &leftoverVector1);
-    ReadVector(stream, &leftoverVector2);
-    stream->ReadF32(&leftoverFloat1);
-    stream->ReadF32(&leftoverFloat2);
+    ReadVector(stream, &targetBoxMin);
+    ReadVector(stream, &targetBoxMax);
+    stream->ReadF32(&framingDistance);
+    stream->ReadF32(&framingShare);
     ReadAngle(&fovStart, stream);
     ReadAngle(&fovEnd, stream);
     ReadAngle(&pitchStart, stream);
@@ -1094,9 +1100,9 @@ void MainCamera::Read(Stream* stream)
     ReadAngle(&yawEnd, stream);
     stream->ReadF32(&distanceStart);
     stream->ReadF32(&distanceEnd);
-    stream->ReadF32(&secondValue);
-    stream->ReadF32(&firstValue);
-    ReadAngle(&yawExtra, stream);
+    stream->ReadF32(&positionFollowRate);
+    stream->ReadF32(&targetFollowRate);
+    ReadAngle(&yawSpeed, stream);
     ReadAngle(&blendInYaw, stream);
     ReadAngle(&blendInPitch, stream);
     stream->ReadF32(&blendInDistance);
@@ -1121,11 +1127,11 @@ void MainCamera::Read(Stream* stream)
 
 CameraEvent* CameraEvent::Construct(CameraEvent* event, Reference** argument, u32 kinds, CameraNode* node)
 {
-    event->unknown04 = EventId;
+    event->id = EventId;
     event->vtable = g_GameEventVTable;
     event->kinds = kinds;
     event->reference = nullptr;
-    event->type = 0;
+    event->message = 0;
     // Retail copies the handle into its base's constructor and lets the copies go again: the event keeps the caller's reference
     event->argument = *argument;
     event->vtable = g_CameraEventBaseVTable;
@@ -1168,7 +1174,7 @@ CameraNode* CameraNode::Construct(CameraNode* node, ChunkData* chunk, CameraTrig
 {
     TriggerNode::Construct(node, chunk, trigger);
     node->vtable = g_CameraNodeVTable;
-    node->nodeBits |= NodeBitCamera;
+    node->bits.tellsEntryOrStay = 1;
     node->camera = trigger->camera;
     return node;
 }
@@ -1186,7 +1192,7 @@ void CameraNode::Destroy(u32 destroyFlags)
 
 u32 CameraNode::Kind()
 {
-    return 8;
+    return NodeCameraTrigger;
 }
 
 u32 CameraNode::Type()
@@ -1199,11 +1205,11 @@ void CameraNode::ForgetEvent()
     event = nullptr;
 }
 
-void CameraNode::Entered(InstanceContext*)
+void CameraNode::EnteredFirstTime(InstanceContext*)
 {
 }
 
-void CameraNode::EnteredSecond(InstanceContext*)
+void CameraNode::EnteredEveryTime(InstanceContext*)
 {
 }
 
@@ -1211,24 +1217,24 @@ void CameraNode::Left(InstanceContext*)
 {
 }
 
-void CameraNode::Enter(InstanceContext* entering)
+void CameraNode::EnteredOrStayed(InstanceContext* entering)
 {
-    constexpr u32 EventSize = 0x18;
     CameraEvent* forEntering = nullptr;
     if (event == nullptr)
     {
         Reference* handle = owner != nullptr ? AddReference(owner) : nullptr;
-        event = CameraEvent::Construct(static_cast<CameraEvent*>(MemoryAllocate(EventSize)), &handle, eventKinds, this);
+        event = CameraEvent::Construct(static_cast<CameraEvent*>(MemoryAllocate(sizeof(CameraEvent))), &handle, eventKinds, this);
     }
 
     Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
     QueueEvent(entering, &handle);
-    for (u32 index = 0; index < instanceCount; index++)
+    for (u32 index = 0; index < bits.instanceCount; index++)
     {
         if (forEntering == nullptr)
         {
             Reference* other = entering != nullptr ? AddReference(entering) : nullptr;
-            forEntering = CameraEvent::Construct(static_cast<CameraEvent*>(MemoryAllocate(EventSize)), &other, eventKinds, this);
+            forEntering =
+                CameraEvent::Construct(static_cast<CameraEvent*>(MemoryAllocate(sizeof(CameraEvent))), &other, eventKinds, this);
         }
 
         handle = forEntering != nullptr ? AddEventReference(forEntering) : nullptr;

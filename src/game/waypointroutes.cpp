@@ -36,8 +36,6 @@ FUN_0020b6e8:
 
 namespace
 {
-// 2.5e-09
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // How high the lift raises the point per unit
 constexpr f32 LiftHeight = 4.5f;
 
@@ -101,11 +99,9 @@ void CopyKeys(Waypoints* waypoints, const Waypoints* other)
         } while (index < waypoints->keyCount);
     }
 
-    constexpr u8 CopiedFlags[] = {Waypoints::FlagWrapped, Waypoints::FlagStopped, Waypoints::FlagBackwards};
-    for (u8 flag : CopiedFlags)
-    {
-        waypoints->flags = (waypoints->flags & ~flag) | (other->flags & flag);
-    }
+    waypoints->flags.wrapped = other->flags.wrapped;
+    waypoints->flags.stopped = other->flags.stopped;
+    waypoints->flags.backwards = other->flags.backwards;
 
     waypoints->key = other->key;
 }

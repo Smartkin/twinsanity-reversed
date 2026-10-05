@@ -19,32 +19,32 @@ struct VideoController;
 // skipping a cutscene leaves)
 
 // A cutscene's track of an instance (0x4C bytes): the model it's played on (the instance the video controller was given for the
-// model, else one made for it), whether its animation has blend shapes, its values (the position's x, y and z, the turns about x,
-// y and z, then shown above a half), its animation's joints and blend shapes, its values at the end, and two more animations'
-// data the reading loads (the second with blend shapes only) and nothing plays
+// model, else one made for it; NoModelId none), whether its animation has blend shapes, its values (the position's x, y and z,
+// the turns about x, y and z, then shown above a half), its animation's joints and blend shapes, its values at the end, and two
+// more animations' data the reading loads (the second with blend shapes only) and nothing plays
 struct CutsceneInstanceTrack
 {
     u16 model;
     bool hasBlendShapes;
-    u8 unknown03;
+    u8 unused03;
     AnimationDataInformation values;
     AnimationDataSource joints;
     AnimationDataSource blendShapes;
     AnimationDataInformation endValues;
-    AnimationDataSource unknown34;
-    AnimationDataSource unknown40;
+    AnimationDataSource unused34;
+    AnimationDataSource unused40;
 };
 CHECK_OFFSET(CutsceneInstanceTrack, joints, 0x10);
 CHECK_OFFSET(CutsceneInstanceTrack, endValues, 0x28);
 CHECK_SIZE(CutsceneInstanceTrack, 0x4C);
 
-// A cutscene's track of a particle emitter (0x1C bytes): its values (the position's x, y and z, the turns about x, y and z, then
-// on above a half) and its values at the end
+// A cutscene's track of a particle emitter (0x1C bytes): a halfword and a flag the reading reads and nothing uses, its values
+// (the position's x, y and z, the turns about x, y and z, then on above a half) and its values at the end
 struct CutsceneEmitterTrack
 {
-    u16 unknown00;
-    bool unknown02;
-    u8 unknown03;
+    u16 unused00;
+    bool unused02;
+    u8 unused03;
     AnimationDataInformation values;
     AnimationDataInformation endValues;
 };
@@ -56,8 +56,8 @@ struct CutsceneSoundTrack
 {
     u16 sound;
     // 1 when made
-    u8 unknown02;
-    u8 unknown03;
+    u8 unused02;
+    u8 unused03;
     AnimationDataInformation values;
     AnimationDataInformation endValues;
 };
@@ -77,24 +77,28 @@ CHECK_OFFSET(CutsceneCameraTrack, cuts, 0x14);
 CHECK_SIZE(CutsceneCameraTrack, 0x20);
 
 // A part of a cutscene (0x68 bytes): the cutscene's frames, the part's (another part is read while it has 150 or more), the
-// cutscene's number and the part's (0xFFFF none), the counts of its tracks of instances, sounds and emitters, its camera's track
-// and its tracks
+// cutscene's number and the part's (0xFFFF none), a halfword and four words the reading reads and nothing uses, the counts of its
+// tracks of instances, sounds and emitters, its camera's track and its tracks
 struct Cutscene
 {
     static constexpr u32 PartFrames = 150;
+    static constexpr u32 FramesPerSecond = 25;
+    // The frame a track plays its values at the end at (skipping the cutscene)
+    static constexpr u16 EndFrame = 0xFFFF;
+    static constexpr u16 NoNumber = 0xFFFF;
 
     u16 frames;
     u16 partFrames;
     u16 number;
     u16 part;
-    u16 unknown08;
+    u16 unused08;
     u8 instanceTrackCount;
     u8 soundTrackCount;
     u8 emitterTrackCount;
-    u8 unknown0D[3];
-    u32 unknown10[4];
+    u8 unused0D[3];
+    u32 unused10[4];
     CutsceneCameraTrack camera;
-    u8 unknown40[0x5C - 0x40];
+    u8 unused40[0x5C - 0x40];
     CutsceneInstanceTrack* instanceTracks;
     CutsceneSoundTrack* soundTracks;
     CutsceneEmitterTrack* emitterTracks;
@@ -114,29 +118,37 @@ public:
     s32 part;
     Cutscene* cutscene;
 
-    void Destroy(u32 flags) RETAIL(FUN_0029e3f8);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_0029e3f8);
     void Read(u8* data, u32 size, ReaderStack* readers) RETAIL(LoadCutscene);
     // Nothing when the file isn't there
     void Missing(u8* data, u32 size, ReaderStack* readers) RETAIL(FUN_0029e590);
 };
 CHECK_SIZE(CutsceneReader, 0x14);
 
+// A played instance track's bits: whether the instance was the controller's, given back at the end, rather than made for the
+// cutscene
+union PlayedInstanceTrackBits
+{
+    u64 value;
+    struct
+    {
+        u64 given : 1;
+        u64 unused1 : 63;
+    };
+};
+CHECK_SIZE(PlayedInstanceTrackBits, 8);
+
 // What the video controller keeps of an instance's track (0x40 bytes): the instance, the track it plays and the data of its
-// values (made again when the track changes), the animation made of the track's joints, its bits (0: the instance was the
-// controller's, given back at the end, rather than made for the cutscene), and the rotation and position the values gave it
+// values (made again when the track changes), the animation made of the track's joints, its bits, and the rotation and position
+// the values gave it
 struct PlayedInstanceTrack
 {
-    enum Bits : u64
-    {
-        BitGiven = 0x1,
-    };
-
     InstanceContext* instance;
     const CutsceneInstanceTrack* track;
     DynamicAnimationData* values;
     GameAnimation* animation;
-    u64 bits;
-    u8 unknown18[8];
+    PlayedInstanceTrackBits bits;
+    u8 unused18[8];
     Vector4 rotation;
     Vector4 position;
 };
@@ -144,7 +156,7 @@ CHECK_OFFSET(PlayedInstanceTrack, bits, 0x10);
 CHECK_OFFSET(PlayedInstanceTrack, position, 0x30);
 CHECK_SIZE(PlayedInstanceTrack, 0x40);
 
-// What the video controller keeps of an emitter's track (0x30 bytes): the emitter (-1 none, which it stays: nothing makes one;
+// What the video controller keeps of an emitter's track (0x30 bytes): the emitter (NoEmitter, which it stays: nothing makes one;
 // it's dropped once the values turn it off), the track it plays and the data of its values, the turns about x, y and z (65536ths
 // of a turn) and the position
 struct PlayedEmitterTrack
@@ -153,24 +165,24 @@ struct PlayedEmitterTrack
     const CutsceneEmitterTrack* track;
     DynamicAnimationData* values;
     s32 angles[3];
-    u8 unknown18[8];
+    u8 unused18[8];
     Vector4 position;
 };
 CHECK_OFFSET(PlayedEmitterTrack, angles, 0xC);
 CHECK_OFFSET(PlayedEmitterTrack, position, 0x20);
 CHECK_SIZE(PlayedEmitterTrack, 0x30);
 
-// What the video controller keeps of a sound's track (0x30 bytes): the track it plays and the data of its values, the position
-// and the volume they give (the player plays no sound with them)
+// What the video controller keeps of a sound's track (0x30 bytes): a word made -1 and never read, the track it plays and the data
+// of its values, the position and the volume they give (the player plays no sound with them)
 struct PlayedSoundTrack
 {
-    s32 unknown00;
+    s32 unused00;
     const CutsceneSoundTrack* track;
     DynamicAnimationData* values;
-    u32 unknown0C;
+    u32 unused0C;
     Vector4 position;
     f32 volume;
-    u8 unknown24[0xC];
+    u8 unused24[0xC];
 };
 CHECK_OFFSET(PlayedSoundTrack, position, 0x10);
 CHECK_OFFSET(PlayedSoundTrack, volume, 0x20);
@@ -180,15 +192,15 @@ CHECK_SIZE(PlayedSoundTrack, 0x30);
 // its cuts, the camera it places (the game controller's cutscene camera), the shot it's at and whether the cuts are above 0
 struct PlayedCameraTrack
 {
-    u32 unknown00;
+    u32 unused00;
     const CutsceneCameraTrack* track;
     DynamicAnimationData* values;
     AnimationData* cuts;
-    u32 unknown10;
+    u32 unused10;
     CutsceneCameraRig* camera;
     u8 shot;
     u8 cutting;
-    u8 unknown1A[2];
+    u8 unused1A[2];
 };
 CHECK_OFFSET(PlayedCameraTrack, camera, 0x14);
 CHECK_SIZE(PlayedCameraTrack, 0x1C);
@@ -227,18 +239,18 @@ extern "C"
     // frame waited
     void NextCutscenePart(VideoController* controller) RETAIL(FUN_0029b508);
     // An instance track given the animation of its track's joints, played on its instance's root
-    void PlayInstanceTrackAnimation(PlayedInstanceTrack* track, const CutsceneInstanceTrack* data) RETAIL(FUN_0029b888);
+    void PlayInstanceTrackAnimation(PlayedInstanceTrack* played, const CutsceneInstanceTrack* track) RETAIL(FUN_0029b888);
 
     // A frame of a track played (a share of the way to the next frame; the frame 0xFFFF its values at the end), placed in the
     // origin's space when there's one: an instance moved, turned and shown or hidden; an emitter placed (and let go of once its
     // values turn it off); a sound's position and volume; the camera's position, turn and field of view (a new shot once the cuts
     // go above 0)
-    void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* track, const CutsceneInstanceTrack* data, u16 frame,
+    void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* played, const CutsceneInstanceTrack* track, u16 frame,
                                 const Matrix4x4* origin) RETAIL_N32(FUN_0029b990);
-    void PlayEmitterTrackFrame(f32 share, PlayedEmitterTrack* track, const CutsceneEmitterTrack* data, u16 frame,
+    void PlayEmitterTrackFrame(f32 share, PlayedEmitterTrack* played, const CutsceneEmitterTrack* track, u16 frame,
                                const Matrix4x4* origin) RETAIL_N32(FUN_0029c340);
-    void PlaySoundTrackFrame(f32 share, PlayedSoundTrack* track, const CutsceneSoundTrack* data, u16 frame,
+    void PlaySoundTrackFrame(f32 share, PlayedSoundTrack* played, const CutsceneSoundTrack* track, u16 frame,
                              const Matrix4x4* origin) RETAIL_N32(FUN_0029c870);
-    void PlayCameraTrackFrame(f32 share, PlayedCameraTrack* track, const CutsceneCameraTrack* data, u16 frame,
+    void PlayCameraTrackFrame(f32 share, PlayedCameraTrack* played, const CutsceneCameraTrack* track, u16 frame,
                               const Matrix4x4* origin) RETAIL_N32(FUN_0029a068);
 }

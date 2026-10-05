@@ -8,20 +8,10 @@ EABI_EXPORT(FUN_00252500, SetNearFocusWeight);
 
 namespace
 {
-constexpr u32 StampMask = AiPosition::StampMask;
-// Further than any point (the searches' first best)
-constexpr f32 Far = 0x1.93e594p+99f;
-constexpr u16 NoIndex = 0xFFFF;
-constexpr u16 NoStep = 0xFF;
-// The navigations the path finder keeps and the searches' routes' longest
-constexpr u32 Navigations = 128;
-constexpr s32 RouteSteps = 255;
-
 // A path added to a position's links (the list made again one longer)
 void AddLink(AiPosition* position, AiPath* path)
 {
-    constexpr u32 CountBits = AiPosition::LinkCountMask << AiPosition::LinkCountShift;
-    u32 count = position->bits >> AiPosition::LinkCountShift & AiPosition::LinkCountMask;
+    u32 count = position->bits.linkCount;
     auto** links = static_cast<AiPath**>(MemoryAllocate2((count + 1) * sizeof(AiPath*)));
     for (u8 index = 0; index < count; index++)
     {
@@ -29,7 +19,7 @@ void AddLink(AiPosition* position, AiPath* path)
     }
 
     links[count] = path;
-    position->bits = (position->bits & ~CountBits) | ((count + 1) & AiPosition::LinkCountMask) << AiPosition::LinkCountShift;
+    position->bits.linkCount = count + 1;
     if (position->links != nullptr)
     {
         MemoryDeallocate_(position->links);
@@ -65,18 +55,18 @@ void DestroyPosition(AiPosition* position)
 
 void AiPosition::Read(Stream* stream)
 {
-    bits = 0;
+    bits.value = 0;
     links = nullptr;
     stream->Read(&position, sizeof(position), 1);
-    stream->ReadS16(&flags);
-    bits = (bits & ~StampMask) | (g_PathSearchStamp & StampMask);
+    stream->ReadS16(reinterpret_cast<s16*>(&flags.value));
+    bits.stamp = g_PathSearchStamp;
 }
 
 void AiPath::Read(Stream* stream)
 {
     stream->ReadS16(reinterpret_cast<s16*>(&positionA));
     stream->ReadS16(reinterpret_cast<s16*>(&positionB));
-    stream->ReadS16(reinterpret_cast<s16*>(&flags));
+    stream->ReadS16(reinterpret_cast<s16*>(&flags.value));
     stream->ReadS16(reinterpret_cast<s16*>(&chunkA));
     stream->ReadS16(reinterpret_cast<s16*>(&chunkB));
 }
@@ -97,7 +87,7 @@ void AiNavigation::Destroy(u32 destroyFlags)
     vtable = g_AiNavigationVTable;
     ClearPositions();
     ClearPaths();
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -200,17 +190,15 @@ void AiNavigation::SetPathFinder(PathFinder* finder)
 
 void AiNavigation::StampPositions(u32 stamp)
 {
-    u32 bits = stamp & StampMask;
     for (u16 index = 0; index < positionCount; index++)
     {
-        AiPosition* position = positions[index];
-        position->bits = (position->bits & ~StampMask) | bits;
+        positions[index]->bits.stamp = stamp;
     }
 }
 
 AiPosition* AiNavigation::Nearest(const Vector4* point)
 {
-    f32 best = Far;
+    f32 best = Infinite;
     AiPosition* nearest = nullptr;
     for (u16 index = 0; index < positionCount; index++)
     {
@@ -228,8 +216,8 @@ AiPosition* AiNavigation::Nearest(const Vector4* point)
 
 AiPosition* AiNavigation::NearestIndex(const Vector4* point, u16* index)
 {
-    f32 best = Far;
-    u16 nearestIndex = NoIndex;
+    f32 best = Infinite;
+    u16 nearestIndex = NoAiIndex;
     AiPosition* nearest = nullptr;
     for (u16 at = 0; at < positionCount; at++)
     {
@@ -251,13 +239,13 @@ AiPosition* AiNavigation::NearestWithFlags(const Vector4* point, u16* index, u32
 {
     u16 requiredFlags = static_cast<u16>(required);
     u16 ruledOutFlags = static_cast<u16>(ruledOut);
-    f32 best = Far;
-    u16 nearestIndex = NoIndex;
+    f32 best = Infinite;
+    u16 nearestIndex = NoAiIndex;
     AiPosition* nearest = nullptr;
     for (u16 at = 0; at < positionCount; at++)
     {
         AiPosition* position = positions[at];
-        u16 flags = static_cast<u16>(position->flags);
+        u16 flags = position->flags.value;
         if (requiredFlags != 0 && (flags & requiredFlags) == 0)
         {
             continue;
@@ -309,7 +297,7 @@ PathFinder* PathFinder::Construct(PathFinder* finder)
 void PathFinder::Destroy(u32 destroyFlags)
 {
     vtable = g_PathFinderVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -317,7 +305,7 @@ void PathFinder::Destroy(u32 destroyFlags)
 
 void PathFinder::Clear()
 {
-    for (u32 index = 0; index < Navigations; index++)
+    for (u32 index = 0; index < MostChunks; index++)
     {
         navigations[index] = nullptr;
     }
@@ -370,19 +358,19 @@ Route* PathFinder::MakeRoute(RouteRequest*, AiPosition* start, u32 chunk, u32 po
         route->positions[route->count] = stepPosition;
         route->count++;
         AiPosition* step = navigations[stepChunk]->positions[stepPosition];
-        if (steps >= RouteSteps)
+        if (steps >= static_cast<s32>(Route::MostSearchedSteps))
         {
             break;
         }
 
-        if (step->previousPosition == NoStep)
+        if (step->previousPosition == AiPosition::NoPrevious)
         {
             break;
         }
 
         stepChunk = step->previousChunk;
         stepPosition = step->previousPosition;
-        step->previousPosition = NoStep;
+        step->previousPosition = AiPosition::NoPrevious;
         if (step == start)
         {
             break;
@@ -447,9 +435,7 @@ void AiNavigation::Link(PathFinder* finder, u32 chunkIndex)
 
 Route* PathFinder::Search(RouteRequest* request)
 {
-    // The vtable's step cost and estimate; the open list starts in the middle, its last entry is the one before the last
-    constexpr u32 StepCostSlot = 2;
-    constexpr u32 EstimateSlot = 3;
+    // The open list starts in the middle, its last entry is the one before the last
     constexpr u32 Middle = 0x7F;
     constexpr u32 LastTail = 0xFE;
     NewSearch();
@@ -464,7 +450,7 @@ Route* PathFinder::Search(RouteRequest* request)
     first->position = start;
     first->chunk = request->startChunk;
     first->index = request->startPosition;
-    start->previousPosition = NoStep;
+    start->previousPosition = AiPosition::NoPrevious;
     SearchEntry* next = first;
     AiPosition* at = next->position;
     for (;;)
@@ -479,7 +465,7 @@ Route* PathFinder::Search(RouteRequest* request)
         head++;
         u16 fromChunk = from->chunk;
         u16 fromIndex = from->index;
-        for (u8 link = 0; link < (at->bits >> AiPosition::LinkCountShift & AiPosition::LinkCountMask); link++)
+        for (u8 link = 0; link < at->bits.linkCount; link++)
         {
             AiPath* path = at->links[link];
             AiNavigation* navigationB = navigations[path->chunkB];
@@ -493,19 +479,19 @@ Route* PathFinder::Search(RouteRequest* request)
                 {
                     toChunk = path->chunkA;
                     toIndex = path->positionA;
-                    backwards = 0;
+                    unused11F4 = 0;
                     to = navigationA->positions[path->positionA];
                 }
             }
             else if (navigationA != nullptr && navigationA->positions[path->positionA] == at && navigationB != nullptr)
             {
                 toChunk = path->chunkB;
-                backwards = 1;
+                unused11F4 = 1;
                 toIndex = path->positionB;
                 to = navigationB->positions[path->positionB];
             }
 
-            if (to == nullptr || (to->bits & StampMask) == g_PathSearchStamp)
+            if (to == nullptr || to->bits.stamp == g_PathSearchStamp)
             {
                 continue;
             }
@@ -516,7 +502,7 @@ Route* PathFinder::Search(RouteRequest* request)
                 continue;
             }
 
-            to->bits = (to->bits & ~StampMask) | (g_PathSearchStamp & StampMask);
+            to->bits.stamp = g_PathSearchStamp;
             if (to == end)
             {
                 end->previousPosition = fromIndex;
@@ -561,7 +547,7 @@ Route* PathFinder::Search(RouteRequest* request)
 
         if (tail < head)
         {
-            request->flags |= RouteRequest::FlagNoRoute;
+            request->flags.noRoute = 1;
             return nullptr;
         }
 
@@ -594,15 +580,13 @@ f32 GamePathFinder::StepCost(const AiPath* path, const AiPosition* from, const A
 {
     constexpr f32 Blocked = -1.0f;
     constexpr f32 Weight = 100.0f;
-    // A focus radius this small counts as none
-    constexpr f32 NoRadius = 0x1.a36e2ep-15f;
-    if ((to->flags & AiPosition::FlagBlocked) != 0 || (from->flags & AiPosition::FlagBlocked) != 0)
+    if (to->flags.blocked || from->flags.blocked)
     {
         return Blocked;
     }
 
-    u32 flags = request->flags;
-    if ((flags & RouteRequest::FlagDistanceOnly) != 0)
+    RouteRequestFlags flags = request->flags;
+    if (flags.distanceOnly)
     {
         f32 x = from->position.x - to->position.x;
         f32 y = from->position.y - to->position.y;
@@ -610,49 +594,48 @@ f32 GamePathFinder::StepCost(const AiPath* path, const AiPosition* from, const A
         return x * x + y * y + z * z;
     }
 
-    // The flags of the paths each request flag rules out (bit 24 rules out the paths with none of 5-8)
-    u16 pathFlags = path->flags;
-    if ((flags & 0x200000) != 0 && (pathFlags & 0x40) != 0)
+    AiPathFlags pathFlags = path->flags;
+    if (flags.rulesOutScriptFlag6 && pathFlags.scriptFlag6)
     {
         return Blocked;
     }
 
-    if ((flags & 0x1000000) != 0 && (pathFlags & 0x1E0) == 0)
+    if (flags.rulesOutPlainPaths && (pathFlags.value & AiPathFlags::NotPlainMask) == 0)
     {
         return Blocked;
     }
 
-    if ((flags & 0x20000) != 0)
+    if (flags.rulesOutJumps)
     {
-        if ((pathFlags & 0x4) != 0)
+        if (pathFlags.needsJump)
         {
             return Blocked;
         }
     }
     else
     {
-        if ((flags & 0x80000) != 0 && (pathFlags & 0x8) != 0)
+        if (flags.rulesOutLongJumps && pathFlags.needsLongJump)
         {
             return Blocked;
         }
 
-        if ((flags & 0x40000) != 0 && (pathFlags & 0x10) != 0)
+        if (flags.rulesOutHighJumps && pathFlags.needsHighJump)
         {
             return Blocked;
         }
     }
 
-    if ((flags & 0x800000) != 0 && (pathFlags & 0x100) != 0)
+    if (flags.rulesOutScriptFlag8 && pathFlags.scriptFlag8)
     {
         return Blocked;
     }
 
-    if ((flags & 0x400000) != 0 && (pathFlags & 0x80) != 0)
+    if (flags.rulesOutScriptFlag7 && pathFlags.scriptFlag7)
     {
         return Blocked;
     }
 
-    if ((flags & 0x100000) != 0 && (pathFlags & 0x20) != 0)
+    if (flags.rulesOutFlights && pathFlags.needsFlight)
     {
         return Blocked;
     }
@@ -661,32 +644,33 @@ f32 GamePathFinder::StepCost(const AiPath* path, const AiPosition* from, const A
     f32 y = from->position.y - to->position.y;
     f32 z = from->position.z - to->position.z;
     f32 cost = x * x + y * y + z * z;
-    if ((flags & RouteRequest::FlagAvoidFocus) != 0)
+    if (flags.avoidsFocus)
     {
         f32 fx = to->position.x - focus.x;
         f32 fy = to->position.y - focus.y;
         f32 fz = to->position.z - focus.z;
         f32 radius = focusRadius;
         f32 distance = fx * fx + fy * fy + fz * fz;
-        if (!(__builtin_fabsf(radius) <= NoRadius))
+        // A focus radius this small counts as none
+        if (!(__builtin_fabsf(radius) <= Epsilon))
         {
             cost += (1.0f - distance / radius) * Weight;
         }
     }
 
-    if ((flags & RouteRequest::FlagPositionCosts) != 0)
+    if (flags.positionCosts)
     {
-        cost += static_cast<f32>(static_cast<s32>(to->bits >> AiPosition::CostShift & AiPosition::CostMask)) * Weight;
+        cost += static_cast<f32>(static_cast<s32>(to->bits.cost)) * Weight;
     }
 
-    if ((flags & RouteRequest::FlagNearFocus) != 0)
+    if (flags.nearFocus)
     {
         f32 fx = to->position.x - focus.x;
         f32 fy = to->position.y - focus.y;
         f32 fz = to->position.z - focus.z;
         f32 radius = focusRadius;
         f32 distance = fx * fx + fy * fy + fz * fz;
-        if (__builtin_fabsf(radius) <= NoRadius)
+        if (__builtin_fabsf(radius) <= Epsilon)
         {
             return cost;
         }
@@ -701,7 +685,7 @@ AiPath* AiPosition::PathTo(u32 chunk, u32 index)
 {
     u16 toChunk = static_cast<u16>(chunk);
     u16 toIndex = static_cast<u16>(index);
-    u32 count = bits >> LinkCountShift & LinkCountMask;
+    u32 count = bits.linkCount;
     for (u16 link = 0; link < count; link++)
     {
         AiPath* path = links[link];
@@ -736,7 +720,6 @@ AiPath* Route::PathTo(u32 step)
 
 void Route::Occupy()
 {
-    constexpr u32 CostBits = AiPosition::CostMask << AiPosition::CostShift;
     for (u16 step = 0; step < count; step++)
     {
         AiNavigation* navigation = g_PathFinder->navigations[chunks[step]];
@@ -746,34 +729,31 @@ void Route::Occupy()
             continue;
         }
 
-        u32 cost = position->bits >> AiPosition::CostShift & AiPosition::CostMask;
-        if (cost < AiPosition::CostMask)
+        u32 cost = position->bits.cost;
+        if (cost < AiPosition::MostCost)
         {
-            position->bits = (position->bits & ~CostBits) | ((cost + 1) & AiPosition::CostMask) << AiPosition::CostShift;
+            position->bits.cost = cost + 1;
         }
     }
 }
 
 void Route::Leave()
 {
-    constexpr u32 CostBits = AiPosition::CostMask << AiPosition::CostShift;
     for (u16 step = 0; step < count; step++)
     {
         AiNavigation* navigation = g_PathFinder->navigations[chunks[step]];
         AiPosition* position = navigation != nullptr ? navigation->positions[positions[step]] : nullptr;
-        if (position == nullptr || (position->bits & CostBits) == 0)
+        if (position == nullptr || position->bits.cost == 0)
         {
             continue;
         }
 
-        u32 cost = position->bits >> AiPosition::CostShift & AiPosition::CostMask;
-        position->bits = (position->bits & ~CostBits) | ((cost - 1) & AiPosition::CostMask) << AiPosition::CostShift;
+        position->bits.cost = position->bits.cost - 1;
     }
 }
 
 void SetNearFocusWeight(PathFinder* finder, f32 weight)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     const Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
     Vector4 way = finder->routeEnd;
     way.x = way.x - finder->routeStart.x;

@@ -11,12 +11,12 @@
 
 extern "C"
 {
-    // A common header's: 45 degrees, the up axis (the jump's room to take off), 0.01 twice, black at half alpha and 0
+    // A common header's: 45 degrees, the up axis (the jump's room to take off), the UI's shadow offset and colour, and 0
     extern s32 g_ControllersAngle45 RETAIL(D_0030A528);
     extern Vector4 g_JumpUp RETAIL(D_0030BB20);
-    extern f32 g_ControllersSmall RETAIL(D_0030A530);
-    extern f32 g_ControllersSmall2 RETAIL(D_0030A534);
-    extern u32 g_ControllersShade RETAIL(D_0030A538);
+    extern f32 g_ControllersShadowX RETAIL(D_0030A530);
+    extern f32 g_ControllersShadowY RETAIL(D_0030A534);
+    extern u32 g_ControllersShadowColour RETAIL(D_0030A538);
     extern u32 g_ControllersZero RETAIL(D_0030A540);
     // The up axis of the crouch's checks for room to stand up
     extern Vector4 g_CrouchUp RETAIL(D_0030BB70);
@@ -29,7 +29,7 @@ u32 TimeReached(const TimeClock* clock, s32 time, s32 end, s32 divisor)
 
 void InvertRotation(Vector4* rotation)
 {
-    f32 inverse = InverseLength4(0.0f, Rounded(1e-10), rotation);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, rotation);
     rotation->w = rotation->w * inverse;
     rotation->x = rotation->x * -inverse;
     rotation->y = rotation->y * -inverse;
@@ -38,17 +38,16 @@ void InvertRotation(Vector4* rotation)
 
 void InitCharacterControllerGlobals(u32 initialize, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
 
-    AngleFrom(&g_ControllersAngle45, 0x1.921fb6p-1f, AngleRadians);
+    AngleFrom(&g_ControllersAngle45, QuarterPi, AngleRadians);
     g_JumpUp = {0.0f, 1.0f, 0.0f, 1.0f};
-    g_ControllersSmall = Rounded(0.01);
-    g_ControllersSmall2 = Rounded(0.01);
-    ColourSet(&g_ControllersShade, 0.0f, 0.0f, 0.0f, 0.5f);
+    g_ControllersShadowX = UiShadowOffset;
+    g_ControllersShadowY = UiShadowOffset;
+    ColourSet(&g_ControllersShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
     g_ControllersZero = 0;
     AngleFrom(&g_RigPitchPushRate, 180.0f, AngleDegrees);
     AngleFrom(&g_RigYawPushRate, 180.0f, AngleDegrees);
@@ -87,5 +86,5 @@ void InitCharacterControllerGlobals(u32 initialize, u32 priority)
 
 void CharacterControllerGlobalsConstructor()
 {
-    InitCharacterControllerGlobals(1, 0xFFFF);
+    InitCharacterControllerGlobals(1, DefaultInitPriority);
 }

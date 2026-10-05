@@ -14,11 +14,10 @@ constexpr f32 TrackUnit = 0x1p-12f;
 
 ShaderAnimation* ConstructShaderAnimation(ShaderAnimation* animation)
 {
-    constexpr u32 RateBits = ShaderAnimation::RateMask << ShaderAnimation::RateShift;
-    *reinterpret_cast<u16*>(&animation->header) = 0;
+    animation->header.frames = 0;
     animation->data.diskHandle = -1;
-    animation->header &= ~RateBits;
-    animation->data.sections = 0;
+    animation->header.rate = 0;
+    animation->data.layout.value = 0;
     animation->data.frames = 0;
     animation->frames = nullptr;
     animation->loopStart = 0;
@@ -40,7 +39,7 @@ void DestroyShaderAnimation(ShaderAnimation* animation, u32 destroyFlags)
         DiskRelease(GetDiskManager(), &animation->data.diskHandle);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(animation);
     }
@@ -51,20 +50,20 @@ void ReadShaderAnimation(ShaderAnimation* animation, Stream* stream)
     stream->Read(&animation->header, sizeof(animation->header), 1);
     ReadAnimationData(&animation->data, stream);
     auto* frames = static_cast<AnimationData*>(MemoryAllocate(sizeof(AnimationData)));
-    u32 count = animation->header & ShaderAnimation::FramesMask;
+    u32 count = animation->header.frames;
     animation->frames = frames;
     frames->information = &animation->data;
-    u32 rate = animation->header >> ShaderAnimation::RateShift & ShaderAnimation::RateMask;
+    u32 rate = animation->header.rate;
     animation->loopLength = static_cast<s32>(static_cast<f32>(count) / static_cast<f32>(rate) * g_ClockUnitsPerSecond);
 }
 
 void AnimateShader(ShaderAnimation* animation, const s32* time)
 {
     constexpr u32 Channels = 6;
-    if ((animation->header & ShaderAnimation::Started) == 0)
+    if (animation->header.started == 0)
     {
         s32 now = *time;
-        animation->header |= ShaderAnimation::Started;
+        animation->header.started = 1;
         animation->time = now;
         animation->loopStart = now;
         animation->loopTime = 0;
@@ -83,7 +82,7 @@ void AnimateShader(ShaderAnimation* animation, const s32* time)
         }
     }
 
-    u32 count = animation->header & ShaderAnimation::FramesMask;
+    u32 count = animation->header.frames;
     f32 through = static_cast<f32>(animation->loopTime) * g_SecondsPerClockUnit /
                   (static_cast<f32>(animation->loopLength) * g_SecondsPerClockUnit);
     f32 position = static_cast<f32>(static_cast<s32>(count)) * through;
@@ -98,7 +97,7 @@ void AnimateShader(ShaderAnimation* animation, const s32* time)
     const JointTrackSettings* settings = data->settings;
     TrackReader reader;
     reader.statics = settings->statics;
-    reader.statics2 = (1 << (settings->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask)) - 1;
+    reader.unused02 = (1 << settings->flags.channels) - 1;
     reader.staticValues = data->statics + settings->staticIndex;
     reader.current = data->current + settings->frameIndex;
     reader.next = data->next + settings->frameIndex;
@@ -121,14 +120,14 @@ void AnimateShader(ShaderAnimation* animation, const s32* time)
         }
 
         reader.statics >>= 1;
-        reader.statics2 >>= 1;
+        reader.unused02 >>= 1;
     }
 }
 
 void AdvanceShaderAnimation(ShaderAnimation* animation, f32 seconds)
 {
     s32 time = 0;
-    if ((animation->header & ShaderAnimation::Started) != 0)
+    if (animation->header.started != 0)
     {
         time = animation->loopStart + animation->loopTime + static_cast<s32>(seconds * g_ClockUnitsPerSecond);
     }
@@ -138,13 +137,14 @@ void AdvanceShaderAnimation(ShaderAnimation* animation, f32 seconds)
 
 void RestartShaderAnimation(ShaderAnimation* animation)
 {
-    animation->header &= ~ShaderAnimation::Started;
+    animation->header.started = 0;
 }
 
 u32 SameShaderAnimations(const ShaderAnimation* animation, const ShaderAnimation* other)
 {
     u32 same = 0;
-    if ((animation->header & ShaderAnimation::Compared) == (other->header & ShaderAnimation::Compared))
+    if ((animation->header.value & ShaderAnimationHeader::FramesAndRate) ==
+        (other->header.value & ShaderAnimationHeader::FramesAndRate))
     {
         u32 size = AnimationDataSize(&animation->data);
         if (size == AnimationDataSize(&other->data))

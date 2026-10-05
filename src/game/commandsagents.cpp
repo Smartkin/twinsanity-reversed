@@ -9,11 +9,13 @@
 #include "game/clock.h"
 #include "game/collision.h"
 #include "game/controllers.h"
+#include "game/events.h"
 #include "game/followcamera.h"
 #include "game/gamecontroller.h"
 #include "game/layout.h"
 #include "game/math.h"
 #include "game/memory.h"
+#include "game/nodecontrollers.h"
 #include "game/objectnode.h"
 #include "game/objects.h"
 #include "game/physics.h"
@@ -23,6 +25,7 @@
 #include "game/reference.h"
 #include "game/resources.h"
 #include "game/scenery.h"
+#include "game/vehicles.h"
 
 #include <cstdint>
 
@@ -32,40 +35,15 @@ extern "C"
 {
     // The chunk manager's chunk of an index
     extern void* G_ChunkManager;
-    // The object of a node's instance (the node it takes its object from)
-    // A character's vehicle left
-    void LeaveVehicle(PlayerCharacter* character, u32 unknown) RETAIL(FUN_0013bc60);
+    // A character's vehicle left (CharacterAgent::LeaveVehicle)
+    void LeaveVehicle(PlayerCharacter* character, u32 replaced) RETAIL(FUN_0013bc60);
 }
-
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 CharacterNodeKind = 0xC;
-constexpr u32 CrateNodeKind = 0xD;
-constexpr u32 CreatureNodeKind = 0xF;
-constexpr u32 GenericObjectNodeKind = 0x10;
-constexpr u32 GrabbableNodeKind = 0x11;
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 StartBehaviourSlot = 18;
-constexpr u32 GetDesignatorSlot = 36;
-// The agents' contact message function, and the referenced objects' sleep
-constexpr u32 ContactSlot = 9;
-constexpr u32 SleepSlot = 3;
-constexpr u8 NoDesignator = 0xFF;
-constexpr u16 NoBehaviour = 0xFFFF;
-// The attachments node's word: the linked objects' count (bits 0-4) and the current one (bits 7-11), the instances after it
-constexpr u32 LinkedCountMask = 0x1F;
-constexpr u32 LinkedIndexShift = 7;
-constexpr u32 LinkedIndexMask = 0x1F;
 // The event the linked objects are sent, and the one the nitro crates are
 constexpr u32 TriggerEvent = 1;
 constexpr u32 NitroEvent = 0xD;
-// A creature part's hit points (bits 6-13 of its flags)
-constexpr u32 HitPointsShift = 6;
-constexpr u32 HitPointsMask = 0xFF;
 
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
@@ -74,12 +52,12 @@ ObjectNode* NodeOf(BehaviourRunner* runner)
 
 bool TakesPackets(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0;
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0;
 }
 
 bool Asleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // An instance's nodes (no instance: read at 0xD4, retail's)
@@ -97,7 +75,7 @@ InstanceContext* PlayerInstance()
 InstanceContext* PlayedInstance()
 {
     GameProgress* progress = &G_GameController->progress;
-    return progress->Instance(progress->Field(GameProgress::CharacterShift));
+    return progress->Instance(progress->play.character);
 }
 
 // A character node's agent as the player's character (the same object)
@@ -109,23 +87,24 @@ PlayerCharacter* CharacterOf(AgentNode* node)
 // The played character's follow node (no character played: its nodes read at 0xD4)
 FollowNode* PlayedFollowNode()
 {
-    return static_cast<FollowNode*>(GetGameNode(NodesOf(PlayedInstance()), Node16));
+    return static_cast<FollowNode*>(GetGameNode(NodesOf(PlayedInstance()), NodeFollow));
 }
 
-u32* AttachmentsWord(void* attachments)
+// The instance's attachments node (none when it has none)
+AttachmentsNode* AttachmentsNodeOf(InstanceContext* instance)
 {
-    return reinterpret_cast<u32*>(static_cast<u8*>(attachments) + 0x18);
+    return static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, NodeAttachments));
 }
 
-InstanceContext** LinkedInstances(void* attachments)
+InstanceContext** LinkedInstances(AttachmentsNode* attachments)
 {
-    return reinterpret_cast<InstanceContext**>(static_cast<u8*>(attachments) + 0x20);
+    return attachments->linked;
 }
 
-// The attachments' path (the entries with their slots)
-void* PathOf(void* attachments)
+// The linked object the linked object commands are at
+u32 CurrentLinked(const AttachmentsNode* attachments)
 {
-    return *reinterpret_cast<void**>(static_cast<u8*>(attachments) + 0x70);
+    return attachments->bits.currentLinked;
 }
 
 GameObject* ObjectOf(ObjectNode* node)
@@ -133,29 +112,17 @@ GameObject* ObjectOf(ObjectNode* node)
     return node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
 }
 
-void SetFlag(ObjectNode* node, u32 flag, bool set)
-{
-    if (set)
-    {
-        node->flags |= flag;
-    }
-    else
-    {
-        node->flags &= ~flag;
-    }
-}
-
 // The query of a chunk's instances the commands make (the awake ones, all the wanted flags)
-void MakeQuery(InstanceRayHit* query, void** results, u16 most)
+void MakeQuery(InstanceQuery* query, void** results, u16 most)
 {
     query->results = results;
     query->count = 0;
     query->most = most;
-    query->distance = Rounded(1e30);
+    query->distance = Infinite;
     // Retail keeps the stack's other bits (nothing reads them)
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = 0;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -163,7 +130,7 @@ void MakeQuery(InstanceRayHit* query, void** results, u16 most)
 
 void SetPartHitPoints(CreaturePart* part, u32 hitPoints)
 {
-    part->flags = (part->flags & ~(HitPointsMask << HitPointsShift)) | (hitPoints & HitPointsMask) << HitPointsShift;
+    part->flags.hitPoints = hitPoints;
 }
 
 // The instance moved along its own axes (queued to be stepped when it moved)
@@ -175,35 +142,34 @@ void MoveInstanceLocally(InstanceContext* instance, const Vector4* offset)
     }
 }
 
-// The flags of a character's control (bit 2) when its instance (by its number; none: its nodes read at 0xD4) has a controls node
-// and a character node (whether the character has a control isn't checked)
-void SetCharacterControlFlag(u32 character, bool set)
+// The held flag of the vehicle a character rides when its instance (by its number; none: its nodes read at 0xD4) has a controls
+// node and a character node (whether the character rides one isn't checked)
+void SetVehicleHeld(u32 character, bool set)
 {
-    constexpr u64 Flag2 = 0x4;
     NodeList* nodes = NodesOf(G_GameController->progress.Instance(character));
     void* controls = GetGameNode(nodes, NodeControls);
-    auto* node = static_cast<AgentNode*>(GetGameNode(nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(nodes, NodeCharacter));
     if (controls == nullptr || node == nullptr)
     {
         return;
     }
 
-    CharacterControl* control = CharacterOf(node)->control;
-    control->bits = set ? control->bits | Flag2 : control->bits & ~Flag2;
+    Vehicle* vehicle = CharacterOf(node)->vehicle;
+    vehicle->bits.held = set;
 }
 
 // Every linked object's generic object agent sent the event (the instance its sender; the count read again each time)
 void TriggerLinkedGenericObjects(InstanceContext* instance)
 {
-    void* attachments = GetGameNode(&instance->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(instance);
     if (attachments == nullptr)
     {
         return;
     }
 
-    for (u32 index = 0; index < (*AttachmentsWord(attachments) & LinkedCountMask); index++)
+    for (u32 index = 0; index < attachments->LinkedCount(); index++)
     {
-        auto* generic = static_cast<AgentNode*>(GetGameNode(NodesOf(LinkedInstances(attachments)[index]), GenericObjectNodeKind));
+        auto* generic = static_cast<AgentNode*>(GetGameNode(NodesOf(LinkedInstances(attachments)[index]), NodeGenericObject));
         if (generic != nullptr)
         {
             RunAgentEvent(generic->agent, TriggerEvent, reinterpret_cast<u32>(instance), 0, 0);
@@ -212,8 +178,9 @@ void TriggerLinkedGenericObjects(InstanceContext* instance)
 }
 }
 
-// The rigid body's sizes and modes (bits 6-7 the second, 8-9 the first), the body made when the node has none
-void SetPhysicsSizesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The rigid body's sizes and its magnet's modes (its strength the second, its way the first), the body made when the node has
+// none
+void SetMagnetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
     if (node == nullptr)
@@ -228,34 +195,29 @@ void SetPhysicsSizesCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     }
 
     body->sizes[0] = size;
-    body->sizes[1] = size2;
-    body->bits90 = (body->bits90 & ~u64{0xC0}) | static_cast<u64>(mode2.raw & 3) << 6;
-    body->bits90 = (body->bits90 & ~u64{0x300}) | u64{mode1 & 3} << 8;
+    body->sizes[1] = magnetPull;
+    body->state.magnetStrength = magnetStrength;
+    body->state.magnetWay = magnetWay;
 }
 
-// The node's bit fields at 0x150: bits 42-57 a value (0xFFFF keeps them; giving one sets the command's own bit 16), bit 40 the
-// command's bit 16
-void SetNode150FieldsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void SetNoiseMessageCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Kept = 0xFFFF;
-    constexpr u32 Given = 0x10000;
-    auto* bits = reinterpret_cast<u64*>(&NodeOf(runner)->unknown150);
-    if ((values & 0xFFFF) != Kept)
+    ObjectNodeReactions& reactions = NodeOf(runner)->reactions;
+    if (settings.message != NoMessage)
     {
-        values |= Given;
-        *bits = (*bits & ~(u64{0xFFFF} << 42)) | u64{values & 0xFFFF} << 42;
+        settings.passesNoises = 1;
+        reactions.noiseMessage = settings.message;
     }
 
-    *bits = (*bits & ~(u64{1} << 40)) | u64{values >> 16 & 1} << 40;
+    reactions.passesNoises = settings.passesNoises;
 }
 
-// Bit 57 of the player character's part's bits: the value's bit 0 clear (no player: its nodes read at 0xD4)
-void SetPlayerFlag57Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+// No player: its nodes read at 0xD4
+void SetPlayerScriptFlagCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    auto* node = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayerInstance()), CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayerInstance()), NodeCharacter));
     auto* part = static_cast<CharacterPart*>(node->agent->part);
-    u64* bits = &part->Bits();
-    *bits = (*bits & ~(u64{1} << 57)) | u64{((value & 0xFF) ^ 1) & 1} << 57;
+    part->moveBits.scriptFlag = clears.on ^ 1;
 }
 
 // The agent's persistent flag set to the value's low byte (in its chunk's own store or the other one)
@@ -263,48 +225,42 @@ void SetStateCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLeve
 {
     Agent* agent = NodeOf(runner)->agent;
     PropertyHolder* properties = agent->properties;
-    if ((properties->state & PropertyHolder::StatePersistentFlag) == 0)
+    if (properties->state.persistentFlag == 0)
     {
         return;
     }
 
     ChunkEntry* chunk = ChunkOfIndex(G_ChunkManager, agent->chunkIndex);
     u16 id = agent->id;
-    PersistentFlags* flags = (properties->state & PropertyHolder::StateFlagInChunkStore) != 0 ? chunk->flags : chunk->otherFlags;
+    PersistentFlags* flags = properties->state.flagInChunkStore != 0 ? chunk->savedFlags : chunk->unsavedFlags;
     if (flags != nullptr)
     {
-        SetPersistentFlag(flags, id, value1 & 0xFF);
+        SetPersistentFlag(flags, id, state.flag);
     }
 }
 
-// The part 0x114 bytes in while on (its first byte 1): the node it keeps told (slot 24) before and after its instance stops
-// taking triggers' signals and is hidden, then off
+// The node's mask controller: the particle trails of the node it keeps destroyed before and after its instance stops taking
+// triggers' signals and is hidden, then the controller's kind made 0 (what looks for a mask controller doesn't find it any more)
 void ResetMaskControllerCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 NodeSlot24 = 24;
-    struct Part114
-    {
-        u8 on;
-        GameNode* node;
-    };
-
-    auto* part = reinterpret_cast<Part114*>(NodeOf(runner)->unknown114);
-    if (part == nullptr || part->on != 1)
+    NodeController* controller = NodeOf(runner)->controller;
+    if (controller == nullptr || controller->kind != NodeController::KindMask)
     {
         return;
     }
 
-    CallVirtual<void>(part->node, part->node->vtable, NodeSlot24);
-    part->node->owner->flags &= ~ReferencedObject::FlagTriggerSignals & ~ReferencedObject::FlagVisible;
-    CallVirtual<void>(part->node, part->node->vtable, NodeSlot24);
-    part->on = 0;
+    CallVirtual<void>(controller->node, controller->node->vtable, ObjectNode::DestroyParticleTrailsSlot);
+    controller->node->owner->flags.receivesTriggerSignals = 0;
+    controller->node->owner->flags.visible = 0;
+    CallVirtual<void>(controller->node, controller->node->vtable, ObjectNode::DestroyParticleTrailsSlot);
+    controller->kind = NodeController::KindJointAim;
 }
 
 // Its distance a second, for the frame's seconds
 void NowMoveForwardsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     InstanceContext* instance = NodeOf(runner)->owner;
-    f32 step = distance.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
+    f32 step = speed.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
     Vector4 offset = {0.0f, 0.0f, step, 1.0f};
     MoveInstanceLocally(instance, &offset);
 }
@@ -312,7 +268,7 @@ void NowMoveForwardsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
 void NowStrafeRightCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     InstanceContext* instance = NodeOf(runner)->owner;
-    f32 step = distance.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
+    f32 step = speed.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
     Vector4 offset = {step, 0.0f, 0.0f, 1.0f};
     MoveInstanceLocally(instance, &offset);
 }
@@ -320,7 +276,7 @@ void NowStrafeRightCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
 void NowStrafeLeftCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     InstanceContext* instance = NodeOf(runner)->owner;
-    f32 step = -distance.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
+    f32 step = -speed.FloatWith(NodeOf(runner)->PacketProperties()) * g_FrameSeconds;
     Vector4 offset = {step, 0.0f, 0.0f, 1.0f};
     MoveInstanceLocally(instance, &offset);
 }
@@ -329,56 +285,55 @@ void NowStrafeLeftCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
 void ClearAnimationCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
         return;
     }
 
-    s32 blend = static_cast<s32>(value2.FloatWith(node->PacketProperties()) * g_ClockUnitsPerSecond);
-    StopOgiAnimation(animator, blend, value1 & 0xFF);
+    s32 blend = static_cast<s32>(blendTime.FloatWith(node->PacketProperties()) * g_ClockUnitsPerSecond);
+    StopOgiAnimation(animator, blend, joint.id);
 }
 
-// The model node's bits: mode 1 sets bit 24, 2 bit 25, any other clears bit 25
+// The model node animated at its next update however long its instance went unseen (mode 1), always animated (2) or not any
+// more (any other)
 void ForceAnimationUpdateCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Bit24 = 0x1000000;
-    constexpr u32 Bit25 = 0x2000000;
-    auto* model = static_cast<ModelNode*>(GetGameNode(&NodeOf(runner)->owner->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&NodeOf(runner)->owner->nodes, NodeModel));
     if (model == nullptr)
     {
         return;
     }
 
-    u32 mode = value1.raw & 0xF;
-    if (mode == 1)
+    u32 mode = update.mode;
+    if (mode == AnimationUpdate::UpdateOnce)
     {
-        model->bits |= Bit24;
+        model->bits.ogiChanged = 1;
     }
-    else if (mode == 2)
+    else if (mode == AnimationUpdate::UpdateAlways)
     {
-        model->bits |= Bit25;
+        model->bits.alwaysAnimated = 1;
     }
     else
     {
-        model->bits &= ~Bit25;
+        model->bits.alwaysAnimated = 0;
     }
 }
 
-// The first awake instance of the chunk whose box overlaps the instance's with bit 8 of its flags (of 32 at most) put to sleep
+// The first awake instance of the chunk with a camera trigger whose box overlaps the instance's (of 32 at most) put to sleep
 void TriggerInstanceAtOwnBoxCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u16 Most = 0x20;
-    constexpr u32 Flags = 0x100;
+    constexpr u32 CameraTriggers = 1 << NodeCameraTrigger;
     InstanceContext* instance = NodeOf(runner)->owner;
     void* results[Most];
-    InstanceRayHit query;
+    InstanceQuery query;
     MakeQuery(&query, results, Most);
-    if (QueryChunkInstances(instance->chunk, &instance->collision.box, Flags, &query) != 0)
+    if (QueryChunkInstances(instance->chunk, &instance->collision.box, CameraTriggers, &query) != 0)
     {
         auto* found = static_cast<ReferencedObject*>(results[0]);
-        CallVirtual<u32>(found, found->vtable, SleepSlot);
+        CallVirtual<u32>(found, found->vtable, ReferencedObject::SleepSlot);
     }
 }
 
@@ -391,24 +346,25 @@ void SetFocusToGameActorCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
         return;
     }
 
-    InstanceContext* actor = G_GameController->progress.Instance(actorIndex & 0xFF);
+    InstanceContext* actor = G_GameController->progress.Instance(character.character);
     if (actor == nullptr)
     {
         return;
     }
 
     node->focusInstance = actor;
-    node->flags = (node->flags | ObjectNodeBase::FlagFocusInstance) & ~ObjectNodeBase::FlagFocusPosition;
+    node->flags.focusInstance = 1;
+    node->flags.focusPosition = 0;
 }
 
-void SetCharacterFlag2Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void HoldVehicleCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    SetCharacterControlFlag(character, true);
+    SetVehicleHeld(character, true);
 }
 
-void ClearCharacterFlag2Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void ReleaseVehicleCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    SetCharacterControlFlag(character, false);
+    SetVehicleHeld(character, false);
 }
 
 // What the played character's follow node follows the focus (whether there's a follow node isn't checked; following nothing
@@ -416,25 +372,24 @@ void ClearCharacterFlag2Command::Execute(TimeClock*, BehaviourRunner*, Behaviour
 void SetFocusToCameraTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
-    auto* followed = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+    auto* followed = follow->cameraInstance != nullptr ? static_cast<InstanceContext*>(follow->cameraInstance->object) : nullptr;
     ObjectNode* node = NodeOf(runner);
     node->focusInstance = followed;
     if (followed != nullptr)
     {
-        node->flags |= ObjectNodeBase::FlagFocusInstance;
+        node->flags.focusInstance = 1;
     }
 
-    node->flags &= ~ObjectNodeBase::FlagFocusPosition;
+    node->flags.focusPosition = 0;
 }
 
-// The follow camera's target the instance (unless the follow node's bit 7 says the scripts don't set it)
-void CameraNodeSetTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The follow camera's target the instance (unless the follow camera keeps its target)
+void SetFollowCameraTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u64 KeepsTarget = 0x80;
     InstanceContext* played = PlayedInstance();
     InstanceContext* instance = NodeOf(runner)->owner;
-    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), Node16));
-    if (follow == nullptr || (follow->camera.Bits() & KeepsTarget) != 0)
+    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), NodeFollow));
+    if (follow == nullptr || follow->camera.bits.keepsTarget != 0)
     {
         return;
     }
@@ -443,7 +398,7 @@ void CameraNodeSetTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
 }
 
 // The follow camera's positioner and target take their own cameras (cleared)
-void CameraNodeEnableFlagsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void UseOwnFollowCamerasCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
     if (follow == nullptr)
@@ -452,15 +407,15 @@ void CameraNodeEnableFlagsCommand::Execute(TimeClock*, BehaviourRunner*, Behavio
     }
 
     FollowCameraPositioner* positioner = &follow->camera.rig.ownPositioner;
-    positioner->bits |= FollowCameraPositioner::BitOwnCamera;
-    positioner->Clear();
+    positioner->bits.ownCamera = 1;
+    positioner->ClearTriggerValues();
     FollowCameraTarget* target = &follow->camera.rig.ownTarget;
-    target->bits |= FollowCameraTarget::BitOwnCamera;
-    target->Clear();
+    target->bits.ownCamera = 1;
+    target->ClearTriggerValues();
 }
 
 // Back to the triggers' cameras, their own cameras made to only steer
-void CameraNodeClearFlagsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void UseTriggerCamerasCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
     if (follow == nullptr)
@@ -469,17 +424,20 @@ void CameraNodeClearFlagsCommand::Execute(TimeClock*, BehaviourRunner*, Behaviou
     }
 
     FollowCameraPositioner* positioner = &follow->camera.rig.ownPositioner;
-    positioner->camera.flags = MainCamera::FlagSteers;
-    positioner->bits &= ~u64{FollowCameraPositioner::BitOwnCamera};
-    positioner->Clear();
+    positioner->camera.flags.value = 0;
+    positioner->camera.flags.steers = 1;
+    positioner->bits.ownCamera = 0;
+    positioner->ClearTriggerValues();
     FollowCameraTarget* target = &follow->camera.rig.ownTarget;
-    target->camera.flags = MainCamera::FlagSteers;
-    target->bits &= ~u64{FollowCameraTarget::BitOwnCamera};
-    target->Clear();
+    target->camera.flags.value = 0;
+    target->camera.flags.steers = 1;
+    target->bits.ownCamera = 0;
+    target->ClearTriggerValues();
 }
 
-// The follow camera's positioner's own camera given a value: mode 0 the rig's second value, 1 the yaw extra (from degrees)
-void SetCameraNodeValueCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+// The follow camera's positioner's own camera given a rate: the one its place is followed at, or the yaw blender's speed (from
+// radians a second)
+void SetFollowCameraRateCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
     if (follow == nullptr)
@@ -488,18 +446,18 @@ void SetCameraNodeValueCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourL
     }
 
     MainCamera* camera = &follow->camera.rig.ownPositioner.camera;
-    u32 which = mode.raw & 7;
-    if (which == 0)
+    u32 kind = which.kind;
+    if (kind == FollowCameraRate::PositionRate)
     {
-        camera->flags |= MainCamera::FlagPassesSecondValue;
-        camera->secondValue = value;
+        camera->flags.setsPositionFollowRate = 1;
+        camera->positionFollowRate = rate;
     }
-    else if (which == 1)
+    else if (kind == FollowCameraRate::YawSpeed)
     {
         s32 angle;
-        AngleFrom(&angle, value, 0);
-        camera->flags |= MainCamera::FlagSetsYawExtra;
-        camera->yawExtra = static_cast<u32>(angle);
+        AngleFrom(&angle, rate, 0);
+        camera->flags.setsYawSpeed = 1;
+        camera->yawSpeed = static_cast<u32>(angle);
     }
 }
 
@@ -526,38 +484,38 @@ void CloseAllLinkedFurnitureCommand::Execute(TimeClock*, BehaviourRunner* runner
     TriggerLinkedGenericObjects(NodeOf(runner)->owner);
 }
 
-// With the value's bit 0, bit 0 of the grabbable part's value its bit 16 (whether there's a grabbable node isn't checked)
+// Whether there's a grabbable node isn't checked
 void SetChiChiGrassCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     InstanceContext* instance = NodeOf(runner)->owner;
-    if ((value1 & 1) == 0)
+    if (setting.given == 0)
     {
         return;
     }
 
-    auto* grabbable = static_cast<AgentNode*>(GetGameNode(&instance->nodes, GrabbableNodeKind));
+    auto* grabbable = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeGrabbable));
     auto* part = static_cast<GrabbablePart*>(grabbable->agent->part);
-    part->value = (part->value & ~1u) | (value1 >> 16 & 1);
+    part->grabbable.unused0 = setting.on;
 }
 
-// The character's part's hit points (more than none: bit 14 of its agent's bits at 0x70 cleared), else the creature's
+// The character's part's hit points (more than none: its agent no longer dead), else the creature's
 void SetHitPointsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     NodeList* nodes = &NodeOf(runner)->owner->nodes;
-    auto* character = static_cast<AgentNode*>(GetGameNode(nodes, CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(nodes, NodeCharacter));
     if (character != nullptr)
     {
         auto* agent = static_cast<CharacterAgent*>(character->agent);
         SetPartHitPoints(static_cast<CreaturePart*>(agent->part), hitPoints);
         if (static_cast<s32>(hitPoints) > 0)
         {
-            agent->StateBits() &= ~u64{CharacterAgent::StateDead};
+            agent->state.dead = 0;
         }
 
         return;
     }
 
-    auto* creature = static_cast<AgentNode*>(GetGameNode(nodes, CreatureNodeKind));
+    auto* creature = static_cast<AgentNode*>(GetGameNode(nodes, NodeCreature));
     if (creature != nullptr)
     {
         SetPartHitPoints(static_cast<CreaturePart*>(creature->agent->part), hitPoints);
@@ -567,25 +525,24 @@ void SetHitPointsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
 // The node's motion block (made when it has none, the instance then a physics body) made sticky with the values
 void BecomeStickyCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 StickyFlag = 0x2000;
     ObjectNode* node = NodeOf(runner);
     MotionBlock* block = node->motionBlock;
     if (block == nullptr)
     {
         block = ConstructMotionBlock(MemoryAllocate(sizeof(MotionBlock)), 0, 0);
         node->motionBlock = block;
-        node->owner->flags |= ReferencedObject::FlagPhysicsBody;
+        node->owner->flags.physicsBody = 1;
         node->motionBlock->node = node;
     }
 
-    node->owner->flags |= ReferencedObject::FlagPhysicsBody;
-    block->flags |= StickyFlag;
-    block->stickyFlags |= static_cast<u32>(value1);
-    block->stickyValue = value2;
+    node->owner->flags.physicsBody = 1;
+    block->flags.sticky = 1;
+    block->stickyKinds |= static_cast<u32>(kinds);
+    block->stickyStrength = strength;
     block->stickyMessage = static_cast<u32>(message);
-    if ((objectId & 0xFFFF) != 0)
+    if (object.object != 0)
     {
-        block->stickyObject = static_cast<u16>(objectId);
+        block->stickyObject = object.object;
     }
 }
 
@@ -593,20 +550,21 @@ void BecomeStickyCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
 void OffsetFocusPositionCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
-    if ((node->flags & ObjectNodeBase::FlagFocusPosition) == 0)
+    if (!node->flags.focusPosition)
     {
         return;
     }
 
     Vector4 position = node->focusPosition;
-    position.x = position.x + x;
-    position.y = position.y + y;
-    position.z = position.z + z;
+    position.x = position.x + offset.x;
+    position.y = position.y + offset.y;
+    position.z = position.z + offset.z;
     node->focusPosition = position;
-    node->flags = (node->flags | ObjectNodeBase::FlagFocusPosition) & ~ObjectNodeBase::FlagFocusInstance;
+    node->flags.focusPosition = 1;
+    node->flags.focusInstance = 0;
 }
 
-// The runner's originator's agent told of a contact from the instance (the contact word and the hit points)
+// The runner's originator's agent told of a contact of damage from the instance
 void DamageOriginatorCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
@@ -620,13 +578,13 @@ void DamageOriginatorCommand::Execute(TimeClock*, BehaviourRunner* runner, Behav
 
     ContactMessage message;
     ContactMessage::Construct(&message);
-    message.word = contactWord;
-    message.byte = static_cast<u8>(hitPoints.IntWith(properties));
+    message.hitKinds = hitKinds;
+    message.damage = static_cast<u8>(damage.IntWith(properties));
     AgentNode* agentNode = AgentNodeOf(originator);
     if (agentNode != nullptr)
     {
         Agent* agent = agentNode->agent;
-        CallVirtual<void>(agent, agent->vtable, ContactSlot, &message, instance, 0u);
+        CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &message, instance, 0u);
     }
 }
 
@@ -648,21 +606,20 @@ void SetFocusPositionToPlayerCommand::Execute(TimeClock*, BehaviourRunner* runne
     ObjectPlace* place = player->place;
     place->SyncPosition();
     node->storedPosition = place->position;
-    node->flags |= ObjectNodeBase::FlagStoredPosition;
+    node->flags.storedPosition = 1;
 }
 
 // The second agent reference the first linked object (taken out of the list, kept while asleep) when it has none; then the
-// object node of the reference told (slot 11) and the reference put to sleep (an asleep one not kept forgotten first: then read
+// parts of the reference's object node let go and the reference put to sleep (an asleep one not kept forgotten first: then read
 // at null)
 void CacheLinkedInstanceCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 NodeSlot11 = 11;
     ObjectNode* node = NodeOf(runner);
     if (node->agentRef2 == nullptr)
     {
-        void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+        AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
         node->agentRef2 = TakeFirstLinked(attachments, 1);
-        node->flags |= ObjectNodeBase::FlagKeepsAgentRef2;
+        node->flags.keepsAgentRef2 = 1;
     }
 
     if (node->agentRef2 == nullptr)
@@ -670,15 +627,15 @@ void CacheLinkedInstanceCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
         return;
     }
 
-    if (Asleep(node->agentRef2) && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (Asleep(node->agentRef2) && !node->flags.keepsAgentRef2)
     {
         node->agentRef2 = nullptr;
     }
 
     InstanceContext* linked = node->agentRef2;
-    auto* objectNode = static_cast<GameNode*>(GetGameNode(NodesOf(linked), ObjectNodeKind));
-    CallVirtual<void>(objectNode, objectNode->vtable, NodeSlot11);
-    CallVirtual<u32>(linked, linked->vtable, SleepSlot);
+    auto* objectNode = static_cast<GameNode*>(GetGameNode(NodesOf(linked), NodeObject));
+    CallVirtual<void>(objectNode, objectNode->vtable, ObjectNode::ReleasePartsUnlessUnloadingSlot);
+    CallVirtual<u32>(linked, linked->vtable, InstanceContext::SleepSlot);
 }
 
 // The behaviour of the object's slot (bits 0-15) started on the node, forced, in the runner of bit 16 (the object of the node it
@@ -687,12 +644,13 @@ void RunScriptSlotCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
 {
     ObjectNode* node = NodeOf(runner);
     u16 id;
-    GetObjectBehaviourId(&id, ObjectOf(node), slotAndFlags & 0xFFFF);
+    GetObjectBehaviourId(&id, ObjectOf(node), request.slot);
     ResourceTable* scripts = G_GameResourcesObjectPointer->scripts;
-    auto* starter = id != NoBehaviour ? static_cast<ScriptStarter*>(scripts->items[id & 0x7FFF]) : nullptr;
+    auto* starter = id != NoScriptId ? static_cast<ScriptStarter*>(scripts->items[id & ResourceIndexMask]) : nullptr;
     if (starter != nullptr)
     {
-        CallVirtual<u32>(node, node->vtable, StartBehaviourSlot, starter, node->owner, 1u, slotAndFlags >> 16 & 1);
+        CallVirtual<u32>(node, node->vtable, ObjectNode::StartBehaviourSlot, starter, node->owner, 1u,
+                         request.runner);
     }
 }
 
@@ -700,17 +658,17 @@ void RunScriptSlotCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
 void TriggerLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
-    u32 count = *AttachmentsWord(attachments) & LinkedCountMask;
-    void* sender = (value1 & 1) != 0 ? runner->originator : node->owner;
+    u32 count = attachments->LinkedCount();
+    void* sender = fromOriginator.on != 0 ? runner->originator : node->owner;
     for (u32 index = 0; index < count; index++)
     {
-        auto* linked = static_cast<ObjectNode*>(GetGameNode(NodesOf(LinkedInstances(attachments)[index]), ObjectNodeKind));
+        auto* linked = static_cast<ObjectNode*>(GetGameNode(NodesOf(LinkedInstances(attachments)[index]), NodeObject));
         if (linked != nullptr)
         {
             RunAgentEvent(linked->agent, TriggerEvent, reinterpret_cast<u32>(sender), 0, 0);
@@ -718,31 +676,32 @@ void TriggerLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
     }
 }
 
-// The instance of the attachments path's entry of the slot (0xFF: the entry without one) the focus (none: no focus)
+// The instance hanging on the exit point (0xFF: the one at none) the focus (none: no focus)
 void RequestAttachmentFocusCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u8 NoSlot = 0xFF;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* target = nullptr;
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
     if (attachments != nullptr)
     {
-        void* path = PathOf(attachments);
+        AttachmentsPath* path = attachments->path;
         if (path != nullptr)
         {
-            u8 slot = value1 & 0xFF;
-            target = slot != NoSlot ? SlottedAttachment(path, slot) : UnslottedAttachment(path);
+            u8 index = hanging.exitPoint;
+            target = index != GameOGI::NoExitPoint ? SlottedAttachment(path, index) : UnslottedAttachment(path);
         }
     }
 
     if (target != nullptr)
     {
         node->focusInstance = target;
-        node->flags = (node->flags | ObjectNodeBase::FlagFocusInstance) & ~ObjectNodeBase::FlagFocusPosition;
+        node->flags.focusInstance = 1;
+        node->flags.focusPosition = 0;
     }
     else
     {
-        node->flags = node->flags & ~ObjectNodeBase::FlagFocusPosition & ~ObjectNodeBase::FlagFocusInstance;
+        node->flags.focusPosition = 0;
+        node->flags.focusInstance = 0;
     }
 }
 
@@ -752,7 +711,7 @@ void NowGoBackCollidableCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
 {
     constexpr u32 PushBackKind = 0x6F;
     ObjectNode* node = NodeOf(runner);
-    auto* character = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, NodeCharacter));
     if (character == nullptr)
     {
         return;
@@ -761,11 +720,11 @@ void NowGoBackCollidableCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
     Agent* agent = character->agent;
     PropertyHolder* properties = agent->properties;
     f32 second = properties->GetFloat(1);
-    f32 scale = value1.FloatWith(properties);
+    f32 times = scale.FloatWith(properties);
     Vector4 velocity = node->motion->velocity;
-    velocity.x = velocity.x * scale;
-    velocity.y = velocity.y * scale;
-    velocity.z = velocity.z * scale;
+    velocity.x = velocity.x * times;
+    velocity.y = velocity.y * times;
+    velocity.z = velocity.z * times;
     static_cast<CharacterAgent*>(agent)->PushBack(second, &velocity, PushBackKind, nullptr);
 }
 
@@ -781,13 +740,13 @@ void SetVehicleWrestleCreatureCommand::Execute(TimeClock*, BehaviourRunner* runn
         return;
     }
 
-    auto* character = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (character == nullptr)
     {
         return;
     }
 
-    auto* creature = static_cast<AgentNode*>(GetGameNode(&focus->nodes, CreatureNodeKind));
+    auto* creature = static_cast<AgentNode*>(GetGameNode(&focus->nodes, NodeCreature));
     if (creature == nullptr)
     {
         return;
@@ -796,25 +755,24 @@ void SetVehicleWrestleCreatureCommand::Execute(TimeClock*, BehaviourRunner* runn
     SetPlayerVehicle(CharacterOf(character), WrestledCreature, reinterpret_cast<PlayerCharacter*>(creature->agent), 0);
 }
 
-// The played character's (bit 8) or a character's object node given the object (the object of the node it takes its object
-// from when there's one) as its sound's
+// The played character's or a character's object node given the object (the object of the node it takes its object from when
+// there's one) as its sound's
 void CharacterSoundProxyCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 PlayedBit = 0x100;
     GameProgress* progress = &G_GameController->progress;
-    u32 character = (value1 & PlayedBit) != 0 ? progress->Field(GameProgress::CharacterShift) : value1 & 0xFF;
+    u32 character = choice.played != 0 ? progress->play.character : choice.character;
     InstanceContext* instance = progress->Instance(character);
     if (instance == nullptr)
     {
         return;
     }
 
-    auto* characterNode = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* characterNode = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject));
     SetSoundObject(characterNode, ObjectOf(NodeOf(runner)));
 }
 
-// The trajectory controller's three motion floats, the ones the last value's bits say
-void SetMotionFloatsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The trajectory's cycles' amplitudes (its motion floats) about the axes picked
+void SetCycleAmplitudesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
     if (!TakesPackets(node))
@@ -829,76 +787,72 @@ void SetMotionFloatsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     }
 
     PropertyHolder* properties = node->PacketProperties();
-    if ((set.raw & 1) != 0)
+    if (axes.x != 0)
     {
-        trajectory->motionFloats[0] = a.FloatWith(properties);
+        trajectory->motionFloats[0] = amplitudeX.FloatWith(properties);
     }
 
-    if ((set.raw & 2) != 0)
+    if (axes.y != 0)
     {
-        trajectory->motionFloats[1] = b.FloatWith(properties);
+        trajectory->motionFloats[1] = amplitudeY.FloatWith(properties);
     }
 
-    if ((set.raw & 4) != 0)
+    if (axes.z != 0)
     {
-        trajectory->motionFloats[2] = c.FloatWith(properties);
+        trajectory->motionFloats[2] = amplitudeZ.FloatWith(properties);
     }
 }
 
-// A designator's instance's object node made to take its object from itself again, or with bit 9 every linked object's
+// A designator's instance's object node made to take its object from itself again, or every linked object's
 void StopTargetBehaviourCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 LinkedBit = 0x200;
     ObjectNode* node = NodeOf(runner);
-    u8 designator = targetAndFlags & 0xFF;
-    if (designator != NoDesignator)
+    u8 designator = request.designator;
+    if (designator != DesignatesNone)
     {
-        auto* target = CallVirtual<InstanceContext*>(node, node->vtable, GetDesignatorSlot, u32{designator});
+        auto* target = CallVirtual<InstanceContext*>(node, node->vtable, ObjectNode::GetDesignatorSlot, u32{designator});
         if (target != nullptr)
         {
-            static_cast<ObjectNodeBase*>(GetGameNode(&target->nodes, ObjectNodeKind))->sourceNode = nullptr;
+            static_cast<ObjectNodeBase*>(GetGameNode(&target->nodes, NodeObject))->sourceNode = nullptr;
         }
 
         return;
     }
 
-    if ((targetAndFlags & LinkedBit) == 0)
+    if (request.everyLinked == 0)
     {
         return;
     }
 
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
-    for (u32 index = 0; index < (*AttachmentsWord(attachments) & LinkedCountMask); index++)
+    for (u32 index = 0; index < attachments->LinkedCount(); index++)
     {
         InstanceContext* linked = LinkedInstances(attachments)[index];
         if (linked != nullptr)
         {
-            static_cast<ObjectNodeBase*>(GetGameNode(&linked->nodes, ObjectNodeKind))->sourceNode = nullptr;
+            static_cast<ObjectNodeBase*>(GetGameNode(&linked->nodes, NodeObject))->sourceNode = nullptr;
         }
     }
 }
 
-// The played character's vehicle of kind 3 given the value (the third of a vector, its slot 4, with the instance; whether there's
-// a character node or a vehicle isn't checked)
-void SetPlayerVehicleValueCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The played character's Humiliskate pushed along z by the instance (whether there's a character node or a vehicle isn't checked)
+void PushPlayerVehicleCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 ValueSlot = 4;
-    constexpr u32 Humiliskate = 3;
-    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayedInstance()), CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayedInstance()), NodeCharacter));
     PlayerCharacter* player = CharacterOf(character);
-    if (player->control->Kind() != Humiliskate)
+    if (player->vehicle->Kind() != Vehicle::KindHumiliskate)
     {
         return;
     }
 
-    Vector4 values = {0.0f, 0.0f, value, 0.0f};
-    CharacterControl* control = player->control;
-    CallVirtual<void>(control, control->vtable, ValueSlot, &values, runner->agentNode->owner);
+    Vector4 pushed = {0.0f, 0.0f, push, 0.0f};
+    Vehicle* vehicle = player->vehicle;
+    CallVirtual<void>(vehicle, vehicle->vtable, Vehicle::SlotPush, &pushed, runner->agentNode->owner);
 }
 
 // The attachments' current linked object the next one of the list's (numbers from 1, as many as the count; the current one not
@@ -906,17 +860,15 @@ void SetPlayerVehicleValueCommand::Execute(TimeClock*, BehaviourRunner* runner, 
 void NextLinkedObjectInListCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u8 NotFound = 0xFF;
-    void* attachments = GetGameNode(&NodeOf(runner)->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(NodeOf(runner)->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
-    u32* word = AttachmentsWord(attachments);
-    u32 bits = *word;
-    const auto* numbers = reinterpret_cast<const u8*>(&links1);
-    u8 total = static_cast<u8>(count);
-    u32 current = (bits >> LinkedIndexShift & LinkedIndexMask) + 1;
+    AttachmentsNodeBits bits = attachments->bits;
+    u8 total = count.numbers;
+    u32 current = bits.currentLinked + 1;
     u8 found = NotFound;
     for (u8 index = 0; index < total; index++)
     {
@@ -938,25 +890,26 @@ void NextLinkedObjectInListCommand::Execute(TimeClock*, BehaviourRunner* runner,
     }
 
     u8 linked = numbers[next] - 1;
-    if (linked < (bits & LinkedCountMask))
+    if (linked < bits.linkedCount)
     {
-        *word = (bits & ~(LinkedIndexMask << LinkedIndexShift)) | (linked & LinkedIndexMask) << LinkedIndexShift;
+        bits.currentLinked = linked;
+        attachments->bits = bits;
     }
 }
 
-// The chunk's instances with bit 13 of their flags (128 at most) sent event 13 (whether each has a crate node isn't checked)
+// The chunk's crates (128 at most) sent the nitro event
 void TriggerAllNitroCratesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u16 Most = 0x80;
-    constexpr u32 NitroFlag = 0x2000;
+    constexpr u32 Crates = 1 << NodeCrate;
     InstanceContext* instance = NodeOf(runner)->owner;
     void* results[Most];
-    InstanceRayHit query;
+    InstanceQuery query;
     MakeQuery(&query, results, Most);
-    s32 count = QueryChunkInstancesByFlags(instance->chunk, NitroFlag, &query);
+    s32 count = QueryChunkInstancesOfKinds(instance->chunk, Crates, &query);
     for (u16 index = 0; index < static_cast<u32>(count); index++)
     {
-        auto* crate = static_cast<AgentNode*>(GetGameNode(&static_cast<InstanceContext*>(results[index])->nodes, CrateNodeKind));
+        auto* crate = static_cast<AgentNode*>(GetGameNode(&static_cast<InstanceContext*>(results[index])->nodes, NodeCrate));
         RunAgentEvent(crate->agent, NitroEvent, 0, 0, 0);
     }
 }
@@ -964,16 +917,15 @@ void TriggerAllNitroCratesCommand::Execute(TimeClock*, BehaviourRunner* runner, 
 // A character's vehicle left (its controls' handler dropped); when it had one, played alone with no second character
 void ExitVehicleModeCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    constexpr u32 Alone = 1;
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* instance = progress->Instance(value1);
+    InstanceContext* instance = progress->Instance(character);
     if (instance == nullptr)
     {
         return;
     }
 
     auto* controls = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-    auto* character = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (controls == nullptr || character == nullptr)
     {
         return;
@@ -981,13 +933,14 @@ void ExitVehicleModeCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLeve
 
     PlayerCharacter* player = CharacterOf(character);
     ReplaceControlsHandler(controls, nullptr);
-    bool hadVehicle = player->control != nullptr;
+    bool hadVehicle = player->vehicle != nullptr;
     LeaveVehicle(player, 0);
     if (hadVehicle)
     {
-        u32 bits = (progress->bits & ~(GameProgress::FieldMask << GameProgress::PairingShift)) | Alone << GameProgress::PairingShift;
-        progress->bits = (bits & ~(GameProgress::FieldMask << GameProgress::SecondShift)) |
-                         GameProgress::NoCharacter << GameProgress::SecondShift;
+        PlayState play = progress->play;
+        play.pairing = PairingAlone;
+        play.second = GameProgress::NoCharacter;
+        progress->play = play;
     }
 }
 
@@ -1021,49 +974,44 @@ void ApplyVelocityToHeldBodyCommand::Execute(TimeClock*, BehaviourRunner* runner
     }
 
     FollowOwnMotionBlock(heldNode);
-    Vector4 impulse = {x, y, z, w};
+    Vector4 push = impulse;
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
-    VuRotateVector(&place->matrix, &impulse, &impulse);
+    VuRotateVector(&place->matrix, &push, &push);
     // Retail stores the node's roll radius there first
-    Vector4 point = heldNode->unknown20;
+    Vector4 point = heldNode->middle;
     point.w = 1.0f;
-    PushRigidBody(body, &impulse, &point);
+    PushRigidBody(body, &push, &point);
 }
 
-// A linked object unlinked: bit 8 every one, bit 10 the current one, bit 9 the one of the low byte's index, else the designator's
-// instance when it's linked
+// A linked object unlinked: every one, the current one, the one of the index, else the designator's instance when it's linked
 void UnlinkTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 AllBit = 0x100;
-    constexpr u32 IndexBit = 0x200;
-    constexpr u32 CurrentBit = 0x400;
     ObjectNode* node = NodeOf(runner);
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
-    u32 bits = target.raw;
-    if ((bits & AllBit) != 0)
+    if (request.all != 0)
     {
         UnlinkAll(attachments);
         return;
     }
 
     InstanceContext* linked;
-    if ((bits & CurrentBit) != 0)
+    if (request.current != 0)
     {
-        linked = LinkedInstances(attachments)[*AttachmentsWord(attachments) >> LinkedIndexShift & LinkedIndexMask];
+        linked = LinkedInstances(attachments)[CurrentLinked(attachments)];
     }
-    else if ((bits & IndexBit) != 0)
+    else if (request.byIndex != 0)
     {
-        linked = LinkedInstances(attachments)[bits & 0xFF];
+        linked = LinkedInstances(attachments)[request.target];
     }
     else
     {
-        linked = CallVirtual<InstanceContext*>(node, node->vtable, GetDesignatorSlot, bits & 0xFF);
+        linked = CallVirtual<InstanceContext*>(node, node->vtable, ObjectNode::GetDesignatorSlot, u32{request.target});
         if (IndexOfLinked(attachments, linked) == -1)
         {
             linked = nullptr;
@@ -1076,15 +1024,15 @@ void UnlinkTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
     }
 }
 
-// What the runner's end leaves: bit 0 the particles, 1 the trajectory controller, 2-4 the node's bits 10, 11 and 12, 5 the
-// perception
+// What the runner's end leaves: bit 0 the particles, 1 the trajectory controller, 2-4 the node's bits 10, 11 and 12 (nothing
+// reads them), 5 the perception
 void KeepCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
-    SetFlag(node, ObjectNodeBase::FlagKeepsParticles, (flags.raw & 0x1) != 0);
-    SetFlag(node, ObjectNodeBase::FlagKeepsTrajectory, (flags.raw & 0x2) != 0);
-    SetFlag(node, 0x800, (flags.raw & 0x8) != 0);
-    SetFlag(node, 0x400, (flags.raw & 0x4) != 0);
-    SetFlag(node, 0x1000, (flags.raw & 0x10) != 0);
-    SetFlag(node, ObjectNodeBase::FlagKeepsPerception, (flags.raw & 0x20) != 0);
+    node->flags.keepsParticles = keeps.particles;
+    node->flags.keepsTrajectory = keeps.trajectory;
+    node->flags.unused11 = keeps.unused3;
+    node->flags.unused10 = keeps.unused2;
+    node->flags.unused12 = keeps.unused4;
+    node->flags.keepsPerception = keeps.perception;
 }

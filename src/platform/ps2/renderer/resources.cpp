@@ -65,21 +65,16 @@ extern "C"
 namespace
 {
 // A texture's data in its file: the GS's view of it, 0x20 bytes of the tools' memory, then the image
-constexpr u32 TextureHeaderSize = 0x60;
+constexpr u32 TextureHeaderSize = sizeof(Texture);
 constexpr u32 TextureLeftoverSize = 0x20;
 // The disk manager's handles are none until they're allocated
 constexpr s32 NoHandle = -1;
-// The shaders tell whether their model needs the eye and whether it's a billboard
-constexpr u32 ShaderNeedsEyeSlot = 8;
-constexpr u32 ShaderBillboardSlot = 9;
-constexpr u32 ShaderDestroySlot = 1;
 // A blend part's shape factors
-constexpr u32 ShapeFactorsSize = 0xC;
+constexpr u32 ShapeFactorsSize = sizeof(BlendPart::shapeFactors);
 // A LOD's distances are squared when it's read, or stored squared
 constexpr s32 LodDistancesVersion = 0x1001;
 constexpr s32 LodSquaresVersion = 0x1002;
 constexpr u32 NoDistance = 0xFFFFFFFF;
-constexpr u32 LodDistanceCount = 3;
 // A blend skin's quadwords
 constexpr u32 QuadwordShift = 4;
 
@@ -99,7 +94,7 @@ s32* NewHandles(u32 count)
 void ReadPacket(Stream* stream, s32* handle, u32 size)
 {
     s32 allocated;
-    DiskAllocate(&allocated, GetDiskManager(), size, false, 1);
+    DiskAllocate(&allocated, GetDiskManager(), size, false, DeferRelease);
     *handle = allocated;
     stream->Read(DiskLoadedMemory(GetDiskManager(), handle), size, 1);
 }
@@ -144,9 +139,6 @@ void ReadRigidModelData(RigidModel* model, Stream* stream)
     model->instances.billboard = AnyShader(model, ShaderBillboardSlot);
 }
 
-// The shaders' frame update, given the frame's seconds
-constexpr u32 ShaderUpdateSlot = 3;
-
 void RestartAnimations(const Material* material)
 {
     for (u32 index = 0; index < material->shaderCount; index++)
@@ -176,8 +168,8 @@ GameTexture* TextureConstruct(void* memory, u32 id)
     auto* texture = static_cast<GameTexture*>(memory);
     ConstructResourceHeader(texture, id);
     texture->texture.transfer = NoHandle;
-    texture->texture.unknown02 = 2;
-    texture->texture.unknown5C = 0;
+    texture->texture.unused02 = 2;
+    texture->texture.unused5C = 0;
     texture->texture.slot = nullptr;
     texture->texture.secondContext = 0;
     return texture;
@@ -190,7 +182,7 @@ void TextureDestroy(GameTexture* texture, u32 flags)
         DiskRelease(GetDiskManager(), &texture->texture.transfer);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(texture);
     }
@@ -213,7 +205,7 @@ MaterialResource* MaterialResourceConstruct(void* memory, u32 id)
     auto* resource = static_cast<MaterialResource*>(memory);
     ConstructResourceHeader(resource, id);
     resource->material = nullptr;
-    resource->unknown0C = 0;
+    resource->unused0C = 0;
     return resource;
 }
 
@@ -224,7 +216,7 @@ void MaterialResourceDestroy(MaterialResource* resource, u32 flags)
         MaterialDestroy(resource->material, DestroyAndFree);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(resource);
     }
@@ -235,9 +227,9 @@ void MaterialResourceRead(MaterialResource* resource, Stream* stream)
 {
     auto* material = static_cast<Material*>(MemoryAllocate(Platform::Graphics::MaterialStorage));
     RenderBucketConstruct(&material->writer);
-    material->call = 1;
+    material->call = CallRenderTarget;
     material->listed = 0;
-    material->unknown65 = 0;
+    material->unused65 = 0;
     material->drawnDirectly = 0;
     ReadMaterialShaders(material, stream);
     resource->material = material;
@@ -279,7 +271,7 @@ void ModelDestroy(RigidModelData* model, u32 flags)
         MemoryDeallocate_(model->extraSizes);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(model);
     }
@@ -335,7 +327,7 @@ void RigidModelDestroy(RigidModel* model, u32 flags)
         MemoryDeallocate_(model->materials);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(model);
     }
@@ -392,7 +384,7 @@ void SkinDestroy(Skin* skin, u32 flags)
         MemoryDeallocate_(skin->sizes);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(skin);
     }
@@ -449,7 +441,7 @@ void BlendSkinDestroy(BlendSkin* skin, u32 flags)
         MemoryDeallocate_(skin->subModels);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(skin);
     }
@@ -510,7 +502,7 @@ void BlendSubModelDestroy(BlendSubModel* subModel, u32 flags)
 
     subModel->parts = nullptr;
     subModel->count = 0;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(subModel);
     }
@@ -562,7 +554,7 @@ void BlendPartDestroy(BlendPart* part, u32 flags)
         MemoryDeallocate_(part->shapeCounts);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(part);
     }
@@ -571,7 +563,7 @@ void BlendPartDestroy(BlendPart* part, u32 flags)
 void ReadBlendPart(BlendPart* part, Stream* stream, u32 shapeCount)
 {
     stream->ReadS32(reinterpret_cast<s32*>(&part->packetSize));
-    stream->ReadS32(reinterpret_cast<s32*>(&part->unknown20));
+    stream->ReadS32(reinterpret_cast<s32*>(&part->unused20));
     part->packet = reinterpret_cast<u32>(MemoryAllocate2(part->packetSize));
     stream->Read(reinterpret_cast<void*>(part->packet), part->packetSize, 1);
     stream->Read(part->shapeFactors, ShapeFactorsSize, 1);
@@ -627,7 +619,7 @@ void LodDestroy(Lod* lod, u32 flags)
         MemoryDeallocate_(lod->meshes);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(lod);
     }
@@ -645,17 +637,17 @@ void LodRead(Lod* lod, Stream* stream)
         stream->ReadU32(&count);
         lod->count = static_cast<u8>(count);
         lod->meshes = static_cast<RigidModel**>(MemoryAllocate2(lod->count * sizeof(RigidModel*)));
-        stream->ReadS32(reinterpret_cast<s32*>(&lod->distances[0]));
-        stream->ReadS32(reinterpret_cast<s32*>(&lod->distances[1]));
-        lod->distances[0] = lod->distances[0] * lod->distances[0];
-        if (lod->distances[1] != NoDistance)
+        stream->ReadS32(reinterpret_cast<s32*>(&lod->nearest));
+        stream->ReadS32(reinterpret_cast<s32*>(&lod->farthest));
+        lod->nearest = lod->nearest * lod->nearest;
+        if (lod->farthest != NoDistance)
         {
-            lod->distances[1] = lod->distances[1] * lod->distances[1];
+            lod->farthest = lod->farthest * lod->farthest;
         }
 
-        for (u32 distance = 0; distance < LodDistanceCount; distance++)
+        for (u32 distance = 0; distance < Lod::MostSwitches; distance++)
         {
-            u32& value = lod->distances[2 + distance];
+            u32& value = lod->switchDistances[distance];
             stream->ReadS32(reinterpret_cast<s32*>(&value));
             value = value * value;
         }
@@ -670,9 +662,9 @@ void LodRead(Lod* lod, Stream* stream)
     {
         stream->ReadS8(reinterpret_cast<s8*>(&lod->count));
         lod->meshes = static_cast<RigidModel**>(MemoryAllocate2(lod->count * sizeof(RigidModel*)));
-        stream->ReadS32(reinterpret_cast<s32*>(&lod->distances[0]));
-        stream->ReadS32(reinterpret_cast<s32*>(&lod->distances[1]));
-        stream->Read(&lod->distances[2], LodDistanceCount * sizeof(u32), 1);
+        stream->ReadS32(reinterpret_cast<s32*>(&lod->nearest));
+        stream->ReadS32(reinterpret_cast<s32*>(&lod->farthest));
+        stream->Read(lod->switchDistances, sizeof(lod->switchDistances), 1);
         ReadMeshes(lod->meshes, lod->count, stream);
     }
 }
@@ -698,7 +690,7 @@ void SkyDestroy(Sky* sky, u32 flags)
         MemoryDeallocate_(sky->models);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(sky);
     }
@@ -754,20 +746,20 @@ void SkinRestartAnimations(Skin* skin)
 
 RigidModel* LodMeshAt(Lod* lod, u32 distance)
 {
-    if (distance < lod->distances[0] || lod->distances[1] < distance)
+    if (distance < lod->nearest || lod->farthest < distance)
     {
         return nullptr;
     }
 
     RigidModel* mesh = lod->meshes[0];
     s32 last = lod->count - 1;
-    if (last <= 0 || distance < lod->distances[2])
+    if (last <= 0 || distance < lod->switchDistances[0])
     {
         return mesh;
     }
 
     mesh = lod->meshes[1];
-    for (s32 index = 1; index < last && distance >= lod->distances[2 + index]; index++)
+    for (s32 index = 1; index < last && distance >= lod->switchDistances[index]; index++)
     {
         mesh = lod->meshes[index + 1];
     }

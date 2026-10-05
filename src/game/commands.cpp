@@ -9,9 +9,6 @@ T* NewScriptObject()
 {
     return static_cast<T*>(MemoryAllocate(sizeof(T)));
 }
-
-// The commands' vtable function run on a node
-constexpr u32 ExecuteOnSlot = 4;
 }
 
 u32 AddTrailCommand::Size()
@@ -144,9 +141,9 @@ u32 NowMoveForwardsCommand::Size()
     return sizeof(NowMoveForwardsCommand);
 }
 
-u32 NowMoveBackwardsCommand::Size()
+u32 NoOpNowMoveBackwardsCommand::Size()
 {
-    return sizeof(NowMoveBackwardsCommand);
+    return sizeof(NoOpNowMoveBackwardsCommand);
 }
 
 u32 NowStrafeLeftCommand::Size()
@@ -174,14 +171,14 @@ u32 NowTurnRightCommand::Size()
     return sizeof(NowTurnRightCommand);
 }
 
-void NowRotateJointCommand::Destroy(u32 destroyFlags)
+void LinkTargetCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 NowRotateJointCommand::Size()
+u32 LinkTargetCommand::Size()
 {
-    return sizeof(NowRotateJointCommand);
+    return sizeof(LinkTargetCommand);
 }
 
 StoreCurrentSpaceCommand* StoreCurrentSpaceCommand::Construct(StoreCurrentSpaceCommand* command)
@@ -219,14 +216,14 @@ u32 RotationWarpCommand::Size()
     return sizeof(RotationWarpCommand);
 }
 
-void ClearThreatsCommand::Destroy(u32 destroyFlags)
+void SetRestartableCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearThreatsCommand::Size()
+u32 SetRestartableCommand::Size()
 {
-    return sizeof(ClearThreatsCommand);
+    return sizeof(SetRestartableCommand);
 }
 
 void TriggerLinkedObjectsCommand::Destroy(u32 destroyFlags)
@@ -639,14 +636,14 @@ u32 DestroyMeCommand::Size()
     return sizeof(DestroyMeCommand);
 }
 
-void SetSoundCommand::Destroy(u32 destroyFlags)
+void SetReverbCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetSoundCommand::Size()
+u32 SetReverbCommand::Size()
 {
-    return sizeof(SetSoundCommand);
+    return sizeof(SetReverbCommand);
 }
 
 u32 AlterWobblePhaseCommand::Size()
@@ -739,14 +736,14 @@ u32 CacheLinkedInstanceCommand::Size()
     return sizeof(CacheLinkedInstanceCommand);
 }
 
-void SetRotationComponentsCommand::Destroy(u32 destroyFlags)
+void SnapRotationCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetRotationComponentsCommand::Size()
+u32 SnapRotationCommand::Size()
 {
-    return sizeof(SetRotationComponentsCommand);
+    return sizeof(SnapRotationCommand);
 }
 
 void StopHeadTrackingCommand::Destroy(u32 destroyFlags)
@@ -799,14 +796,14 @@ u32 SetHeadTrackingTargetCommand::Size()
     return sizeof(SetHeadTrackingTargetCommand);
 }
 
-void ClearNodeByte154Command::Destroy(u32 destroyFlags)
+void ClearKnockCountdownCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearNodeByte154Command::Size()
+u32 ClearKnockCountdownCommand::Size()
 {
-    return sizeof(ClearNodeByte154Command);
+    return sizeof(ClearKnockCountdownCommand);
 }
 
 void PhysicsResetVelocityCommand::Destroy(u32 destroyFlags)
@@ -829,14 +826,14 @@ u32 SetFocusPositionBesidePlayerCommand::Size()
     return sizeof(SetFocusPositionBesidePlayerCommand);
 }
 
-void SetFocusPositionToAgentCommand::Destroy(u32 destroyFlags)
+void CopyDesignatorCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetFocusPositionToAgentCommand::Size()
+u32 CopyDesignatorCommand::Size()
 {
-    return sizeof(SetFocusPositionToAgentCommand);
+    return sizeof(CopyDesignatorCommand);
 }
 
 void LinkToNearestPointCommand::Destroy(u32 destroyFlags)
@@ -909,14 +906,14 @@ u32 PhysicsBodyActivateCommand::Size()
     return sizeof(PhysicsBodyActivateCommand);
 }
 
-void SetPhysicsSizesCommand::Destroy(u32 destroyFlags)
+void SetMagnetCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetPhysicsSizesCommand::Size()
+u32 SetMagnetCommand::Size()
 {
-    return sizeof(SetPhysicsSizesCommand);
+    return sizeof(SetMagnetCommand);
 }
 
 void MagnetPullToFocusCommand::Destroy(u32 destroyFlags)
@@ -999,44 +996,44 @@ u32 PushFromPerceptionCommand::Size()
     return sizeof(PushFromPerceptionCommand);
 }
 
-void SetCharacterAnalogCommand::Destroy(u32 destroyFlags)
+void SetPresenceCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetCharacterAnalogCommand::Size()
+u32 SetPresenceCommand::Size()
 {
-    return sizeof(SetCharacterAnalogCommand);
+    return sizeof(SetPresenceCommand);
 }
 
-void AddCharacterAnalogCommand::Destroy(u32 destroyFlags)
+void AddPresenceCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 AddCharacterAnalogCommand::Size()
+u32 AddPresenceCommand::Size()
 {
-    return sizeof(AddCharacterAnalogCommand);
+    return sizeof(AddPresenceCommand);
 }
 
-void PerceptionOp141Command::Destroy(u32 destroyFlags)
+void TurnSenseOffCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 PerceptionOp141Command::Size()
+u32 TurnSenseOffCommand::Size()
 {
-    return sizeof(PerceptionOp141Command);
+    return sizeof(TurnSenseOffCommand);
 }
 
-void PerceptionOp142Command::Destroy(u32 destroyFlags)
+void TurnSenseOnCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 PerceptionOp142Command::Size()
+u32 TurnSenseOnCommand::Size()
 {
-    return sizeof(PerceptionOp142Command);
+    return sizeof(TurnSenseOnCommand);
 }
 
 void DisableAllPerceptionsCommand::Destroy(u32 destroyFlags)
@@ -1089,9 +1086,9 @@ u32 PreviousKeyCommand::Size()
     return sizeof(PreviousKeyCommand);
 }
 
-u32 SetMotionFloatsCommand::Size()
+u32 SetCycleAmplitudesCommand::Size()
 {
-    return sizeof(SetMotionFloatsCommand);
+    return sizeof(SetCycleAmplitudesCommand);
 }
 
 void RotateWithLinkedCommand::Destroy(u32 destroyFlags)
@@ -1114,19 +1111,19 @@ u32 StrafeTowardsTargetCommand::Size()
     return sizeof(StrafeTowardsTargetCommand);
 }
 
-void NextKeyOfPath34Command::Destroy(u32 destroyFlags)
+void PreviousRouteNodeCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 NextKeyOfPath34Command::Size()
+u32 PreviousRouteNodeCommand::Size()
 {
-    return sizeof(NextKeyOfPath34Command);
+    return sizeof(PreviousRouteNodeCommand);
 }
 
-u32 AddMotionAnglesCommand::Size()
+u32 AddWobblePhaseCommand::Size()
 {
-    return sizeof(AddMotionAnglesCommand);
+    return sizeof(AddWobblePhaseCommand);
 }
 
 void MoveTowardsDesignatorCommand::Destroy(u32 destroyFlags)
@@ -1139,14 +1136,14 @@ u32 MoveTowardsDesignatorCommand::Size()
     return sizeof(MoveTowardsDesignatorCommand);
 }
 
-void SetNode150FieldsCommand::Destroy(u32 destroyFlags)
+void SetNoiseMessageCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetNode150FieldsCommand::Size()
+u32 SetNoiseMessageCommand::Size()
 {
-    return sizeof(SetNode150FieldsCommand);
+    return sizeof(SetNoiseMessageCommand);
 }
 
 void UnlinkTargetCommand::Destroy(u32 destroyFlags)
@@ -1164,39 +1161,39 @@ u32 AttachMotionBlockCommand::Size()
     return sizeof(AttachMotionBlockCommand);
 }
 
-void ResetNode120Command::Destroy(u32 destroyFlags)
+void ClearTouchMessageCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ResetNode120Command::Size()
+u32 ClearTouchMessageCommand::Size()
 {
-    return sizeof(ResetNode120Command);
+    return sizeof(ClearTouchMessageCommand);
 }
 
-void ClearMotionBlockFlag16Command::Destroy(u32 destroyFlags)
+void StopTouchMessagesCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearMotionBlockFlag16Command::Size()
+u32 StopTouchMessagesCommand::Size()
 {
-    return sizeof(ClearMotionBlockFlag16Command);
+    return sizeof(StopTouchMessagesCommand);
 }
 
-void SetMotionBlockFlag16Command::Destroy(u32 destroyFlags)
+void SendTouchMessagesCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetMotionBlockFlag16Command::Size()
+u32 SendTouchMessagesCommand::Size()
 {
-    return sizeof(SetMotionBlockFlag16Command);
+    return sizeof(SendTouchMessagesCommand);
 }
 
-u32 AddToFocusObjectByteCommand::Size()
+u32 AddToFocusCounterCommand::Size()
 {
-    return sizeof(AddToFocusObjectByteCommand);
+    return sizeof(AddToFocusCounterCommand);
 }
 
 void UnlinkFromTargetCommand::Destroy(u32 destroyFlags)
@@ -1209,9 +1206,9 @@ u32 UnlinkFromTargetCommand::Size()
     return sizeof(UnlinkFromTargetCommand);
 }
 
-u32 AddToLinkedObjectsByteCommand::Size()
+u32 AddToLinkedCounterCommand::Size()
 {
-    return sizeof(AddToLinkedObjectsByteCommand);
+    return sizeof(AddToLinkedCounterCommand);
 }
 
 u32 ForceVolumeControllerCommand::Size()
@@ -1239,9 +1236,9 @@ u32 SetSurfaceCommand::Size()
     return sizeof(SetSurfaceCommand);
 }
 
-u32 MoveInstancesInBoxCommand::Size()
+u32 PushInstancesAwayCommand::Size()
 {
-    return sizeof(MoveInstancesInBoxCommand);
+    return sizeof(PushInstancesAwayCommand);
 }
 
 void SetFocusPositionAlongCommand::Destroy(u32 destroyFlags)
@@ -1254,9 +1251,9 @@ u32 SetFocusPositionAlongCommand::Size()
     return sizeof(SetFocusPositionAlongCommand);
 }
 
-u32 SetFocusObjectByteCommand::Size()
+u32 SetFocusCounterCommand::Size()
 {
-    return sizeof(SetFocusObjectByteCommand);
+    return sizeof(SetFocusCounterCommand);
 }
 
 void RunSlotBehaviourOnLinkedCommand::Destroy(u32 destroyFlags)
@@ -1279,14 +1276,14 @@ u32 StopTargetBehaviourCommand::Size()
     return sizeof(StopTargetBehaviourCommand);
 }
 
-void SetKeyPathByte43Command::Destroy(u32 destroyFlags)
+void SetPathIndexCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetKeyPathByte43Command::Size()
+u32 SetPathIndexCommand::Size()
 {
-    return sizeof(SetKeyPathByte43Command);
+    return sizeof(SetPathIndexCommand);
 }
 
 void SetFocusToOwnerCommand::Destroy(u32 destroyFlags)
@@ -1309,14 +1306,14 @@ u32 SetAgentRef1ToOwnerCommand::Size()
     return sizeof(SetAgentRef1ToOwnerCommand);
 }
 
-void FadeSoundGroupCommand::Destroy(u32 destroyFlags)
+void FadeOutMusicSlotCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 FadeSoundGroupCommand::Size()
+u32 FadeOutMusicSlotCommand::Size()
 {
-    return sizeof(FadeSoundGroupCommand);
+    return sizeof(FadeOutMusicSlotCommand);
 }
 
 void WarpAgentCommand::Destroy(u32 destroyFlags)
@@ -1349,24 +1346,24 @@ u32 QueueObjectVideoCommand::Size()
     return sizeof(QueueObjectVideoCommand);
 }
 
-void VideoControllerUpdateCommand::Destroy(u32 destroyFlags)
+void StartObjectVideoCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 VideoControllerUpdateCommand::Size()
+u32 StartObjectVideoCommand::Size()
 {
-    return sizeof(VideoControllerUpdateCommand);
+    return sizeof(StartObjectVideoCommand);
 }
 
-void VideoControllerOp182Command::Destroy(u32 destroyFlags)
+void CancelVideoCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 VideoControllerOp182Command::Size()
+u32 CancelVideoCommand::Size()
 {
-    return sizeof(VideoControllerOp182Command);
+    return sizeof(CancelVideoCommand);
 }
 
 void SetTargetOwnerToSelfCommand::Destroy(u32 destroyFlags)
@@ -1379,14 +1376,14 @@ u32 SetTargetOwnerToSelfCommand::Size()
     return sizeof(SetTargetOwnerToSelfCommand);
 }
 
-void ResetTimerCommand::Destroy(u32 destroyFlags)
+void RestoreOwnObjectCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ResetTimerCommand::Size()
+u32 RestoreOwnObjectCommand::Size()
 {
-    return sizeof(ResetTimerCommand);
+    return sizeof(RestoreOwnObjectCommand);
 }
 
 u32 QueueVideoCommand::Size()
@@ -1444,34 +1441,34 @@ u32 SetShadowRectangleCommand::Size()
     return sizeof(SetShadowRectangleCommand);
 }
 
-void ShadowToggleCommand::Destroy(u32 destroyFlags)
+void SetShadowSlotCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void ShadowToggleCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void SetShadowSlotCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 ShadowToggleCommand::Size()
+u32 SetShadowSlotCommand::Size()
 {
-    return sizeof(ShadowToggleCommand);
+    return sizeof(SetShadowSlotCommand);
 }
 
-void SetNode10SlotCommand::Destroy(u32 destroyFlags)
+void ClearShadowSlotCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetNode10SlotCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void ClearShadowSlotCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 SetNode10SlotCommand::Size()
+u32 ClearShadowSlotCommand::Size()
 {
-    return sizeof(SetNode10SlotCommand);
+    return sizeof(ClearShadowSlotCommand);
 }
 
 void LaunchAtTargetCommand::Destroy(u32 destroyFlags)
@@ -1484,14 +1481,14 @@ u32 LaunchAtTargetCommand::Size()
     return sizeof(LaunchAtTargetCommand);
 }
 
-void SetNodeBytes168Command::Destroy(u32 destroyFlags)
+void SetContactSoundsCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetNodeBytes168Command::Size()
+u32 SetContactSoundsCommand::Size()
 {
-    return sizeof(SetNodeBytes168Command);
+    return sizeof(SetContactSoundsCommand);
 }
 
 void StopVideoCommand::Destroy(u32 destroyFlags)
@@ -1514,23 +1511,23 @@ u32 StopSoundCommand::Size()
     return sizeof(StopSoundCommand);
 }
 
-void DUMMY_197Command::Destroy(u32 destroyFlags)
+void NoOp197Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_197Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void NoOp197Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-void DUMMY_197Command::ExecuteOn(GameNode*)
+void NoOp197Command::ExecuteOn(GameNode*)
 {
 }
 
-u32 DUMMY_197Command::Size()
+u32 NoOp197Command::Size()
 {
-    return sizeof(DUMMY_197Command);
+    return sizeof(NoOp197Command);
 }
 
 void SetCollisionBoxSizeCommand::Destroy(u32 destroyFlags)
@@ -1553,14 +1550,14 @@ u32 NextLinkedObjectInListCommand::Size()
     return sizeof(NextLinkedObjectInListCommand);
 }
 
-void ArrangeLinkedObjectsCommand::Destroy(u32 destroyFlags)
+void PickLinkedObjectNearPlayerCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ArrangeLinkedObjectsCommand::Size()
+u32 PickLinkedObjectNearPlayerCommand::Size()
 {
-    return sizeof(ArrangeLinkedObjectsCommand);
+    return sizeof(PickLinkedObjectNearPlayerCommand);
 }
 
 void TriggerInstanceAtOwnBoxCommand::Destroy(u32 destroyFlags)
@@ -1573,14 +1570,14 @@ u32 TriggerInstanceAtOwnBoxCommand::Size()
     return sizeof(TriggerInstanceAtOwnBoxCommand);
 }
 
-void ScaleModelNodeCommand::Destroy(u32 destroyFlags)
+void SetBodyMassCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ScaleModelNodeCommand::Size()
+u32 SetBodyMassCommand::Size()
 {
-    return sizeof(ScaleModelNodeCommand);
+    return sizeof(SetBodyMassCommand);
 }
 
 void SetFocusPositionOffsetCommand::Destroy(u32 destroyFlags)
@@ -1593,14 +1590,14 @@ u32 SetFocusPositionOffsetCommand::Size()
     return sizeof(SetFocusPositionOffsetCommand);
 }
 
-void SetFocusPositionAtAngleCommand::Destroy(u32 destroyFlags)
+void SetStoredPositionAtAngleCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetFocusPositionAtAngleCommand::Size()
+u32 SetStoredPositionAtAngleCommand::Size()
 {
-    return sizeof(SetFocusPositionAtAngleCommand);
+    return sizeof(SetStoredPositionAtAngleCommand);
 }
 
 void SaveScriptStateCommand::Destroy(u32 destroyFlags)
@@ -1623,24 +1620,24 @@ u32 ClearSavedScriptStateCommand::Size()
     return sizeof(ClearSavedScriptStateCommand);
 }
 
-u32 SetNodeByte8cCommand::Size()
+u32 SetRankCommand::Size()
 {
-    return sizeof(SetNodeByte8cCommand);
+    return sizeof(SetRankCommand);
 }
 
-u32 SetGlobalByte30a0e9Command::Size()
+u32 SetTriggerRankCommand::Size()
 {
-    return sizeof(SetGlobalByte30a0e9Command);
+    return sizeof(SetTriggerRankCommand);
 }
 
-void TriggerInstancesInRangeCommand::Destroy(u32 destroyFlags)
+void TriggerInstancesByRankCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 TriggerInstancesInRangeCommand::Size()
+u32 TriggerInstancesByRankCommand::Size()
 {
-    return sizeof(TriggerInstancesInRangeCommand);
+    return sizeof(TriggerInstancesByRankCommand);
 }
 
 void MarkTimeCommand::Destroy(u32 destroyFlags)
@@ -1663,14 +1660,14 @@ u32 ClearMarkedTimeCommand::Size()
     return sizeof(ClearMarkedTimeCommand);
 }
 
-void KeyOfPath34Op213Command::Destroy(u32 destroyFlags)
+void RestartRouteCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 KeyOfPath34Op213Command::Size()
+u32 RestartRouteCommand::Size()
 {
-    return sizeof(KeyOfPath34Op213Command);
+    return sizeof(RestartRouteCommand);
 }
 
 void ControllerRumbleCommand::Destroy(u32 destroyFlags)
@@ -1703,19 +1700,19 @@ u32 CreateCrateContentsCommand::Size()
     return sizeof(CreateCrateContentsCommand);
 }
 
-void CA_PickUpWumpaCommand::Destroy(u32 destroyFlags)
+void PickUpWumpaCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void CA_PickUpWumpaCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void PickUpWumpaCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 CA_PickUpWumpaCommand::Size()
+u32 PickUpWumpaCommand::Size()
 {
-    return sizeof(CA_PickUpWumpaCommand);
+    return sizeof(PickUpWumpaCommand);
 }
 
 void CreateDamageCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
@@ -1748,14 +1745,14 @@ u32 SetPlayerRespawnPositionCommand::Size()
     return sizeof(SetPlayerRespawnPositionCommand);
 }
 
-void ResetGameCommand::Destroy(u32 destroyFlags)
+void RestartFromCheckpointCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ResetGameCommand::Size()
+u32 RestartFromCheckpointCommand::Size()
 {
-    return sizeof(ResetGameCommand);
+    return sizeof(RestartFromCheckpointCommand);
 }
 
 void SetCrateCommand::Destroy(u32 destroyFlags)
@@ -1778,19 +1775,19 @@ u32 TriggerBalancedCrateFallingCommand::Size()
     return sizeof(TriggerBalancedCrateFallingCommand);
 }
 
-void CA_PickUpHealthCommand::Destroy(u32 destroyFlags)
+void PickUpHealthCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void CA_PickUpHealthCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void PickUpHealthCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 CA_PickUpHealthCommand::Size()
+u32 PickUpHealthCommand::Size()
 {
-    return sizeof(CA_PickUpHealthCommand);
+    return sizeof(PickUpHealthCommand);
 }
 
 void SetPlayerInputCommand::Destroy(u32 destroyFlags)
@@ -1893,32 +1890,32 @@ u32 SetHitPointsCommand::Size()
     return sizeof(SetHitPointsCommand);
 }
 
-DUMMY_SetRayTestsCommand* DUMMY_SetRayTestsCommand::Construct(DUMMY_SetRayTestsCommand* command)
+NoOpSetRayTestsCommand* NoOpSetRayTestsCommand::Construct(NoOpSetRayTestsCommand* command)
 {
-    return MakeCommand(command, g_DUMMY_SetRayTestsCommandVTable);
+    return MakeCommand(command, g_NoOpSetRayTestsCommandVTable);
 }
 
-void DUMMY_SetRayTestsCommand::Destroy(u32 destroyFlags)
+void NoOpSetRayTestsCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_SetRayTestsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOpSetRayTestsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_SetRayTestsCommand::Size()
+u32 NoOpSetRayTestsCommand::Size()
 {
-    return sizeof(DUMMY_SetRayTestsCommand);
+    return sizeof(NoOpSetRayTestsCommand);
 }
 
-void DUMMY_NowGoForwardCollidableCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOpNowGoForwardCollidableCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_NowGoForwardCollidableCommand::Size()
+u32 NoOpNowGoForwardCollidableCommand::Size()
 {
-    return sizeof(DUMMY_NowGoForwardCollidableCommand);
+    return sizeof(NoOpNowGoForwardCollidableCommand);
 }
 
 u32 NowGoBackCollidableCommand::Size()
@@ -1926,9 +1923,9 @@ u32 NowGoBackCollidableCommand::Size()
     return sizeof(NowGoBackCollidableCommand);
 }
 
-u32 SetGlobalProgressionCommand::Size()
+u32 SetPlayAreaCommand::Size()
 {
-    return sizeof(SetGlobalProgressionCommand);
+    return sizeof(SetPlayAreaCommand);
 }
 
 void AddCrystalCommand::Destroy(u32 destroyFlags)
@@ -1946,18 +1943,18 @@ u32 AddCrystalCommand::Size()
     return sizeof(AddCrystalCommand);
 }
 
-void DUMMY_536Command::Destroy(u32 destroyFlags)
+void NoOp536Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_536Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp536Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_536Command::Size()
+u32 NoOp536Command::Size()
 {
-    return sizeof(DUMMY_536Command);
+    return sizeof(NoOp536Command);
 }
 
 void AddGemCommand::Destroy(u32 destroyFlags)
@@ -1975,53 +1972,53 @@ u32 AddGemCommand::Size()
     return sizeof(AddGemCommand);
 }
 
-void DUMMY_538Command::Destroy(u32 destroyFlags)
+void NoOp538Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_538Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void NoOp538Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-void DUMMY_538Command::ExecuteOn(GameNode*)
+void NoOp538Command::ExecuteOn(GameNode*)
 {
 }
 
-u32 DUMMY_538Command::Size()
+u32 NoOp538Command::Size()
 {
-    return sizeof(DUMMY_538Command);
+    return sizeof(NoOp538Command);
 }
 
-CA_SetPickupCommand* CA_SetPickupCommand::Construct(CA_SetPickupCommand* command)
+SetCustomPickupCommand* SetCustomPickupCommand::Construct(SetCustomPickupCommand* command)
 {
-    return MakeCommand(command, g_CA_SetPickupCommandVTable);
+    return MakeCommand(command, g_SetCustomPickupCommandVTable);
 }
 
-void CA_SetPickupCommand::Destroy(u32 destroyFlags)
+void SetCustomPickupCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void CA_SetPickupCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void SetCustomPickupCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 CA_SetPickupCommand::Size()
+u32 SetCustomPickupCommand::Size()
 {
-    return sizeof(CA_SetPickupCommand);
+    return sizeof(SetCustomPickupCommand);
 }
 
-void CA_SetProjectileCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void SetCustomProjectileCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 CA_SetProjectileCommand::Size()
+u32 SetCustomProjectileCommand::Size()
 {
-    return sizeof(CA_SetProjectileCommand);
+    return sizeof(SetCustomProjectileCommand);
 }
 
 void ShootCommand::Destroy(u32 destroyFlags)
@@ -2049,18 +2046,18 @@ u32 GetShortRouteCommand::Size()
     return sizeof(GetShortRouteCommand);
 }
 
-void DUMMY_FuelPayGateCommand::Destroy(u32 destroyFlags)
+void NoOpFuelPayGateCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_FuelPayGateCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOpFuelPayGateCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_FuelPayGateCommand::Size()
+u32 NoOpFuelPayGateCommand::Size()
 {
-    return sizeof(DUMMY_FuelPayGateCommand);
+    return sizeof(NoOpFuelPayGateCommand);
 }
 
 void OpenAllLinkedFurnitureCommand::Destroy(u32 destroyFlags)
@@ -2198,18 +2195,18 @@ u32 SetFocusPositionToPlayerCommand::Size()
     return sizeof(SetFocusPositionToPlayerCommand);
 }
 
-void DUMMY_568Command::Destroy(u32 destroyFlags)
+void NoOp568Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_568Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp568Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_568Command::Size()
+u32 NoOp568Command::Size()
 {
-    return sizeof(DUMMY_568Command);
+    return sizeof(NoOp568Command);
 }
 
 void ExitVehicleModeCommand::Destroy(u32 destroyFlags)
@@ -2292,24 +2289,24 @@ u32 BecomeStickyCommand::Size()
     return sizeof(BecomeStickyCommand);
 }
 
-void CharacterOp578Command::Destroy(u32 destroyFlags)
+void CountPlayerCirclingCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CharacterOp578Command::Size()
+u32 CountPlayerCirclingCommand::Size()
 {
-    return sizeof(CharacterOp578Command);
+    return sizeof(CountPlayerCirclingCommand);
 }
 
-void CounterPositionOp579Command::Destroy(u32 destroyFlags)
+void CountPlayerApproachCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CounterPositionOp579Command::Size()
+u32 CountPlayerApproachCommand::Size()
 {
-    return sizeof(CounterPositionOp579Command);
+    return sizeof(CountPlayerApproachCommand);
 }
 
 void ApplyVelocityToHeldBodyCommand::Destroy(u32 destroyFlags)
@@ -2342,52 +2339,52 @@ u32 AddPerceptionCommand::Size()
     return sizeof(AddPerceptionCommand);
 }
 
-void CutsceneCameraOp583Command::Destroy(u32 destroyFlags)
+void SwingAroundCameraCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CutsceneCameraOp583Command::Size()
+u32 SwingAroundCameraCommand::Size()
 {
-    return sizeof(CutsceneCameraOp583Command);
+    return sizeof(SwingAroundCameraCommand);
 }
 
-void DUMMY_584Command::Destroy(u32 destroyFlags)
+void NoOp584Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_584Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp584Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_584Command::Size()
+u32 NoOp584Command::Size()
 {
-    return sizeof(DUMMY_584Command);
+    return sizeof(NoOp584Command);
 }
 
-void DUMMY_586Command::Destroy(u32 destroyFlags)
+void NoOp586Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_586Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp586Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_586Command::Size()
+u32 NoOp586Command::Size()
 {
-    return sizeof(DUMMY_586Command);
+    return sizeof(NoOp586Command);
 }
 
-void SetObjectFlags587Command::Destroy(u32 destroyFlags)
+void SetAttacksTakenCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetObjectFlags587Command::Size()
+u32 SetAttacksTakenCommand::Size()
 {
-    return sizeof(SetObjectFlags587Command);
+    return sizeof(SetAttacksTakenCommand);
 }
 
 void PlayerFaceTowardsCameraCommand::Destroy(u32 destroyFlags)
@@ -2585,32 +2582,32 @@ u32 ClearBottomTextCommand::Size()
     return sizeof(ClearBottomTextCommand);
 }
 
-void DUMMY_609Command::Destroy(u32 destroyFlags)
+void NoOp609Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_609Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp609Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_609Command::Size()
+u32 NoOp609Command::Size()
 {
-    return sizeof(DUMMY_609Command);
+    return sizeof(NoOp609Command);
 }
 
-void DUMMY_610Command::Destroy(u32 destroyFlags)
+void NoOp610Command::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_610Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void NoOp610Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
 }
 
-u32 DUMMY_610Command::Size()
+u32 NoOp610Command::Size()
 {
-    return sizeof(DUMMY_610Command);
+    return sizeof(NoOp610Command);
 }
 
 void SetCharacterHomeChunkCommand::Destroy(u32 destroyFlags)
@@ -2623,14 +2620,14 @@ u32 SetCharacterHomeChunkCommand::Size()
     return sizeof(SetCharacterHomeChunkCommand);
 }
 
-void GameControllerOp612Command::Destroy(u32 destroyFlags)
+void EnablePlayerControlCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 GameControllerOp612Command::Size()
+u32 EnablePlayerControlCommand::Size()
 {
-    return sizeof(GameControllerOp612Command);
+    return sizeof(EnablePlayerControlCommand);
 }
 
 void DisablePlayerControlCommand::Destroy(u32 destroyFlags)
@@ -2643,24 +2640,24 @@ u32 DisablePlayerControlCommand::Size()
     return sizeof(DisablePlayerControlCommand);
 }
 
-void SetNode120FlagCommand::Destroy(u32 destroyFlags)
+void StopStickingCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetNode120FlagCommand::Size()
+u32 StopStickingCommand::Size()
 {
-    return sizeof(SetNode120FlagCommand);
+    return sizeof(StopStickingCommand);
 }
 
-void SetPlayerFlag57Command::Destroy(u32 destroyFlags)
+void SetPlayerScriptFlagCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetPlayerFlag57Command::Size()
+u32 SetPlayerScriptFlagCommand::Size()
 {
-    return sizeof(SetPlayerFlag57Command);
+    return sizeof(SetPlayerScriptFlagCommand);
 }
 
 void PlaceCharacterInChunkCommand::Destroy(u32 destroyFlags)
@@ -2733,24 +2730,24 @@ u32 CharacterSoundProxyCommand::Size()
     return sizeof(CharacterSoundProxyCommand);
 }
 
-void CameraNodeSetTargetCommand::Destroy(u32 destroyFlags)
+void SetFollowCameraTargetCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CameraNodeSetTargetCommand::Size()
+u32 SetFollowCameraTargetCommand::Size()
 {
-    return sizeof(CameraNodeSetTargetCommand);
+    return sizeof(SetFollowCameraTargetCommand);
 }
 
-void EnableVarPercept629Command::Destroy(u32 destroyFlags)
+void SetScriptGlobalFlagCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 EnableVarPercept629Command::Size()
+u32 SetScriptGlobalFlagCommand::Size()
 {
-    return sizeof(EnableVarPercept629Command);
+    return sizeof(SetScriptGlobalFlagCommand);
 }
 
 void SwitchCharacterCommand::Destroy(u32 destroyFlags)
@@ -2763,34 +2760,34 @@ u32 SwitchCharacterCommand::Size()
     return sizeof(SwitchCharacterCommand);
 }
 
-void CameraNodeEnableFlagsCommand::Destroy(u32 destroyFlags)
+void UseOwnFollowCamerasCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CameraNodeEnableFlagsCommand::Size()
+u32 UseOwnFollowCamerasCommand::Size()
 {
-    return sizeof(CameraNodeEnableFlagsCommand);
+    return sizeof(UseOwnFollowCamerasCommand);
 }
 
-void CameraNodeClearFlagsCommand::Destroy(u32 destroyFlags)
+void UseTriggerCamerasCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 CameraNodeClearFlagsCommand::Size()
+u32 UseTriggerCamerasCommand::Size()
 {
-    return sizeof(CameraNodeClearFlagsCommand);
+    return sizeof(UseTriggerCamerasCommand);
 }
 
-void SetCameraNodeValueCommand::Destroy(u32 destroyFlags)
+void SetFollowCameraRateCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetCameraNodeValueCommand::Size()
+u32 SetFollowCameraRateCommand::Size()
 {
-    return sizeof(SetCameraNodeValueCommand);
+    return sizeof(SetFollowCameraRateCommand);
 }
 
 void SetCameraNodeValuesCommand::Destroy(u32 destroyFlags)
@@ -2803,29 +2800,29 @@ u32 SetCameraNodeValuesCommand::Size()
     return sizeof(SetCameraNodeValuesCommand);
 }
 
-void SetNode5FlagsCommand::Destroy(u32 destroyFlags)
+void SwitchBodyFlagsCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetNode5FlagsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void SwitchBodyFlagsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-u32 SetNode5FlagsCommand::Size()
+u32 SwitchBodyFlagsCommand::Size()
 {
-    return sizeof(SetNode5FlagsCommand);
+    return sizeof(SwitchBodyFlagsCommand);
 }
 
-void SetPlayerVehicleValueCommand::Destroy(u32 destroyFlags)
+void PushPlayerVehicleCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetPlayerVehicleValueCommand::Size()
+u32 PushPlayerVehicleCommand::Size()
 {
-    return sizeof(SetPlayerVehicleValueCommand);
+    return sizeof(PushPlayerVehicleCommand);
 }
 
 void SetLinkedObjectNearestPlayerCommand::Destroy(u32 destroyFlags)
@@ -2868,14 +2865,14 @@ u32 AddAmmoCommand::Size()
     return sizeof(AddAmmoCommand);
 }
 
-void LinkedObjectNearestPlayerOp637Command::Destroy(u32 destroyFlags)
+void SetFocusToLinkedObjectInViewCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 LinkedObjectNearestPlayerOp637Command::Size()
+u32 SetFocusToLinkedObjectInViewCommand::Size()
 {
-    return sizeof(LinkedObjectNearestPlayerOp637Command);
+    return sizeof(SetFocusToLinkedObjectInViewCommand);
 }
 
 u32 EnableBossModeCommand::Size()
@@ -2903,14 +2900,14 @@ u32 ExitBossModeCommand::Size()
     return sizeof(ExitBossModeCommand);
 }
 
-void FinalBossInitWeaponsCommand::Destroy(u32 destroyFlags)
+void FinalBossWeaponsCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 FinalBossInitWeaponsCommand::Size()
+u32 FinalBossWeaponsCommand::Size()
 {
-    return sizeof(FinalBossInitWeaponsCommand);
+    return sizeof(FinalBossWeaponsCommand);
 }
 
 void CreateNodeControllerCommand::Destroy(u32 destroyFlags)
@@ -2923,59 +2920,59 @@ u32 CreateNodeControllerCommand::Size()
     return sizeof(CreateNodeControllerCommand);
 }
 
-void RequestOgiSlotCommand::Destroy(u32 destroyFlags)
+void SetGaugeIconCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 RequestOgiSlotCommand::Size()
+u32 SetGaugeIconCommand::Size()
 {
-    return sizeof(RequestOgiSlotCommand);
+    return sizeof(SetGaugeIconCommand);
 }
 
-u32 SetGlobalProgression2Command::Size()
+u32 RaiseStoryAreaCommand::Size()
 {
-    return sizeof(SetGlobalProgression2Command);
+    return sizeof(RaiseStoryAreaCommand);
 }
 
-void SetNodeValue174Command::Destroy(u32 destroyFlags)
+void SetCountedValueCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetNodeValue174Command::Size()
+u32 SetCountedValueCommand::Size()
 {
-    return sizeof(SetNodeValue174Command);
+    return sizeof(SetCountedValueCommand);
 }
 
-void ClearNodeValue174Command::Destroy(u32 destroyFlags)
+void ClearCountedValueCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearNodeValue174Command::Size()
+u32 ClearCountedValueCommand::Size()
 {
-    return sizeof(ClearNodeValue174Command);
+    return sizeof(ClearCountedValueCommand);
 }
 
-void SetCharacterFlag2Command::Destroy(u32 destroyFlags)
+void HoldVehicleCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 SetCharacterFlag2Command::Size()
+u32 HoldVehicleCommand::Size()
 {
-    return sizeof(SetCharacterFlag2Command);
+    return sizeof(HoldVehicleCommand);
 }
 
-void ClearCharacterFlag2Command::Destroy(u32 destroyFlags)
+void ReleaseVehicleCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearCharacterFlag2Command::Size()
+u32 ReleaseVehicleCommand::Size()
 {
-    return sizeof(ClearCharacterFlag2Command);
+    return sizeof(ReleaseVehicleCommand);
 }
 
 void CameraTopdownModeCommand::Destroy(u32 destroyFlags)
@@ -3033,24 +3030,24 @@ u32 SetSplineControllerValuesCommand::Size()
     return sizeof(SetSplineControllerValuesCommand);
 }
 
-void TriggerCharacterEvent12Command::Destroy(u32 destroyFlags)
+void MakeCharactersIdleCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 TriggerCharacterEvent12Command::Size()
+u32 MakeCharactersIdleCommand::Size()
 {
-    return sizeof(TriggerCharacterEvent12Command);
+    return sizeof(MakeCharactersIdleCommand);
 }
 
-void ClearPlayerFlag14Command::Destroy(u32 destroyFlags)
+void ClearCharacterDeadCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-u32 ClearPlayerFlag14Command::Size()
+u32 ClearCharacterDeadCommand::Size()
 {
-    return sizeof(ClearPlayerFlag14Command);
+    return sizeof(ClearCharacterDeadCommand);
 }
 
 void SetSkateControllerIdsCommand::Destroy(u32 destroyFlags)
@@ -3109,7 +3106,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 14:
         return MakeCommand(NewScriptObject<NowMoveForwardsCommand>(), g_NowMoveForwardsCommandVTable);
     case 15:
-        return MakeCommand(NewScriptObject<NowMoveBackwardsCommand>(), g_NowMoveBackwardsCommandVTable);
+        return MakeCommand(NewScriptObject<NoOpNowMoveBackwardsCommand>(), g_NoOpNowMoveBackwardsCommandVTable);
     case 16:
         return MakeCommand(NewScriptObject<NowStrafeLeftCommand>(), g_NowStrafeLeftCommandVTable);
     case 17:
@@ -3117,11 +3114,12 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 18:
         return MakeCommand(NewScriptObject<NowTurnLeftCommand>(), g_NowTurnLeftCommandVTable);
     case 19:
+        // NowTurnRight's ID, which retail makes a turn left for as well
         return MakeCommand(NewScriptObject<NowTurnLeftCommand>(), g_NowTurnLeftCommandVTable);
     case 23:
-        return MakeCommand(NewScriptObject<NowRotateJointCommand>(), g_NowRotateJointCommandVTable);
+        return MakeCommand(NewScriptObject<LinkTargetCommand>(), g_LinkTargetCommandVTable);
     case 24:
-        return MakeCommand(NewScriptObject<NowRotateJointCommand>(), g_NowRotateJointCommandVTable);
+        return MakeCommand(NewScriptObject<LinkTargetCommand>(), g_LinkTargetCommandVTable);
     case 27:
         return StoreCurrentSpaceCommand::Construct(NewScriptObject<StoreCurrentSpaceCommand>());
     case 28:
@@ -3129,7 +3127,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 29:
         return MakeCommand(NewScriptObject<RotationWarpCommand>(), g_RotationWarpCommandVTable);
     case 31:
-        return MakeCommand(NewScriptObject<ClearThreatsCommand>(), g_ClearThreatsCommandVTable);
+        return MakeCommand(NewScriptObject<SetRestartableCommand>(), g_SetRestartableCommandVTable);
     case 33:
         return MakeCommand(NewScriptObject<TriggerLinkedObjectsCommand>(), g_TriggerLinkedObjectsCommandVTable);
     case 34:
@@ -3223,7 +3221,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 85:
         return MakeCommand(NewScriptObject<DestroyMeCommand>(), g_DestroyMeCommandVTable);
     case 86:
-        return MakeCommand(NewScriptObject<SetSoundCommand>(), g_SetSoundCommandVTable);
+        return MakeCommand(NewScriptObject<SetReverbCommand>(), g_SetReverbCommandVTable);
     case 87:
         return MakeCommand(NewScriptObject<AlterWobblePhaseCommand>(), g_AlterWobblePhaseCommandVTable);
     case 88:
@@ -3275,7 +3273,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 112:
         return SpawnResidentAgentCommand::Construct(NewScriptObject<SpawnResidentAgentCommand>(), 1);
     case 113:
-        return MakeCommand(NewScriptObject<SetRotationComponentsCommand>(), g_SetRotationComponentsCommandVTable);
+        return MakeCommand(NewScriptObject<SnapRotationCommand>(), g_SnapRotationCommandVTable);
     case 114:
         return MakeCommand(NewScriptObject<StopHeadTrackingCommand>(), g_StopHeadTrackingCommandVTable);
     case 115:
@@ -3287,13 +3285,13 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 118:
         return MakeCommand(NewScriptObject<SetHeadTrackingTargetCommand>(), g_SetHeadTrackingTargetCommandVTable);
     case 119:
-        return MakeCommand(NewScriptObject<ClearNodeByte154Command>(), g_ClearNodeByte154CommandVTable);
+        return MakeCommand(NewScriptObject<ClearKnockCountdownCommand>(), g_ClearKnockCountdownCommandVTable);
     case 120:
         return MakeCommand(NewScriptObject<PhysicsResetVelocityCommand>(), g_PhysicsResetVelocityCommandVTable);
     case 121:
         return MakeCommand(NewScriptObject<SetFocusPositionBesidePlayerCommand>(), g_SetFocusPositionBesidePlayerCommandVTable);
     case 122:
-        return MakeCommand(NewScriptObject<SetFocusPositionToAgentCommand>(), g_SetFocusPositionToAgentCommandVTable);
+        return MakeCommand(NewScriptObject<CopyDesignatorCommand>(), g_CopyDesignatorCommandVTable);
     case 123:
         return MakeCommand(NewScriptObject<LinkToNearestPointCommand>(), g_LinkToNearestPointCommandVTable);
     case 124:
@@ -3309,7 +3307,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 129:
         return MakeCommand(NewScriptObject<PhysicsBodyActivateCommand>(), g_PhysicsBodyActivateCommandVTable);
     case 130:
-        return MakeCommand(NewScriptObject<SetPhysicsSizesCommand>(), g_SetPhysicsSizesCommandVTable);
+        return MakeCommand(NewScriptObject<SetMagnetCommand>(), g_SetMagnetCommandVTable);
     case 131:
         return MakeCommand(NewScriptObject<MagnetPullToFocusCommand>(), g_MagnetPullToFocusCommandVTable);
     case 132:
@@ -3327,13 +3325,13 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 138:
         return MakeCommand(NewScriptObject<PushFromPerceptionCommand>(), g_PushFromPerceptionCommandVTable);
     case 139:
-        return MakeCommand(NewScriptObject<SetCharacterAnalogCommand>(), g_SetCharacterAnalogCommandVTable);
+        return MakeCommand(NewScriptObject<SetPresenceCommand>(), g_SetPresenceCommandVTable);
     case 140:
-        return MakeCommand(NewScriptObject<AddCharacterAnalogCommand>(), g_AddCharacterAnalogCommandVTable);
+        return MakeCommand(NewScriptObject<AddPresenceCommand>(), g_AddPresenceCommandVTable);
     case 141:
-        return MakeCommand(NewScriptObject<PerceptionOp141Command>(), g_PerceptionOp141CommandVTable);
+        return MakeCommand(NewScriptObject<TurnSenseOffCommand>(), g_TurnSenseOffCommandVTable);
     case 142:
-        return MakeCommand(NewScriptObject<PerceptionOp142Command>(), g_PerceptionOp142CommandVTable);
+        return MakeCommand(NewScriptObject<TurnSenseOnCommand>(), g_TurnSenseOnCommandVTable);
     case 143:
         return MakeCommand(NewScriptObject<DisableAllPerceptionsCommand>(), g_DisableAllPerceptionsCommandVTable);
     case 144:
@@ -3345,15 +3343,15 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 147:
         return MakeCommand(NewScriptObject<PreviousKeyCommand>(), g_PreviousKeyCommandVTable);
     case 148:
-        return MakeCommand(NewScriptObject<SetMotionFloatsCommand>(), g_SetMotionFloatsCommandVTable);
+        return MakeCommand(NewScriptObject<SetCycleAmplitudesCommand>(), g_SetCycleAmplitudesCommandVTable);
     case 149:
         return MakeCommand(NewScriptObject<RotateWithLinkedCommand>(), g_RotateWithLinkedCommandVTable);
     case 150:
         return MakeCommand(NewScriptObject<StrafeTowardsTargetCommand>(), g_StrafeTowardsTargetCommandVTable);
     case 151:
-        return MakeCommand(NewScriptObject<NextKeyOfPath34Command>(), g_NextKeyOfPath34CommandVTable);
+        return MakeCommand(NewScriptObject<PreviousRouteNodeCommand>(), g_PreviousRouteNodeCommandVTable);
     case 152:
-        return MakeCommand(NewScriptObject<AddMotionAnglesCommand>(), g_AddMotionAnglesCommandVTable);
+        return MakeCommand(NewScriptObject<AddWobblePhaseCommand>(), g_AddWobblePhaseCommandVTable);
     case 153:
         return MakeCommand(NewScriptObject<MoveTowardsDesignatorCommand>(), g_MoveTowardsDesignatorCommandVTable);
     case 154:
@@ -3361,23 +3359,23 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 155:
         return MakeCommand(NewScriptObject<SetFocusToLinkedObjectCommand>(), g_SetFocusToLinkedObjectCommandVTable);
     case 156:
-        return MakeCommand(NewScriptObject<SetNode150FieldsCommand>(), g_SetNode150FieldsCommandVTable);
+        return MakeCommand(NewScriptObject<SetNoiseMessageCommand>(), g_SetNoiseMessageCommandVTable);
     case 157:
         return MakeCommand(NewScriptObject<UnlinkTargetCommand>(), g_UnlinkTargetCommandVTable);
     case 158:
         return MakeCommand(NewScriptObject<AttachMotionBlockCommand>(), g_AttachMotionBlockCommandVTable);
     case 159:
-        return MakeCommand(NewScriptObject<ResetNode120Command>(), g_ResetNode120CommandVTable);
+        return MakeCommand(NewScriptObject<ClearTouchMessageCommand>(), g_ClearTouchMessageCommandVTable);
     case 160:
-        return MakeCommand(NewScriptObject<ClearMotionBlockFlag16Command>(), g_ClearMotionBlockFlag16CommandVTable);
+        return MakeCommand(NewScriptObject<StopTouchMessagesCommand>(), g_StopTouchMessagesCommandVTable);
     case 161:
-        return MakeCommand(NewScriptObject<SetMotionBlockFlag16Command>(), g_SetMotionBlockFlag16CommandVTable);
+        return MakeCommand(NewScriptObject<SendTouchMessagesCommand>(), g_SendTouchMessagesCommandVTable);
     case 162:
-        return MakeCommand(NewScriptObject<AddToFocusObjectByteCommand>(), g_AddToFocusObjectByteCommandVTable);
+        return MakeCommand(NewScriptObject<AddToFocusCounterCommand>(), g_AddToFocusCounterCommandVTable);
     case 163:
         return MakeCommand(NewScriptObject<UnlinkFromTargetCommand>(), g_UnlinkFromTargetCommandVTable);
     case 164:
-        return MakeCommand(NewScriptObject<AddToLinkedObjectsByteCommand>(), g_AddToLinkedObjectsByteCommandVTable);
+        return MakeCommand(NewScriptObject<AddToLinkedCounterCommand>(), g_AddToLinkedCounterCommandVTable);
     case 165:
         return MakeCommand(NewScriptObject<ForceVolumeControllerCommand>(), g_ForceVolumeControllerCommandVTable);
     case 166:
@@ -3385,23 +3383,23 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 167:
         return MakeCommand(NewScriptObject<SetSurfaceCommand>(), g_SetSurfaceCommandVTable);
     case 168:
-        return MakeCommand(NewScriptObject<MoveInstancesInBoxCommand>(), g_MoveInstancesInBoxCommandVTable);
+        return MakeCommand(NewScriptObject<PushInstancesAwayCommand>(), g_PushInstancesAwayCommandVTable);
     case 169:
         return MakeCommand(NewScriptObject<SetFocusPositionAlongCommand>(), g_SetFocusPositionAlongCommandVTable);
     case 170:
-        return MakeCommand(NewScriptObject<SetFocusObjectByteCommand>(), g_SetFocusObjectByteCommandVTable);
+        return MakeCommand(NewScriptObject<SetFocusCounterCommand>(), g_SetFocusCounterCommandVTable);
     case 171:
         return MakeCommand(NewScriptObject<RunSlotBehaviourOnLinkedCommand>(), g_RunSlotBehaviourOnLinkedCommandVTable);
     case 172:
         return MakeCommand(NewScriptObject<StopTargetBehaviourCommand>(), g_StopTargetBehaviourCommandVTable);
     case 173:
-        return MakeCommand(NewScriptObject<SetKeyPathByte43Command>(), g_SetKeyPathByte43CommandVTable);
+        return MakeCommand(NewScriptObject<SetPathIndexCommand>(), g_SetPathIndexCommandVTable);
     case 174:
         return MakeCommand(NewScriptObject<SetFocusToOwnerCommand>(), g_SetFocusToOwnerCommandVTable);
     case 175:
         return MakeCommand(NewScriptObject<SetAgentRef1ToOwnerCommand>(), g_SetAgentRef1ToOwnerCommandVTable);
     case 176:
-        return MakeCommand(NewScriptObject<FadeSoundGroupCommand>(), g_FadeSoundGroupCommandVTable);
+        return MakeCommand(NewScriptObject<FadeOutMusicSlotCommand>(), g_FadeOutMusicSlotCommandVTable);
     case 177:
         return MakeCommand(NewScriptObject<WarpAgentCommand>(), g_WarpAgentCommandVTable);
     case 178:
@@ -3411,13 +3409,13 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 180:
         return MakeCommand(NewScriptObject<QueueObjectVideoCommand>(), g_QueueObjectVideoCommandVTable);
     case 181:
-        return MakeCommand(NewScriptObject<VideoControllerUpdateCommand>(), g_VideoControllerUpdateCommandVTable);
+        return MakeCommand(NewScriptObject<StartObjectVideoCommand>(), g_StartObjectVideoCommandVTable);
     case 182:
-        return MakeCommand(NewScriptObject<VideoControllerOp182Command>(), g_VideoControllerOp182CommandVTable);
+        return MakeCommand(NewScriptObject<CancelVideoCommand>(), g_CancelVideoCommandVTable);
     case 183:
         return MakeCommand(NewScriptObject<SetTargetOwnerToSelfCommand>(), g_SetTargetOwnerToSelfCommandVTable);
     case 184:
-        return MakeCommand(NewScriptObject<ResetTimerCommand>(), g_ResetTimerCommandVTable);
+        return MakeCommand(NewScriptObject<RestoreOwnObjectCommand>(), g_RestoreOwnObjectCommandVTable);
     case 185:
         return MakeCommand(NewScriptObject<QueueVideoCommand>(), g_QueueVideoCommandVTable);
     case 186:
@@ -3431,51 +3429,51 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 190:
         return MakeCommand(NewScriptObject<SetShadowRectangleCommand>(), g_SetShadowRectangleCommandVTable);
     case 191:
-        return MakeCommand(NewScriptObject<ShadowToggleCommand>(), g_ShadowToggleCommandVTable);
+        return MakeCommand(NewScriptObject<SetShadowSlotCommand>(), g_SetShadowSlotCommandVTable);
     case 192:
-        return MakeCommand(NewScriptObject<SetNode10SlotCommand>(), g_SetNode10SlotCommandVTable);
+        return MakeCommand(NewScriptObject<ClearShadowSlotCommand>(), g_ClearShadowSlotCommandVTable);
     case 193:
         return MakeCommand(NewScriptObject<LaunchAtTargetCommand>(), g_LaunchAtTargetCommandVTable);
     case 194:
-        return MakeCommand(NewScriptObject<SetNodeBytes168Command>(), g_SetNodeBytes168CommandVTable);
+        return MakeCommand(NewScriptObject<SetContactSoundsCommand>(), g_SetContactSoundsCommandVTable);
     case 195:
         return MakeCommand(NewScriptObject<StopVideoCommand>(), g_StopVideoCommandVTable);
     case 196:
         return MakeCommand(NewScriptObject<StopSoundCommand>(), g_StopSoundCommandVTable);
     case 197:
-        return MakeCommand(NewScriptObject<DUMMY_197Command>(), g_DUMMY_197CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp197Command>(), g_NoOp197CommandVTable);
     case 198:
         return MakeCommand(NewScriptObject<SetCollisionBoxSizeCommand>(), g_SetCollisionBoxSizeCommandVTable);
     case 199:
         return MakeCommand(NewScriptObject<NextLinkedObjectInListCommand>(), g_NextLinkedObjectInListCommandVTable);
     case 200:
-        return MakeCommand(NewScriptObject<ArrangeLinkedObjectsCommand>(), g_ArrangeLinkedObjectsCommandVTable);
+        return MakeCommand(NewScriptObject<PickLinkedObjectNearPlayerCommand>(), g_PickLinkedObjectNearPlayerCommandVTable);
     case 201:
-        return MakeCommand(NewScriptObject<ArrangeLinkedObjectsCommand>(), g_ArrangeLinkedObjectsCommandVTable);
+        return MakeCommand(NewScriptObject<PickLinkedObjectNearPlayerCommand>(), g_PickLinkedObjectNearPlayerCommandVTable);
     case 202:
         return MakeCommand(NewScriptObject<TriggerInstanceAtOwnBoxCommand>(), g_TriggerInstanceAtOwnBoxCommandVTable);
     case 203:
-        return MakeCommand(NewScriptObject<ScaleModelNodeCommand>(), g_ScaleModelNodeCommandVTable);
+        return MakeCommand(NewScriptObject<SetBodyMassCommand>(), g_SetBodyMassCommandVTable);
     case 204:
         return MakeCommand(NewScriptObject<SetFocusPositionOffsetCommand>(), g_SetFocusPositionOffsetCommandVTable);
     case 205:
-        return MakeCommand(NewScriptObject<SetFocusPositionAtAngleCommand>(), g_SetFocusPositionAtAngleCommandVTable);
+        return MakeCommand(NewScriptObject<SetStoredPositionAtAngleCommand>(), g_SetStoredPositionAtAngleCommandVTable);
     case 206:
         return MakeCommand(NewScriptObject<SaveScriptStateCommand>(), g_SaveScriptStateCommandVTable);
     case 207:
         return MakeCommand(NewScriptObject<ClearSavedScriptStateCommand>(), g_ClearSavedScriptStateCommandVTable);
     case 208:
-        return MakeCommand(NewScriptObject<SetNodeByte8cCommand>(), g_SetNodeByte8cCommandVTable);
+        return MakeCommand(NewScriptObject<SetRankCommand>(), g_SetRankCommandVTable);
     case 209:
-        return MakeCommand(NewScriptObject<SetGlobalByte30a0e9Command>(), g_SetGlobalByte30a0e9CommandVTable);
+        return MakeCommand(NewScriptObject<SetTriggerRankCommand>(), g_SetTriggerRankCommandVTable);
     case 210:
-        return MakeCommand(NewScriptObject<TriggerInstancesInRangeCommand>(), g_TriggerInstancesInRangeCommandVTable);
+        return MakeCommand(NewScriptObject<TriggerInstancesByRankCommand>(), g_TriggerInstancesByRankCommandVTable);
     case 211:
         return MakeCommand(NewScriptObject<MarkTimeCommand>(), g_MarkTimeCommandVTable);
     case 212:
         return MakeCommand(NewScriptObject<ClearMarkedTimeCommand>(), g_ClearMarkedTimeCommandVTable);
     case 213:
-        return MakeCommand(NewScriptObject<KeyOfPath34Op213Command>(), g_KeyOfPath34Op213CommandVTable);
+        return MakeCommand(NewScriptObject<RestartRouteCommand>(), g_RestartRouteCommandVTable);
     case 214:
         return MakeCommand(NewScriptObject<ControllerRumbleCommand>(), g_ControllerRumbleCommandVTable);
     case 215:
@@ -3483,7 +3481,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 512:
         return MakeCommand(NewScriptObject<CreateCrateContentsCommand>(), g_CreateCrateContentsCommandVTable);
     case 513:
-        return MakeCommand(NewScriptObject<CA_PickUpWumpaCommand>(), g_CA_PickUpWumpaCommandVTable);
+        return MakeCommand(NewScriptObject<PickUpWumpaCommand>(), g_PickUpWumpaCommandVTable);
     case 514:
         return MakeCommand(NewScriptObject<CreateDamageCommand>(), g_CreateDamageCommandVTable);
     case 515:
@@ -3491,13 +3489,13 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 516:
         return MakeCommand(NewScriptObject<SetPlayerRespawnPositionCommand>(), g_SetPlayerRespawnPositionCommandVTable);
     case 517:
-        return MakeCommand(NewScriptObject<ResetGameCommand>(), g_ResetGameCommandVTable);
+        return MakeCommand(NewScriptObject<RestartFromCheckpointCommand>(), g_RestartFromCheckpointCommandVTable);
     case 518:
         return MakeCommand(NewScriptObject<SetCrateCommand>(), g_SetCrateCommandVTable);
     case 519:
         return MakeCommand(NewScriptObject<TriggerBalancedCrateFallingCommand>(), g_TriggerBalancedCrateFallingCommandVTable);
     case 520:
-        return MakeCommand(NewScriptObject<CA_PickUpHealthCommand>(), g_CA_PickUpHealthCommandVTable);
+        return MakeCommand(NewScriptObject<PickUpHealthCommand>(), g_PickUpHealthCommandVTable);
     case 521:
         return MakeCommand(NewScriptObject<SetPlayerInputCommand>(), g_SetPlayerInputCommandVTable);
     case 522:
@@ -3517,27 +3515,27 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 529:
         return SetHitPointsCommand::Construct(NewScriptObject<SetHitPointsCommand>());
     case 530:
-        return DUMMY_SetRayTestsCommand::Construct(NewScriptObject<DUMMY_SetRayTestsCommand>());
+        return NoOpSetRayTestsCommand::Construct(NewScriptObject<NoOpSetRayTestsCommand>());
     case 531:
         return MakeCommand(NewScriptObject<RestartDefaultBehaviourCommand>(), g_RestartDefaultBehaviourCommandVTable);
     case 532:
-        return MakeCommand(NewScriptObject<DUMMY_NowGoForwardCollidableCommand>(), g_DUMMY_NowGoForwardCollidableCommandVTable);
+        return MakeCommand(NewScriptObject<NoOpNowGoForwardCollidableCommand>(), g_NoOpNowGoForwardCollidableCommandVTable);
     case 533:
         return MakeCommand(NewScriptObject<NowGoBackCollidableCommand>(), g_NowGoBackCollidableCommandVTable);
     case 534:
-        return MakeCommand(NewScriptObject<SetGlobalProgressionCommand>(), g_SetGlobalProgressionCommandVTable);
+        return MakeCommand(NewScriptObject<SetPlayAreaCommand>(), g_SetPlayAreaCommandVTable);
     case 535:
         return MakeCommand(NewScriptObject<AddCrystalCommand>(), g_AddCrystalCommandVTable);
     case 536:
-        return MakeCommand(NewScriptObject<DUMMY_536Command>(), g_DUMMY_536CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp536Command>(), g_NoOp536CommandVTable);
     case 537:
         return MakeCommand(NewScriptObject<AddGemCommand>(), g_AddGemCommandVTable);
     case 538:
-        return MakeCommand(NewScriptObject<DUMMY_538Command>(), g_DUMMY_538CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp538Command>(), g_NoOp538CommandVTable);
     case 539:
-        return CA_SetPickupCommand::Construct(NewScriptObject<CA_SetPickupCommand>());
+        return SetCustomPickupCommand::Construct(NewScriptObject<SetCustomPickupCommand>());
     case 540:
-        return MakeCommand(NewScriptObject<CA_SetProjectileCommand>(), g_CA_SetProjectileCommandVTable);
+        return MakeCommand(NewScriptObject<SetCustomProjectileCommand>(), g_SetCustomProjectileCommandVTable);
     case 541:
         return MakeCommand(NewScriptObject<AddTrailCommand>(), g_AddTrailCommandVTable);
     case 542:
@@ -3555,7 +3553,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 549:
         return GetShortRouteCommand::Construct(NewScriptObject<GetShortRouteCommand>());
     case 550:
-        return MakeCommand(NewScriptObject<DUMMY_FuelPayGateCommand>(), g_DUMMY_FuelPayGateCommandVTable);
+        return MakeCommand(NewScriptObject<NoOpFuelPayGateCommand>(), g_NoOpFuelPayGateCommandVTable);
     case 551:
         return MakeCommand(NewScriptObject<OpenAllLinkedFurnitureCommand>(), g_OpenAllLinkedFurnitureCommandVTable);
     case 552:
@@ -3591,7 +3589,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 567:
         return MakeCommand(NewScriptObject<SetFocusPositionToPlayerCommand>(), g_SetFocusPositionToPlayerCommandVTable);
     case 568:
-        return MakeCommand(NewScriptObject<DUMMY_568Command>(), g_DUMMY_568CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp568Command>(), g_NoOp568CommandVTable);
     case 569:
         return MakeCommand(NewScriptObject<ExitVehicleModeCommand>(), g_ExitVehicleModeCommandVTable);
     case 570:
@@ -3611,9 +3609,9 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 577:
         return MakeCommand(NewScriptObject<BecomeStickyCommand>(), g_BecomeStickyCommandVTable);
     case 578:
-        return MakeCommand(NewScriptObject<CharacterOp578Command>(), g_CharacterOp578CommandVTable);
+        return MakeCommand(NewScriptObject<CountPlayerCirclingCommand>(), g_CountPlayerCirclingCommandVTable);
     case 579:
-        return MakeCommand(NewScriptObject<CounterPositionOp579Command>(), g_CounterPositionOp579CommandVTable);
+        return MakeCommand(NewScriptObject<CountPlayerApproachCommand>(), g_CountPlayerApproachCommandVTable);
     case 580:
         return MakeCommand(NewScriptObject<ApplyVelocityToHeldBodyCommand>(), g_ApplyVelocityToHeldBodyCommandVTable);
     case 581:
@@ -3621,15 +3619,15 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 582:
         return MakeCommand(NewScriptObject<AddPerceptionCommand>(), g_AddPerceptionCommandVTable);
     case 583:
-        return MakeCommand(NewScriptObject<CutsceneCameraOp583Command>(), g_CutsceneCameraOp583CommandVTable);
+        return MakeCommand(NewScriptObject<SwingAroundCameraCommand>(), g_SwingAroundCameraCommandVTable);
     case 584:
-        return MakeCommand(NewScriptObject<DUMMY_584Command>(), g_DUMMY_584CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp584Command>(), g_NoOp584CommandVTable);
     case 585:
         return MakeCommand(NewScriptObject<AddLivesCommand>(), g_AddLivesCommandVTable);
     case 586:
-        return MakeCommand(NewScriptObject<DUMMY_586Command>(), g_DUMMY_586CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp586Command>(), g_NoOp586CommandVTable);
     case 587:
-        return MakeCommand(NewScriptObject<SetObjectFlags587Command>(), g_SetObjectFlags587CommandVTable);
+        return MakeCommand(NewScriptObject<SetAttacksTakenCommand>(), g_SetAttacksTakenCommandVTable);
     case 588:
         return MakeCommand(NewScriptObject<PlayerFaceTowardsCameraCommand>(), g_PlayerFaceTowardsCameraCommandVTable);
     case 589:
@@ -3673,19 +3671,19 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 608:
         return MakeCommand(NewScriptObject<ClearBottomTextCommand>(), g_ClearBottomTextCommandVTable);
     case 609:
-        return MakeCommand(NewScriptObject<DUMMY_609Command>(), g_DUMMY_609CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp609Command>(), g_NoOp609CommandVTable);
     case 610:
-        return MakeCommand(NewScriptObject<DUMMY_610Command>(), g_DUMMY_610CommandVTable);
+        return MakeCommand(NewScriptObject<NoOp610Command>(), g_NoOp610CommandVTable);
     case 611:
         return MakeCommand(NewScriptObject<SetCharacterHomeChunkCommand>(), g_SetCharacterHomeChunkCommandVTable);
     case 612:
-        return MakeCommand(NewScriptObject<GameControllerOp612Command>(), g_GameControllerOp612CommandVTable);
+        return MakeCommand(NewScriptObject<EnablePlayerControlCommand>(), g_EnablePlayerControlCommandVTable);
     case 613:
         return MakeCommand(NewScriptObject<DisablePlayerControlCommand>(), g_DisablePlayerControlCommandVTable);
     case 614:
-        return MakeCommand(NewScriptObject<SetNode120FlagCommand>(), g_SetNode120FlagCommandVTable);
+        return MakeCommand(NewScriptObject<StopStickingCommand>(), g_StopStickingCommandVTable);
     case 615:
-        return MakeCommand(NewScriptObject<SetPlayerFlag57Command>(), g_SetPlayerFlag57CommandVTable);
+        return MakeCommand(NewScriptObject<SetPlayerScriptFlagCommand>(), g_SetPlayerScriptFlagCommandVTable);
     case 616:
         return MakeCommand(NewScriptObject<PlaceCharacterInChunkCommand>(), g_PlaceCharacterInChunkCommandVTable);
     case 617:
@@ -3701,23 +3699,23 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 622:
         return MakeCommand(NewScriptObject<CharacterSoundProxyCommand>(), g_CharacterSoundProxyCommandVTable);
     case 623:
-        return MakeCommand(NewScriptObject<CameraNodeSetTargetCommand>(), g_CameraNodeSetTargetCommandVTable);
+        return MakeCommand(NewScriptObject<SetFollowCameraTargetCommand>(), g_SetFollowCameraTargetCommandVTable);
     case 624:
-        return MakeCommand(NewScriptObject<EnableVarPercept629Command>(), g_EnableVarPercept629CommandVTable);
+        return MakeCommand(NewScriptObject<SetScriptGlobalFlagCommand>(), g_SetScriptGlobalFlagCommandVTable);
     case 625:
         return MakeCommand(NewScriptObject<SwitchCharacterCommand>(), g_SwitchCharacterCommandVTable);
     case 626:
-        return MakeCommand(NewScriptObject<CameraNodeEnableFlagsCommand>(), g_CameraNodeEnableFlagsCommandVTable);
+        return MakeCommand(NewScriptObject<UseOwnFollowCamerasCommand>(), g_UseOwnFollowCamerasCommandVTable);
     case 627:
-        return MakeCommand(NewScriptObject<CameraNodeClearFlagsCommand>(), g_CameraNodeClearFlagsCommandVTable);
+        return MakeCommand(NewScriptObject<UseTriggerCamerasCommand>(), g_UseTriggerCamerasCommandVTable);
     case 628:
-        return MakeCommand(NewScriptObject<SetCameraNodeValueCommand>(), g_SetCameraNodeValueCommandVTable);
+        return MakeCommand(NewScriptObject<SetFollowCameraRateCommand>(), g_SetFollowCameraRateCommandVTable);
     case 629:
         return MakeCommand(NewScriptObject<SetCameraNodeValuesCommand>(), g_SetCameraNodeValuesCommandVTable);
     case 630:
-        return MakeCommand(NewScriptObject<SetNode5FlagsCommand>(), g_SetNode5FlagsCommandVTable);
+        return MakeCommand(NewScriptObject<SwitchBodyFlagsCommand>(), g_SwitchBodyFlagsCommandVTable);
     case 631:
-        return MakeCommand(NewScriptObject<SetPlayerVehicleValueCommand>(), g_SetPlayerVehicleValueCommandVTable);
+        return MakeCommand(NewScriptObject<PushPlayerVehicleCommand>(), g_PushPlayerVehicleCommandVTable);
     case 632:
         return MakeCommand(NewScriptObject<SetLinkedObjectNearestPlayerCommand>(), g_SetLinkedObjectNearestPlayerCommandVTable);
     case 633:
@@ -3727,7 +3725,7 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 636:
         return MakeCommand(NewScriptObject<AddAmmoCommand>(), g_AddAmmoCommandVTable);
     case 637:
-        return MakeCommand(NewScriptObject<LinkedObjectNearestPlayerOp637Command>(), g_LinkedObjectNearestPlayerOp637CommandVTable);
+        return MakeCommand(NewScriptObject<SetFocusToLinkedObjectInViewCommand>(), g_SetFocusToLinkedObjectInViewCommandVTable);
     case 638:
         return MakeCommand(NewScriptObject<EnableBossModeCommand>(), g_EnableBossModeCommandVTable);
     case 639:
@@ -3735,31 +3733,31 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 640:
         return MakeCommand(NewScriptObject<ExitBossModeCommand>(), g_ExitBossModeCommandVTable);
     case 641:
-        return MakeCommand(NewScriptObject<FinalBossInitWeaponsCommand>(), g_FinalBossInitWeaponsCommandVTable);
+        return MakeCommand(NewScriptObject<FinalBossWeaponsCommand>(), g_FinalBossWeaponsCommandVTable);
     case 642:
-        return MakeCommand(NewScriptObject<FinalBossInitWeaponsCommand>(), g_FinalBossInitWeaponsCommandVTable);
+        return MakeCommand(NewScriptObject<FinalBossWeaponsCommand>(), g_FinalBossWeaponsCommandVTable);
     case 643:
-        return MakeCommand(NewScriptObject<FinalBossInitWeaponsCommand>(), g_FinalBossInitWeaponsCommandVTable);
+        return MakeCommand(NewScriptObject<FinalBossWeaponsCommand>(), g_FinalBossWeaponsCommandVTable);
     case 644:
-        return MakeCommand(NewScriptObject<FinalBossInitWeaponsCommand>(), g_FinalBossInitWeaponsCommandVTable);
+        return MakeCommand(NewScriptObject<FinalBossWeaponsCommand>(), g_FinalBossWeaponsCommandVTable);
     case 645:
         return MakeCommand(NewScriptObject<CreateNodeControllerCommand>(), g_CreateNodeControllerCommandVTable);
     case 646:
-        return MakeCommand(NewScriptObject<RequestOgiSlotCommand>(), g_RequestOgiSlotCommandVTable);
+        return MakeCommand(NewScriptObject<SetGaugeIconCommand>(), g_SetGaugeIconCommandVTable);
     case 647:
-        return MakeCommand(NewScriptObject<SetGlobalProgression2Command>(), g_SetGlobalProgression2CommandVTable);
+        return MakeCommand(NewScriptObject<RaiseStoryAreaCommand>(), g_RaiseStoryAreaCommandVTable);
     case 648:
-        return MakeCommand(NewScriptObject<SetNodeValue174Command>(), g_SetNodeValue174CommandVTable);
+        return MakeCommand(NewScriptObject<SetCountedValueCommand>(), g_SetCountedValueCommandVTable);
     case 649:
-        return MakeCommand(NewScriptObject<ClearNodeValue174Command>(), g_ClearNodeValue174CommandVTable);
+        return MakeCommand(NewScriptObject<ClearCountedValueCommand>(), g_ClearCountedValueCommandVTable);
     case 650:
-        return MakeCommand(NewScriptObject<SetCharacterFlag2Command>(), g_SetCharacterFlag2CommandVTable);
+        return MakeCommand(NewScriptObject<HoldVehicleCommand>(), g_HoldVehicleCommandVTable);
     case 651:
-        return MakeCommand(NewScriptObject<ClearCharacterFlag2Command>(), g_ClearCharacterFlag2CommandVTable);
+        return MakeCommand(NewScriptObject<ReleaseVehicleCommand>(), g_ReleaseVehicleCommandVTable);
     case 652:
         return MakeCommand(NewScriptObject<CameraTopdownModeCommand>(), g_CameraTopdownModeCommandVTable);
     case 653:
-        return MakeCommand(NewScriptObject<FinalBossInitWeaponsCommand>(), g_FinalBossInitWeaponsCommandVTable);
+        return MakeCommand(NewScriptObject<FinalBossWeaponsCommand>(), g_FinalBossWeaponsCommandVTable);
     case 654:
         return MakeCommand(NewScriptObject<PlayCreditsCommand>(), g_PlayCreditsCommandVTable);
     case 655:
@@ -3771,9 +3769,9 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
     case 658:
         return MakeCommand(NewScriptObject<SetSplineControllerValuesCommand>(), g_SetSplineControllerValuesCommandVTable);
     case 659:
-        return MakeCommand(NewScriptObject<TriggerCharacterEvent12Command>(), g_TriggerCharacterEvent12CommandVTable);
+        return MakeCommand(NewScriptObject<MakeCharactersIdleCommand>(), g_MakeCharactersIdleCommandVTable);
     case 660:
-        return MakeCommand(NewScriptObject<ClearPlayerFlag14Command>(), g_ClearPlayerFlag14CommandVTable);
+        return MakeCommand(NewScriptObject<ClearCharacterDeadCommand>(), g_ClearCharacterDeadCommandVTable);
     case 661:
         return MakeCommand(NewScriptObject<SetSkateControllerIdsCommand>(), g_SetSkateControllerIdsCommandVTable);
     case 662:
@@ -3784,9 +3782,9 @@ void* BuildScriptCommand(void*, u32 id, s32 kind)
 }
 
 // Their members (tagged values, IDs and the parts' arguments) have destructors that free nothing
-void MoveInstancesInBoxCommand::Destroy(u32 destroyFlags)
+void PushInstancesAwayCommand::Destroy(u32 destroyFlags)
 {
-    vtable = g_MoveInstancesInBoxCommandVTable;
+    vtable = g_PushInstancesAwayCommandVTable;
     ScriptCommand::Destroy(destroyFlags);
 }
 
@@ -3810,17 +3808,17 @@ void AttachMotionBlockCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void NowMoveBackwardsCommand::Destroy(u32 destroyFlags)
+void NoOpNowMoveBackwardsCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void AddToFocusObjectByteCommand::Destroy(u32 destroyFlags)
+void AddToFocusCounterCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void AddToLinkedObjectsByteCommand::Destroy(u32 destroyFlags)
+void AddToLinkedCounterCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3835,7 +3833,7 @@ void NowStrafeLeftCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetFocusObjectByteCommand::Destroy(u32 destroyFlags)
+void SetFocusCounterCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3860,12 +3858,12 @@ void AddTrailCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetNodeByte8cCommand::Destroy(u32 destroyFlags)
+void SetRankCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetGlobalByte30a0e9Command::Destroy(u32 destroyFlags)
+void SetTriggerRankCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3875,7 +3873,7 @@ void SetCollisionsCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void DUMMY_NowGoForwardCollidableCommand::Destroy(u32 destroyFlags)
+void NoOpNowGoForwardCollidableCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3885,12 +3883,12 @@ void NowGoBackCollidableCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetGlobalProgressionCommand::Destroy(u32 destroyFlags)
+void SetPlayAreaCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void CA_SetProjectileCommand::Destroy(u32 destroyFlags)
+void SetCustomProjectileCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3930,7 +3928,7 @@ void EnableBossModeCommand::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetGlobalProgression2Command::Destroy(u32 destroyFlags)
+void RaiseStoryAreaCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
@@ -3980,12 +3978,12 @@ void LaunchAgentRef2Command::Destroy(u32 destroyFlags)
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void SetMotionFloatsCommand::Destroy(u32 destroyFlags)
+void SetCycleAmplitudesCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void AddMotionAnglesCommand::Destroy(u32 destroyFlags)
+void AddWobblePhaseCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }

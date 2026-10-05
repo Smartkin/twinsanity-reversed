@@ -7,12 +7,21 @@
 struct InstanceContext;
 struct SceneryCell;
 
+// A pool's links: a used slot's, and the last free slot's (the free list's end). A pool with no slots has no free one either
+constexpr s16 PoolSlotUsed = -1;
+constexpr s16 PoolFreeListEnd = -2;
+constexpr s16 PoolNoFreeSlot = -1;
+// What a new pool grows by when it's full (the stream system by a quarter of its first capacity more)
+constexpr s16 PoolGrowth = 10;
+
 // A pool of items (0x14 bytes; its vtable, after its members, only has the destructor): slots handed out from a free list
-// through the links (a used slot's -1, the free list's end -2); full, it grows by its growth, both made even first. The
-// retail code has one per item type, each with its own copies of the functions
+// through the links; full, it grows by its growth, both made even first. The retail code has one per item type, each with its
+// own copies of the functions
 template <typename T>
 struct ItemPool
 {
+    static constexpr u32 DestroySlot = 1;
+
     s16 capacity;
     s16 growth;
     s16 count;
@@ -30,7 +39,7 @@ struct ItemPool
 
     void VirtualDestroy(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 };
 

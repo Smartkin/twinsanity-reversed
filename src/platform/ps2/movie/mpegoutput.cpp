@@ -11,15 +11,13 @@ extern "C"
     extern const char g_MpegConvertError[] RETAIL(D_00307578);
     // The fields a frame is shown for by its timing flags (repeat_first_field, top_field_first, progressive_frame,
     // progressive_sequence from bit 0): 0 for the combinations MPEG-2 doesn't allow
-    extern const u32 g_MpegFieldsShown[16] RETAIL(D_002E8158);
+    extern const u32 g_MpegFieldsShown[MpegFlagsTiming + 1] RETAIL(D_002E8158);
 }
 
 namespace
 {
-// The IPU converts 1023 macroblocks a command at most (CSC's count is 10 bits), into 64 quadwords each
-constexpr s32 ChunkMacroblocks = 0x3FF;
-constexpr u32 ConvertedQuadwords = 0x40;
-constexpr u32 ChunkQuadwords = ChunkMacroblocks * ConvertedQuadwords;
+// The IPU converts a picture of more than ChunkMacroblocks in chunks of them
+constexpr u32 ChunkQuadwords = ChunkMacroblocks * Rgb32MacroblockQuadwords;
 constexpr u32 ChunkBytes = ChunkQuadwords << 4;
 // The toIPU channel sends 0xFFFF quadwords at a time
 constexpr u32 SendQuadwords = 0xFFFF;
@@ -46,12 +44,15 @@ u64 SignExtended(s32 value)
     return static_cast<u64>(static_cast<s64>(value));
 }
 
-// sceMpeg's flags of a picture
+// sceMpeg's flags of a picture (the values ORed in unmasked)
 u64 FlagsOf(MpegImage* image)
 {
-    return SignExtended(image->progressiveSequence) << 8 | SignExtended(image->pictureCodingType) |
-           SignExtended(image->repeatFirstField) << 5 | SignExtended(image->topFieldFirst) << 6 |
-           SignExtended(image->progressiveFrame) << 7 | SignExtended(image->pictureStructure) << 3;
+    return SignExtended(image->progressiveSequence) << MpegFlagsProgressiveSequenceShift |
+           SignExtended(image->pictureCodingType) << MpegFlagsCodingTypeShift |
+           SignExtended(image->repeatFirstField) << MpegFlagsRepeatFirstFieldShift |
+           SignExtended(image->topFieldFirst) << MpegFlagsTopFieldFirstShift |
+           SignExtended(image->progressiveFrame) << MpegFlagsProgressiveFrameShift |
+           SignExtended(image->pictureStructure) << MpegFlagsStructureShift;
 }
 
 // A picture without a PTS of its own gets the last one and its fields' time when the state counts them (the half fields of
@@ -76,10 +77,10 @@ inline __attribute__((always_inline)) void CountPts(MpegSystem* sys, s64* pts, M
 
 void TakePendingPts(MpegSystem* sys, s64* pts)
 {
-    if (sys->pendingPtsState == 2 && sys->pendingPts >= 0)
+    if (sys->pendingPtsState == MpegPtsForNextPicture && sys->pendingPts >= 0)
     {
         *pts = sys->pendingPts;
-        sys->pendingPtsState = 0;
+        sys->pendingPtsState = MpegNoPendingPts;
         sys->pendingPts = -1;
     }
 }
@@ -113,9 +114,9 @@ void PutOut(MpegSystem* sys, MpegImage* image)
         Libmpeg::CopyMacroblocks(sys, image);
     }
 
-    if (sys->outputState != 2)
+    if (sys->outputState != MpegPicturePutOut)
     {
-        sys->outputState = 2;
+        sys->outputState = MpegPicturePutOut;
         sys->firstOutputPicture = sys->pictureNumber;
     }
 
@@ -144,7 +145,7 @@ void ConvertWhole(MpegSystem* sys, s32 macroblocks)
     WaitIpu();
     s32 interrupts = DIntr();
     *R_EE_D3_MADR = reinterpret_cast<u32>(output) & PhysicalMask;
-    *R_EE_D3_QWC = macroblocks << 6;
+    *R_EE_D3_QWC = macroblocks * Rgb32MacroblockQuadwords;
     *R_EE_D3_CHCR = ChcrStart;
     if (interrupts != 0)
     {
@@ -230,7 +231,7 @@ void OutputImage(MpegSystem* sys, MpegImage* image)
     mpeg->dts = image->dts;
     mpeg->flags = FlagsOf(image);
     sys->lastPts = static_cast<s32>(mpeg->pts);
-    sys->fields = g_MpegFieldsShown[(mpeg->flags >> MpegFlagsTimingShift) & 0xF];
+    sys->fields = g_MpegFieldsShown[(mpeg->flags >> MpegFlagsTimingShift) & MpegFlagsTiming];
     sys->outputDisplayWidth = image->displayHorizontalSize;
     sys->outputDisplayHeight = image->displayVerticalSize;
     for (s32 i = 0; i < 3; i++)
@@ -336,9 +337,9 @@ void OutputFields(MpegSystem* sys, MpegImage* image, MpegImage* other)
     }
 
     image->heightMacroblocks >>= 1;
-    if (sys->outputState != 2)
+    if (sys->outputState != MpegPicturePutOut)
     {
-        sys->outputState = 2;
+        sys->outputState = MpegPicturePutOut;
         sys->firstOutputPicture = sys->pictureNumber;
     }
 
@@ -348,7 +349,7 @@ void OutputFields(MpegSystem* sys, MpegImage* image, MpegImage* other)
 s32 Flush(Mpeg* mpeg)
 {
     MpegSystem* sys = mpeg->sys;
-    if (sys->pictureWaiting == 0 || sys->outputState == 0)
+    if (sys->pictureWaiting == 0 || sys->outputState == MpegNothingDecoded)
     {
         return 0;
     }
@@ -359,11 +360,11 @@ s32 Flush(Mpeg* mpeg)
     }
     else if (sys->pictureStructure == MpegFrame)
     {
-        OutputImage(sys, sys->frames[1]);
+        OutputImage(sys, sys->frames[MpegFuture]);
     }
     else
     {
-        OutputFields(sys, sys->topFields[1], sys->bottomFields[1]);
+        OutputFields(sys, sys->topFields[MpegFuture], sys->bottomFields[MpegFuture]);
     }
 
     sys->secondFieldMissing = 0;
@@ -379,21 +380,21 @@ void OutputFrame(MpegSystem* sys, s32, s32 waiting)
         bool bPicture = sys->pictureCodingType == MpegPictureB;
         if (sys->pictureStructure == MpegFrame)
         {
-            OutputImage(sys, bPicture ? sys->frames[3] : sys->frames[0]);
+            OutputImage(sys, bPicture ? sys->frames[MpegBImage] : sys->frames[MpegPast]);
         }
         else if (bPicture)
         {
-            OutputFields(sys, sys->topFields[3], sys->bottomFields[3]);
+            OutputFields(sys, sys->topFields[MpegBImage], sys->bottomFields[MpegBImage]);
         }
         else
         {
-            OutputFields(sys, sys->topFields[0], sys->bottomFields[0]);
+            OutputFields(sys, sys->topFields[MpegPast], sys->bottomFields[MpegPast]);
         }
     }
 
-    if (sys->pendingPtsState == 1)
+    if (sys->pendingPtsState == MpegPtsSet)
     {
-        sys->pendingPtsState = 2;
+        sys->pendingPtsState = MpegPtsForNextPicture;
     }
 }
 
@@ -442,14 +443,14 @@ void ConvertInChunks(MpegSystem* sys, u8* output, s32 macroblocks)
 void ConvertImage(MpegSystem* sys, MpegImage* image)
 {
     s32 macroblocks = image->widthMacroblocks * image->heightMacroblocks;
-    MpegCallbackData data = {MpegCallbackStopDma};
-    DispatchCallback(sys->mpeg, &data);
-    if ((*IpuControl & IpuControlErrorCode) != 0)
+    MpegCallbackData dma = {MpegCallbackStopDma};
+    DispatchCallback(sys->mpeg, &dma);
+    if (IpuControlRegister{*IpuControl}.errorFound)
     {
         *IpuControl = IpuControlReset;
     }
 
-    bool oneCommand = macroblocks < ChunkMacroblocks + 1;
+    bool oneCommand = macroblocks <= ChunkMacroblocks;
     WaitIpu();
     SetIpuCommand(sys, IpuClearInput);
     WaitIpu();
@@ -507,8 +508,8 @@ void ConvertImage(MpegSystem* sys, MpegImage* image)
         }
     }
 
-    data.type = MpegCallbackRestartDma;
-    DispatchCallback(sys->mpeg, &data);
+    dma.type = MpegCallbackRestartDma;
+    DispatchCallback(sys->mpeg, &dma);
 }
 
 s32 ConvertedChunk(s32, void* argument, void*)
@@ -536,7 +537,7 @@ s32 ConvertedChunk(s32, void* argument, void*)
         // The last chunk, of what's left (none when the count is a multiple of 1023: then this interrupt is the last)
         chunks->macroblocks -= chunks->converted * ChunkMacroblocks;
         *R_EE_D3_MADR = chunks->next;
-        *R_EE_D3_QWC = chunks->macroblocks << 6;
+        *R_EE_D3_QWC = chunks->macroblocks * Rgb32MacroblockQuadwords;
         *R_EE_D3_CHCR = ChcrStart;
         *IpuCommand = chunks->macroblocks | IpuConvert;
     }

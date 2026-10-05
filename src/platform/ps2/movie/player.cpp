@@ -1,38 +1,44 @@
 #include "movie.h"
 
 #include "../renderer/renderer.h"
+#include "../renderer/gsvalues.h"
 
 #include "platform/io.h"
 #include "retail/libc.h"
 
+#include <bit>
 #include <kernel.h>
 #include <libcdvd.h>
+#include <libgs.h>
 #include <sifdma.h>
 
 extern "C"
 {
     // libsdr's calls of the sound processor's driver (sdr.cpp) and libgraph's vertical blank callback (graphics.cpp)
-    s32 sceSdRemote(s32 arg, s32 command, ...);
+    s32 sceSdRemote(s32 wait, s32 command, ...);
     void* sceGsSyncVCallback(s32 (*handler)(s32 cause));
-
-    // The renderer's DMA memory, from MemoryAllocate2(0x540000): the decoder takes what's after the chains' movie buffers (they're
-    // at the start of the frames' buffers, which aren't used while a movie plays)
-    extern u8* g_RendererDmaMemory RETAIL(G_DMA_ByteStream_Beg_);
-    // The GS's memory: the Z buffer's page (the movie's pictures go there) and the frame buffer's
-    extern u32 g_ZBufferPage RETAIL(D_0030AB00);
-    extern u32 g_FrameBufferPage RETAIL(D_0030AAFC);
 }
 
 namespace
 {
-constexpr u32 MovieBucket = 27;
-constexpr u32 GifChannel = 2;
-
-// The disc stream's buffer (0x50 sectors in 5 banks, 64 byte aligned) and the sound's ring after it in the memory the game lends
-constexpr u32 DiscBufferSize = 0x28040;
+// The disc stream's buffer: 0x50 sectors in 5 banks, 64 byte aligned, and the sound's ring after it in the memory the game lends
+constexpr u32 SectorSize = 0x800;
+constexpr u32 SectorShift = 11;
+constexpr u32 StreamSectors = 0x50;
+constexpr u32 StreamBanks = 5;
+constexpr u32 DiscBufferAlignment = 0x40;
+constexpr u32 DiscBufferSize = StreamSectors * SectorSize + DiscBufferAlignment;
 constexpr u32 SoundRingSize = 0x6000;
+// No file streamed: no location on the disc
+constexpr u32 NoFileLocation = 0xFFFFFFFF;
+// libcdvd's modes of its waits: wait, or return the state
+constexpr s32 CdWait = 0;
+constexpr s32 CdPoll = 1;
 
-// libsdr's commands and the SPU2's: the block transfer of core 0 (its start, stop and where it plays), its input's volume
+// libsdr's calls wait for the driver's result. Its commands and the SPU2's: the block transfer of core 0 (its start, stop and where
+// it plays), its input's volume (at most 0x7FFF)
+constexpr s32 SdWait = 1;
+constexpr s32 SdCore0 = 0;
 constexpr s32 SdBlockTransfer = 0x80E0;
 constexpr s32 SdBlockTransferStatus = 0x8100;
 constexpr s32 SdSetParameter = 0x8010;
@@ -40,6 +46,42 @@ constexpr s32 SdBlockLoopWrite = 0x13;
 constexpr s32 SdBlockStop = 2;
 constexpr s32 SdInputVolumeLeft = 0xF80;
 constexpr s32 SdInputVolumeRight = 0x1080;
+constexpr f32 SdMaximumVolume = 32767.0f;
+// The sound goes to the ring a KB at a time
+constexpr s32 SoundBlockBytes = 0x400;
+
+// The block transfer's status: where in the sound processor's memory it plays, and the half of the buffer
+union BlockTransferStatus
+{
+    u32 value;
+    struct
+    {
+        u32 address : 24;
+        u32 half : 8;
+    };
+};
+CHECK_SIZE(BlockTransferStatus, 4);
+
+// The GS's buffers' widths are in 64 pixels
+constexpr u32 BufferWidthUnit = 1u << GsWidthShift;
+
+// The picture's packet: a DMA tag, the GIF tag and its A+D writes, 9 of the settings and 4 a strip (its corners' UV and XYZ2). The
+// GS's coordinates are in sixteenths of a pixel (half a texel in from the edges), its depth in front of everything
+constexpr u32 SettingWrites = 9;
+constexpr u32 StripWrites = 4;
+constexpr u32 StripWidth = 32 << GsSubpixelShift;
+const QWORD SpritesTag =
+    std::bit_cast<QWORD>(GS_GIF_TAG{.eop = 1, .pre = 1, .prim = GS_PRIM_SPRITE, .flg = GS_GIF_PACKED, .nreg = 1, .reg = gif_rd_ad});
+// The settings: the primitives' attributes from PRIM; the frame 512 pixels wide with its alpha kept (its page ORed in); the depth
+// buffer of 32 bits (Z32 where GS_SET_ZBUF puts the format, past PSM's 4 bits: the GS reads 0) not written (its page ORed in); a
+// texture of 1024 by 1024 with its alpha, as it is (its address and width ORed in); depth greater or equal. gsvalues.h's
+// textured sprite (UV in texels) in white draws it, the texture's colours as they are
+const u64 MovieAttributes = std::bit_cast<u64>(GS_PRMODECONT{.control = 1});
+const u64 MovieFrame = std::bit_cast<u64>(GS_FRAME{.fb_width = 8, .draw_mask = 0xFF000000});
+const u64 MovieDepth = DepthNotWritten | ZbufZ32Format;
+const u64 MovieTexture = std::bit_cast<u64>(
+    GS_TEX0{.tex_width = 10, .tex_height = 10, .tex_cc = 1, .tex_funtion = GS_TEX_DECAL, .clut_loadmode = 1});
+const u64 MovieTest = std::bit_cast<u64>(GS_TEST{.ztest_enable = 1, .ztest_method = GS_ZBUFF_GEQUAL});
 
 void (*g_Present)();
 // The vertical blank's handler presented since WaitFrame started waiting, every second blank while it waits
@@ -51,14 +93,14 @@ volatile u8 g_Waiting;
 bool g_DecodingUnready = true;
 
 // The movie file on the disc, and the stream's position in it
-u32 g_FileLocation = 0xFFFFFFFF;
+u32 g_FileLocation = NoFileLocation;
 u32 g_FileSize;
 u32 g_ReadPosition;
 sceCdRMode g_ReadMode = {0, 0, 0, 0};
 
 // The sound's ring in the I/O processor's memory: where the next bytes go, how many went in before the sound started, whether it's
 // the game's memory
-u32 g_SoundMode;
+MovieAudioStream g_SoundMode;
 u32 g_SoundStarted;
 s32 g_RingWrite;
 s32 g_RingFilled;
@@ -147,7 +189,7 @@ s32 CopyToIop(u8* to, s32 toSize, u8* toWrapped, s32 toWrappedSize, u8* from, s3
 // the ring is full. Returns the bytes taken
 u32 FeedSound(u8* ring, u32 size, u32 read, u32 count, u32)
 {
-    if (g_SoundMode != 1)
+    if (g_SoundMode != MoviePcm)
     {
         return 0;
     }
@@ -158,8 +200,10 @@ u32 FeedSound(u8* ring, u32 size, u32 read, u32 count, u32)
     s32 toWrappedSize = 0;
     if (g_SoundStarted != 0)
     {
-        u32 playing = (static_cast<u32>(sceSdRemote(1, SdBlockTransferStatus, 0)) & 0xFFFFFF) - reinterpret_cast<u32>(g_Ring);
-        s32 room = static_cast<s32>(playing + g_RingSize - g_RingWrite - 0x400) % g_RingSize / 0x400 * 0x400;
+        BlockTransferStatus status = {static_cast<u32>(sceSdRemote(SdWait, SdBlockTransferStatus, 0))};
+        u32 playing = status.address - reinterpret_cast<u32>(g_Ring);
+        s32 room = static_cast<s32>(playing + g_RingSize - g_RingWrite - SoundBlockBytes) % g_RingSize / SoundBlockBytes *
+                   SoundBlockBytes;
         toSize = g_RingSize - g_RingWrite;
         to = g_Ring + g_RingWrite;
         if (toSize < room)
@@ -174,11 +218,11 @@ u32 FeedSound(u8* ring, u32 size, u32 read, u32 count, u32)
     }
     else
     {
-        toSize = (g_RingSize - g_RingFilled) / 0x400 * 0x400;
+        toSize = (g_RingSize - g_RingFilled) / SoundBlockBytes * SoundBlockBytes;
         to = g_Ring + g_RingFilled;
     }
 
-    u32 whole = count >> 10 << 10;
+    u32 whole = count / SoundBlockBytes * SoundBlockBytes;
     s32 fromSize;
     s32 fromWrappedSize;
     if (size < read + whole)
@@ -201,14 +245,14 @@ u32 FeedSound(u8* ring, u32 size, u32 read, u32 count, u32)
 // The sound processor's input volume (0 to 1)
 void SetSoundVolume(f32 volume)
 {
-    if (g_SoundMode != 1)
+    if (g_SoundMode != MoviePcm)
     {
         return;
     }
 
-    s32 value = static_cast<s32>(volume * 32767.0f);
-    sceSdRemote(1, SdSetParameter, SdInputVolumeLeft, value);
-    sceSdRemote(1, SdSetParameter, SdInputVolumeRight, value);
+    s32 value = static_cast<s32>(volume * SdMaximumVolume);
+    sceSdRemote(SdWait, SdSetParameter, SdInputVolumeLeft, value);
+    sceSdRemote(SdWait, SdSetParameter, SdInputVolumeRight, value);
 }
 
 // The decoder's file: the disc stream from the file's start
@@ -219,7 +263,8 @@ s32 SeekStream(const char*)
     return result;
 }
 
-// Reads whole sectors (blocking), again after a read the drive had trouble with. Returns the bytes, -1 past the file's end
+// Reads the whole sectors the stream has (without waiting for more), again after a read the drive had trouble with. Returns the
+// bytes, -1 past the file's end
 s32 ReadStream(u8* buffer, u32 size, const char*)
 {
     u32 position = g_ReadPosition;
@@ -228,16 +273,16 @@ s32 ReadStream(u8* buffer, u32 size, const char*)
         return -1;
     }
 
-    u32 sectors = static_cast<s32>(size) / 0x800;
+    u32 sectors = static_cast<s32>(size) / static_cast<s32>(SectorSize);
     u32 error = 0;
-    s32 read = sceCdStRead(sectors, reinterpret_cast<u32*>(buffer), 0, &error) << 11;
-    while (error != 0 || sceCdSync(0) != 0 || sceCdGetError() != 0)
+    s32 read = sceCdStRead(sectors, reinterpret_cast<u32*>(buffer), STMNBLK, &error) << SectorShift;
+    while (error != 0 || sceCdSync(CdWait) != 0 || sceCdGetError() != 0)
     {
-        while (sceCdDiskReady(0) != SCECdComplete)
+        while (sceCdDiskReady(CdWait) != SCECdComplete)
         {
         }
 
-        read = sceCdStRead(sectors, reinterpret_cast<u32*>(buffer), 0, &error) << 11;
+        read = sceCdStRead(sectors, reinterpret_cast<u32*>(buffer), STMNBLK, &error) << SectorShift;
     }
 
     g_ReadPosition += read;
@@ -246,7 +291,7 @@ s32 ReadStream(u8* buffer, u32 size, const char*)
 
 void WaitUntilDiscReady()
 {
-    while (sceCdDiskReady(1) != SCECdComplete)
+    while (sceCdDiskReady(CdPoll) != SCECdComplete)
     {
     }
 }
@@ -276,7 +321,9 @@ void OpenStream(Platform::Movie::Player* player, const char* file, void* lentMem
         player->discBufferLent = 0;
     }
 
-    sceCdStInit(0x50, 5, reinterpret_cast<void*>((reinterpret_cast<u32>(player->discBuffer) + 0x3F) & ~0x3Fu));
+    sceCdStInit(StreamSectors, StreamBanks,
+                reinterpret_cast<void*>((reinterpret_cast<u32>(player->discBuffer) + DiscBufferAlignment - 1) &
+                                        ~(DiscBufferAlignment - 1)));
     WaitUntilDiscReady();
     sceCdStStart(g_FileLocation, &g_ReadMode);
 }
@@ -291,9 +338,9 @@ void CloseStream(Platform::Movie::Player* player)
         Platform::Io::FreeHeap(player->discBuffer);
     }
 
-    g_FileLocation = 0xFFFFFFFF;
+    g_FileLocation = NoFileLocation;
     player->discBuffer = nullptr;
-    while (sceCdSync(1) != 0)
+    while (sceCdSync(CdPoll) != 0)
     {
     }
 }
@@ -308,10 +355,12 @@ void Prepare(Platform::Movie::Player* player, void* lentMemory)
     }
 
     player->frames = 0;
-    MovieDecoding::SetArena(g_DmaMovieNext, g_RendererDmaMemory + 0x540000);
+    // The decoder takes the renderer's DMA memory after the chains' movie buffers (they're at the start of the frames' buffers,
+    // which aren't used while a movie plays)
+    MovieDecoding::SetArena(g_DmaMovieNext, g_RendererDmaMemory + RendererDmaMemorySize);
     g_Ring = nullptr;
     g_SoundMode = player->audio;
-    g_RingSize = player->audio == 1 ? SoundRingSize : 0;
+    g_RingSize = player->audio == MoviePcm ? SoundRingSize : 0;
     if (g_RingSize != 0)
     {
         g_Ring = static_cast<u8*>(lentMemory);
@@ -335,7 +384,7 @@ void Prepare(Platform::Movie::Player* player, void* lentMemory)
 // The picture decoded last waits for the vertical blank when fewer than two do. Returns whether it went in
 bool QueueDecoded(Platform::Movie::Player* player)
 {
-    if (player->decoded == nullptr || player->queued >= 2)
+    if (player->decoded == nullptr || player->queued >= PictureQueueSize)
     {
         return false;
     }
@@ -436,9 +485,9 @@ void Platform::Movie::Construct(Player* player)
     player->opened = 0;
     player->frames = 0;
     player->discBuffer = nullptr;
-    player->mode = 1;
-    player->audio = 1;
-    player->format = 2;
+    player->container = MoviePss;
+    player->audio = MoviePcm;
+    player->format = MovieMpeg2;
 }
 
 void Platform::Movie::BeginPresenting(Player* player, void (*present)())
@@ -450,19 +499,19 @@ void Platform::Movie::BeginPresenting(Player* player, void (*present)())
     EnableIntc(INTC_VBLANK_S);
     EI();
     player->queued = 0;
-    player->frameBase = g_ZBufferPage << 5;
+    player->frameBase = g_DepthBufferPage << GsPageBlocksShift;
 }
 
 bool Platform::Movie::Open(Player* player, const char* file, u32 audioChannel, s32 width, void* lentMemory)
 {
-    player->mode = 1;
-    player->audio = 1;
-    player->format = 2;
+    player->container = MoviePss;
+    player->audio = MoviePcm;
+    player->format = MovieMpeg2;
     Prepare(player, lentMemory);
     OpenStream(player, file, lentMemory);
     // The decoder's read and seek go to the stream, which doesn't need the path
-    player->opened = MovieDecoding::Open(&player->decoder, player->mode, player->format, player->audio, audioChannel, SeekStream,
-                                         ReadStream, nullptr, 1, static_cast<u32>(width) >> 6, 0x100);
+    player->opened = MovieDecoding::Open(&player->decoder, player->container, player->format, player->audio, audioChannel,
+                                         SeekStream, ReadStream, nullptr, 1, static_cast<u32>(width) / BufferWidthUnit, MovieRgb32);
     if (player->opened != 1)
     {
         return false;
@@ -474,7 +523,7 @@ bool Platform::Movie::Open(Player* player, const char* file, u32 audioChannel, s
     DecodeOnCopiedStack(player);
     while (!MovieDecoding::Finished())
     {
-        bool full = g_SoundMode == 0 || (g_SoundMode == 1 && g_RingFilled >= g_RingSize);
+        bool full = g_SoundMode == MovieNoAudio || (g_SoundMode == MoviePcm && g_RingFilled >= g_RingSize);
         if (full)
         {
             break;
@@ -490,12 +539,13 @@ bool Platform::Movie::Open(Player* player, const char* file, u32 audioChannel, s
 // The sound processor plays the ring in a loop
 void Platform::Movie::StartSound(Player*, f32 volume)
 {
-    if (g_SoundMode != 1)
+    if (g_SoundMode != MoviePcm)
     {
         return;
     }
 
-    sceSdRemote(1, SdBlockTransfer, 0, SdBlockLoopWrite, g_Ring, g_RingSize / 0x400 * 0x400, g_Ring);
+    sceSdRemote(SdWait, SdBlockTransfer, SdCore0, SdBlockLoopWrite, g_Ring, g_RingSize / SoundBlockBytes * SoundBlockBytes,
+                g_Ring);
     SetSoundVolume(volume);
     g_SoundStarted = 1;
 }
@@ -519,11 +569,13 @@ bool Platform::Movie::Step(Player* player)
 
 void Platform::Movie::WaitFrame(Player* player)
 {
+    // The stream read twice at most meanwhile
+    constexpr s32 ReadsWhileWaiting = 2;
     g_Waiting = 1;
     s32 reads = 0;
     while (g_Presented == 0)
     {
-        if (player->queued < 2 && reads < 2)
+        if (player->queued < PictureQueueSize && reads < ReadsWhileWaiting)
         {
             reads++;
             MovieDecoding::ReadOn();
@@ -548,37 +600,37 @@ void Platform::Movie::QueuePicture(Player* player)
     player->queue[0] = next;
 }
 
-// The picture's sprites: 32 pixel wide strips over the area, the texture the Z buffer's memory the pictures were sent to, through
-// the GS's second context (its frame the renderer's frame buffer, with the alpha kept)
+// The picture's sprites: 32 pixel wide strips over the area, the texture the depth buffer's memory the pictures were sent to,
+// through the GS's second context (its frame the renderer's frame buffer, with the alpha kept)
 void Platform::Movie::Draw(Player* player, const Area& area, s32 width, s32 height, u32 skippedRows)
 {
-    u32 textureWidth = static_cast<u32>(width) >> 6;
-    if ((width & 0x3F) != 0)
+    u32 textureWidth = static_cast<u32>(width) / BufferWidthUnit;
+    if (static_cast<u32>(width) % BufferWidthUnit != 0)
     {
         textureWidth++;
     }
 
-    u32 x = static_cast<u32>(area.x) << 4;
-    u32 y = static_cast<u32>(area.y) << 4;
-    u32 areaWidth = static_cast<u32>(area.width) << 4;
-    u32 areaHeight = static_cast<u32>(area.height) << 4;
-    u32 strips = areaWidth >> 9;
+    u32 x = static_cast<u32>(area.x) << GsSubpixelShift;
+    u32 y = static_cast<u32>(area.y) << GsSubpixelShift;
+    u32 areaWidth = static_cast<u32>(area.width) << GsSubpixelShift;
+    u32 areaHeight = static_cast<u32>(area.height) << GsSubpixelShift;
+    u32 strips = areaWidth / StripWidth;
     if (player->frames < 2)
     {
         return;
     }
 
-    RenderBucket& bucket = g_FrameBuckets.buckets[MovieBucket];
+    RenderBucket& bucket = g_FrameBuckets.buckets[BucketMovies];
     u8* packet = g_DmaChains[bucket.chain].next;
     bucket.last[1] = reinterpret_cast<u32>(packet);
     u32* tag = reinterpret_cast<u32*>(packet);
-    u32 quadwords = strips * 4 + 10;
+    u32 quadwords = strips * StripWrites + SettingWrites + 1;
     // A DMA tag of the packet's quadwords, VIF1's FLUSHA and DIRECT of them
-    tag[0] = quadwords | 0x10000000;
+    tag[0] = quadwords | CountTag;
     tag[1] = 0;
-    tag[2] = 0x13000000;
-    tag[3] = quadwords | 0x50000000;
-    u64* at = reinterpret_cast<u64*>(packet + 0x10);
+    tag[2] = VifFlushA;
+    tag[3] = quadwords | VifDirect;
+    u64* at = reinterpret_cast<u64*>(packet + QuadwordBytes);
     auto write = [&at](u64 low, u64 high)
     {
         at[0] = low;
@@ -587,32 +639,31 @@ void Platform::Movie::Draw(Player* player, const Area& area, s32 width, s32 heig
     };
 
     // The GIF tag: sprites, the registers' writes (A+D) of the settings and every strip's corners
-    write((strips * 4 + 9) | 0x8000 | 0x1003400000000000, 0xE);
-    // PRMODECONT, FRAME_2, XYOFFSET_2, ZBUF_2 (not written), TEXFLUSH, TEX0_2, TEST_2 (depth greater or equal), PRIM (a textured
-    // sprite of context 2, UV in texels), RGBAQ
-    write(1, 0x1A);
-    write(g_FrameBufferPage | 0x80000 | 0xFF00000000000000, 0x4D);
-    write(0, 0x19);
-    write(g_ZBufferPage | 0x30000000 | 0x100000000, 0x4F);
-    write(0, 0x3F);
-    write((g_ZBufferPage << 5) | static_cast<u64>(textureWidth) << 14 | 0x2000000EA8000000, 0x07);
-    write(0x50000, 0x48);
-    write(0x316, 0);
-    write(0x3F80000080808080, 1);
+    write((strips * StripWrites + SettingWrites) | SpritesTag.lo, SpritesTag.hi);
+    write(MovieAttributes, gs_g_prmodecont);
+    write(g_FrameBufferPage | MovieFrame, gs_g_frame_2);
+    write(0, gs_g_xyoffset_2);
+    write(g_DepthBufferPage | MovieDepth, gs_g_zbuf_2);
+    write(0, gs_g_texflush);
+    write((g_DepthBufferPage << GsPageBlocksShift) | static_cast<u64>(textureWidth) << GsTextureWidthShift | MovieTexture,
+          gs_g_tex0_2);
+    write(MovieTest, gs_g_test_2);
+    write(TexturedSprite, gs_g_prim);
+    write(White, gs_g_rgbaq);
     if (strips != 0)
     {
-        u32 step = static_cast<u32>(width) / strips << 4;
-        u64 top = static_cast<u64>((skippedRows << 4) + 8) << 16;
-        u64 bottom = static_cast<u64>(((height - skippedRows) << 4) + 8) << 16;
-        u64 depth = 0xFFFFFFFF00000000;
-        u32 left = 8;
+        u32 step = static_cast<u32>(width) / strips << GsSubpixelShift;
+        u64 top = static_cast<u64>((skippedRows << GsSubpixelShift) + GsHalfTexel) << GsUvVShift;
+        u64 bottom = static_cast<u64>(((height - skippedRows) << GsSubpixelShift) + GsHalfTexel) << GsUvVShift;
+        u64 depth = u64{GsFrontDepth} << GsXyzDepthShift;
+        u32 left = GsHalfTexel;
         for (u32 strip = 0; strip < strips; strip++)
         {
-            u32 screenLeft = x + (strip << 9);
-            write(left | top, 3);
-            write(screenLeft | static_cast<u64>(y) << 16 | depth, 5);
-            write((left + step) | bottom, 3);
-            write((screenLeft + 0x200) | static_cast<u64>(y + areaHeight) << 16 | depth, 5);
+            u32 screenLeft = x + strip * StripWidth;
+            write(left | top, gs_g_uv);
+            write(screenLeft | static_cast<u64>(y) << GsXyzYShift | depth, gs_g_xyz2);
+            write((left + step) | bottom, gs_g_uv);
+            write((screenLeft + StripWidth) | static_cast<u64>(y + areaHeight) << GsXyzYShift | depth, gs_g_xyz2);
             left += step;
         }
     }
@@ -623,11 +674,11 @@ void Platform::Movie::Draw(Player* player, const Area& area, s32 width, s32 heig
     u8* next = g_DmaChains[bucket.chain].next;
     u32* nextTag = reinterpret_cast<u32*>(next);
     bucket.last = nextTag;
-    nextTag[0] = 0x20000000;
+    nextTag[0] = NextTag;
     nextTag[1] = 0;
     nextTag[2] = 0;
     nextTag[3] = 0;
-    g_DmaChains[bucket.chain].next = next + 0x10;
+    g_DmaChains[bucket.chain].next = next + QuadwordBytes;
 }
 
 // The vertical blank's handler goes, the disc stream stops, the sound and its ring go and the decoder closes
@@ -639,7 +690,7 @@ void Platform::Movie::Close(Player* player)
     EI();
     CloseStream(player);
     SetSoundVolume(0.0f);
-    sceSdRemote(1, SdBlockTransfer, 0, SdBlockStop, 0, 0);
+    sceSdRemote(SdWait, SdBlockTransfer, SdCore0, SdBlockStop, 0, 0);
     if (g_Ring != nullptr && !g_RingLent)
     {
         Platform::Io::FreeHeap(g_Ring);

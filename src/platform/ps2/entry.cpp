@@ -49,7 +49,7 @@ void Platform::System::Exit(s32 status)
 }
 
 // Clears .sbss and .bss, makes the main thread (SetupThread: no stack of its own in main memory, the heap may reach the top) and
-// moves its stack to the scratchpad
+// moves its stack to the scratchpad, filling it with a pattern first
 asm(R"(
     .section .text.entry, "ax", @progbits
     .globl entry
@@ -57,6 +57,10 @@ asm(R"(
     .ent entry
     .set noreorder
     .set noat
+    .equ SetupThreadSyscall, 60
+    .equ ScratchpadStart, 0x70000000
+    .equ ScratchpadSize, 0x4000
+    .equ StackFill, 0xA1B2C3D4
 entry:
     la $2, _fbss
     la $3, _end
@@ -74,12 +78,12 @@ entry:
     la $7, MainARGC
     la $8, ExitThread
     move $gp, $4
-    li $3, 60
+    li $3, SetupThreadSyscall
     syscall
-    li $sp, 0x70004000
-    lui $8, 0x7000
-    li $9, 0x4000
-    li $10, 0xA1B2C3D4
+    li $sp, ScratchpadStart + ScratchpadSize
+    li $8, ScratchpadStart
+    li $9, ScratchpadSize
+    li $10, StackFill
 3:
     sw $10, 0($8)
     addiu $9, $9, -4

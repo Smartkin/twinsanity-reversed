@@ -24,7 +24,7 @@ struct RenderView
     Vector4 forward;
     Reference* cameraObject;
     f32 inverseAspect;
-    u8 unknown168[0x170 - 0x168];
+    u8 unused168[0x170 - 0x168];
 
     // Looking down the Z axis (its projection and world to clip matrices the identity, the clip vector the guard band's), with no
     // camera

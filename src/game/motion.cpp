@@ -1,6 +1,7 @@
 #include "game/objectnode.h"
 
 #include "game/agentlab.h"
+#include "game/animation.h"
 #include "game/behaviours.h"
 #include "game/clock.h"
 #include "game/layout.h"
@@ -14,25 +15,35 @@
 
 namespace
 {
-constexpr u32 NoJoint = 0xFF;
-// 2π / 65536, 5e-05, 1e30, 1e-06
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 Epsilon = 0x1.a36e2ep-15f;
-constexpr f32 Forever = 0x1.93e594p+99f;
+// A direction whose x and z squared add up to no more than this (1e-06) is straight up or down
 constexpr f32 FlatEpsilon = 0x1.0c6f7ap-20f;
+// What a step or a key comes to when it's stepped back past 0
+constexpr u8 SteppedBeforeFirst = 0xFF;
+// Motions 11 and 12 (nameless in the AgentLab tool) are stepped as a ground chase and an air chase
+constexpr u32 SecondGroundChase = 11;
+constexpr u32 SecondAirChase = 12;
+// A projectile's gravity when the packet gives no Power, and how far a chase leans at most when it gives no Bounce
+constexpr f32 DefaultProjectileGravity = 40.0f;
+constexpr f32 DefaultChaseMostLean = 80.0f;
 
-// The packet's spaces (the tool's names): where its target and offset are taken from
-enum Space : u32
+// The physics' parameters by motion: a spring's power and damping; a projectile's speed along the ground, its speed up and its
+// gravity; a chase's share of the turn toward the target made per second (the packet's Duration), how much it leans into turns
+// (Power), how much turning slows it (Damping) and how far it leans at most (Bounce)
+enum PhysicsParameter : u32
 {
-    WorldSpace = 0,
-    InitialSpace = 1,
-    CurrentSpace = 2,
-    TargetSpace = 3,
-    ParentSpace = 4,
-    InitialPosition = 5,
-    CurrentPosition = 6,
-    StoredSpace = 7,
+    SpringPower = 0,
+    SpringDamping = 1,
+    ProjectileSpeed = 0,
+    ProjectileRise = 1,
+    ProjectileGravity = 2,
+    ChaseTurnRate = 0,
+    ChaseLean = 1,
+    ChaseTurnDrag = 2,
+    ChaseMostLean = 3,
 };
+
+// The packet's spaces: where its target and offset are taken from
+using enum ControlPacket::Space;
 
 // A target moved by an offset turned by a matrix (the offset a row vector)
 void AddTransformed(Vector4* target, const Vector4* offset, const Matrix4x4* matrix)
@@ -45,9 +56,10 @@ void AddTransformed(Vector4* target, const Vector4* offset, const Matrix4x4* mat
     target->y = target->y + y;
 }
 
-f32 InverseOf(f32 duration, f32 forever)
+// A duration's inverse (the one given for no time)
+f32 InverseOf(f32 duration, f32 noTime)
 {
-    return __builtin_fabsf(duration) <= Epsilon ? forever : 1.0f / duration;
+    return __builtin_fabsf(duration) <= Epsilon ? noTime : 1.0f / duration;
 }
 
 // The packet ended (its motion's both parts done, or its delay or sync over)
@@ -56,34 +68,35 @@ void EndRunningPacket(BehaviourRunner* runner)
     ControlPacket* ended = runner->packet;
     runner->packet = nullptr;
     runner->lastPacket = ended;
-    runner->flags = (runner->flags & ~BehaviourRunner::FlagPacketWaiting) | BehaviourRunner::FlagPacketEnded;
+    runner->flags.packetWaiting = 0;
+    runner->flags.packetEnded = 1;
 }
 
 // An interpolation that's over: the instance at the translation's and the rotation's targets (when it moves no joint), and the
 // trajectory controller holding them
 u32 FinishInterpolation(ObjectNode* node, ControlPacket* packet, u32 joint)
 {
-    if ((packet->settings & ControlPacket::Translates) != 0)
+    if (packet->settings.translates != 0)
     {
-        if (joint == NoJoint)
+        if (joint == GameOGI::NoJoint)
         {
             MoveInstance(node, packet, &node->translator->target);
         }
 
-        node->motion->bits |= MotionState::TranslationDone;
+        node->motion->bits.translationDone = 1;
         if (node->trajectory != nullptr)
         {
             node->trajectory->position = node->translator->target;
         }
     }
 
-    node->motion->bits |= MotionState::RotationDone;
-    if ((packet->settings & ControlPacket::Rotates) == 0)
+    node->motion->bits.rotationDone = 1;
+    if (packet->settings.rotates == 0)
     {
         return 1;
     }
 
-    if (joint == NoJoint)
+    if (joint == GameOGI::NoJoint)
     {
         TurnInstance(node, packet, &node->rotator->target);
     }
@@ -96,7 +109,7 @@ u32 FinishInterpolation(ObjectNode* node, ControlPacket* packet, u32 joint)
         trajectory->rotation.y = rotator->target.y;
         trajectory->rotation.z = rotator->target.z;
         trajectory->rotation.w = rotator->target.w;
-        if (joint != NoJoint)
+        if (joint != GameOGI::NoJoint)
         {
             AnglesOfRotation(&trajectory->rotation, &trajectory->angles[0], &trajectory->angles[1], &trajectory->angles[2]);
         }
@@ -109,7 +122,7 @@ u32 FinishInterpolation(ObjectNode* node, ControlPacket* packet, u32 joint)
 u32 Interpolate(ObjectNode* node, BehaviourRunner* runner, ControlPacket* packet, u32 joint, f32 along)
 {
     Vector4 point;
-    if ((packet->settings & ControlPacket::Translates) != 0)
+    if (packet->settings.translates != 0)
     {
         Translator* translator = node->translator;
         point.x = translator->start.x + (translator->target.x - translator->start.x) * along;
@@ -126,26 +139,27 @@ u32 Interpolate(ObjectNode* node, BehaviourRunner* runner, ControlPacket* packet
             f32 z = point.z - translator->target.z;
             if (x * x + y * y + z * z < tolerance)
             {
-                node->motion->bits |= MotionState::TranslationDone;
-                node->motion->bits |= MotionState::RotationDone;
+                node->motion->bits.translationDone = 1;
+                node->motion->bits.rotationDone = 1;
                 return 1;
             }
         }
 
-        if (joint == NoJoint)
+        if (joint == GameOGI::NoJoint)
         {
-            node->flags |= ObjectNodeBase::FlagUnsettled;
+            node->flags.unused4 = 1;
             MoveInstance(node, packet, &point);
         }
     }
 
-    if ((packet->settings & ControlPacket::Rotates) != 0)
+    if (packet->settings.rotates != 0)
     {
         Rotator* rotator = node->rotator;
-        SlerpRotations(along, &point, &rotator->start, &rotator->target);
-        if (joint == NoJoint)
+        Vector4 rotation;
+        SlerpRotations(along, &rotation, &rotator->start, &rotator->target);
+        if (joint == GameOGI::NoJoint)
         {
-            TurnInstance(node, packet, &point);
+            TurnInstance(node, packet, &rotation);
         }
     }
 
@@ -198,7 +212,7 @@ EABI_EXPORT(FUN_0022d4f8, SteerTowards);
 EABI_EXPORT(FUN_0022cac0, SteerBodyTowards);
 EABI_EXPORT(FUN_00231580, StepAirChase);
 EABI_EXPORT(FUN_00231840, StepRiddenAirChase);
-EABI_EXPORT(FUN_00231cc8, StepLastChase);
+EABI_EXPORT(FUN_00231cc8, StepClimbingChase);
 
 PropertyHolder* ObjectNodeBase::PacketProperties()
 {
@@ -251,7 +265,7 @@ MotionState* MotionState::Construct(MotionState* state)
 
 void MotionState::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -259,8 +273,11 @@ void MotionState::Destroy(u32 destroyFlags)
 
 void MotionState::Reset()
 {
-    constexpr u32 ClearedBits = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
-    bits &= ~ClearedBits;
+    bits.translationDone = 0;
+    bits.rotationDone = 0;
+    bits.unused2 = 0;
+    bits.unused3 = 0;
+    bits.unused4 = 0;
     duration = 0.0f;
     inverseDuration = 0.0f;
     turnSpeed = 0.0f;
@@ -291,7 +308,7 @@ Translator* Translator::Construct(Translator* translator)
 
 void Translator::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -313,7 +330,7 @@ Rotator* Rotator::Construct(Rotator* rotator)
 
 void Rotator::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -325,10 +342,10 @@ void Rotator::Reset()
     target.w = 0.0f;
     target.z = 0.0f;
     target.x = 0.0f;
-    unknown30.y = 0.0f;
-    unknown30.w = 0.0f;
-    unknown30.z = 0.0f;
-    unknown30.x = 0.0f;
+    unused30.y = 0.0f;
+    unused30.w = 0.0f;
+    unused30.z = 0.0f;
+    unused30.x = 0.0f;
 }
 
 Physics* Physics::Construct(Physics* physics)
@@ -339,7 +356,7 @@ Physics* Physics::Construct(Physics* physics)
 
 void Physics::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -350,13 +367,13 @@ void Physics::Reset()
     parameters[0] = 0.0f;
     parameters[1] = 0.0f;
     parameters[2] = 0.0f;
-    bits = (bits & ~KindMask) | KindMade;
+    bits.unused2 = KindMade;
     velocity = g_DefaultBox.min;
     velocity.w = 1.0f;
-    unknown30.y = 0.0f;
-    unknown30.w = 0.0f;
-    unknown30.z = 0.0f;
-    unknown30.x = 0.0f;
+    unused30.y = 0.0f;
+    unused30.w = 0.0f;
+    unused30.z = 0.0f;
+    unused30.x = 0.0f;
 }
 
 Waypoints* Waypoints::Construct(Waypoints* waypoints)
@@ -387,7 +404,7 @@ void Waypoints::Destroy(u32 destroyFlags)
         MemoryDeallocate_(positions.data);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -401,8 +418,10 @@ void Waypoints::Reset()
     key = 0;
     route = nullptr;
     routePath = nullptr;
-    flags &= ~FlagStopped & ~FlagBackwards & ~FlagWrapped;
-    routeIndex = 0xFF;
+    flags.stopped = 0;
+    flags.backwards = 0;
+    flags.wrapped = 0;
+    routeIndex = Waypoints::NoRouteStep;
     firstKey = 0;
     lastKey = 0;
     pathDirection = g_DefaultBox.min;
@@ -428,7 +447,7 @@ void Waypoints::NextKey()
     key++;
     if (lastKey < key)
     {
-        flags |= FlagWrapped;
+        flags.wrapped = 1;
         key = firstKey;
     }
 }
@@ -436,9 +455,9 @@ void Waypoints::NextKey()
 void Waypoints::PreviousKey()
 {
     key--;
-    if (key == 0xFF)
+    if (key == SteppedBeforeFirst)
     {
-        flags |= FlagWrapped;
+        flags.wrapped = 1;
         key = lastKey;
     }
 }
@@ -463,7 +482,7 @@ void Waypoints::SetRoute(Route* taken)
 
 void Waypoints::ReleaseRoute()
 {
-    routeIndex = 0xFF;
+    routeIndex = Waypoints::NoRouteStep;
     if (route == nullptr)
     {
         return;
@@ -481,7 +500,7 @@ void Waypoints::ReleaseRoute()
 
 void Waypoints::ClearRoute()
 {
-    routeIndex = 0xFF;
+    routeIndex = Waypoints::NoRouteStep;
     key = 0;
     if (route != nullptr)
     {
@@ -493,7 +512,7 @@ void Waypoints::ClearRoute()
     }
 
     pathParameter = 0.0f;
-    flags &= ~FlagWrapped;
+    flags.wrapped = 0;
     route = nullptr;
     routePath = nullptr;
 }
@@ -505,10 +524,10 @@ void Waypoints::NextRouteStep()
         return;
     }
 
-    if ((flags & FlagWrapped) != 0)
+    if (flags.wrapped)
     {
         routeIndex = 1;
-        flags &= ~FlagWrapped;
+        flags.wrapped = 0;
     }
     else
     {
@@ -531,10 +550,10 @@ void Waypoints::PreviousRouteStep()
     }
 
     routeIndex--;
-    if (routeIndex == 0xFF)
+    if (routeIndex == SteppedBeforeFirst)
     {
         routeIndex = 0;
-        flags |= FlagWrapped;
+        flags.wrapped = 1;
     }
 
     routePath = route->PathTo(routeIndex);
@@ -579,7 +598,8 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
     runner->packetStart = clock->time;
     runner->lastPacket = nullptr;
     runner->syncUnit = 0;
-    runner->flags = (runner->flags | BehaviourRunner::FlagPacketWaiting) & ~BehaviourRunner::FlagPacketEnded;
+    runner->flags.packetWaiting = 1;
+    runner->flags.packetEnded = 0;
     runner->packetEnd = 0;
     PropertyHolder* properties = node->PacketProperties();
     Translator* translator = nullptr;
@@ -590,13 +610,13 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
     Vector4 position = place->position;
     u32 selector = Packet::NoSlot;
     Vector4 focusPosition = {0.0f, 0.0f, 0.0f, 1.0f};
-    s32 joint = NoJoint;
+    s32 joint = GameOGI::NoJoint;
     Vector4* focus = nullptr;
     InstanceContext* instance = nullptr;
     LayoutPosition* key = nullptr;
     AiPosition* step = nullptr;
-    u32 motionKind = runner->packet->MotionKind();
-    node->flags &= ~ObjectNodeBase::FlagAccelerates;
+    u32 motionKind = runner->packet->settings.motion;
+    node->flags.accelerates = 0;
     runner->packet->Word(Packet::Selector, &selector);
 
     f32 delay;
@@ -611,14 +631,14 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
     }
     else if (runner->packet->Word2(Packet::SyncUnit, &runner->syncUnit))
     {
-        InstanceContext* synced = runner->receivers->instances[selector & 0xFF];
+        InstanceContext* synced = runner->receivers->instances[static_cast<u8>(selector)];
         node->focusInstance = synced;
         if (synced != nullptr)
         {
-            node->flags |= ObjectNodeBase::FlagFocusInstance;
+            node->flags.focusInstance = 1;
         }
 
-        node->flags &= ~ObjectNodeBase::FlagFocusPosition;
+        node->flags.focusPosition = 0;
     }
 
     // What the packet goes to: the selector's receiver or the focus, else what its key names
@@ -628,7 +648,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
         keyed = false;
         if (selector != DesignatesFocus)
         {
-            instance = runner->receivers->instances[selector & 0xFF];
+            instance = runner->receivers->instances[static_cast<u8>(selector)];
         }
         else
         {
@@ -661,7 +681,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
             break;
         case DesignatesStoredPosition:
             focus = nullptr;
-            if ((node->flags & ObjectNodeBase::FlagStoredPosition) != 0)
+            if (node->flags.storedPosition)
             {
                 focusPosition = node->storedPosition;
                 focus = &focusPosition;
@@ -669,8 +689,8 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
 
             break;
         case DesignatesAgentRef2:
-            if (node->agentRef2 != nullptr && (node->agentRef2->flags & ReferencedObject::FlagAsleep) != 0 &&
-                (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+            if (node->agentRef2 != nullptr && node->agentRef2->flags.asleep &&
+                !node->flags.keepsAgentRef2)
             {
                 node->agentRef2 = nullptr;
             }
@@ -679,7 +699,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
             ends = instance == nullptr;
             break;
         case DesignatesAgentRef1:
-            if (node->agentRef1 != nullptr && (node->agentRef1->flags & ReferencedObject::FlagAsleep) != 0)
+            if (node->agentRef1 != nullptr && node->agentRef1->flags.asleep)
             {
                 node->agentRef1 = nullptr;
             }
@@ -700,7 +720,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
             break;
         case DesignatesFocusPosition:
             focus = nullptr;
-            if ((node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+            if (node->flags.focusPosition)
             {
                 focusPosition = node->focusPosition;
                 focus = &focusPosition;
@@ -718,11 +738,11 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
         {
             // A key's index, from the first again past the last
             u32 count = waypoints->keyCount;
-            waypoints->flags = (waypoints->flags & ~Waypoints::FlagWrapped) | (keyIndex == count ? Waypoints::FlagWrapped : 0);
+            waypoints->flags.wrapped = keyIndex == count;
             count = waypoints->keyCount;
             s32 index = static_cast<s32>(keyIndex) < static_cast<s32>(count) ? keyIndex : keyIndex - count;
             waypoints->key = index;
-            key = waypoints->positions.data[index & 0xFF];
+            key = waypoints->positions.data[static_cast<u8>(index)];
             break;
         }
         }
@@ -735,11 +755,11 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
 
         // Following the keys, the rotation faces the next one
         constexpr u32 FollowsKeys = 2;
-        if (key != nullptr && motionKind - Packet::LinearInterpolation < FollowsKeys && (waypoints->flags & Waypoints::FlagStopped) == 0)
+        if (key != nullptr && motionKind - Packet::LinearInterpolation < FollowsKeys && !waypoints->flags.stopped)
         {
             u32 current = waypoints->key;
             s32 count = waypoints->keyCount;
-            s32 next = (waypoints->flags & Waypoints::FlagBackwards) != 0 ? current - 1 : current + 1;
+            s32 next = waypoints->flags.backwards ? current - 1 : current + 1;
             if (next >= count)
             {
                 next -= count;
@@ -754,7 +774,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
         }
     }
 
-    if ((runner->packet->settings & Packet::TracksDestination) != 0)
+    if (runner->packet->settings.tracksDestination != 0)
     {
         node->tracked = instance;
     }
@@ -762,20 +782,20 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
     runner->packet->GetInt(Packet::JointIndex, properties, &joint);
     runner->joint = static_cast<u8>(joint);
 
-    if ((runner->packet->settings & Packet::Translates) != 0)
+    if (runner->packet->settings.translates != 0)
     {
         translator = node->MakeTranslator();
         translator->start = position;
-        if (runner->joint == NoJoint)
+        if (runner->joint == GameOGI::NoJoint)
         {
             SetTranslationTarget(translator, runner, key, step, instance, focus);
         }
 
-        motion->bits &= ~MotionState::TranslationDone;
+        motion->bits.translationDone = 0;
         if (motionKind != Packet::Projectile && translator->target.x == position.x && translator->target.y == position.y &&
             translator->target.z == position.z)
         {
-            motion->bits |= MotionState::TranslationDone;
+            motion->bits.translationDone = 1;
         }
         else
         {
@@ -789,16 +809,16 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
             case Packet::Projectile:
             {
                 Physics* physics = node->MakePhysics();
-                f32 power = 40.0f;
-                runner->packet->GetFloat(Packet::Power, properties, &power);
-                SetUpProjectile(power, physics, runner->packet, properties, &translator->direction);
-                node->flags |= ObjectNodeBase::FlagMoves;
+                f32 gravity = DefaultProjectileGravity;
+                runner->packet->GetFloat(Packet::Power, properties, &gravity);
+                SetUpProjectile(gravity, physics, runner->packet, properties, &translator->direction);
+                node->flags.moves = 1;
                 break;
             }
             case Packet::Spring:
             {
                 Physics* physics = node->MakePhysics();
-                physics->bits &= ~Physics::KindMask;
+                physics->bits.unused2 = Physics::KindSpring;
                 f32 power = 0.0f;
                 f32 damping = 0.0f;
                 f32 deceleration = 0.0f;
@@ -809,17 +829,17 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 pull.x = (pull.x - position.x) * power;
                 pull.y = (pull.y - position.y) * power;
                 pull.z = (pull.z - position.z) * power;
-                physics->parameters[0] = power;
-                physics->parameters[1] = damping;
+                physics->parameters[SpringPower] = power;
+                physics->parameters[SpringDamping] = damping;
                 physics->velocity = pull;
-                physics->bits = (physics->bits & ~Physics::NegativeDeceleration) | (deceleration < 0.0f ? Physics::NegativeDeceleration : 0);
+                physics->bits.negativeDeceleration = deceleration < 0.0f;
                 break;
             }
             case Packet::GroundChase:
             case Packet::AirChase:
-            case 11:
-            case 12:
-            case Packet::LastChase:
+            case SecondGroundChase:
+            case SecondAirChase:
+            case Packet::ClimbingChase:
             {
                 Physics* physics = node->MakePhysics();
                 // Left as it was in retail when the packet gives no speed
@@ -828,20 +848,19 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 motion->chaseSpeed = speed;
                 motion->speed = runner->packet->HasByte(Packet::Damping) ? 0.0f : speed;
                 Packet* packet = runner->packet;
-                physics->bits = (physics->bits & ~Physics::KindMask) | Physics::KindChase;
-                physics->parameters[1] = 0.0f;
-                physics->parameters[2] = 0.0f;
-                physics->parameters[0] = 1.0f;
-                physics->parameters[3] = 80.0f;
-                packet->GetFloat(Packet::Duration, properties, &physics->parameters[0]);
-                packet->GetFloat(Packet::Power, properties, &physics->parameters[1]);
-                packet->GetFloat(Packet::Bounce, properties, &physics->parameters[3]);
-                packet->GetFloat(Packet::Damping, properties, &physics->parameters[2]);
+                physics->bits.unused2 = Physics::KindChase;
+                physics->parameters[ChaseLean] = 0.0f;
+                physics->parameters[ChaseTurnDrag] = 0.0f;
+                physics->parameters[ChaseTurnRate] = 1.0f;
+                physics->parameters[ChaseMostLean] = DefaultChaseMostLean;
+                packet->GetFloat(Packet::Duration, properties, &physics->parameters[ChaseTurnRate]);
+                packet->GetFloat(Packet::Power, properties, &physics->parameters[ChaseLean]);
+                packet->GetFloat(Packet::Bounce, properties, &physics->parameters[ChaseMostLean]);
+                packet->GetFloat(Packet::Damping, properties, &physics->parameters[ChaseTurnDrag]);
                 ObjectRigidBody* body = node->rigidBody;
                 if (body != nullptr)
                 {
-                    constexpr u64 LastChaseBit = 0x10;
-                    body->bits90 = motionKind == Packet::LastChase ? body->bits90 | LastChaseBit : body->bits90 & ~LastChaseBit;
+                    body->state.followsSurface = motionKind == Packet::ClimbingChase;
                 }
 
                 break;
@@ -850,7 +869,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
             {
                 // Straight to the target in the time its distance takes at the speed, accelerating and decelerating for the times
                 // the packet gives
-                node->flags |= ObjectNodeBase::FlagMoves;
+                node->flags.moves = 1;
                 f32 speed = 0.0f;
                 runner->packet->GetFloat(Packet::MoveSpeed, properties, &speed);
                 f32 deceleration = 0.0f;
@@ -875,7 +894,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 f32 distance = __builtin_sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
                 if (accelerates)
                 {
-                    node->flags |= ObjectNodeBase::FlagAccelerates;
+                    node->flags.accelerates = 1;
                     translator->distance = distance;
                     motion->duration = AcceleratedDuration(distance, speed, acceleration, deceleration);
                 }
@@ -884,7 +903,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                     motion->duration = distance / speed;
                 }
 
-                motion->inverseDuration = InverseOf(motion->duration, Forever);
+                motion->inverseDuration = InverseOf(motion->duration, Infinite);
                 f32 inverse = motion->inverseDuration;
                 Vector4 velocity;
                 velocity.x = delta.x * inverse;
@@ -892,8 +911,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 velocity.z = delta.z * inverse;
                 velocity.w = 1.0f;
                 motion->velocity = velocity;
-                constexpr u32 SmoothCurve = 2;
-                if (accelerates || runner->packet->Acceleration() == SmoothCurve)
+                if (accelerates || runner->packet->settings.acceleration == Packet::SmoothCurve)
                 {
                     // It starts at rest, the velocity kept for when it's at full speed
                     motion->startVelocity = motion->velocity;
@@ -907,8 +925,8 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
     }
     else if (motion != nullptr)
     {
-        motion->bits |= MotionState::TranslationDone;
-        if ((runner->packet->settings & Packet::YawFaces) != 0)
+        motion->bits.translationDone = 1;
+        if (runner->packet->settings.yawFaces != 0)
         {
             translator = node->MakeTranslator();
             ObjectPlace* current = runner->agentNode->owner->place;
@@ -920,15 +938,15 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
 
     // Read uninitialized in retail when the packet moves a joint
     Vector4 rotation = {};
-    if ((runner->packet->settings & Packet::Rotates) == 0)
+    if (runner->packet->settings.rotates == 0)
     {
-        motion->bits |= MotionState::RotationDone;
+        motion->bits.rotationDone = 1;
     }
     else
     {
-        motion->bits &= ~MotionState::RotationDone;
+        motion->bits.rotationDone = 0;
         Rotator* rotator = node->MakeRotator();
-        if (runner->joint != NoJoint)
+        if (runner->joint != GameOGI::NoJoint)
         {
             rotator->start.x = rotation.x;
             rotator->start.y = rotation.y;
@@ -950,7 +968,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
         }
 
         Vector4* target = &rotator->target;
-        if ((runner->packet->settings & Packet::YawFaces) != 0)
+        if (runner->packet->settings.yawFaces != 0)
         {
             // Facing the translation, turned by the packet's angles when one of them is left out
             s32 angles[3];
@@ -978,12 +996,12 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 SnapToYaw(target, snap);
             }
         }
-        else if (runner->joint == NoJoint)
+        else if (runner->joint == GameOGI::NoJoint)
         {
             SetRotationTarget(rotator, runner, key, step, instance);
         }
 
-        if ((runner->packet->settings & Packet::Translates) == 0 && motionKind == Packet::LinearInterpolation)
+        if (runner->packet->settings.translates == 0 && motionKind == Packet::LinearInterpolation)
         {
             // A turn in place: the time the angle takes at the turn speed (accelerating and decelerating as a translation does)
             f32 turnSpeed = 0.0f;
@@ -1014,7 +1032,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 s32 turns = between;
                 s32 duration = *DivideAngle(&turns, motion->turnSpeed);
                 motion->duration = static_cast<f32>(duration) * AngleToRadians;
-                motion->inverseDuration = InverseOf(motion->duration, Forever);
+                motion->inverseDuration = InverseOf(motion->duration, Infinite);
             }
             else
             {
@@ -1023,7 +1041,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                     translator = node->MakeTranslator();
                 }
 
-                node->flags |= ObjectNodeBase::FlagAccelerates;
+                node->flags.accelerates = 1;
                 motion->turnSpeed = turnSpeed;
                 motion->speed = turnSpeed;
                 s32 between;
@@ -1037,34 +1055,35 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                     motion->duration = 0.0f;
                 }
 
-                constexpr f32 Long = 10000.0f;
-                motion->inverseDuration = InverseOf(motion->duration, Long);
+                // A turn of no time is over in a ten thousandth of a second
+                constexpr f32 InstantTurnInverse = 10000.0f;
+                motion->inverseDuration = InverseOf(motion->duration, InstantTurnInverse);
             }
         }
 
         if (__builtin_fabsf(rotation.x - target->x) <= Epsilon && __builtin_fabsf(rotation.y - target->y) <= Epsilon &&
             __builtin_fabsf(rotation.z - target->z) <= Epsilon && __builtin_fabsf(rotation.w - target->w) <= Epsilon)
         {
-            motion->bits |= MotionState::RotationDone;
+            motion->bits.rotationDone = 1;
         }
     }
 
     Trajectory* trajectory = node->trajectory;
     if (trajectory != nullptr)
     {
-        if ((runner->packet->settings & Packet::Rotates) != 0)
+        if (runner->packet->settings.rotates != 0)
         {
             trajectory->rotation.x = rotation.x;
             trajectory->rotation.y = rotation.y;
             trajectory->rotation.z = rotation.z;
             trajectory->rotation.w = rotation.w;
-            if (runner->joint != NoJoint)
+            if (runner->joint != GameOGI::NoJoint)
             {
                 AnglesOfRotation(&trajectory->rotation, &trajectory->angles[0], &trajectory->angles[1], &trajectory->angles[2]);
             }
         }
 
-        if ((runner->packet->settings & Packet::Translates) != 0)
+        if (runner->packet->settings.translates != 0)
         {
             trajectory->position = position;
         }
@@ -1077,7 +1096,7 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
 void CheckPacketEnd(BehaviourRunner* runner, TimeClock* clock, u32, InstanceContext* leftover)
 {
     ControlPacket* packet = runner->packet;
-    if ((packet->settings & ControlPacket::Stalls) != 0)
+    if (packet->settings.stalls != 0)
     {
         return;
     }
@@ -1101,12 +1120,12 @@ void CheckPacketEnd(BehaviourRunner* runner, TimeClock* clock, u32, InstanceCont
 
     auto* node = static_cast<ObjectNodeBase*>(runner->agentNode);
     InstanceContext* synced = leftover;
-    if ((node->flags & ObjectNodeBase::FlagFocusInstance) != 0 && node->focusInstance != nullptr)
+    if (node->flags.focusInstance && node->focusInstance != nullptr)
     {
         InstanceContext* focus = node->focusInstance;
-        if ((focus->flags & ReferencedObject::FlagAsleep) != 0)
+        if (focus->flags.asleep)
         {
-            node->flags &= ~ObjectNodeBase::FlagFocusPosition & ~ObjectNodeBase::FlagFocusInstance;
+            node->flags.value &= ~ObjectNodeFlags::FocusMask;
             node->focusInstance = nullptr;
             synced = nullptr;
         }
@@ -1118,7 +1137,7 @@ void CheckPacketEnd(BehaviourRunner* runner, TimeClock* clock, u32, InstanceCont
 
     // The nodes are read whether there's an instance or not (the retail code's)
     auto* nodes = reinterpret_cast<NodeList*>(reinterpret_cast<u32>(synced) + offsetof(InstanceContext, nodes));
-    if (LeftSyncState(static_cast<GameNode*>(GetGameNode(nodes, 1)), runner->syncUnit) == 0)
+    if (LeftSyncState(static_cast<GameNode*>(GetGameNode(nodes, NodeObject)), runner->syncUnit) == 0)
     {
         return;
     }
@@ -1133,7 +1152,7 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
     ObjectPlace* place = node->owner->place;
     place->SyncPosition();
     Vector4 start = place->position;
-    u32 motionKind = runner->packet->MotionKind();
+    u32 motionKind = runner->packet->settings.motion;
     u32 last = runner->agentNode->time;
     f32 elapsed = 0.0f;
     if (last != 0)
@@ -1151,11 +1170,9 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
     if (motion != nullptr && motionKind != Packet::NoMotion)
     {
         // The target follows what it tracks, and the instance's own position in the initial and current position spaces
-        constexpr u32 InitialPositionSpace = 5;
-        constexpr u32 CurrentPositionSpace = 6;
-        u32 settings = runner->packet->settings;
-        u32 space = settings & Packet::SpaceMask;
-        if ((settings & Packet::TracksDestination) != 0 || space == InitialPositionSpace || space == CurrentPositionSpace)
+        ControlPacketSettings settings = runner->packet->settings;
+        u32 space = settings.space;
+        if (settings.tracksDestination != 0 || space == InitialPosition || space == CurrentPosition)
         {
             FollowTarget(node->translator, runner, node);
         }
@@ -1166,10 +1183,10 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
         }
         else
         {
-            if ((runner->packet->settings & Packet::Rotates) != 0 && (motion->bits & MotionState::RotationDone) == 0 &&
+            if (runner->packet->settings.rotates != 0 && !motion->bits.rotationDone &&
                 StepRotation(node, runner) != 0)
             {
-                motion->bits |= MotionState::RotationDone;
+                motion->bits.rotationDone = 1;
                 if (trajectory != nullptr)
                 {
                     Rotator* rotator = node->rotator;
@@ -1177,17 +1194,18 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
                     trajectory->rotation.y = rotator->target.y;
                     trajectory->rotation.z = rotator->target.z;
                     trajectory->rotation.w = rotator->target.w;
-                    if (runner->joint != NoJoint)
+                    if (runner->joint != GameOGI::NoJoint)
                     {
                         AnglesOfRotation(&trajectory->rotation, &trajectory->angles[0], &trajectory->angles[1], &trajectory->angles[2]);
                     }
                 }
             }
 
-            if ((runner->packet->settings & Packet::Translates) != 0 && (motion->bits & MotionState::TranslationDone) == 0 &&
+            if (runner->packet->settings.translates != 0 && !motion->bits.translationDone &&
                 StepTranslation(node, runner, clock) != 0)
             {
-                motion->bits |= MotionState::TranslationDone | MotionState::RotationDone;
+                motion->bits.translationDone = 1;
+                motion->bits.rotationDone = 1;
                 if (trajectory != nullptr)
                 {
                     trajectory->position = node->translator->target;
@@ -1196,10 +1214,9 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
         }
 
         settings = runner->packet->settings;
-        if ((settings & Packet::OrientsPredicts) != 0)
+        if (settings.orientsPredicts != 0)
         {
             // The instance faces the way it moves (unless that's straight up or down)
-            constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
             Vector4 direction = motion->velocity;
             f32 inverse = InverseLength(&direction, LengthEpsilon);
             f32 x = direction.x * inverse;
@@ -1215,7 +1232,7 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
                 Matrix4x4 look;
                 Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
                 LookAlong(&look, &direction, &up);
-                if (trails == nullptr || (trails->bits & ParticleTrails::MeasuresTurn) == 0)
+                if (trails == nullptr || !trails->bits.measuresTurn)
                 {
                     ObjectPlace* current = owner->place;
                     current->SyncRotation();
@@ -1254,7 +1271,7 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
                 }
             }
         }
-        else if ((settings >> Packet::AxesShift & Packet::AxesMask) != 0)
+        else if (settings.axes != Packet::NoNatural)
         {
             // It rolls along its natural axis over what it moved
             ObjectPlace* current = node->owner->place;
@@ -1263,7 +1280,7 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
             moved.x -= start.x;
             moved.y -= start.y;
             moved.z -= start.z;
-            u32 axes = runner->packet->settings >> Packet::AxesShift & Packet::AxesMask;
+            u32 axes = runner->packet->settings.axes;
             if (axes == Packet::XNatural)
             {
                 RollAlongX(node->rollRadius, node, &moved);
@@ -1274,10 +1291,11 @@ void PacketFrame(BehaviourRunner* runner, TimeClock* clock)
             }
         }
 
-        if ((motion->bits & MotionState::TranslationDone) != 0 && (motion->bits & MotionState::RotationDone) != 0)
+        if (motion->bits.translationDone && motion->bits.rotationDone)
         {
             EndRunningPacket(runner);
-            motion->bits &= ~MotionState::TranslationDone & ~MotionState::RotationDone;
+            motion->bits.translationDone = 0;
+            motion->bits.rotationDone = 0;
         }
     }
 
@@ -1298,7 +1316,7 @@ void SetTranslationTarget(Translator* translator, BehaviourRunner* runner, Layou
     Vector4 offset;
     bool offsets = packet->GetVector(ControlPacket::RawPosX, properties, &offset) != 0;
     Vector4* target = &translator->target;
-    switch (packet->settings & ControlPacket::SpaceMask)
+    switch (packet->settings.space)
     {
     case WorldSpace:
         if (key != nullptr || step != nullptr || instance != nullptr || position != nullptr)
@@ -1408,10 +1426,9 @@ void SetTranslationTarget(Translator* translator, BehaviourRunner* runner, Layou
         }
 
         ReferencedObject* object = body->object;
-        // The box its collision keeps 0x60 bytes into it
-        const auto* box = reinterpret_cast<const Vector4*>(reinterpret_cast<const u8*>(object) + 0x60);
-        Vector4 max = box[1];
-        Vector4 min = box[0];
+        const Box* box = &object->collision.ownBox;
+        Vector4 max = box->max;
+        Vector4 min = box->min;
         f32 halfX = (max.x - min.x) * 0.5f;
         f32 halfZ = (max.z - min.z) * 0.5f;
         offset.y = 0.0f;
@@ -1507,9 +1524,9 @@ void SetRotationTarget(Rotator* rotator, BehaviourRunner* runner, LayoutPosition
     auto* node = static_cast<ObjectNode*>(runner->agentNode);
     ControlPacket* packet = runner->packet;
     s32 angles[3];
-    AngleFrom(&angles[0], 0.0f, 0);
-    AngleFrom(&angles[1], 0.0f, 0);
-    AngleFrom(&angles[2], 0.0f, 0);
+    AngleFrom(&angles[0], 0.0f, AngleRadians);
+    AngleFrom(&angles[1], 0.0f, AngleRadians);
+    AngleFrom(&angles[2], 0.0f, AngleRadians);
     PropertyHolder* properties = node->PacketProperties();
     // The angles (Pitch, Yaw and Roll) turn the rotation only when one of them isn't given (the retail code's)
     bool turns = packet->GetAngles(ControlPacket::Pitch, properties, angles) != 0;
@@ -1559,7 +1576,7 @@ void SetRotationTarget(Rotator* rotator, BehaviourRunner* runner, LayoutPosition
         target->w = 1.0f;
     };
 
-    switch (packet->settings & ControlPacket::SpaceMask)
+    switch (packet->settings.space)
     {
     case WorldSpace:
         if (key != nullptr || step != nullptr)
@@ -1653,7 +1670,7 @@ void SetUpProjectile(f32 gravity, Physics* physics, ControlPacket* packet, Prope
 {
     // A throw over the translation's direction: the flight's time (Duration) gives the speed up, else the height it rises to
     // (MoveSpeed), or the rebound of its speed down (Bounce) does and the flight's time follows
-    physics->bits = (physics->bits & ~Physics::KindMask) | Physics::KindMade;
+    physics->bits.unused2 = Physics::KindMade;
     Vector4 flat = *direction;
     f32 rise = flat.y;
     flat.y = 0.0f;
@@ -1692,13 +1709,12 @@ void SetUpProjectile(f32 gravity, Physics* physics, ControlPacket* packet, Prope
     }
 
     motion = physics->motion;
-    physics->parameters[2] = gravity;
-    physics->parameters[1] = up;
-    physics->parameters[0] = distance * motion->inverseDuration;
+    physics->parameters[ProjectileGravity] = gravity;
+    physics->parameters[ProjectileRise] = up;
+    physics->parameters[ProjectileSpeed] = distance * motion->inverseDuration;
     motion->velocity.y = up;
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 inverse = InverseLength(&flat, LengthEpsilon);
-    f32 speed = physics->parameters[0];
+    f32 speed = physics->parameters[ProjectileSpeed];
     flat.x = flat.x * inverse * speed;
     flat.y = flat.y * inverse * speed;
     flat.z = flat.z * inverse * speed;
@@ -1716,7 +1732,7 @@ void FollowTarget(Translator* translator, BehaviourRunner* runner, ObjectNode* n
     ControlPacket* packet = runner->packet;
     InstanceContext* tracked = node->tracked;
     Vector4 toward;
-    if ((packet->settings & ControlPacket::SpaceMask) == CurrentPosition)
+    if (packet->settings.space == CurrentPosition)
     {
         toward = node->waypoints->pathDirection;
         SetTranslationTarget(translator, runner, nullptr, nullptr, nullptr, nullptr);
@@ -1746,7 +1762,6 @@ void FollowTarget(Translator* translator, BehaviourRunner* runner, ObjectNode* n
         toward.x -= own.x;
         toward.y -= own.y;
         toward.z -= own.z;
-        constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
         f32 inverse = InverseLength(&toward, LengthEpsilon);
         toward.x = toward.x * inverse;
         toward.y = toward.y * inverse;
@@ -1770,7 +1785,7 @@ void FollowTarget(Translator* translator, BehaviourRunner* runner, ObjectNode* n
 
 void MoveInstance(ObjectNode* node, ControlPacket* packet, const Vector4* position)
 {
-    if ((node->flags & ObjectNodeBase::FlagMovesStoredPlace) == 0)
+    if (!node->flags.movesStoredPlace)
     {
         InstanceContext* owner = node->owner;
         ObjectPlace* place = owner->place;
@@ -1784,7 +1799,7 @@ void MoveInstance(ObjectNode* node, ControlPacket* packet, const Vector4* positi
     }
 
     ObjectPlace* stored = node->storedPlace;
-    if (stored == nullptr || (packet != nullptr && (packet->settings & ControlPacket::SpaceMask) == StoredSpace))
+    if (stored == nullptr || (packet != nullptr && packet->settings.space == StoredSpace))
     {
         return;
     }
@@ -1795,7 +1810,7 @@ void MoveInstance(ObjectNode* node, ControlPacket* packet, const Vector4* positi
 
 void TurnInstance(ObjectNode* node, ControlPacket* packet, const Vector4* rotation)
 {
-    if ((node->flags & ObjectNodeBase::FlagMovesStoredPlace) == 0)
+    if (!node->flags.movesStoredPlace)
     {
         InstanceContext* owner = node->owner;
         ObjectPlace* place = owner->place;
@@ -1809,7 +1824,7 @@ void TurnInstance(ObjectNode* node, ControlPacket* packet, const Vector4* rotati
     }
 
     ObjectPlace* stored = node->storedPlace;
-    if (stored == nullptr || (packet != nullptr && (packet->settings & ControlPacket::SpaceMask) == StoredSpace))
+    if (stored == nullptr || (packet != nullptr && packet->settings.space == StoredSpace))
     {
         return;
     }
@@ -1843,7 +1858,6 @@ void StepSpringPhysics(f32 elapsed, f32 damping, Physics* physics, const Vector4
     velocity.z = velocity.z + force->z * elapsed;
     if (damping * damping < velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
     {
-        constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
         f32 inverse = InverseLength(&velocity, LengthEpsilon);
         velocity.x = velocity.x * inverse;
         velocity.y = velocity.y * inverse;
@@ -1864,17 +1878,17 @@ u32 StepTranslation(ObjectNode* node, BehaviourRunner* runner, TimeClock* clock)
     }
 
     ControlPacket* packet = runner->packet;
-    switch (packet->MotionKind())
+    switch (packet->settings.motion)
     {
     case ControlPacket::Spring:
         return StepSpring(elapsed, node, runner, packet);
     case ControlPacket::Projectile:
         return StepProjectile(elapsed, node, runner, packet);
     case ControlPacket::GroundChase:
-    case 11:
+    case SecondGroundChase:
         return StepGroundChase(elapsed, node, runner);
     case ControlPacket::AirChase:
-    case 12:
+    case SecondAirChase:
     {
         // Riding something with its rigid body
         if (node->rigidBody != nullptr && node->rigidBody->physicsBody != nullptr)
@@ -1884,8 +1898,8 @@ u32 StepTranslation(ObjectNode* node, BehaviourRunner* runner, TimeClock* clock)
 
         return StepAirChase(elapsed, node, runner);
     }
-    case ControlPacket::LastChase:
-        return StepLastChase(elapsed, node, runner);
+    case ControlPacket::ClimbingChase:
+        return StepClimbingChase(elapsed, node, runner);
     default:
         // The other motions move by their velocity alone: done at once
         return 1;
@@ -1908,17 +1922,17 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
     force.x -= position.x;
     force.y -= position.y;
     force.z -= position.z;
-    if ((node->flags & ObjectNodeBase::FlagLevel) != 0)
+    if (node->flags.falls)
     {
         force.y = 0.0f;
     }
 
     Physics* physics = node->physics;
-    f32 power = physics->parameters[0];
+    f32 power = physics->parameters[SpringPower];
     force.x = force.x * power;
     force.y = force.y * power;
     force.z = force.z * power;
-    StepSpringPhysics(elapsed, physics->parameters[1], physics, &force);
+    StepSpringPhysics(elapsed, physics->parameters[SpringDamping], physics, &force);
     MotionState* motion = node->motion;
     Trajectory* trajectory = node->trajectory;
     Vector4 step = motion->velocity;
@@ -1947,7 +1961,7 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
     }
 
     physics = node->physics;
-    if ((physics->bits & Physics::NegativeDeceleration) != 0)
+    if (physics->bits.negativeDeceleration)
     {
         if (__builtin_fabsf(target->x - position.x) < __builtin_fabsf(step.x))
         {
@@ -1964,7 +1978,7 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
             next.z = target->z;
         }
 
-        if (joint == NoJoint)
+        if (joint == GameOGI::NoJoint)
         {
             MoveInstance(node, packet, &next);
         }
@@ -1974,7 +1988,7 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
             return 1;
         }
 
-        node->flags |= ObjectNodeBase::FlagUnsettled;
+        node->flags.unused4 = 1;
         return 0;
     }
 
@@ -1982,7 +1996,7 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
     const Vector4& pulled = physics->velocity;
     f32 energy = moving.x * moving.x + moving.y * moving.y + moving.z * moving.z +
                  (pulled.x * pulled.x + pulled.y * pulled.y + pulled.z * pulled.z);
-    if (joint != NoJoint)
+    if (joint != GameOGI::NoJoint)
     {
         return energy < Settled ? 1 : 0;
     }
@@ -1994,21 +2008,19 @@ u32 StepSpring(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPa
     }
 
     MoveInstance(node, packet, &next);
-    node->flags |= ObjectNodeBase::FlagUnsettled;
+    node->flags.unused4 = 1;
     return 0;
 }
 
 u32 StepProjectile(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, ControlPacket* packet)
 {
-    // Thrown with gravity: done within the tolerance, else once its flight's time is up (landing on the target, or where it is
-    // with settings bit 7; turned to the rotation's target with bit 17 but not 8)
-    constexpr u32 LandsWhereItIs = 0x80;
-    constexpr u32 SkipsTurn = 0x100;
-    node->flags |= ObjectNodeBase::FlagMoves;
+    // Thrown with gravity: done within the tolerance, else once its flight's time is up (landing on the target, or where it is;
+    // turned to the rotation's target when it interpolates angles and doesn't skip the turn)
+    node->flags.moves = 1;
     MotionState* motion = node->motion;
     Translator* translator = node->translator;
     Vector4 velocity = motion->velocity;
-    f32 gravity = node->physics->parameters[2];
+    f32 gravity = node->physics->parameters[ProjectileGravity];
     TimeClock* clock = GetContextClock(node->owner);
     f32 flight = static_cast<f32>(static_cast<s32>(clock->time - runner->packetStart)) * g_SecondsPerClockUnit;
     f32 tolerance = runner->tolerance;
@@ -2042,9 +2054,9 @@ u32 StepProjectile(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, Contr
         done = node->motion->duration <= flight;
         if (done)
         {
-            MoveInstance(node, packet, (packet->settings & LandsWhereItIs) != 0 ? &next : &translator->target);
-            u32 settings = packet->settings;
-            if ((settings & ControlPacket::InterpolatesAngles) != 0 && (settings & SkipsTurn) == 0)
+            MoveInstance(node, packet, packet->settings.landsWhereItIs != 0 ? &next : &translator->target);
+            ControlPacketSettings settings = packet->settings;
+            if (settings.interpolatesAngles != 0 && settings.skipsTurn == 0)
             {
                 TurnInstance(node, packet, &node->rotator->target);
             }
@@ -2053,18 +2065,18 @@ u32 StepProjectile(f32 elapsed, ObjectNode* node, BehaviourRunner* runner, Contr
 
     if (done)
     {
-        node->motion->bits |= MotionState::RotationDone;
+        node->motion->bits.rotationDone = 1;
         return 1;
     }
 
     MoveInstance(node, packet, &next);
-    node->flags |= ObjectNodeBase::FlagUnsettled;
+    node->flags.unused4 = 1;
     return 0;
 }
 
 u32 StepRotation(ObjectNode* node, BehaviourRunner* runner)
 {
-    if ((node->flags & ObjectNodeBase::FlagAccelerates) != 0)
+    if (node->flags.accelerates)
     {
         return StepAcceleratedRotation(node, runner);
     }
@@ -2075,18 +2087,17 @@ u32 StepRotation(ObjectNode* node, BehaviourRunner* runner)
     u32 joint = runner->joint;
     if (1.0f <= t || t < -1.0f)
     {
-        if (joint == NoJoint)
+        if (joint == GameOGI::NoJoint)
         {
             TurnInstance(node, runner->packet, &node->rotator->target);
         }
 
-        node->motion->bits |= MotionState::RotationDone;
+        node->motion->bits.rotationDone = 1;
         return 1;
     }
 
     ControlPacket* packet = runner->packet;
-    constexpr u32 SmoothCurve = 2;
-    if (packet->Acceleration() == SmoothCurve)
+    if (packet->settings.acceleration == ControlPacket::SmoothCurve)
     {
         t = t * (t * 3.0f) - (t + t) * t * t;
     }
@@ -2094,7 +2105,7 @@ u32 StepRotation(ObjectNode* node, BehaviourRunner* runner)
     Rotator* rotator = node->rotator;
     Vector4 rotation;
     SlerpRotations(t, &rotation, &rotator->start, &rotator->target);
-    if (joint == NoJoint)
+    if (joint == GameOGI::NoJoint)
     {
         TurnInstance(node, packet, &rotation);
     }
@@ -2110,7 +2121,7 @@ u32 StepAcceleratedRotation(ObjectNode* node, BehaviourRunner* runner)
     if (1.0f <= t || t < -1.0f)
     {
         TurnInstance(node, runner->packet, &node->rotator->target);
-        node->motion->bits |= MotionState::RotationDone;
+        node->motion->bits.rotationDone = 1;
         return 1;
     }
 
@@ -2177,7 +2188,6 @@ void SmoothVelocity(f32 t, MotionState* motion, const Translator* translator)
     velocity.x = velocity.x - translator->start.x;
     velocity.y = velocity.y - translator->start.y;
     velocity.z = velocity.z - translator->start.z;
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 inverse = InverseLength(&velocity, LengthEpsilon);
     velocity.x = velocity.x * inverse;
     f32 speed = (t - t * t) * 6.0f;
@@ -2190,9 +2200,8 @@ void SmoothVelocity(f32 t, MotionState* motion, const Translator* translator)
 
 u32 StepInterpolation(ObjectNode* node, BehaviourRunner* runner)
 {
-    u32 flags = node->flags | ObjectNodeBase::FlagMoves;
-    node->flags = flags;
-    if ((flags & ObjectNodeBase::FlagAccelerates) != 0)
+    node->flags.moves = 1;
+    if (node->flags.accelerates)
     {
         return StepAcceleratedInterpolation(node, runner);
     }
@@ -2207,8 +2216,7 @@ u32 StepInterpolation(ObjectNode* node, BehaviourRunner* runner)
         return FinishInterpolation(node, packet, joint);
     }
 
-    constexpr u32 SmoothCurve = 2;
-    if (packet->Acceleration() == SmoothCurve)
+    if (packet->settings.acceleration == ControlPacket::SmoothCurve)
     {
         t = t * (t * 3.0f) - (t + t) * t * t;
     }
@@ -2233,18 +2241,6 @@ u32 StepAcceleratedInterpolation(ObjectNode* node, BehaviourRunner* runner)
 
 namespace
 {
-// A chase's physics parameters: the share of the turn toward the target made per second (the packet's Duration), how much it
-// leans into turns (Power), how much turning slows it (Damping) and how far it leans at most (Bounce)
-constexpr u32 ChaseTurnRate = 0;
-constexpr u32 ChaseLean = 1;
-constexpr u32 ChaseTurnDrag = 2;
-constexpr u32 ChaseMostLean = 3;
-// The rigid body's bit 59 (it steers itself), bits 32-39 (something holds its moves), and bit 24 of its second bits (it takes the
-// whole velocity, its vertical speed included)
-constexpr u64 BodySteers = u64{1} << 59;
-constexpr u64 BodyHeld = u64{0xFF} << 32;
-constexpr u64 BodyTakesVelocity = u64{1} << 24;
-
 // The instance moved by a step unless it's too small to see, the node unsettled
 void ChaseMove(ObjectNode* node, const Vector4* move)
 {
@@ -2253,14 +2249,14 @@ void ChaseMove(ObjectNode* node, const Vector4* move)
     if (!(__builtin_fabsf(move->x) <= Epsilon && __builtin_fabsf(move->y) <= Epsilon && __builtin_fabsf(move->z) <= Epsilon))
     {
         place->SyncPosition();
-        place->bits = (place->bits | ObjectPlace::BitMoved) & ~u64{ObjectPlace::BitMatrixMoved};
+        place->MarkMoved();
         place->position.x = place->position.x + move->x;
         place->position.y = place->position.y + move->y;
         place->position.z = place->position.z + move->z;
         QueueObject(owner);
     }
 
-    node->flags |= ObjectNodeBase::FlagUnsettled;
+    node->flags.unused4 = 1;
 }
 
 // Whether a chase is within its tolerance of its target (never without one), and where it is
@@ -2296,12 +2292,14 @@ Vector4 Cross(const Vector4& a, const Vector4& b)
 
 f32 TurnSlowedSpeed(f32 turn, Physics* physics, MotionState* motion)
 {
+    // The share of the speed taken away: the turn times the drag in hundredths, 90% at most
+    constexpr f32 DragScale = 100.0f;
     constexpr f32 MostSlowed = Rounded(0.9);
     f32 drag = physics->parameters[ChaseTurnDrag];
     f32 speed = motion->chaseSpeed;
     if (0.0f < drag)
     {
-        f32 slowed = turn * (drag * 100.0f);
+        f32 slowed = turn * (drag * DragScale);
         if (MostSlowed < slowed)
         {
             slowed = MostSlowed;
@@ -2324,7 +2322,7 @@ u32 StepGroundChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
 
     Translator* translator = node->translator;
     // Without a rigid body steering itself the motion's velocity is the chase's, its vertical speed kept
-    bool free = node->rigidBody == nullptr || (node->rigidBody->bits88 & BodySteers) == 0;
+    bool free = node->rigidBody == nullptr || !node->rigidBody->bits.steersItself;
     Physics* physics = node->physics;
     f32 turned;
     if (free)
@@ -2370,7 +2368,8 @@ u32 StepGroundChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
         move.z *= speed;
         MotionState* motion = node->motion;
         motion->startVelocity = motion->velocity;
-        if ((body->bits90 & BodyTakesVelocity) != 0)
+        // Having touched something it takes the whole velocity, its vertical speed included
+        if (body->state.touched)
         {
             motion->velocity = move;
         }
@@ -2385,7 +2384,7 @@ u32 StepGroundChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
     move.y *= elapsed;
     move.z *= elapsed;
     ObjectRigidBody* body = node->rigidBody;
-    if (body != nullptr && (body->bits88 & BodyHeld) != 0)
+    if (body != nullptr && (body->bits.value & ObjectRigidBodyBits::KindsMask) != 0)
     {
         HoldRigidBodyMove(body, &move);
     }
@@ -2414,7 +2413,7 @@ u32 StepAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
     move.y = move.y * speed * elapsed;
     move.z = move.z * speed * elapsed;
     ObjectRigidBody* body = node->rigidBody;
-    if (body != nullptr && (body->bits88 & BodyHeld) != 0)
+    if (body != nullptr && (body->bits.value & ObjectRigidBodyBits::KindsMask) != 0)
     {
         HoldRigidBodyMove(body, &move);
     }
@@ -2425,8 +2424,6 @@ u32 StepAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
 
 u32 StepRiddenAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    constexpr f32 TicksPerSecond = 60.0f;
     // A target straight above or below is taken a little to the side
     constexpr f32 Nudge = Rounded(0.01);
     Vector4 here;
@@ -2441,7 +2438,7 @@ u32 StepRiddenAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
     Vector4 forward = *RowOf(&place->matrix, 2);
     Physics* physics = node->physics;
     Vector4 riddenForward = *RowOf(&ridden->matrix, 2);
-    f32 turn = physics->parameters[ChaseTurnRate] * elapsed * (ridden->mass * TicksPerSecond);
+    f32 turn = physics->parameters[ChaseTurnRate] * elapsed * (ridden->mass * FramesPerSecond);
     Vector4 direction = node->translator->target;
     direction.x = direction.x - here.x;
     direction.y = direction.y - here.y;
@@ -2490,14 +2487,11 @@ u32 StepRiddenAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
     return 0;
 }
 
-u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
+u32 StepClimbingChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    constexpr f32 RotationEpsilon = 0x1.b7cdfep-34f;
     // What it touches is a floor when its normal's y is above this
     constexpr f32 FloorSlope = Rounded(0.3);
-    // The rigid body's bit 52: the target is taken onto the plane of what it touches
-    constexpr u64 BodyProjectsTarget = u64{1} << 52;
+
     Vector4 here;
     if (ChaseArrived(node, runner, &here))
     {
@@ -2543,7 +2537,8 @@ u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
         Vector4 plane;
         PlaneThrough(&plane, &normal, &foot);
         Vector4 goal = *target;
-        if ((node->rigidBody->bits88 & BodyProjectsTarget) != 0)
+        // Touching the world, the target is taken onto the plane of what it touches
+        if (node->rigidBody->bits.touchingWorld)
         {
             ProjectOntoPlane(&plane, target, &goal);
         }
@@ -2583,7 +2578,7 @@ u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
         RotateAndTranslate(place);
         Vector4 from;
         GetRotationVec(&from, &place->matrix);
-        f32 scale = InverseLength4(0.0f, RotationEpsilon, &from);
+        f32 scale = InverseLength4(0.0f, InverseEpsilon, &from);
         from.x = from.x * scale;
         from.y = from.y * scale;
         from.z = from.z * scale;
@@ -2591,7 +2586,7 @@ u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
         // (GetRotationVec reads the matrix alone)
         Vector4 to;
         GetRotationVec(&to, &facing);
-        scale = InverseLength4(0.0f, RotationEpsilon, &to);
+        scale = InverseLength4(0.0f, InverseEpsilon, &to);
         to.x = to.x * scale;
         to.y = to.y * scale;
         to.z = to.z * scale;
@@ -2629,8 +2624,11 @@ u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
         Vector4 along = {direction.x, direction.y, direction.z, 1.0f};
         if (direction.y < 0.0f)
         {
-            // Going down, pressed into the surface the harder the nearer it is to 45°
-            f32 press = -(__builtin_fabsf(0.5f - __builtin_fabsf(0.5f - normal.y)) * 8.0f + 2.0f);
+            // Going down, pressed into the surface the harder the nearer its normal's y is to a half (2 on a floor or a wall, 6
+            // on a slope of 60°)
+            constexpr f32 LeastPress = 2.0f;
+            constexpr f32 PressGrowth = 8.0f;
+            f32 press = -(__builtin_fabsf(0.5f - __builtin_fabsf(0.5f - normal.y)) * PressGrowth + LeastPress);
             move = {(along.x + normal.x * press) * 0.5f, (along.y + normal.y * press) * 0.5f, (along.z + normal.z * press) * 0.5f,
                     1.0f};
         }
@@ -2651,7 +2649,7 @@ u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner)
     move.y *= elapsed;
     move.z *= elapsed;
     body = node->rigidBody;
-    if (body != nullptr && (body->bits88 & BodyHeld) != 0)
+    if (body != nullptr && (body->bits.value & ObjectRigidBodyBits::KindsMask) != 0)
     {
         HoldRigidBodyMove(body, &move);
     }
@@ -2688,7 +2686,7 @@ void RollAlongX(f32 radius, ObjectNode* node, Vector4* moved)
     }
 
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
     s32 roll = angle;
     Vector4 rotation;
     RotationFromRoll(&rotation, &roll);
@@ -2736,7 +2734,6 @@ void RollAlongY(f32 radius, ObjectNode* node, Vector4* moved)
 
 f32 SteerTowards(f32 share, f32 lean, f32 mostLean, InstanceContext* instance, const Vector4* target)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     // A facing within this cosine of the target is facing it
     constexpr f32 Facing = Rounded(0.99999);
     bool leans = lean != 0.0f;
@@ -2824,7 +2821,7 @@ f32 SteerTowards(f32 share, f32 lean, f32 mostLean, InstanceContext* instance, c
     }
 
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
     s32 roll = angle;
     Vector4 leaning;
     RotationFromRoll(&leaning, &roll);
@@ -2835,7 +2832,6 @@ f32 SteerTowards(f32 share, f32 lean, f32 mostLean, InstanceContext* instance, c
 
 f32 SteerBodyTowards(f32 share, f32 lean, InstanceContext* instance, const Vector4* target, u32 facingOnly)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     // How far the up leans: the target's direction times the lean, raised and added to the current up
     constexpr f32 Raise = 1.5f;
     constexpr f32 Keep = 1.25f;

@@ -13,13 +13,10 @@
 
 namespace
 {
-// The instances' vtable functions that put them to sleep and release them
-constexpr u32 SleepSlot = 3;
-constexpr u32 ReleaseSlot = 4;
-// The node the places' instance starts from (its information: where it started)
-constexpr u32 ObjectNodeKind = 1;
-// The placement's flag: the instance stays when its chunk isn't loaded
-constexpr u32 FlagStays = 0x1;
+// The way into the game an instance put back at its first place leaves its chunk for
+constexpr u32 PlacesWay = 1;
+// ChunkMakeGlobal moving the instance whatever state its chunk is in
+constexpr u32 NoStateCheck = 0;
 
 void TakeRotation(InstancePlacement* placement, InstanceContext* instance)
 {
@@ -50,7 +47,7 @@ InstancePlacement* InstancePlacement::Assign(const InstancePlacement* other)
     return this;
 }
 
-void InstancePlacement::Take(InstanceContext* instance, u32 flag)
+void InstancePlacement::Take(InstanceContext* instance, u32 stays)
 {
     ChunkData* chunkData = instance->chunk;
     TakeRotation(this, instance);
@@ -62,17 +59,17 @@ void InstancePlacement::Take(InstanceContext* instance, u32 flag)
         StringAssign(&chunk, chunkData->path.string);
     }
 
-    flags = (flags & ~FlagStays) | (flag & FlagStays);
+    flags.stays = stays;
 }
 
-void InstancePlacement::TakeInChunk(InstanceContext* instance, ChunkData* chunkData, u32 flag)
+void InstancePlacement::TakeInChunk(InstanceContext* instance, ChunkData* chunkData, u32 stays)
 {
     StringAssign(&chunk, chunkData->path.string);
     TakeRotation(this, instance);
     ObjectPlace* place = instance->place;
     place->SyncPosition();
     position = place->position;
-    flags = (flags & ~FlagStays) | (flag & FlagStays);
+    flags.stays = stays;
 }
 
 void InstancePlacement::Apply(InstanceContext* instance)
@@ -80,9 +77,9 @@ void InstancePlacement::Apply(InstanceContext* instance)
     ChunkData* chunkData = FindChunkData(GetChunkList(), &chunk);
     if (chunkData == nullptr)
     {
-        if ((flags & FlagStays) == 0)
+        if (flags.stays == 0)
         {
-            CallVirtual<u32>(instance, instance->vtable, ReleaseSlot);
+            CallVirtual<u32>(instance, instance->vtable, InstanceContext::ReleaseSlot);
         }
 
         return;
@@ -109,7 +106,7 @@ namespace
 {
 ObjectNodeBase* ObjectNodeOf(InstanceContext* instance)
 {
-    return static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    return static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject));
 }
 
 // A place kept, moved down over the ones dropped before it
@@ -127,10 +124,10 @@ void KeepPlace(InstancePlaces* places, u32 index, u32* kept)
 InstancePlaces* ConstructInstancePlaces(InstancePlaces* places, InstanceContext* instance, ChunkData* chunk)
 {
     places->count = 0;
-    places->name.string = nullptr;
-    places->name.length = 0;
-    places->name.capacity = 0;
-    StringAssign(&places->name, chunk->path.string);
+    places->lastChunk.string = nullptr;
+    places->lastChunk.length = 0;
+    places->lastChunk.capacity = 0;
+    StringAssign(&places->lastChunk, chunk->path.string);
     for (InstancePlacement& placement : places->places)
     {
         InstancePlacement::Construct(&placement, nullptr);
@@ -162,8 +159,8 @@ u32 KeepLoadedPlaces(InstancePlaces* places)
             continue;
         }
 
-        u32 state = chunk->bits & ChunkData::StateMask;
-        if (state == ChunkData::Releasing || state == ChunkData::Released)
+        u32 state = chunk->flags.state;
+        if (state == ChunkReleasing || state == ChunkReleased)
         {
             continue;
         }
@@ -219,20 +216,20 @@ u32 ReleasePlaces(InstancePlaces* places, InstanceContext* instance)
     ClearComebackPlacement(node);
     if (chunk == nullptr)
     {
-        CallVirtual<u32>(instance, instance->vtable, SleepSlot);
-        MakeGlobal(1, instance);
+        CallVirtual<u32>(instance, instance->vtable, InstanceContext::SleepSlot);
+        MakeGlobal(PlacesWay, instance);
         return 0;
     }
 
-    ChunkMakeGlobal(chunk, 0, 1, instance);
-    StringAssign(&places->name, node->information.chunk.string);
+    ChunkMakeGlobal(chunk, NoStateCheck, PlacesWay, instance);
+    StringAssign(&places->lastChunk, node->information.chunk.string);
     return 0;
 }
 
 void DismissPlaces(InstancePlaces* places, InstanceContext* instance)
 {
     KeepLoadedPlaces(places);
-    CallVirtual<u32>(instance, instance->vtable, SleepSlot);
+    CallVirtual<u32>(instance, instance->vtable, InstanceContext::SleepSlot);
 }
 
 u32 PlacePlacesInChunk(InstancePlaces* places, InstanceContext* instance, ChunkData* chunk)
@@ -262,13 +259,13 @@ u32 PlacePlacesInChunk(InstancePlaces* places, InstanceContext* instance, ChunkD
     ClearComebackPlacement(node);
     if (current != chunk)
     {
-        ChunkMakeGlobal(current, 0, 1, instance);
+        ChunkMakeGlobal(current, NoStateCheck, PlacesWay, instance);
     }
     else
     {
         node->information.Take(instance, 0);
     }
 
-    StringAssign(&places->name, node->information.chunk.string);
+    StringAssign(&places->lastChunk, node->information.chunk.string);
     return 1;
 }

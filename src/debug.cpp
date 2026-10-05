@@ -1,29 +1,44 @@
 #include "debug.h"
 
 #include "game/gamecontroller.h"
+#include "retail/libc.h"
 
 extern "C"
 {
     volatile u32 g_DebugStep = 0;
-    volatile s32 g_DebugValues[16] = {};
+    volatile s32 g_DebugValues[DebugValueCount] = {};
 
     __attribute__((section(".data"))) volatile u32 g_DebugFixedTime = 0;
     volatile u32 g_DebugFrame = 0;
     volatile u32 g_DebugFreezeFrame = 0;
-    volatile u32 g_DebugStates[64] = {};
-    volatile u32 g_DebugRandom[4096] = {};
-    // The C library's reentrancy block: rand's state is at 0x58
-    extern u8* D_002EA3CC;
-    volatile DebugInput g_DebugInputs[16] = {};
-
+    volatile u32 g_DebugStates[DebugStateCount] = {};
+    volatile u32 g_DebugRandom[DebugRandomFrames] = {};
+    volatile DebugInput g_DebugInputs[DebugInputCount] = {};
 }
 
 namespace
 {
-// The game controller's states as two words (the state it's in and the next in the high one)
-volatile u32* StateWords()
+// The high word of the game controller's 64 bit states (bits 44-49 the state it's in, 50-55 the next)
+union StatesHighWord
 {
-    return reinterpret_cast<volatile u32*>(&G_GameController->states);
+    u32 value;
+    struct
+    {
+        u32 unused0 : 12;
+        u32 state : 6;
+        u32 next : 6;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(StatesHighWord, 4);
+
+// A state logged is the frame and the state's low byte
+constexpr u32 LoggedFrameShift = 8;
+constexpr u32 LoggedStateMask = 0xFF;
+
+volatile u32* StatesHigh()
+{
+    return reinterpret_cast<volatile u32*>(&G_GameController->states) + 1;
 }
 }
 
@@ -31,17 +46,18 @@ void DebugFrameRendered()
 {
     u32 frame = g_DebugFrame + 1;
     g_DebugFrame = frame;
-    g_DebugRandom[frame % 4096] = *reinterpret_cast<volatile u32*>(D_002EA3CC + 0x58);
+    g_DebugRandom[frame % DebugRandomFrames] = *reinterpret_cast<volatile u32*>(&g_Impure->randomNext);
     if (G_GameController != nullptr)
     {
-        // The current state is in bits 44-49 of the 64 bits at 8
-        u32 state = StateWords()[1] >> 12 & 0x3F;
+        StatesHighWord states;
+        states.value = *StatesHigh();
+        u32 state = states.state;
         static u32 logged;
-        if (logged == 0 || (g_DebugStates[logged - 1] & 0xFF) != state)
+        if (logged == 0 || (g_DebugStates[logged - 1] & LoggedStateMask) != state)
         {
-            if (logged < 64)
+            if (logged < DebugStateCount)
             {
-                g_DebugStates[logged++] = frame << 8 | state;
+                g_DebugStates[logged++] = frame << LoggedFrameShift | state;
             }
         }
     }
@@ -50,8 +66,10 @@ void DebugFrameRendered()
     {
         if (input.kind == DebugInput::State && input.frame == frame && G_GameController != nullptr)
         {
-            auto* high = StateWords() + 1;
-            *high = (*high & ~(0x3Fu << 18)) | (input.value & 0x3F) << 18;
+            StatesHighWord states;
+            states.value = *StatesHigh();
+            states.next = input.value;
+            *StatesHigh() = states.value;
         }
         else if (input.kind == DebugInput::Press)
         {

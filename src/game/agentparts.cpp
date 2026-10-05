@@ -1,5 +1,6 @@
 #include "game/agentparts.h"
 
+#include "game/characters.h"
 #include "game/clock.h"
 #include "game/memory.h"
 
@@ -13,9 +14,6 @@ EABI_EXPORT(FUN_00140308, &CharacterPart::RequestScale);
 
 namespace
 {
-constexpr u8 BasicLowByte = 3;
-constexpr u32 BasicBits = 0x1E000 | 0x20000 | 0x40000 | 0x80000;
-constexpr u32 CreatureValue = 2;
 // What the constructors pass their part's Reset
 constexpr u32 Made = 1;
 
@@ -23,7 +21,7 @@ constexpr u32 Made = 1;
 void StartBasicPart(BasicAgentPart* part)
 {
     part->lastAttack = 0;
-    part->unknown08 = 0;
+    part->presence = 0.0f;
     part->vtable = g_BasicAgentPartVTable;
     part->Reset(Made);
 }
@@ -38,12 +36,20 @@ void EndPart(AgentPart* part, u32 destroyFlags)
     }
 }
 
-void ResetBasicValues(BasicAgentPart* part, u32 unknown)
+// Every attack reaches it
+void ResetBasicValues(BasicAgentPart* part, u32 resetEntry)
 {
-    part->bits = 0;
-    *reinterpret_cast<u8*>(&part->bits) = BasicLowByte;
-    part->bits |= BasicBits;
-    part->AgentPart::Reset(unknown);
+    AgentPartBits made = {};
+    made.attackKind = AttackWalkInto;
+    made.hitByWalkInto = 1;
+    made.unused14 = 1;
+    made.hitFromBelow = 1;
+    made.hitBySpin = 1;
+    made.hitBySlide = 1;
+    made.hitBySlamOrTied = 1;
+    made.hitByLandOn = 1;
+    part->bits = made;
+    part->AgentPart::Reset(resetEntry);
 }
 }
 
@@ -54,7 +60,7 @@ void AgentPart::Destroy(u32 destroyFlags)
 
 void AgentPart::Reset(u32)
 {
-    unknown08 = 0;
+    presence = 0.0f;
     lastAttack = 0;
     lastAttackTime = 0;
 }
@@ -82,8 +88,7 @@ u32 AgentPart::AttackedWithin(u32 kind, const u32* time, f32 seconds)
 
 u32 AgentPart::HitWithin(const u32* time, f32 seconds)
 {
-    constexpr u32 FirstHit = 6;
-    if (lastAttack < FirstHit)
+    if (lastAttack < AttackSpin)
     {
         return 0;
     }
@@ -102,9 +107,9 @@ void BasicAgentPart::Destroy(u32 destroyFlags)
     EndPart(this, destroyFlags);
 }
 
-void BasicAgentPart::Reset(u32 unknown)
+void BasicAgentPart::Reset(u32 resetEntry)
 {
-    ResetBasicValues(this, unknown);
+    ResetBasicValues(this, resetEntry);
 }
 
 // HitBy's cases splat split off, which the retail jump table (jtbl_002F2E50) points at: kinds 10 to 12 (and the default) and
@@ -129,19 +134,19 @@ u32 BasicAgentPart::HitBy(u32 kind)
 {
     switch (kind)
     {
-    case 3:
-        return (bits & HitByKind3) != 0;
-    case 4:
-        return (bits & HitByKind4) != 0;
-    case 5:
-        return (bits & HitByKind5) != 0;
-    case 6:
-        return (bits & HitByKind6) != 0;
-    case 7:
-    case 9:
-        return (bits & HitByKind7Or9) != 0;
-    case 8:
-        return (bits & HitByKind8) != 0;
+    case AttackWalkInto:
+        return bits.hitByWalkInto != 0;
+    case AttackLandOn:
+        return bits.hitByLandOn != 0;
+    case AttackFromBelow:
+        return bits.hitFromBelow != 0;
+    case AttackSpin:
+        return bits.hitBySpin != 0;
+    case AttackSlam:
+    case AttackTied:
+        return bits.hitBySlamOrTied != 0;
+    case AttackSlide:
+        return bits.hitBySlide != 0;
     default:
         return 1;
     }
@@ -160,9 +165,9 @@ void PickupPart::Destroy(u32 destroyFlags)
     EndPart(this, destroyFlags);
 }
 
-void PickupPart::Reset(u32 unknown)
+void PickupPart::Reset(u32 resetEntry)
 {
-    ResetBasicValues(this, unknown);
+    ResetBasicValues(this, resetEntry);
     value = 0;
 }
 
@@ -180,9 +185,9 @@ void CratePart::Destroy(u32 destroyFlags)
     BasicAgentPart::Destroy(destroyFlags);
 }
 
-void CratePart::Reset(u32 unknown)
+void CratePart::Reset(u32 resetEntry)
 {
-    BasicAgentPart::Reset(unknown);
+    BasicAgentPart::Reset(resetEntry);
     value = 0;
 }
 
@@ -200,17 +205,19 @@ void CreaturePart::Destroy(u32 destroyFlags)
     BasicAgentPart::Destroy(destroyFlags);
 }
 
-void CreaturePart::Reset(u32 unknown)
+void CreaturePart::Reset(u32 resetEntry)
 {
-    BasicAgentPart::Reset(unknown);
-    unknown18 = 0;
-    flags = CreatureValue;
+    BasicAgentPart::Reset(resetEntry);
+    gravity = 0.0f;
+    CreaturePartFlags made = {};
+    made.resting = 1;
+    flags = made;
 }
 
 CharacterPart* CharacterPart::Construct(CharacterPart* part)
 {
     CreaturePart::Construct(part);
-    part->moveBits = 0;
+    part->moveBits.value = 0;
     part->vtable = g_CharacterPartVTable;
     part->Reset(Made);
     return part;
@@ -222,10 +229,10 @@ void CharacterPart::Destroy(u32 destroyFlags)
     CreaturePart::Destroy(destroyFlags);
 }
 
-void CharacterPart::Reset(u32 unknown)
+void CharacterPart::Reset(u32 resetEntry)
 {
-    CreaturePart::Reset(unknown);
-    moveBits = 0;
+    CreaturePart::Reset(resetEntry);
+    moveBits.value = 0;
     wantedTurn = 0;
     push = g_DefaultBox.min;
     push.w = 1.0f;
@@ -240,72 +247,75 @@ void CharacterPart::Reset(u32 unknown)
 
 u32 CharacterPart::RequestTurn(const s32* angle)
 {
-    if ((moveBits & TurnRequested) != 0)
+    if (moveBits.turnRequested != 0)
     {
         return 0;
     }
 
-    moveBits |= TurnRequested;
+    moveBits.turnRequested = 1;
     wantedTurn = *angle;
     return 1;
 }
 
 u32 CharacterPart::RequestForward(f32 speed)
 {
-    if ((moveBits & ForwardRequested) != 0)
+    if (moveBits.forwardRequested != 0)
     {
         return 0;
     }
 
     wantedForward = speed;
-    moveBits |= ForwardRequested;
+    moveBits.forwardRequested = 1;
     return 1;
 }
 
 u32 CharacterPart::RequestSideways(f32 speed)
 {
-    if ((moveBits & SidewaysRequested) != 0)
+    if (moveBits.sidewaysRequested != 0)
     {
         return 0;
     }
 
     wantedSideways = speed;
-    moveBits |= SidewaysRequested;
+    moveBits.sidewaysRequested = 1;
     return 1;
 }
 
 u32 CharacterPart::RequestVertical(f32 speed)
 {
-    if ((moveBits & VerticalRequested) != 0)
+    if (moveBits.verticalRequested != 0)
     {
         return 0;
     }
 
     wantedVertical = speed;
-    moveBits |= VerticalRequested;
+    moveBits.verticalRequested = 1;
     return 1;
 }
 
 u32 CharacterPart::RequestScale(f32 scale)
 {
-    if ((moveBits & ScaleRequested) != 0)
+    if (moveBits.scaleRequested != 0)
     {
         return 0;
     }
 
     speedScale = scale;
-    moveBits |= ScaleRequested;
+    moveBits.scaleRequested = 1;
     return 1;
 }
 
 void CharacterPart::ClearSpeedRequests()
 {
-    moveBits &= ~(ForwardRequested | SidewaysRequested | VerticalRequested | ScaleRequested);
+    moveBits.forwardRequested = 0;
+    moveBits.sidewaysRequested = 0;
+    moveBits.verticalRequested = 0;
+    moveBits.scaleRequested = 0;
 }
 
 void CharacterPart::ClearTurnRequest()
 {
-    moveBits &= ~TurnRequested;
+    moveBits.turnRequested = 0;
 }
 
 GenericObjectPart* GenericObjectPart::Construct(GenericObjectPart* part)
@@ -322,9 +332,9 @@ void GenericObjectPart::Destroy(u32 destroyFlags)
     BasicAgentPart::Destroy(destroyFlags);
 }
 
-void GenericObjectPart::Reset(u32 unknown)
+void GenericObjectPart::Reset(u32 resetEntry)
 {
-    BasicAgentPart::Reset(unknown);
+    BasicAgentPart::Reset(resetEntry);
     value = 0;
 }
 
@@ -360,9 +370,9 @@ void PayGatePart::Destroy(u32 destroyFlags)
     EndPart(this, destroyFlags);
 }
 
-void PayGatePart::Reset(u32 unknown)
+void PayGatePart::Reset(u32 resetEntry)
 {
-    ResetBasicValues(this, unknown);
+    ResetBasicValues(this, resetEntry);
     value = 0;
 }
 
@@ -380,9 +390,9 @@ void GraplePart::Destroy(u32 destroyFlags)
     BasicAgentPart::Destroy(destroyFlags);
 }
 
-void GraplePart::Reset(u32 unknown)
+void GraplePart::Reset(u32 resetEntry)
 {
-    BasicAgentPart::Reset(unknown);
+    BasicAgentPart::Reset(resetEntry);
 }
 
 void ProjectilePart::Destroy(u32 destroyFlags)

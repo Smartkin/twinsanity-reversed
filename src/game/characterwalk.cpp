@@ -21,25 +21,13 @@ EABI_EXPORT(FUN_001604b8, &WalkController::BouncePush);
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 NextMask = WalkController::StateMask << WalkController::NextShift;
-// The part's attack kinds: walking into something, and the tied characters' slam
-constexpr u32 AttackWalkInto = 3;
-constexpr u32 AttackTied = 9;
-// The part's move bits (bits 32-63 of its 64 bits from 0x18) of a slide jump and of the jump of kind 8
-constexpr u32 MoveSlideJump = 0x8;
-constexpr u32 MoveKindEightJump = 0x80;
-// The character (its first int property) whose strafe ends on its own
-constexpr s32 MechaBandicoot = 5;
-
 // The stick's and the strafe's dead zone, the stick past which it walks (barely, when it's controlled) and runs, and how far
 // the move's direction may be off the facing before it shuffles
-constexpr f32 StickEpsilon = Rounded(5e-05);
+constexpr f32 StickEpsilon = Epsilon;
 constexpr f32 WalkStick = Rounded(0.3);
 constexpr f32 ControlledWalkStick = Rounded(0.0001);
 constexpr f32 RunStick = Rounded(0.96);
 constexpr f32 ShuffleDegrees = 5.0f;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // The stick's turn (1 a half turn) is eased within 45 degrees and between 45 and 135
 constexpr f32 HalfTurnDegrees = 180.0f;
 constexpr f32 EaseNearDegrees = 45.0f;
@@ -56,20 +44,14 @@ constexpr f32 PushedStick = Rounded(0.3);
 constexpr f32 SlamSpeed = 4.0f;
 constexpr f32 SlamTurnRadians = 8.0f;
 
-// The attack kind (the part's bits' low byte, which retail writes as a byte)
-u8& AttackKind(AgentPart* part)
-{
-    return *reinterpret_cast<u8*>(&static_cast<BasicAgentPart*>(part)->bits);
-}
-
 CharacterPart* PartOf(const CharacterAgent* agent)
 {
     return static_cast<CharacterPart*>(agent->part);
 }
 
-s32 CharacterOf(const CharacterAgent* agent)
+s32 CharacterKindOf(const CharacterAgent* agent)
 {
-    return agent->properties->GetInt(0);
+    return agent->properties->GetInt(CharacterKindProperty);
 }
 
 s32 Magnitude(s32 angle)
@@ -91,10 +73,10 @@ void AskAlong(WalkController* walk, s32 angle)
     part->RequestTurn(&turn);
 }
 
-// The strafe's time is over: none but Mecha-Bandicoot's quarter second
+// The strafe's time is over: none but Mecha-Bandicoot's quarter second (its strafe ends on its own)
 bool StrafeOver(const WalkController* walk, s32 elapsed)
 {
-    f32 seconds = CharacterOf(walk->agent) == MechaBandicoot ? MechaStrafeSeconds : 0.0f;
+    f32 seconds = CharacterKindOf(walk->agent) == CharacterMecha ? MechaStrafeSeconds : 0.0f;
     return elapsed >= static_cast<s32>(seconds * g_ClockUnitsPerSecond);
 }
 
@@ -125,9 +107,9 @@ void Stride(WalkController* walk, f32 stick, f32 turn, TimeClock* clock, u32 spe
 void ResetWalk(WalkController* walk)
 {
     // Retail clears the word with memset
-    walk->bits = 0;
+    walk->bits.value = 0;
     walk->speed = 0.0f;
-    walk->bits = (walk->bits & ~WalkController::StateMask) | WalkController::StateNone;
+    walk->bits.state = WalkController::StateNone;
     walk->strafe = 0.0f;
     walk->airSpeed = 0.0f;
     walk->moveDirection = g_DefaultBox.min;
@@ -150,7 +132,7 @@ WalkController* WalkController::Construct(WalkController* walk, CharacterAgent* 
 
 void WalkController::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -185,16 +167,16 @@ u32 WalkController::Strafes()
 
 void WalkController::BeIdle()
 {
-    bits = (bits & ~NextMask) | StateIdle << NextShift;
-    bits = (bits & ~StateMask) | StateIdle;
-    AttackKind(agent->part) = AttackWalkInto;
+    bits.next = StateIdle;
+    bits.state = StateIdle;
+    PartOf(agent)->bits.attackKind = AttackWalkInto;
 }
 
 void WalkController::PushAtSpeed(f32 from, f32 to, s32 ticks)
 {
-    u32 next = (bits & ~NextMask) | StatePushed << NextShift;
-    next &= ~PushVelocity;
-    bits = (next & ~PushEases) | (ticks != 0 ? PushEases : 0);
+    bits.next = StatePushed;
+    bits.pushVelocity = 0;
+    bits.pushEases = ticks != 0;
     pushSpeedFrom = from;
     pushSpeedTo = to;
     pushTicks = ticks;
@@ -203,10 +185,11 @@ void WalkController::PushAtSpeed(f32 from, f32 to, s32 ticks)
 void WalkController::PushAtVelocity(const Vector4* from, const Vector4* to, s32 ticks)
 {
     pushFrom = *from;
-    u32 next = (bits & ~NextMask) | StatePushed << NextShift | PushVelocity;
+    bits.next = StatePushed;
+    bits.pushVelocity = 1;
     pushTo = *to;
     pushTicks = ticks;
-    bits = (next & ~PushEases) | (ticks != 0 ? PushEases : 0);
+    bits.pushEases = ticks != 0;
 }
 
 u32 WalkController::BouncePush(f32 restitution, const Vector4* normal)
@@ -226,14 +209,14 @@ u32 WalkController::NextState(f32 stick, f32 strafe, TimeClock* clock)
 {
     CharacterAgent* agent = this->agent;
     CharacterPart* part = PartOf(agent);
-    if (AttackKind(part) == AttackTied)
+    if (part->bits.attackKind == AttackTied)
     {
-        return (bits & StateMask) == StateSlamming ? 0 : StateSlamming;
+        return bits.state == StateSlamming ? 0 : StateSlamming;
     }
 
-    if ((part->flags & CreaturePart::FlagOnGround) == 0)
+    if (part->flags.onGround == 0)
     {
-        u32 state = bits & StateMask;
+        u32 state = bits.state;
         if (state == StateInAir)
         {
             return 0;
@@ -252,14 +235,14 @@ u32 WalkController::NextState(f32 stick, f32 strafe, TimeClock* clock)
         return StateInAir;
     }
 
-    if ((part->moveBits & CharacterPart::Crouching) != 0)
+    if (part->moveBits.crouching != 0)
     {
-        return (bits & StateMask) == StateNone ? 0 : StateNone;
+        return bits.state == StateNone ? 0 : StateNone;
     }
 
-    if ((bits & StrafeHeld) == 0 && !(__builtin_fabsf(strafe) <= StickEpsilon) && Strafes() != 0)
+    if (bits.strafeHeld == 0 && !(__builtin_fabsf(strafe) <= StickEpsilon) && Strafes() != 0)
     {
-        if ((bits & StateMask) == StateStrafing)
+        if (bits.state == StateStrafing)
         {
             return 0;
         }
@@ -301,7 +284,7 @@ u32 WalkController::NextState(f32 stick, f32 strafe, TimeClock* clock)
         return StateShuffling;
     }
 
-    if ((bits & StateMask) == StateIdle)
+    if (bits.state == StateIdle)
     {
         return 0;
     }
@@ -396,7 +379,7 @@ void WalkController::Strafe(f32, f32 strafe, TimeClock* clock, s32* next)
     RotateAndTranslate(place);
     // It faces its first waypoint when it has one
     const Vector4* target = nullptr;
-    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind))->waypoints;
+    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject))->waypoints;
     if (waypoints != nullptr && waypoints->keyCount != 0)
     {
         target = &waypoints->positions.data[0]->position;
@@ -440,13 +423,13 @@ void WalkController::Strafe(f32, f32 strafe, TimeClock* clock, s32* next)
     speed = agent->Controlled() != 0 ? TopSpeed() : strafeSpeed;
     // The rate goes unused: AskTurn turns to the face direction at once
     s32 rate;
-    AngleFrom(&rate, CharacterOf(agent) == MechaBandicoot ? MechaStrafeTurnDegrees : 0.0f, AngleDegrees);
+    AngleFrom(&rate, CharacterKindOf(agent) == CharacterMecha ? MechaStrafeTurnDegrees : 0.0f, AngleDegrees);
     AskTurn(this->strafe, clock, &rate);
     AskMove(0);
-    if ((!held && StrafeOver(this, elapsed)) || (CharacterOf(agent) == MechaBandicoot && StrafeOver(this, elapsed)))
+    if ((!held && StrafeOver(this, elapsed)) || (CharacterKindOf(agent) == CharacterMecha && StrafeOver(this, elapsed)))
     {
         u32 state = 0;
-        if ((bits & StateMask) != StateIdle)
+        if (bits.state != StateIdle)
         {
             RunAgentEvent(agent, EventIdle, 0, 0, 0);
             state = StateIdle;
@@ -464,11 +447,11 @@ void WalkController::Pushed(f32 stick, f32 strafe, TimeClock* clock, s32* next)
     RotateAndTranslate(place);
     s32 elapsed = clock->time - stateStart;
     bool over;
-    if ((bits & PushEases) != 0 && elapsed < pushTicks)
+    if (bits.pushEases != 0 && elapsed < pushTicks)
     {
         f32 share = elapsed * g_SecondsPerClockUnit / (pushTicks * g_SecondsPerClockUnit);
         share = share * share;
-        if ((bits & PushVelocity) != 0)
+        if (bits.pushVelocity != 0)
         {
             pushVelocity.x = pushFrom.x + (pushTo.x - pushFrom.x) * share;
             pushVelocity.y = pushFrom.y + (pushTo.y - pushFrom.y) * share;
@@ -484,7 +467,7 @@ void WalkController::Pushed(f32 stick, f32 strafe, TimeClock* clock, s32* next)
     }
     else
     {
-        if ((bits & PushVelocity) != 0)
+        if (bits.pushVelocity != 0)
         {
             pushVelocity = pushTo;
         }
@@ -494,9 +477,9 @@ void WalkController::Pushed(f32 stick, f32 strafe, TimeClock* clock, s32* next)
         }
 
         // Without a time it's kept while it's knocked back or in the air without the stick
-        over = (bits & PushEases) != 0
-               || ((part->Bits() & u64{CharacterPart::Hurt} << 32) == 0
-                   && (PushedStick < stick || (part->flags & CreaturePart::FlagOnGround) != 0));
+        over = bits.pushEases != 0
+               || (part->moveBits.hurt == 0
+                   && (PushedStick < stick || part->flags.onGround != 0));
     }
 
     if (over)
@@ -505,7 +488,7 @@ void WalkController::Pushed(f32 stick, f32 strafe, TimeClock* clock, s32* next)
     }
 
     s32 angle = 0;
-    if ((bits & PushVelocity) != 0)
+    if (bits.pushVelocity != 0)
     {
         SignedAngleAboutY(&angle, &pushVelocity, RowOf(&place->matrix, 2));
         turn = 0;
@@ -513,7 +496,7 @@ void WalkController::Pushed(f32 stick, f32 strafe, TimeClock* clock, s32* next)
                                 + pushVelocity.z * pushVelocity.z);
     }
 
-    if ((part->flags & CreaturePart::FlagOnGround) == 0)
+    if (part->flags.onGround == 0)
     {
         airSpeed = speed;
     }
@@ -529,14 +512,14 @@ u32 WalkController::Frame(f32 strafe, f32 turn, TimeClock* clock, const Vector4*
     moveDirection = agent->moveInput;
     faceDirection = g_DefaultBox.min;
     faceDirection.w = 1.0f;
-    if ((bits & NextMask) != 0)
+    if (bits.next != 0)
     {
-        u32 taken = (bits & ~StateMask) | (bits >> NextShift & StateMask);
+        bits.state = bits.next;
         stateStart = time;
-        bits = taken & ~NextMask;
+        bits.next = 0;
     }
 
-    switch (bits & StateMask)
+    switch (bits.state)
     {
     case StateNone:
         next = NextState(stickSize, strafe, clock);
@@ -569,9 +552,9 @@ u32 WalkController::Frame(f32 strafe, f32 turn, TimeClock* clock, const Vector4*
         // The jump's air speed (times the stick but in a slide jump or a jump of kind 8, which go straight ahead) and air turn
         if (agent->jump != nullptr)
         {
-            u64 moveBits = PartOf(agent)->Bits();
+            CharacterMoveBits moveBits = PartOf(agent)->moveBits;
             u32 straight = 0;
-            if ((moveBits & u64{MoveSlideJump} << 32) != 0 || (moveBits & u64{MoveKindEightJump} << 32) != 0)
+            if (moveBits.slideJump != 0 || moveBits.unusedJump != 0)
             {
                 straight = 1;
             }
@@ -608,12 +591,12 @@ u32 WalkController::Frame(f32 strafe, f32 turn, TimeClock* clock, const Vector4*
         break;
     }
 
-    bits = (bits & ~StrafeHeld) | (!(__builtin_fabsf(strafe) <= StickEpsilon) ? StrafeHeld : 0);
+    bits.strafeHeld = !(__builtin_fabsf(strafe) <= StickEpsilon);
     if (next != 0)
     {
-        bits = (bits & ~NextMask) | (next & StateMask) << NextShift;
+        bits.next = next;
     }
 
-    u32 state = bits & StateMask;
+    u32 state = bits.state;
     return state == StateWalking || state == StateRunning;
 }

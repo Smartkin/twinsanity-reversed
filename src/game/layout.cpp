@@ -14,7 +14,6 @@ namespace
 {
 // The lists an element is made with have room for this many, and grow by as many
 constexpr u32 ListGrowth = 10;
-constexpr u16 UndefinedId = 0xFFFF;
 
 void ConstructIds(IdArray* ids)
 {
@@ -56,7 +55,7 @@ u16* NewIds(u32 count)
 
 void DestroyProperties(PropertyList* properties)
 {
-    CallVirtual<void>(properties, properties->vtable, 1, u32{DestroyAndFree});
+    CallVirtual<void>(properties, properties->vtable, PropertyList::DestroySlot, u32{DestroyAndFree});
 }
 }
 
@@ -217,7 +216,7 @@ InstanceTemplate* InstanceTemplate::Construct(InstanceTemplate* instanceTemplate
     starters.data = NewIds(ListGrowth);
     PropertyList& properties = instanceTemplate->properties;
     properties.vtable = g_PropertyListVTable;
-    properties.state = 0;
+    properties.state.value = 0;
     properties.taggedCount = 0;
     properties.tagged = nullptr;
     properties.floatCount = 0;
@@ -250,7 +249,7 @@ LayoutTrigger* LayoutTrigger::Construct(LayoutTrigger* trigger)
     trigger->vtable = g_LayoutTriggerVTable;
     trigger->activators = 0;
     ConstructIds(&trigger->instances);
-    trigger->header = 0;
+    trigger->header.value = 0;
     return trigger;
 }
 
@@ -296,7 +295,7 @@ void MessageTrigger::Read(Stream* stream)
 
 u32 MessageTrigger::ItemType()
 {
-    return 0x1813;
+    return TypeId;
 }
 
 void CameraTrigger::Destroy(u32 destroyFlags)
@@ -315,7 +314,7 @@ void CameraTrigger::Read(Stream* stream)
 
 u32 CameraTrigger::ItemType()
 {
-    return 0x1C00;
+    return TypeId;
 }
 
 void LayoutPosition::Read(Stream* stream)
@@ -363,7 +362,7 @@ void PointList::Read(Stream* stream)
 
 u32 PointList::ItemType()
 {
-    return 0x1511;
+    return TypeId;
 }
 
 void LayoutPath::Destroy(u32 destroyFlags)
@@ -389,13 +388,13 @@ void LayoutPath::Read(Stream* stream)
 
 u32 LayoutPath::ItemType()
 {
-    return 0x1512;
+    return TypeId;
 }
 
 ContactMessage* ContactMessage::Construct(ContactMessage* message)
 {
-    message->word = 0;
-    message->byte = 0;
+    message->hitKinds = 0;
+    message->damage = 0;
     message->point = g_DefaultBox.min;
     return message;
 }
@@ -403,13 +402,14 @@ ContactMessage* ContactMessage::Construct(ContactMessage* message)
 void CollisionSurface::Read(Stream* stream)
 {
     // The ten physics parameters in the tools' order and the ID nothing keeps
-    f32* const Physics[10] = {&volumeScales[0], &volumeScales[1], &volumeScales[2], &volumeScales[3], &volumeScales[4], &physics5,
-                              &friction, &physics7, &physics8, &physics9};
+    f32* const Physics[PhysicsParameters] = {&volumeScales[0], &volumeScales[1], &volumeScales[2], &volumeScales[3],
+                                             &volumeScales[4], &acceleration,    &friction,        &restitution,
+                                             &downhillPull,    &steepNormalY};
     u16* const Ids[10] = {&surfaceId, &stepSound1, &stepSound2, &impactParticles, &hardImpactParticles, &impactSound, &hardImpactSound,
                           &stepParticles, &landSound, &scrapeSound};
-    unknown1C = 1.0f;
-    unknown18 = 1.0f;
-    stream->ReadS32(reinterpret_cast<s32*>(&collisionMask));
+    spinFriction = 1.0f;
+    rollFriction = 1.0f;
+    stream->ReadS32(reinterpret_cast<s32*>(&flags));
     for (u16* id : Ids)
     {
         stream->ReadS16(reinterpret_cast<s16*>(id));
@@ -429,16 +429,16 @@ void CollisionSurface::Read(Stream* stream)
 void SurfaceTable::Add(const CollisionSurface* surface)
 {
     CollisionSurface& entry = surfaces[count];
-    entry.collisionMask = surface->collisionMask;
-    entry.physics5 = surface->physics5;
+    entry.flags = surface->flags;
+    entry.acceleration = surface->acceleration;
     entry.friction = surface->friction;
-    entry.physics7 = surface->physics7;
-    entry.physics8 = surface->physics8;
-    entry.physics9 = surface->physics9;
+    entry.restitution = surface->restitution;
+    entry.downhillPull = surface->downhillPull;
+    entry.steepNormalY = surface->steepNormalY;
     entry.flow = surface->flow;
     entry.contact.point = surface->contact.point;
-    entry.contact.word = surface->contact.word;
-    entry.contact.byte = surface->contact.byte;
+    entry.contact.hitKinds = surface->contact.hitKinds;
+    entry.contact.damage = surface->contact.damage;
     entry.surfaceId = surface->surfaceId;
     entry.impactSound = surface->impactSound;
     entry.hardImpactSound = surface->hardImpactSound;
@@ -449,13 +449,13 @@ void SurfaceTable::Add(const CollisionSurface* surface)
     entry.impactParticles = surface->impactParticles;
     entry.hardImpactParticles = surface->hardImpactParticles;
     entry.stepParticles = surface->stepParticles;
-    for (u32 index = 0; index < 5; index++)
+    for (u32 index = 0; index < CollisionSurface::VolumeScales; index++)
     {
         entry.volumeScales[index] = surface->volumeScales[index];
     }
 
-    entry.unknown18 = surface->unknown18;
-    entry.unknown1C = surface->unknown1C;
+    entry.rollFriction = surface->rollFriction;
+    entry.spinFriction = surface->spinFriction;
     count++;
 }
 

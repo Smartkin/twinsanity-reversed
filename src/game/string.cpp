@@ -5,10 +5,17 @@
 
 namespace
 {
+// What the buffers grow by
+constexpr u32 CapacityStep = 0x20;
+// StringConstructFloat writes the numbers between these plainly, the others with an exponent, and 3 decimals
+constexpr f32 LargestPlain = 1000000.0f;
+constexpr f32 SmallestPlain = Rounded(0.0001);
+constexpr f32 DecimalsScale = 1000.0f;
+
 // What a string of that many characters and its terminator gets
 s32 CapacityFor(s32 length)
 {
-    return static_cast<s32>((static_cast<u32>(length) + 0x20) & ~0x1Fu);
+    return static_cast<s32>((static_cast<u32>(length) + CapacityStep) & ~(CapacityStep - 1));
 }
 
 void AppendCharacter(String* string, char character)
@@ -22,13 +29,13 @@ void Terminate(String* string)
     string->string[string->length] = '\0';
 }
 
-// The retail constructors of numbers start with a buffer of 32 bytes
+// The retail constructors of numbers start with a buffer of one step
 void ConstructForNumber(String* string)
 {
     string->string = nullptr;
     string->length = 0;
-    string->capacity = 0x20;
-    string->string = static_cast<char*>(MemoryAllocate2(0x20));
+    string->capacity = CapacityStep;
+    string->string = static_cast<char*>(MemoryAllocate2(CapacityStep));
 }
 
 // "x10^" and the exponent
@@ -337,7 +344,7 @@ extern "C"
             return;
         }
 
-        if (value > 1000000.0f)
+        if (value > LargestPlain)
         {
             u32 exponent = 0;
             while (value >= 10.0f)
@@ -351,7 +358,7 @@ extern "C"
             return;
         }
 
-        if (value < Rounded(0.0001))
+        if (value < SmallestPlain)
         {
             u32 exponent = 0;
             while (value < 1.0f)
@@ -366,7 +373,7 @@ extern "C"
         }
 
         u32 whole = static_cast<u32>(static_cast<s32>(value));
-        u32 thousandths = static_cast<u32>(static_cast<s32>((value - static_cast<f32>(static_cast<s32>(whole))) * 1000.0f));
+        u32 thousandths = static_cast<u32>(static_cast<s32>((value - static_cast<f32>(static_cast<s32>(whole))) * DecimalsScale));
         u32 tens = whole / 10;
         if (tens != 0)
         {
@@ -424,7 +431,7 @@ extern "C"
 
         StringDestroy(&part);
         StringDestroy(&wanted);
-        return -1;
+        return StringNotFound;
     }
 
     bool StringRemove(String* string, const char* text)
@@ -554,7 +561,7 @@ extern "C" String* StringConstructCopy(String* string, const String* other)
 extern "C" void StringDelete(String* string, u32 flags)
 {
     StringDestroy(string);
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(string);
     }

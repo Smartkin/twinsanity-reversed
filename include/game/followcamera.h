@@ -14,158 +14,220 @@ struct CollisionCache;
 struct GamePad;
 struct ObjectPlace;
 struct Reference;
-class Camera1C0E;
+class KeyedCamera;
+
+// The follow camera's four probes, in the order they're cast in: above and below the view, to its left and to its right (the
+// order of the probes' ends)
+enum FollowProbe : u32
+{
+    ProbeAbove = 0,
+    ProbeBelow = 1,
+    ProbeLeft = 2,
+    ProbeRight = 3,
+    ProbeCount = 4,
+};
+
+// What the follow camera's probes found (FollowCameraPositioner::Probe): which hit, both of a pair (both sides with neither above
+// nor below hitting count as below too), and that it should pull in
+union ProbeHits
+{
+    u32 value;
+    struct
+    {
+        u32 above : 1;
+        u32 below : 1;
+        u32 left : 1;
+        u32 right : 1;
+        u32 unused4 : 1;
+        u32 pair : 1;
+        u32 pullIn : 1;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(ProbeHits, 4);
+
+// The curve the follow camera's positioner blends to its trigger's place by, and its target to its trigger's point: even, or a
+// cube of the time's share. Nothing sets one: the blends are even
+enum FollowBlendCurve : u32
+{
+    FollowCurveEven = 0,
+    FollowCurveCubic = 2,
+};
+
+// The follow camera's positioner's bits (retail reads and writes the 64 bits whole). A restart clears the low half (but
+// distanceFollowsPitch and tilts): what it took from its camera trigger and the rig
+union FollowPositionerBits
+{
+    u64 value;
+    struct
+    {
+        // It goes to its camera trigger's place (else behind the target), its distance follows the pitch (between its ends as
+        // the pitch is between its), the probes start at the target point (the trigger has a first subtype; else around the
+        // instance)
+        u64 atTriggerPlace : 1;
+        u64 distanceFollowsPitch : 1;
+        u64 probesFromTarget : 1;
+        // The rig's look stick turns it (the rig's stickTurning): its probes pull it in when only some hit and it's further than
+        // 2, and unless its trigger always takes values the target counts as moving and camera triggers' values are ignored
+        u64 stickTurning : 1;
+        // The last trigger's probesFromTarget (nothing reads it)
+        u64 unused4 : 1;
+        // Its trigger's alwaysTakesValues (the stick's input not taken either)
+        u64 alwaysTakesValues : 1;
+        // The character moves (the rig's moving): camera triggers' values are taken again once the stick's let go
+        u64 characterMoving : 1;
+        // Camera triggers' values aren't taken (they only change its bits)
+        u64 ignoresValues : 1;
+        // It tilts, its pitch's goal is the default pitch kept within its ends (else 0)
+        u64 tilts : 1;
+        // Cleared with the trigger's bits
+        u64 unused9 : 1;
+        // Its trigger set the yaw's speed (the rig's walk doesn't)
+        u64 yawSpeedSet : 1;
+        // It takes its own camera instead of the triggers'
+        u64 ownCamera : 1;
+        // Its trigger's holdsStill (the rig keeps its rotation: it doesn't move), keepsHeight (it keeps its height looking at the
+        // target), onlyLooksAtTarget
+        u64 holdsStill : 1;
+        u64 keepsHeight : 1;
+        u64 onlyLooksAtTarget : 1;
+        // Set back this step: changing triggers cuts (and it doesn't tilt)
+        u64 restarted : 1;
+        // Its tilt doesn't follow the target's facing (its trigger doesn't tilt, a vehicle's view)
+        u64 noFacingTilt : 1;
+        // Its place follows at the trigger's rate (its camera's position follow rate, else at its own)
+        u64 atTriggerRate : 1;
+        u64 unused18 : 1;
+        // The rig's look stick turned it (until the character moves: its tilt doesn't follow the target's facing)
+        u64 stickTurned : 1;
+        // Its view of the target isn't checked (its trigger's skipsViewCheck, a second subtype or a fixed yaw, the character
+        // dead), its yaw has the extra added (its trigger's addsExtraYaw)
+        u64 skipsViewCheck : 1;
+        u64 addsExtraYaw : 1;
+        u64 unused22 : 10;
+        // The probes are off (its trigger's noProbes, the target still)
+        u64 probesOff : 1;
+        // It was pushed off the collision, out of an instance's hull
+        u64 pushedOffCollision : 1;
+        u64 pushedOutOfHull : 1;
+        // Its view's been blocked over 0.2 seconds, at all (since the time kept), over 0.7 seconds
+        u64 blockedAWhile : 1;
+        u64 blocked : 1;
+        u64 blockedLong : 1;
+        // Nothing pushed it
+        u64 unpushed : 1;
+        // The probes' last results, and the probe cast next (a FollowProbe)
+        u64 leftHit : 1;
+        u64 rightHit : 1;
+        u64 aboveHit : 1;
+        u64 belowHit : 1;
+        u64 nextProbe : 2;
+        // The push brought it no nearer the target (its view counts as blocked)
+        u64 pushedBack : 1;
+        // It steers with its probes (the follow camera's steers), its trigger's steers: the probes are on while it and either
+        // that or ignoresValues are
+        u64 steers : 1;
+        u64 triggerSteers : 1;
+        // The target stands still
+        u64 targetStill : 1;
+        u64 unused49 : 15;
+    };
+};
+CHECK_SIZE(FollowPositionerBits, 8);
+
+// The follow camera's positioner's state
+union FollowPositionerState
+{
+    u32 value;
+    struct
+    {
+        // It blends to its trigger's place (from where it was when the blend started), the blend's started, its curve (a
+        // FollowBlendCurve)
+        u32 blending : 1;
+        u32 blendStarted : 1;
+        u32 curve : 3;
+        u32 unused5 : 1;
+        // It cuts (no smoothing), it was placed by a step
+        u32 cut : 1;
+        u32 placed : 1;
+        // A blend asked for without a trigger (2 seconds, to the defaults)
+        u32 blendAsked : 1;
+        // Its blenders' speeds were set to take the blend's time, and set back
+        u32 timed : 1;
+        u32 timeEnded : 1;
+        // Its trigger's blendsAlongLine: the place is blended along the line from where the blend started
+        u32 alongLine : 1;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(FollowPositionerState, 4);
 
 // The player's camera's positioner (TT Lab's camera controller, 0x400 bytes, retail's vtable D_00304DA8: 7 its rotation tilted
 // toward where the target is going). It keeps the camera behind the target at a pitch, a yaw, a field of view and a distance
 // (its four blenders), or at the place its camera trigger's second subtype gives (blended to from where it was over the
 // trigger's blend time), and away from walls: four probes from around the target to around the camera (above, below, left and
-// right, one cast a step) turn and pull it in, it's pushed off the collision and out of the instances' hulls, and when the view
-// of the target stays blocked it jumps to a clear place. Its bits and state (below), the instance it follows and the target, the
-// place and the blend's start, the probes' ends (around both, between their low and high pitch values by the pitch blender's
-// share), the tilt (its pitch and yaw, eased toward the target's facing and its sideways turn), the camera trigger it took and
-// a camera of its own, the collision near the camera, the rates its place follows at (the trigger's or its own: the share of
-// the way a second), how much of a turn it takes a step, how far it backs off when it looks at the target's front, the radiuses
-// it keeps from the collision and the hulls
+// right, cast in turn) turn and pull it in, it's pushed off the collision and out of the instances' hulls, and when the view of
+// the target stays blocked it jumps to a clear place. Its bits and state, the instance it follows and the target, the
+// trigger's place and the blend's start, the probes' ends (around both, between their low and high pitch values by the pitch
+// blender's share), the tilt (its pitch and yaw, eased toward the target's facing and its sideways turn), the camera trigger it
+// took and a camera of its own, the collision near the camera, the rates its place follows at (the trigger's or its own: the
+// share of the way a second), how much of a turn it takes a step, how far it backs off when it looks at the target's front, the
+// radiuses it keeps from the collision and the hulls
 class FollowCameraPositioner : public CameraPositioner
 {
 public:
-    enum Bits : u64
-    {
-        // It goes to its camera trigger's place (else behind the target), its distance follows the pitch (between its ends as
-        // the pitch is between its), the probes start at the target point (the trigger has a first subtype; else around the
-        // instance), and bit 4 the last trigger's
-        BitAtPlace = 0x1,
-        BitDistanceFollowsPitch = 0x2,
-        BitProbesFromTarget = 0x4,
-        // Its probes pull it in when only some hit and it's further than 2 (and a step without the target moving ends its
-        // following unless bit 5's set), probes are on (with bit 46) while bit 7 or 47 is
-        Bit3 = 0x8,
-        BitHadProbesFromTarget = 0x10,
-        // Its trigger's bit 11: no switch of bit 7
-        BitTriggerBit11 = 0x20,
-        Bit6 = 0x40,
-        // Camera triggers' values aren't taken (they only change its bits)
-        BitIgnoresValues = 0x80,
-        // It tilts, its pitch's goal is the default pitch kept within its ends (else 0)
-        BitTilts = 0x100,
-        BitYawExtraSpeed = 0x400,
-        // It takes its own camera (0x2F0) instead of the triggers'
-        BitOwnCamera = 0x800,
-        // Its trigger's bits 21, 20 and 19: the rig keeps its rotation (it doesn't move), it keeps its height and looks at the
-        // target, it only looks at the target
-        BitStill = 0x1000,
-        BitKeepsHeight = 0x2000,
-        BitOnlyLooks = 0x4000,
-        // Set back this step: changing triggers cuts (and it doesn't tilt)
-        BitRestarted = 0x8000,
-        // Its trigger's bit 22 clear (and it doesn't tilt)
-        BitTriggerBit22Clear = 0x10000,
-        // Its place follows at the trigger's rate (the second value, else at its own)
-        BitTriggerRate = 0x20000,
-        Bit19 = 0x80000,
-        // Its view of the target isn't checked
-        BitViewUnchecked = 0x100000,
-        // Its yaw has the extra added
-        BitYawExtra = 0x200000,
-        // The probes are off (the trigger's bit 23, the target still)
-        BitProbesOff = 0x1'0000'0000,
-        // It was pushed off the collision, out of an instance's hull
-        BitPushedOffCollision = 0x2'0000'0000,
-        BitPushedOutOfHull = 0x4'0000'0000,
-        // Its view's been blocked over 0.2 seconds, at all (since the time kept), over 0.7 seconds
-        BitBlockedAWhile = 0x8'0000'0000,
-        BitBlocked = 0x10'0000'0000,
-        BitBlockedLong = 0x20'0000'0000,
-        // Nothing pushed it
-        BitFree = 0x40'0000'0000,
-        // The probes' last results (left, right, above, below)
-        BitLeftHit = 0x80'0000'0000,
-        BitRightHit = 0x100'0000'0000,
-        BitAboveHit = 0x200'0000'0000,
-        BitBelowHit = 0x400'0000'0000,
-        // The probe cast next
-        ProbeShift = 43,
-        ProbeMask = 0x3ull << ProbeShift,
-        // The push brought it no nearer the target (its view counts as blocked)
-        BitPushedBack = 0x2000'0000'0000,
-        BitSteers = 0x4000'0000'0000,
-        // Its trigger's bit 4
-        BitTriggerBit4 = 0x8000'0000'0000,
-        // The target stands still
-        BitTargetStill = 0x1'0000'0000'0000,
-    };
+    // Its vtable's function past the positioners'
+    static constexpr u32 TiltSlot = 7;
 
-    enum State : u32
-    {
-        // It blends to its trigger's place (from the place it was at when the blend started), the blend's started, how (0 at
-        // the trigger's rates, 2 a cube of the time's share)
-        StateBlending = 0x1,
-        StateBlendStarted = 0x2,
-        CurveShift = 2,
-        CurveMask = 0x7 << CurveShift,
-        CurveCubic = 2,
-        // It cuts (no smoothing), it was placed by a step
-        StateCut = 0x40,
-        StatePlaced = 0x80,
-        // A blend asked for without a trigger (2 seconds, to the defaults)
-        StateBlendAsked = 0x100,
-        // Its blenders' speeds were set to take the blend's time, and set back
-        StateTimed = 0x200,
-        StateTimeEnded = 0x400,
-        // The trigger's bit 29: the place is blended along the line from where the blend started
-        StateAlongLine = 0x800,
-    };
-
-    u64 bits;
-    u32 state;
+    FollowPositionerBits bits;
+    FollowPositionerState state;
     InstanceContext* instance;
     CameraTarget* target;
     AngleBlender pitch;
     AngleBlender fieldOfView;
     AngleBlender yaw;
     DistanceBlender distance;
-    u8 unknown194[0xC];
-    Vector4 place;
+    u8 unused194[0xC];
+    Vector4 triggerPlace;
     Vector4 blendFrom;
     u32 blendStart;
     s32 blendTicks;
-    f32 unknown1C8;
+    f32 unused1C8;
     // How fast the probes turn it (65536ths of a turn a second)
     s32 pitchPushRate;
     s32 yawPushRate;
-    // The probes' results since its last step
-    u8 probeHits;
-    u8 unknown1D5[3];
-    // The probes' sideways ends (the first two up, the others across), around the target and around the camera, at its low pitch
-    // and its high
-    f32 lowTargetSides[4];
-    f32 lowCameraSides[4];
-    f32 highTargetSides[4];
-    f32 highCameraSides[4];
-    u8 unknown218[8];
+    // The probes' results since its last step (their ProbeHits; nothing reads them)
+    u8 unused1D4;
+    u8 unused1D5[3];
+    // The probes' sideways ends (by FollowProbe: the first two up, the others across), around the target and around the camera,
+    // at its low pitch and its high
+    f32 lowTargetSides[ProbeCount];
+    f32 lowCameraSides[ProbeCount];
+    f32 highTargetSides[ProbeCount];
+    f32 highCameraSides[ProbeCount];
+    u8 unused218[8];
     // Around the instance (when the probes don't start at the target point) and around the camera, at the low and the high pitch
     Vector4 lowTargetOffset;
     Vector4 highTargetOffset;
     Vector4 lowCameraOffset;
     Vector4 highCameraOffset;
-    Vector4 probeTargetEnds[4];
-    Vector4 probeCameraEnds[4];
+    Vector4 probeTargetEnds[ProbeCount];
+    Vector4 probeCameraEnds[ProbeCount];
     s32 tiltPitch;
     s32 tiltYaw;
     s32 lastYaw;
     CameraNode* trigger;
     MainCamera camera;
     CollisionCache* cache;
-    u8 unknown384;
-    u8 unknown385[3];
+    u8 unused384;
+    u8 unused385[3];
     f32 stepSeconds;
     f32 triggerRate;
     f32 ownRate;
     f32 turnShare;
-    f32 unknown398;
+    f32 unused398;
     u32 blockedSince;
-    u8 unknown3A0[0x10];
+    u8 unused3A0[0x10];
     // How much it faces the target's front (-1 to 0) and how far the target turned sideways (-1 to 1)
     f32 facing;
     f32 sideways;
@@ -175,15 +237,15 @@ public:
     // The lowest the lower probe's end around the target may be
     f32 probeFloor;
     s32 roll;
-    // A keyed camera (0x1C0E) plays
+    // A keyed camera (CameraSubtype::TypeKeyed) plays
     u8 keyed;
-    u8 unknown3CD[3];
+    u8 unused3CD[3];
     s32 yawExtra;
-    u8 unknown3D4[0xC];
+    u8 unused3D4[0xC];
     Vector4 lastPosition;
     // An instance the view checks leave out
     ReferencedObject* ignored;
-    u8 unknown3F4[0xC];
+    u8 unused3F4[0xC];
 
     static FollowCameraPositioner* Construct(FollowCameraPositioner* positioner, f32 distance, const s32* pitch)
         RETAIL_N32(FUN_00273738);
@@ -203,13 +265,18 @@ public:
     // Its rotation turned by its tilt (eased toward the target's facing and sideways turn while it tilts)
     void Tilt(Vector4* position, Vector4* rotation) RETAIL(FUN_00275978);
 
+    void TiltVirtual(Vector4* position, Vector4* rotation)
+    {
+        CallVirtual<void>(this, vtable, TiltSlot, position, rotation);
+    }
+
     // A camera's values taken (its bits always, its values unless it ignores them: the blenders' ranges, blended over the blend
     // time unless the camera cuts, and the second subtype's place)
-    void Apply(f32 value, MainCamera* camera, CameraTarget* target) RETAIL_N32(FUN_00274e08);
+    void TakeCamera(f32 value, MainCamera* camera, CameraTarget* target) RETAIL_N32(FUN_00274e08);
     // Back to its defaults after a trigger's camera (over the blend time unless it cuts)
     void BlendBack(CameraNode* last, u32 time) RETAIL(FUN_00275cf0);
-    // Its probes' and pushes' state cleared (its trigger's bits off, the blenders' ranges their own)
-    void Clear() RETAIL(FUN_002749c8);
+    // What it took from its trigger's camera dropped (its bits and blend, the blenders' second ranges, the trigger's rate)
+    void ClearTriggerValues() RETAIL(FUN_002749c8);
     // At the place behind the target its angles and distance give (the angles from where it is), cutting
     void PlaceBehind() RETAIL(FUN_00273e98);
     // The tilt on (its pitch's goal the default pitch)
@@ -224,8 +291,9 @@ public:
     void PlaceFor(const Vector4* target, Vector4* out, u32 commit) RETAIL(FUN_00271b28);
     // Moved toward a place looking at a target point (at its rate's share; at once when it cuts), or turned to look at it
     void MoveToward(const Vector4* target, const Vector4* place, u32 jumped) RETAIL(FUN_00271d00);
-    // The probes cast (one a step) for a target point and a place (their results kept when asked): which hit (1 above, 2 below,
-    // 4 left, 8 right, 0x20 both of a pair, 0x40 it should pull in)
+    // The probes for a target point and a place, cast in turn from the next one on (the lower one not while its end around the
+    // target is below the floor, which holds the others up; their results kept when asked), the rest as they last hit: their
+    // ProbeHits
     u32 Probe(const Vector4* target, const Vector4* place, u32 keep) RETAIL(FUN_00272350);
     // The turns the probes ask for (the pitch's and the yaw's rates) and the pull (-20 a second): the probes' results
     u32 ProbeRates(const Vector4* target, s32* pitchRate, s32* yawRate, f32* distanceRate, u32 keep) RETAIL(FUN_00272c48);
@@ -249,7 +317,7 @@ public:
     // 2 of the other point; never when its view isn't checked)
     u32 ViewBlocked(const Vector4* point, const Vector4* other) RETAIL(FUN_00276fd8);
     // A keyed camera's place taken (eased toward once it plays): when it's done, back to following
-    void FollowKeyed(Camera1C0E* camera) RETAIL(FUN_00277108);
+    void FollowKeyed(KeyedCamera* camera) RETAIL(FUN_00277108);
     // Whether the target stands still (the trigger's rate then 0)
     void CheckTargetStill() RETAIL(FUN_00277250);
     // How far it backs off eased toward twice its facing
@@ -270,9 +338,9 @@ CHECK_OFFSET(FollowCameraPositioner, pitch, 0x54);
 CHECK_OFFSET(FollowCameraPositioner, fieldOfView, 0xA4);
 CHECK_OFFSET(FollowCameraPositioner, yaw, 0xF4);
 CHECK_OFFSET(FollowCameraPositioner, distance, 0x144);
-CHECK_OFFSET(FollowCameraPositioner, place, 0x1A0);
+CHECK_OFFSET(FollowCameraPositioner, triggerPlace, 0x1A0);
 CHECK_OFFSET(FollowCameraPositioner, blendTicks, 0x1C4);
-CHECK_OFFSET(FollowCameraPositioner, probeHits, 0x1D4);
+CHECK_OFFSET(FollowCameraPositioner, unused1D4, 0x1D4);
 CHECK_OFFSET(FollowCameraPositioner, lowTargetSides, 0x1D8);
 CHECK_OFFSET(FollowCameraPositioner, lowTargetOffset, 0x220);
 CHECK_OFFSET(FollowCameraPositioner, probeTargetEnds, 0x260);
@@ -288,61 +356,72 @@ CHECK_OFFSET(FollowCameraPositioner, lastPosition, 0x3E0);
 CHECK_OFFSET(FollowCameraPositioner, ignored, 0x3F0);
 CHECK_SIZE(FollowCameraPositioner, 0x400);
 
+// The follow camera's target's bits
+union FollowTargetBits
+{
+    u32 value;
+    struct
+    {
+        // It goes to its trigger's point (the first subtype's, else its own), blends to it, blends now
+        u32 atCameraPoint : 1;
+        u32 blends : 1;
+        u32 blending : 1;
+        // Its box is the given one (its trigger's givesTargetBox: the camera's target box), it frames the trigger's instances
+        // (framesInstances: by the camera's framing share, up to its framing distance), its height isn't eased
+        u32 givenBox : 1;
+        u32 framesInstances : 1;
+        u32 heightUneased : 1;
+        // Its blend's curve (a FollowBlendCurve)
+        u32 curve : 3;
+        // The trigger's point is its own (no first subtype): the eased point
+        u32 pointFollows : 1;
+        // The rig's look stick turns the camera (nothing reads it)
+        u32 unused10 : 1;
+        u32 unused11 : 1;
+        // Its box blends to the trigger's (over the blend time), and settled
+        u32 boxBlending : 1;
+        // It cuts (for its next step), it was set back, it stepped
+        u32 cut : 1;
+        u32 wasReset : 1;
+        u32 stepped : 1;
+        u32 settled : 1;
+        // Its trigger's blendsWhenNear (it blends even when the point is near) and targetBoxUnturned (the box's point isn't
+        // turned with the object), the last trigger's targetBoxUnturned
+        u32 blendsWhenNear : 1;
+        u32 boxUnturned : 1;
+        u32 lastBoxUnturned : 1;
+        // It takes its own camera instead of the triggers'
+        u32 ownCamera : 1;
+        u32 unused21 : 11;
+    };
+};
+CHECK_SIZE(FollowTargetBits, 4);
+
 // The player's camera's target (0x210 bytes, retail's vtable D_00304DF0): the followed instance's place (or a fixed one), its
 // point moved toward the centre of its camera trigger's instances by a share up to a distance, its height eased (rising at 5
 // a second up to the ground's, the point's otherwise) plus the box's point at a share (its own box, or a given one, blended to
 // over the trigger's blend time) turned with the object, or the trigger's first subtype's point (blended to over the blend
-// time). Its bits (below), the reference to the instance, the trigger taken and the one before, the box at the blend's start,
-// a camera of its own
+// time). Its bits, the reference to the instance, the trigger taken and the one before, the box at the blend's start, a camera
+// of its own
 class FollowCameraTarget : public CameraTarget
 {
 public:
-    enum Bits : u32
-    {
-        // It goes to its trigger's point (the first subtype's), blends to it, blends now
-        BitHasCamera = 0x1,
-        BitBlends = 0x2,
-        BitBlending = 0x4,
-        // Its box is the given one (its trigger's bit 8: the camera's leftover vectors), it frames the trigger's instances (bit
-        // 9: the camera's leftover floats are the share and the distance), its height isn't eased
-        BitGivenBox = 0x8,
-        BitFramesInstances = 0x10,
-        BitUneased = 0x20,
-        CurveMask = 0x1C0,
-        CurveCubic = 0x80,
-        // The trigger's point is its own (no first subtype)
-        BitPointFollows = 0x200,
-        // The rig's right stick turns the camera (nothing reads it)
-        BitStickTurns = 0x400,
-        BitBoxBlending = 0x1000,
-        BitCut = 0x2000,
-        BitReset = 0x4000,
-        BitStepped = 0x8000,
-        BitSettled = 0x10000,
-        // Its trigger's bit 25 (it blends even when the point is near), bit 28 (the box's point isn't turned with the object),
-        // the last trigger's bit 28
-        BitBlendsNear = 0x20000,
-        BitOffsetUnturned = 0x40000,
-        BitLastOffsetUnturned = 0x80000,
-        BitOwnCamera = 0x100000,
-    };
-
-    u32 bits;
+    FollowTargetBits bits;
     Reference* followed;
     ObjectPlace* fixedPlace;
     CameraNode* trigger;
-    f32 pull;
-    f32 most;
+    f32 framingShare;
+    f32 framingDistance;
     f32 groundHeight;
-    f32 height;
+    f32 easedHeight;
     f32 boxShare;
-    u8 unknown94[0xC];
-    Vector4 offset;
+    u8 unused94[0xC];
+    Vector4 boxOffset;
     Vector4 easedPoint;
     Vector4 cameraPoint;
     u32 blendStart;
     s32 blendTicks;
-    u8 unknownD8[8];
+    u8 unusedD8[8];
     Vector4 blendFrom;
     Vector4 boxMin;
     Vector4 boxMax;
@@ -353,7 +432,7 @@ public:
     Vector4 currentMin;
     Vector4 currentMax;
     CameraNode* lastTrigger;
-    u8 unknown174[0xC];
+    u8 unused174[0xC];
     MainCamera camera;
 
     static FollowCameraTarget* Construct(FollowCameraTarget* target) RETAIL(FUN_00277700);
@@ -370,8 +449,8 @@ public:
     void ObjectPoint(ObjectPlace* place, Vector4* out) RETAIL(FUN_002774b8);
     // A point's height eased (over the seconds of a step)
     void EaseHeight(f32 seconds, const Vector4* point, Vector4* out) RETAIL_N32(FUN_00277398);
-    // Its trigger's state cleared (smoothed again)
-    void Clear() RETAIL(FUN_0027c980);
+    // What it took from its trigger's camera dropped (smoothed again)
+    void ClearTriggerValues() RETAIL(FUN_0027c980);
     // A box given (and its use dropped)
     void SetBox(const Vector4* min, const Vector4* max) RETAIL(FUN_0027ca18);
     void ClearBox() RETAIL(FUN_0027ca00);
@@ -379,7 +458,7 @@ public:
 CHECK_OFFSET(FollowCameraTarget, bits, 0x70);
 CHECK_OFFSET(FollowCameraTarget, followed, 0x74);
 CHECK_OFFSET(FollowCameraTarget, groundHeight, 0x88);
-CHECK_OFFSET(FollowCameraTarget, offset, 0xA0);
+CHECK_OFFSET(FollowCameraTarget, boxOffset, 0xA0);
 CHECK_OFFSET(FollowCameraTarget, blendStart, 0xD0);
 CHECK_OFFSET(FollowCameraTarget, blendFrom, 0xE0);
 CHECK_OFFSET(FollowCameraTarget, currentMin, 0x150);
@@ -403,49 +482,80 @@ extern "C"
 class PadCameraRig : public CameraRig
 {
 public:
+    enum Slot : u32
+    {
+        ClearInputSlot = 8,
+        ReadPadSlot = 9,
+        FrameSlot = 10,
+        LookStickSlot = 11,
+    };
+
     ButtonBindings bindings;
-    u32 unknown4C;
+    u32 unused4C;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0015df20);
     void LookStick(f32* x, f32* y) RETAIL(FUN_0015df70);
 
     void PrepareVirtual(void* controller, InstanceContext* camera, InstanceContext* character)
     {
-        CallVirtual<void>(this, vtable, 5, controller, camera, character);
+        CallVirtual<void>(this, vtable, PrepareSlot, controller, camera, character);
     }
 
     void RestoreDefaultsVirtual(CharacterAgent* character)
     {
-        CallVirtual<void>(this, vtable, 6, character);
+        CallVirtual<void>(this, vtable, RestoreDefaultsSlot, character);
     }
 
     void AssembleVirtual()
     {
-        CallVirtual<void>(this, vtable, 7);
+        CallVirtual<void>(this, vtable, AssembleSlot);
     }
 
     void ClearInputVirtual()
     {
-        CallVirtual<void>(this, vtable, 8);
+        CallVirtual<void>(this, vtable, ClearInputSlot);
     }
 
     void ReadPadVirtual(GamePad* pad)
     {
-        CallVirtual<void>(this, vtable, 9, pad);
+        CallVirtual<void>(this, vtable, ReadPadSlot, pad);
     }
 
     void FrameVirtual(TimeClock* clock, CharacterAgent* character)
     {
-        CallVirtual<void>(this, vtable, 10, clock, character);
+        CallVirtual<void>(this, vtable, FrameSlot, clock, character);
     }
 
     void LookStickVirtual(f32* x, f32* y)
     {
-        CallVirtual<void>(this, vtable, 11, x, y);
+        CallVirtual<void>(this, vtable, LookStickSlot, x, y);
     }
 };
 CHECK_OFFSET(PadCameraRig, bindings, 0x40);
 CHECK_SIZE(PadCameraRig, 0x50);
+
+// The follow camera rig's bits
+union FollowRigBits
+{
+    u32 value;
+    struct
+    {
+        // Its blenders hold (the yaw's, the pitch's, the distance's), it tilts
+        u32 yawHolds : 1;
+        u32 pitchHolds : 1;
+        u32 distanceHolds : 1;
+        u32 tilts : 1;
+        // The kind of the vehicle it's set up for (a Vehicle::Kind, 0 on foot; a passenger's 8 is 0 too)
+        u32 vehicle : 3;
+        u32 unused7 : 1;
+        // The look stick turns it now, turned it (until the character moves), the character moves
+        u32 stickTurning : 1;
+        u32 stickTurned : 1;
+        u32 moving : 1;
+        u32 unused11 : 21;
+    };
+};
+CHECK_SIZE(FollowRigBits, 4);
 
 // The follow camera's rig (retail's D_002F37A0, 0x700 bytes): the pad's input (the shoulders' pressure and two unbound actions;
 // the right stick, an unbound zoom axis, the left stick and the d-pad), its own followers, target and positioner, and the walk's
@@ -454,20 +564,6 @@ CHECK_SIZE(PadCameraRig, 0x50);
 class FollowCameraRig : public PadCameraRig
 {
 public:
-    enum Bits : u32
-    {
-        BitYawHolds = 0x1,
-        BitPitchHolds = 0x2,
-        BitDistanceHolds = 0x4,
-        BitTilts = 0x8,
-        // The vehicle's kind & 7 (0 on foot; a passenger's 8 is 0 too)
-        VehicleShift = 4,
-        VehicleMask = 0x7 << VehicleShift,
-        BitStickTurning = 0x100,
-        BitStickTurned = 0x200,
-        BitMoving = 0x400,
-    };
-
     // pressures[]: action 0 (L1, L2, R1, R2: the yaw's rate scale while the character stands), 1 and 2 (no buttons: the pitch's
     // and the distance's rate scales)
     enum Pressure : u32
@@ -487,23 +583,17 @@ public:
         AxisMoveX = 4,
     };
 
-    u32 bits;
+    FollowRigBits bits;
     f32 pressures[3];
     f32 axes[5];
-    u8 unknown74[0xC];
+    u8 unused74[0xC];
     CameraPointFollower ownTargetFollower;
     CameraPointFollower ownCameraFollower;
     FollowCameraTarget ownTarget;
     FollowCameraPositioner ownPositioner;
     // 65536ths of a turn a second, eased a tenth of the way a frame toward what the left stick's angle asks
     s32 walkYawSpeed;
-    u8 unknown6F4[0xC];
-
-    // Its bits' 64 bits (pressures[0] the high half), as retail reads and writes them
-    u64& Bits()
-    {
-        return *reinterpret_cast<u64*>(&bits);
-    }
+    u8 unused6F4[0xC];
 
     static FollowCameraRig* Construct(FollowCameraRig* rig) RETAIL(FUN_00141d08);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0015e090);
@@ -520,7 +610,7 @@ public:
 
     // Tilting or not; tilting, its ranges, rates and the target's box back to the defaults
     void SetTilts(u32 tilts) RETAIL(FUN_001425d8);
-    // Set up for what the character rides (bits 4-6), the holds and the yaw stepped, the target given the velocity
+    // Set up for what the character rides (its bits' vehicle), the holds and the yaw stepped, the target given the velocity
     void FollowRide(CharacterAgent* character) RETAIL(FUN_00142820);
     void SetMechaView() RETAIL(FUN_00142a88);
     // The yaw's speed by the Rollerbrawl's (the character unread)
@@ -551,58 +641,87 @@ CHECK_OFFSET(FollowCameraRig, ownPositioner, 0x2F0);
 CHECK_OFFSET(FollowCameraRig, walkYawSpeed, 0x6F0);
 CHECK_SIZE(FollowCameraRig, 0x700);
 
+// The follow node's camera's bits
+union FollowCameraBits
+{
+    u32 value;
+    struct
+    {
+        // Its rig's points are followed smoothly, its positioner steers with its probes, its rig takes nothing from the camera
+        // triggers
+        u32 smoothed : 1;
+        u32 steers : 1;
+        u32 ignoresTriggers : 1;
+        // Nothing sets switchBack (a step would flip rigAway and blend the lens back to its rig); rigAway: its rig isn't the
+        // lens's
+        u32 switchBack : 1;
+        u32 rigAway : 1;
+        // Its rig's frame is stepped
+        u32 stepsRig : 1;
+        // The character died (the second slot's cameras are taken from then on)
+        u32 characterDied : 1;
+        // It took the second slot's camera (the character dead): the scripts don't set its target (CameraNodeSetTarget)
+        u32 keepsTarget : 1;
+        u32 unused8 : 24;
+    };
+
+    // The settings a restart keeps
+    enum Mask : u32
+    {
+        Smoothed = 0x1,
+        Steers = 0x2,
+        IgnoresTriggers = 0x4,
+        StepsRig = 0x20,
+        KeptByRestart = Smoothed | Steers | IgnoresTriggers | StepsRig,
+    };
+};
+CHECK_SIZE(FollowCameraBits, 4);
+
 // The follow node's camera (0x730 bytes, no vtable): its bits, the camera triggers (the one chosen last frame, this frame's, the
 // last step's, the second slot's), the chosen one's priority (its trigger's kind byte), its rig and the rig it put on the camera's
 // lens
 struct FollowCamera
 {
-    enum Bits : u32
-    {
-        BitSmoothed = 0x1,
-        BitSteers = 0x2,
-        BitIgnoresTriggers = 0x4,
-        // Nothing sets bit 3 (a step would flip bit 4 and blend the lens back to its rig); bit 4: its rig isn't the lens's
-        BitSwitchBack = 0x8,
-        BitRigAway = 0x10,
-        BitStepsRig = 0x20,
-        BitCharacterDied = 0x40,
-        // The scripts don't set its target (CameraNodeSetTarget)
-        BitKeepsTarget = 0x80,
-    };
-
-    u32 bits;
+    FollowCameraBits bits;
     CameraNode* current;
     CameraNode* pending;
     CameraNode* last;
-    CameraNode* second;
+    CameraNode* secondSlot;
     u32 priority;
-    u8 unknown18[8];
+    u8 unused18[8];
     FollowCameraRig rig;
     CameraRig* lensRig;
-    u8 unknown724[0xC];
-
-    // Its bits' 64 bits (current the high half), as retail reads and writes them
-    u64& Bits()
-    {
-        return *reinterpret_cast<u64*>(&bits);
-    }
+    u8 unused724[0xC];
 };
 CHECK_OFFSET(FollowCamera, rig, 0x20);
 CHECK_OFFSET(FollowCamera, lensRig, 0x720);
 CHECK_SIZE(FollowCamera, 0x730);
 
-// The node of kind 0x16 (retail's UnkNode_0x16_Methods, 0x770 bytes), a playable character's camera: its bits (0: its last update
-// came while its clock was stopped; retail reads them as 64 bits with the chunk), the chunk entry it was made for, the camera's
-// instance, its camera and a countdown nothing reads
+// The follow node's bits (retail reads and writes them as 64 bits with the chunk)
+union FollowNodeBits
+{
+    u32 value;
+    struct
+    {
+        // Its last update came while its clock was stopped (nothing reads it)
+        u32 unused0 : 1;
+        u32 unused1 : 31;
+    };
+};
+CHECK_SIZE(FollowNodeBits, 4);
+
+// The node of kind 0x16 (retail's UnkNode_0x16_Methods, 0x770 bytes), a playable character's camera: its bits, the chunk entry it
+// was made for, the camera's instance, its camera and a countdown nothing reads (set to 1 second whenever the character's solver
+// finds the collision near it, down by its clock's advance)
 struct FollowNode : GameNode
 {
-    u32 nodeBits;
+    FollowNodeBits bits;
     ChunkEntry* chunk;
-    Reference* object;
-    u8 unknown24[0xC];
+    Reference* cameraInstance;
+    u8 unused24[0xC];
     FollowCamera camera;
-    f32 timer;
-    u8 unknown764[0xC];
+    f32 unused760;
+    u8 unused764[0xC];
 
     // Its vtable's functions (game/characternodes.cpp): 2 the destructor (what it follows released and let go of, its camera
     // destroyed), 3 given its instance (its camera started for it in its chunk), 4 whether its instance may change chunks, 5 its
@@ -612,8 +731,8 @@ struct FollowNode : GameNode
     void SetOwner(InstanceContext* instance) RETAIL(FUN_0017b438);
     u32 CanChangeChunk(struct ChunkData* from, struct ChunkLinkData* link) RETAIL(FUN_0017b4b8);
     u32 Kind() RETAIL(GetNodeIndex_0017B218);
-    void LeftChunk(u32 unknown) RETAIL(FUN_00172838);
-    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_0017b520);
+    void LeftChunk(u32 way) RETAIL(FUN_00172838);
+    void Step(TimeClock* clock, u32 way) RETAIL(FUN_0017b520);
     u32 Update(TimeClock* clock) RETAIL(FUN_001728b8);
     u32 Type() RETAIL(FUN_0017b220);
     // A camera's instance made in a chunk, followed (its clock the chunk's first): the instance
@@ -621,9 +740,9 @@ struct FollowNode : GameNode
     // Out of its instance's nodes, what it follows put to sleep
     void StopFollowing() RETAIL(FUN_0017b588);
 };
-CHECK_OFFSET(FollowNode, object, 0x20);
+CHECK_OFFSET(FollowNode, cameraInstance, 0x20);
 CHECK_OFFSET(FollowNode, camera, 0x30);
-CHECK_OFFSET(FollowNode, timer, 0x760);
+CHECK_OFFSET(FollowNode, unused760, 0x760);
 CHECK_SIZE(FollowNode, 0x770);
 
 extern "C"
@@ -666,7 +785,8 @@ extern "C"
     void RestartFollowCamera(FollowCamera* follow, void* controller, InstanceContext* camera, InstanceContext* character)
         RETAIL(FUN_0015e610);
     void RestoreFollowCameraDefaults(FollowCamera* follow, CharacterAgent* character) RETAIL(FUN_0015e738);
-    // Its rig put on the camera's lens (set back when asked) unless bit 4, the lens rig's defaults, the camera chosen taken
+    // Its rig put on the camera's lens (set back when asked) unless its rig is away, the lens rig's defaults, the camera chosen
+    // taken
     void ShowFollowCamera(FollowCamera* follow, InstanceContext* camera, InstanceContext* character, u32 reset)
         RETAIL(FUN_0015e798);
     void PutFollowCameraOnLens(FollowCamera* follow, InstanceContext* camera) RETAIL(FUN_0015e840);

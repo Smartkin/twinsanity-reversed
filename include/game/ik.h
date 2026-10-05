@@ -9,12 +9,17 @@
 // when it has them), turned until the chain's end reaches a target; a chain in 3D keeps them in the upright plane through its
 // start toward its end
 
+// How far off a unit pair a link's sine and cosine may get (turned, or a limit's) before they're made one again
+constexpr f32 IkTurnTolerance = 0x1.0624dep-11f;
+
 // A link (0x44 bytes, vtable 0x40 bytes in: 1 the destructor): the next link and the one before (none for the first), where it
 // starts in the plane, its length, its angle from the one before's (cosine and sine) and in the plane, whether it has limits and
 // their angles' cosines and sines (the low one's and the high one's), and whether its turns are scaled and by what (made 1;
 // nothing sets them)
 struct IkLink
 {
+    static constexpr u32 DestroySlot = 1;
+
     IkLink* next;
     IkLink* previous;
     f32 x;
@@ -25,13 +30,13 @@ struct IkLink
     f32 planeCosine;
     f32 planeSine;
     u8 limited;
-    u8 unknown25[3];
+    u8 unused25[3];
     f32 lowCosine;
     f32 lowSine;
     f32 highCosine;
     f32 highSine;
     u8 turnScaled;
-    u8 unknown39[3];
+    u8 unused39[3];
     f32 turnShare;
     const GccVTableEntry* vtable;
 };
@@ -100,7 +105,7 @@ extern "C"
     // (the angle's 65536ths of a turn times it), a link's angle (its sine and cosine) kept within its limits to a tolerance, and
     // an angle's sine and cosine made those of 0 to 4 times it (nothing for more)
     void AddIkLinks(IkSolver* solver, u32 count, const f32* lengths, const f32* angles) RETAIL(FUN_001828e0);
-    void SetIkLimits(void* chain, u32 link, const f32* low, const f32* high) RETAIL(FUN_001824b0);
+    void SetIkLimits(void* chain, u32 linkNumber, const f32* low, const f32* high) RETAIL(FUN_001824b0);
     s32 StepIkSolver(IkSolver* solver, u32 steps, f32 tolerance) RETAIL_N32(FUN_00182b08);
     void ScaleIkTurn(f32 share, f32* sine, f32* cosine, s32 terms) RETAIL_N32(FUN_001847b0);
     void KeepIkLinkWithinLimits(IkLink* link, f32* sine, f32* cosine, f32 tolerance) RETAIL_N32(FUN_00182680);

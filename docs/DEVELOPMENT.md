@@ -218,6 +218,47 @@ The C++ keeps the retail behaviour where it shows, bugs included (a string's cap
 size class 10 that nothing reaches, a new block's bits left from the allocator): the heap and the disk pool come out the same as
 the retail game's, which is what the runs compare.
 
+## Writing the C++
+
+Names say what the code does with a value, found by reading every use (all of the game is C++, so a grep finds them); the
+retail names stay as link names (`RETAIL(FUN_...)`, a global's `RETAIL(D_...)`). Types, functions, constants and enumerators
+are PascalCase, fields and locals camelCase, globals `g_`. A field nothing reads, written or not, is `unusedXX` (its offset in
+hex). Fields are never removed and layouts never change: a struct the game's
+files, the retail data or the retail code lay out has its `CHECK_OFFSET`s and `CHECK_SIZE`.
+
+- **Words of bits** (flags, packed values, a command's packed arguments, hardware registers) are unions of the whole word and
+  an anonymous struct of bit-fields from bit 0 up, every bit named (`unusedN` for what nothing reads), with a `CHECK_SIZE`:
+
+  ```cpp
+  union ReferenceBits
+  {
+      u32 value;
+      struct
+      {
+          u32 count : 24;
+          u32 owns : 1;
+          u32 unused25 : 7;
+      };
+  };
+  ```
+
+  The code reads and writes the fields (`instance->flags.visible`). A word written whole (a register, a GIF tag) is made in a
+  local union and stored as `.value`. Where the game ORs a value into a word without masking it, the code keeps a shift to the
+  field's named position: a bit-field would cut off what the retail code lets through. The words of bits a query takes (wanted,
+  unwanted) are masks named next to the union (`ReferencedObjectFlags::Visible`).
+- **Constants**: no bare numbers but the obvious ones. A constant one file uses stays in its anonymous namespace; one several
+  files use has one definition, in the header of what it describes: a vtable's slots in its class's `enum Slot`
+  (`Agent::ContactSlot`, `ObjectNode::TakesPacketsSlot`), a field's values next to the field, an ID's "none" next to the ID's type,
+  node kinds and their masks in `instances.h`'s `NodeKind`, the colour table's indexes in `colour.h`, the maths in `math.h`
+  (`Pi`, `Epsilon`, `Infinite`, the turn angles). An enumerator declared in a class silently shadows a file-level constant of
+  the same name in its subclasses' members, which changes code: a shared definition goes in with the local copies gone.
+- **GS registers** are libgs.h's structs (`GS_TEXA{.alpha_1 = 0x80}`) made into words with `std::bit_cast`. Constants made that
+  way are `const`, not `constexpr` (clang can't evaluate a bit_cast of bit-fields, GCC folds both). libgs.h stays out of the
+  shared headers: `graphics.cpp` includes `gs_privileged.h`, whose `GS_SET_*` macros clash with libgs.h's. The values several
+  of the renderer's files write (the textured sprite, the depth test always passing, white, ...) are `renderer/gsvalues.h`'s,
+  which only the renderer's .cpp files and the movie player include.
+- **Floats**: a decimal literal single precision can't hold is `Rounded(...)` or a hex float (see "Float literals" below).
+
 ## What the build has to look out for
 
 - **The memory budget**: the game's two pools take all but about 10 KB of what the executable leaves of the 32 MB: the disk

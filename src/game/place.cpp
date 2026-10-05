@@ -23,13 +23,10 @@ namespace
 {
 constexpr u32 PlaceClassId = 0x1507;
 constexpr u32 PointClassId = 0x150D;
-// What counts as none of a move or a turn
-constexpr f32 NoneEpsilon = 0x1.a36e2ep-15f;
 
 bool IsNoMove(const Vector4* move)
 {
-    return __builtin_fabsf(move->x) <= NoneEpsilon && __builtin_fabsf(move->y) <= NoneEpsilon &&
-           __builtin_fabsf(move->z) <= NoneEpsilon;
+    return __builtin_fabsf(move->x) <= Epsilon && __builtin_fabsf(move->y) <= Epsilon && __builtin_fabsf(move->z) <= Epsilon;
 }
 
 // A rotation of no turn: x, y and z none and w 1 or -1
@@ -40,14 +37,14 @@ bool IsNoTurn(const Vector4* rotation)
         return false;
     }
 
-    return __builtin_fabsf(rotation->w - 1.0f) <= NoneEpsilon || __builtin_fabsf(rotation->w + 1.0f) <= NoneEpsilon;
+    return __builtin_fabsf(rotation->w - 1.0f) <= Epsilon || __builtin_fabsf(rotation->w + 1.0f) <= Epsilon;
 }
 
 // The rotation taken from the matrix when it turned, and the place turned by a rotation after its own
 void StartTurn(ObjectPlace* place)
 {
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
 }
 
 // The place turned about an axis by an angle (a copy of it handed on, as retail does)
@@ -71,16 +68,18 @@ u32 TurnPlaceAbout(ObjectPlace* place, const s32* angle)
 u32 SetPlaceMatrix(ObjectPlace* place, const Matrix4x4* matrix)
 {
     place->matrix = *matrix;
-    place->bits = (place->bits & ~(ObjectPlace::BitMoved | ObjectPlace::BitTurned)) | ObjectPlace::BitMatrixMoved |
-                  ObjectPlace::BitMatrixTurned;
+    // The matrix newer than the position and the rotation
+    place->bits.value = (place->bits.value & ~(PlaceBits::Moved | PlaceBits::Turned)) | PlaceBits::MatrixMoved |
+                        PlaceBits::MatrixTurned;
     return 1;
 }
 
 ObjectPlace* ConstructObjectPlace(ObjectPlace* place)
 {
     InitIdentityMatrix(&place->matrix);
-    place->bits &= ~u64{ObjectPlace::BitMoved} & ~u64{ObjectPlace::BitTurned} & ~u64{ObjectPlace::BitMatrixMoved} &
-                   ~u64{ObjectPlace::BitMatrixTurned};
+    // The two sides in step
+    place->bits.value &= ~u64{PlaceBits::Moved} & ~u64{PlaceBits::Turned} & ~u64{PlaceBits::MatrixMoved} &
+                         ~u64{PlaceBits::MatrixTurned};
     place->position = g_DefaultBox.min;
     place->position.w = 1.0f;
     place->rotation.z = 0.0f;
@@ -104,7 +103,7 @@ ObjectPlace* AssignObjectPlace(ObjectPlace* place, const ObjectPlace* other)
 
 void RotateAndTranslate(ObjectPlace* place)
 {
-    if ((place->bits & ObjectPlace::BitTurned) != 0)
+    if (place->bits.turned != 0)
     {
         Vector4* rotation = &place->rotation;
         f32 x = rotation->x;
@@ -115,13 +114,13 @@ void RotateAndTranslate(ObjectPlace* place)
         rotation->z = rotation->z * inverse;
         rotation->w = rotation->w * inverse;
         MatrixFromRotation(&place->matrix, rotation);
-        place->bits &= ~u64{ObjectPlace::BitTurned};
+        place->bits.turned = 0;
     }
 
-    if ((place->bits & ObjectPlace::BitMoved) != 0)
+    if (place->bits.moved != 0)
     {
         *RowOf(&place->matrix, 3) = place->position;
-        place->bits &= ~u64{ObjectPlace::BitMoved};
+        place->bits.moved = 0;
     }
 }
 
@@ -161,8 +160,9 @@ u32 ResetObjectPlace(ObjectPlace* place)
         return 0;
     }
 
-    place->bits = (place->bits | ObjectPlace::BitMoved | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixMoved} &
-                  ~u64{ObjectPlace::BitMatrixTurned};
+    // The position and the rotation newer than the matrix
+    place->bits.value = (place->bits.value | PlaceBits::Moved | PlaceBits::Turned) & ~u64{PlaceBits::MatrixMoved} &
+                        ~u64{PlaceBits::MatrixTurned};
     CopyQuadword(&place->position, &g_DefaultBox.min);
     place->position.w = 1.0f;
     place->rotation.z = 0.0f;
@@ -181,7 +181,7 @@ u32 MovePlaceLocally(ObjectPlace* place, const Vector4* offset)
 
     RotateAndTranslate(place);
     place->SyncPosition();
-    place->bits = (place->bits | ObjectPlace::BitMoved) & ~u64{ObjectPlace::BitMatrixMoved};
+    place->MarkMoved();
     const Matrix4x4& matrix = place->matrix;
     Vector4& position = place->position;
     position.x = position.x + (matrix.m[0][0] * offset->x + matrix.m[1][0] * offset->y + matrix.m[2][0] * offset->z);
@@ -209,7 +209,7 @@ u32 TurnPlace(ObjectPlace* place, const Vector4* rotation)
     own->y = turned.y;
     own->z = turned.z;
     own->w = turned.w;
-    f32 inverse = InverseLength4(0.0f, Rounded(1e-10), own);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, own);
     own->x = own->x * inverse;
     own->y = own->y * inverse;
     own->z = own->z * inverse;

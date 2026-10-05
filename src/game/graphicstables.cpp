@@ -186,7 +186,7 @@ extern "C"
     // Each kind's reader's functions and its section readers' under their retail names
     void TextureReaderDestroy(GraphicsKindReader<TextureKind>* reader, u32 flags) RETAIL(FUN_001a1bb8);
     u32 TextureReaderCount(GraphicsKindReader<TextureKind>* reader) RETAIL(GetSubSectionsAmount_001A33D0);
-    u32 TextureReaderSlot3(GraphicsKindReader<TextureKind>* reader) RETAIL(FUN_001a33e0);
+    u32 TextureReaderSectionType(GraphicsKindReader<TextureKind>* reader) RETAIL(FUN_001a33e0);
     bool TextureReaderCanRead(GraphicsKindReader<TextureKind>* reader, u32 type) RETAIL(FUN_001a33e8);
     SectionReader* TextureReaderGetReader(GraphicsKindReader<TextureKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetTextureItemSectionReader);
     void TextureReaderClear(GraphicsKindReader<TextureKind>* reader) RETAIL(FUN_001a3528);
@@ -195,7 +195,7 @@ extern "C"
 
     void MaterialReaderDestroy(GraphicsKindReader<MaterialKind>* reader, u32 flags) RETAIL(FUN_001a1ae8);
     u32 MaterialReaderCount(GraphicsKindReader<MaterialKind>* reader) RETAIL(GetSubSectionAmount);
-    u32 MaterialReaderSlot3(GraphicsKindReader<MaterialKind>* reader) RETAIL(FUN_001a3558);
+    u32 MaterialReaderSectionType(GraphicsKindReader<MaterialKind>* reader) RETAIL(FUN_001a3558);
     bool MaterialReaderCanRead(GraphicsKindReader<MaterialKind>* reader, u32 type) RETAIL(FUN_001a3560);
     SectionReader* MaterialReaderGetReader(GraphicsKindReader<MaterialKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetMaterialsItemSectionReader);
     void MaterialReaderClear(GraphicsKindReader<MaterialKind>* reader) RETAIL(FUN_001a36a0);
@@ -204,7 +204,7 @@ extern "C"
 
     void ModelReaderDestroy(GraphicsKindReader<ModelKind>* reader, u32 flags) RETAIL(FUN_001a1c88);
     u32 ModelReaderCount(GraphicsKindReader<ModelKind>* reader) RETAIL(GetMaterialsItemsAmount);
-    u32 ModelReaderSlot3(GraphicsKindReader<ModelKind>* reader) RETAIL(FUN_001a3268);
+    u32 ModelReaderSectionType(GraphicsKindReader<ModelKind>* reader) RETAIL(FUN_001a3268);
     bool ModelReaderCanRead(GraphicsKindReader<ModelKind>* reader, u32 type) RETAIL(FUN_001a3270);
     SectionReader* ModelReaderGetReader(GraphicsKindReader<ModelKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetGameModelReader);
     void ModelReaderClear(GraphicsKindReader<ModelKind>* reader) RETAIL(FUN_001a33b0);
@@ -213,7 +213,7 @@ extern "C"
 
     void RigidModelReaderDestroy(GraphicsKindReader<RigidModelKind>* reader, u32 flags) RETAIL(FUN_001a1d58);
     u32 RigidModelReaderCount(GraphicsKindReader<RigidModelKind>* reader) RETAIL(GetRigidModelsAmount);
-    u32 RigidModelReaderSlot3(GraphicsKindReader<RigidModelKind>* reader) RETAIL(FUN_001a30f0);
+    u32 RigidModelReaderSectionType(GraphicsKindReader<RigidModelKind>* reader) RETAIL(FUN_001a30f0);
     bool RigidModelReaderCanRead(GraphicsKindReader<RigidModelKind>* reader, u32 type) RETAIL(FUN_001a30f8);
     SectionReader* RigidModelReaderGetReader(GraphicsKindReader<RigidModelKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetRigidModelsReader);
     void RigidModelReaderClear(GraphicsKindReader<RigidModelKind>* reader) RETAIL(FUN_001a3238);
@@ -222,7 +222,7 @@ extern "C"
 
     void SkinReaderDestroy(GraphicsKindReader<SkinKind>* reader, u32 flags) RETAIL(FUN_001a1e28);
     u32 SkinReaderCount(GraphicsKindReader<SkinKind>* reader) RETAIL(GetSkinsAmount);
-    u32 SkinReaderSlot3(GraphicsKindReader<SkinKind>* reader) RETAIL(FUN_001a2f78);
+    u32 SkinReaderSectionType(GraphicsKindReader<SkinKind>* reader) RETAIL(FUN_001a2f78);
     bool SkinReaderCanRead(GraphicsKindReader<SkinKind>* reader, u32 type) RETAIL(FUN_001a2f80);
     SectionReader* SkinReaderGetReader(GraphicsKindReader<SkinKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetSkinsSubSectionReader);
     void SkinReaderClear(GraphicsKindReader<SkinKind>* reader) RETAIL(FUN_001a30c0);
@@ -231,7 +231,7 @@ extern "C"
 
     void BlendSkinReaderDestroy(GraphicsKindReader<BlendSkinKind>* reader, u32 flags) RETAIL(FUN_001a1ef8);
     u32 BlendSkinReaderCount(GraphicsKindReader<BlendSkinKind>* reader) RETAIL(GetBlendSkinsAmount);
-    u32 BlendSkinReaderSlot3(GraphicsKindReader<BlendSkinKind>* reader) RETAIL(FUN_001a2e00);
+    u32 BlendSkinReaderSectionType(GraphicsKindReader<BlendSkinKind>* reader) RETAIL(FUN_001a2e00);
     bool BlendSkinReaderCanRead(GraphicsKindReader<BlendSkinKind>* reader, u32 type) RETAIL(FUN_001a2e08);
     SectionReader* BlendSkinReaderGetReader(GraphicsKindReader<BlendSkinKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetBlendSkinSectionLoader);
     void BlendSkinReaderClear(GraphicsKindReader<BlendSkinKind>* reader) RETAIL(FUN_001a2f48);
@@ -240,7 +240,7 @@ extern "C"
 
     void MeshReaderDestroy(GraphicsKindReader<MeshKind>* reader, u32 flags) RETAIL(FUN_001a2098);
     u32 MeshReaderCount(GraphicsKindReader<MeshKind>* reader) RETAIL(GetRigidModels2Amount);
-    u32 MeshReaderSlot3(GraphicsKindReader<MeshKind>* reader) RETAIL(FUN_001a2b10);
+    u32 MeshReaderSectionType(GraphicsKindReader<MeshKind>* reader) RETAIL(FUN_001a2b10);
     bool MeshReaderCanRead(GraphicsKindReader<MeshKind>* reader, u32 type) RETAIL(FUN_001a2b18);
     SectionReader* MeshReaderGetReader(GraphicsKindReader<MeshKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetRigidModels2SectionReader);
     void MeshReaderClear(GraphicsKindReader<MeshKind>* reader) RETAIL(FUN_001a2c58);
@@ -249,7 +249,7 @@ extern "C"
 
     void LodReaderDestroy(GraphicsKindReader<LodKind>* reader, u32 flags) RETAIL(FUN_001a2168);
     u32 LodReaderCount(GraphicsKindReader<LodKind>* reader) RETAIL(GetLodsAmount);
-    u32 LodReaderSlot3(GraphicsKindReader<LodKind>* reader) RETAIL(FUN_001a2998);
+    u32 LodReaderSectionType(GraphicsKindReader<LodKind>* reader) RETAIL(FUN_001a2998);
     bool LodReaderCanRead(GraphicsKindReader<LodKind>* reader, u32 type) RETAIL(FUN_001a29a0);
     SectionReader* LodReaderGetReader(GraphicsKindReader<LodKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetLodsSectionReader);
     void LodReaderClear(GraphicsKindReader<LodKind>* reader) RETAIL(FUN_001a2ae0);
@@ -258,7 +258,7 @@ extern "C"
 
     void SkyReaderDestroy(GraphicsKindReader<SkyKind>* reader, u32 flags) RETAIL(FUN_001a1fc8);
     u32 SkyReaderCount(GraphicsKindReader<SkyKind>* reader) RETAIL(GetSkydomesAmount);
-    u32 SkyReaderSlot3(GraphicsKindReader<SkyKind>* reader) RETAIL(FUN_001a2c88);
+    u32 SkyReaderSectionType(GraphicsKindReader<SkyKind>* reader) RETAIL(FUN_001a2c88);
     bool SkyReaderCanRead(GraphicsKindReader<SkyKind>* reader, u32 type) RETAIL(FUN_001a2c90);
     SectionReader* SkyReaderGetReader(GraphicsKindReader<SkyKind>* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetSkydomeSectionReader);
     void SkyReaderClear(GraphicsKindReader<SkyKind>* reader) RETAIL(FUN_001a2dd0);
@@ -292,14 +292,6 @@ namespace
 {
 // How much room the tables grow by
 constexpr u16 Growth = 0x40;
-
-// The data's streams' alignment
-constexpr u16 StreamAlignment = 0x40;
-// The graphics section's subsections are read as far as their headers, their tables are queued
-constexpr s32 SubsectionHeaderSize = 0xC;
-// The section types the graphics item and the kinds' readers read
-constexpr u32 GraphicsSectionType = 1;
-constexpr u32 SubsectionType = 3;
 
 // How each kind's resources are made, deleted and read (the platform's), and its vtables
 template <typename Kind>
@@ -641,8 +633,10 @@ void GraphicsTable<Kind>::ReleaseAll()
     {
         // Cleared before the check for none (through address 0)
         Item* item = entries[index].item;
-        ReferencesOf(item) = 0;
-        HeaderOf(item)->bits &= ~(ResourceHeader::Bit16 | ResourceHeader::Kept);
+        ResourceHeader* header = HeaderOf(item);
+        header->bits.references = 0;
+        header->bits.unused16 = 0;
+        header->bits.kept = 0;
         if (item != nullptr)
         {
             Traits<Kind>::Delete(item);
@@ -698,8 +692,9 @@ typename GraphicsTable<Kind>::Item* GraphicsTable<Kind>::Acquire(const u32* id, 
 template <typename Kind>
 bool GraphicsTable<Kind>::DropReference(Item* item)
 {
-    u16 references = --ReferencesOf(item);
-    return references != 0 || (HeaderOf(item)->bits & ResourceHeader::Kept) != 0;
+    ResourceHeader* header = HeaderOf(item);
+    u16 references = --header->bits.references;
+    return references != 0 || header->bits.kept != 0;
 }
 
 // Without the loop made into a call of memmove, which the game doesn't have
@@ -802,7 +797,7 @@ void GraphicsTable<Kind>::DestroyBase(u32 flags)
     entries = nullptr;
     count = 0;
     capacity = 0;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -848,7 +843,7 @@ template <typename Kind>
 void GraphicsKindReader<Kind>::Destroy(u32 flags)
 {
     Unload();
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -914,7 +909,7 @@ template <typename Kind>
 void GraphicsResourceReader<Kind>::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -924,7 +919,7 @@ template <typename Kind>
 void GraphicsResourceReader<Kind>::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, StreamAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     Traits<Kind>::Read(item, &stream);
     typename Kind::Item* read = item;
     table->Insert(&read, HeaderOf(read)->id);
@@ -961,7 +956,7 @@ template struct GraphicsResourceReader<SkyKind>;
 
 void InitGraphicsResourceTables(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -980,7 +975,7 @@ void InitGraphicsResourceTables(s32 initialise, s32 priority)
 
 void GraphicsTablesStaticInit()
 {
-    InitGraphicsResourceTables(1, 0xFFFF);
+    InitGraphicsResourceTables(1, DefaultInitPriority);
 }
 
 void ReleaseGraphicsResources(GraphicsItem*)
@@ -1039,7 +1034,7 @@ void UnloadGraphics(GraphicsItem* item, u32 flags)
     item->textures.Unload();
     item->materials.Unload();
     item->vtable = g_ItemInterfaceVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(item);
     }
@@ -1050,14 +1045,14 @@ u32 GraphicsItemCount(GraphicsItem*)
     return GraphicsItem::SubsectionCount;
 }
 
-u32 GraphicsItemSlot3(GraphicsItem*)
+u32 GraphicsItemSectionType(GraphicsItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 bool GraphicsItemCanRead(GraphicsItem*, u32 type)
 {
-    return type == GraphicsSectionType;
+    return type == DefaultSectionType;
 }
 
 SectionReader* GetGraphicsSectionReader(GraphicsItem* item, s32, ItemHeader* header, s32* size)
@@ -1069,9 +1064,10 @@ SectionReader* GetGraphicsSectionReader(GraphicsItem* item, s32, ItemHeader* hea
 
     u32 kind = header->id;
     u32 start = header->offset;
+    // A subsection is read as far as its header, its table is queued
     if (kind < GraphicsItem::SubsectionCount)
     {
-        *size = SubsectionHeaderSize;
+        *size = sizeof(SectionHeader);
     }
 
     auto* reader = static_cast<GraphicsSubsectionReader*>(MemoryAllocate(sizeof(GraphicsSubsectionReader)));
@@ -1141,7 +1137,7 @@ void ForgetGraphicsReading(GraphicsItem*)
 void DestroyGraphicsSubsectionReader(GraphicsSubsectionReader* reader, u32 flags)
 {
     reader->vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(reader);
     }
@@ -1867,14 +1863,15 @@ void SkyMade(SkyTable* table, const u32* id, Sky* sky)
     StringConstructNumber(&number, *id);
     StringAppend(&path, number.string);
     StringDestroy(&number);
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     auto* reader = static_cast<GraphicsResourceReader<SkyKind>*>(MemoryAllocate(sizeof(GraphicsResourceReader<SkyKind>)));
     reader->item = sky;
     reader->vtable = g_SkySectionReaderVTable;
     reader->table = table;
     auto* file = static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader)));
-    file = SubItemsReader::ConstructFile(file, path.string, reader, SubItemsReader::WholeFile | SubItemsReader::OnDisk);
-    AddItemReaderToReaderStorage(storage, file, 0);
+    file = SubItemsReader::ConstructFile(file, path.string, reader,
+                                         SubItemsReaderOptions::ClosesFile | SubItemsReaderOptions::OnDisk);
+    AddItemReaderToReaderStorage(storage, file, QueueBack);
     StringDestroy(&path);
 }
 
@@ -1896,14 +1893,14 @@ u32 TextureReaderCount(GraphicsKindReader<TextureKind>* reader)
     return reader->Count();
 }
 
-u32 TextureReaderSlot3(GraphicsKindReader<TextureKind>*)
+u32 TextureReaderSectionType(GraphicsKindReader<TextureKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool TextureReaderCanRead(GraphicsKindReader<TextureKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* TextureReaderGetReader(GraphicsKindReader<TextureKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -1936,14 +1933,14 @@ u32 MaterialReaderCount(GraphicsKindReader<MaterialKind>* reader)
     return reader->Count();
 }
 
-u32 MaterialReaderSlot3(GraphicsKindReader<MaterialKind>*)
+u32 MaterialReaderSectionType(GraphicsKindReader<MaterialKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool MaterialReaderCanRead(GraphicsKindReader<MaterialKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* MaterialReaderGetReader(GraphicsKindReader<MaterialKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -1976,14 +1973,14 @@ u32 ModelReaderCount(GraphicsKindReader<ModelKind>* reader)
     return reader->Count();
 }
 
-u32 ModelReaderSlot3(GraphicsKindReader<ModelKind>*)
+u32 ModelReaderSectionType(GraphicsKindReader<ModelKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool ModelReaderCanRead(GraphicsKindReader<ModelKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* ModelReaderGetReader(GraphicsKindReader<ModelKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2016,14 +2013,14 @@ u32 RigidModelReaderCount(GraphicsKindReader<RigidModelKind>* reader)
     return reader->Count();
 }
 
-u32 RigidModelReaderSlot3(GraphicsKindReader<RigidModelKind>*)
+u32 RigidModelReaderSectionType(GraphicsKindReader<RigidModelKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool RigidModelReaderCanRead(GraphicsKindReader<RigidModelKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* RigidModelReaderGetReader(GraphicsKindReader<RigidModelKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2056,14 +2053,14 @@ u32 SkinReaderCount(GraphicsKindReader<SkinKind>* reader)
     return reader->Count();
 }
 
-u32 SkinReaderSlot3(GraphicsKindReader<SkinKind>*)
+u32 SkinReaderSectionType(GraphicsKindReader<SkinKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool SkinReaderCanRead(GraphicsKindReader<SkinKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* SkinReaderGetReader(GraphicsKindReader<SkinKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2096,14 +2093,14 @@ u32 BlendSkinReaderCount(GraphicsKindReader<BlendSkinKind>* reader)
     return reader->Count();
 }
 
-u32 BlendSkinReaderSlot3(GraphicsKindReader<BlendSkinKind>*)
+u32 BlendSkinReaderSectionType(GraphicsKindReader<BlendSkinKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool BlendSkinReaderCanRead(GraphicsKindReader<BlendSkinKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* BlendSkinReaderGetReader(GraphicsKindReader<BlendSkinKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2136,14 +2133,14 @@ u32 MeshReaderCount(GraphicsKindReader<MeshKind>* reader)
     return reader->Count();
 }
 
-u32 MeshReaderSlot3(GraphicsKindReader<MeshKind>*)
+u32 MeshReaderSectionType(GraphicsKindReader<MeshKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool MeshReaderCanRead(GraphicsKindReader<MeshKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* MeshReaderGetReader(GraphicsKindReader<MeshKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2176,14 +2173,14 @@ u32 LodReaderCount(GraphicsKindReader<LodKind>* reader)
     return reader->Count();
 }
 
-u32 LodReaderSlot3(GraphicsKindReader<LodKind>*)
+u32 LodReaderSectionType(GraphicsKindReader<LodKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool LodReaderCanRead(GraphicsKindReader<LodKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* LodReaderGetReader(GraphicsKindReader<LodKind>* reader, s32 index, ItemHeader* header, s32* size)
@@ -2216,14 +2213,14 @@ u32 SkyReaderCount(GraphicsKindReader<SkyKind>* reader)
     return reader->Count();
 }
 
-u32 SkyReaderSlot3(GraphicsKindReader<SkyKind>*)
+u32 SkyReaderSectionType(GraphicsKindReader<SkyKind>*)
 {
-    return SubsectionType;
+    return GraphicsKindSectionType;
 }
 
 bool SkyReaderCanRead(GraphicsKindReader<SkyKind>*, u32 type)
 {
-    return type == SubsectionType;
+    return type == GraphicsKindSectionType;
 }
 
 SectionReader* SkyReaderGetReader(GraphicsKindReader<SkyKind>* reader, s32 index, ItemHeader* header, s32* size)

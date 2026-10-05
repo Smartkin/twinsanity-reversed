@@ -34,24 +34,7 @@ extern "C"
 
 namespace
 {
-// Its kinds of emitting
-enum TrailKind : u32
-{
-    KindAlways = 0,
-    KindTimed = 1,
-    KindFaster = 3,
-    KindChanging = 4,
-    KindUnsetVector = 5,
-    KindAnimation = 7,
-    KindStronger = 8,
-};
-
-constexpr u16 NoSystem = 0xFFFF;
-constexpr u16 NoSound = 0xFFFF;
-constexpr u16 NoMessage = 0xFFFF;
-constexpr u32 NoContact = 0xFF;
-constexpr s32 NoSurface = -1;
-constexpr u32 PositionRow = 3;
+constexpr u32 NoContactKind = 0xFF;
 // Kind 1's speed below which it doesn't emit
 constexpr f32 SlowestSpeed = Rounded(0.0001);
 // The surfaces that keep tracks (sand and snow), and the system sand puffs up with
@@ -63,19 +46,18 @@ constexpr f32 LoudnessPerStrength = Rounded(0.1);
 constexpr f32 LoudestSound = 3.0f;
 // A camera shake only along x and y once one of them is above this
 constexpr f32 SmallestShake = Rounded(0.01);
-constexpr u32 MessageKinds = 2;
 
 // The offset of its frame when it's given one
 const Vector4* OffsetOf(const TrailArguments* trail)
 {
-    return (trail->bits & TrailArguments::OffsetGiven) != 0 ? reinterpret_cast<const Vector4*>(trail->offset) : nullptr;
+    return trail->bits.offsetGiven ? reinterpret_cast<const Vector4*>(trail->offset) : nullptr;
 }
 
 // A frame turned and moved by its offset as the trail asks
 void OrientFrame(const TrailArguments* trail, Matrix4x4* frame)
 {
-    u32 turned = trail->bits >> TrailArguments::TurnedShift & 1;
-    OrientParticleFrame(turned, trail->bits >> TrailArguments::AxesShift & TrailArguments::AxesMask, OffsetOf(trail), frame);
+    u32 turned = trail->bits.turned;
+    OrientParticleFrame(turned, trail->bits.axes, OffsetOf(trail), frame);
 }
 
 // The frame particles leave its instance from, oriented as the trail asks
@@ -106,15 +88,15 @@ f32 SecondsSince(const TimeClock* clock, s32 time)
 // Whether a trail emits this step, by its kind; its node's trails' time is the trail's
 bool TrailEmits(const TrailArguments* trail, TimeClock* clock, ObjectNode* node, f32 strength)
 {
-    switch (trail->bits & TrailArguments::KindMask)
+    switch (trail->bits.kind)
     {
-    case KindAlways:
+    case TrailArguments::KindAlways:
         return true;
-    case KindTimed:
+    case TrailArguments::KindTimed:
     {
         s32* time = node->particleTrails->time;
         f32 interval = trail->interval;
-        if ((trail->bits & TrailArguments::BySpacing) != 0)
+        if (trail->bits.bySpacing)
         {
             Vector4 velocity = node->motion->velocity;
             f32 speed = Kept(__builtin_sqrtf(SquaredLength(&velocity)));
@@ -137,7 +119,7 @@ bool TrailEmits(const TrailArguments* trail, TimeClock* clock, ObjectNode* node,
         *time = *time - static_cast<s32>(RandomBelowFloat(trail->randomInterval) * g_ClockUnitsPerSecond);
         return emits;
     }
-    case KindFaster:
+    case TrailArguments::KindFaster:
     {
         Vector4 velocity = node->motion->velocity;
         if (!PassesThreshold(SquaredLength(&velocity), trail->threshold))
@@ -145,7 +127,7 @@ bool TrailEmits(const TrailArguments* trail, TimeClock* clock, ObjectNode* node,
             return false;
         }
 
-        if ((trail->bits & TrailArguments::BySpacing) != 0)
+        if (trail->bits.bySpacing)
         {
             s32* time = node->particleTrails->time;
             if (!(trail->spacing < SecondsSince(clock, *time)))
@@ -158,14 +140,14 @@ bool TrailEmits(const TrailArguments* trail, TimeClock* clock, ObjectNode* node,
 
         return true;
     }
-    case KindChanging:
+    case TrailArguments::KindChanging:
     {
         const MotionState* motion = node->motion;
         Vector4 change = {motion->velocity.x - motion->startVelocity.x, motion->velocity.y - motion->startVelocity.y,
                           motion->velocity.z - motion->startVelocity.z, 1.0f};
         return PassesThreshold(SquaredLength(&change), trail->threshold);
     }
-    case KindUnsetVector:
+    case TrailArguments::KindUnsetVector:
     {
         // Retail bug: kind 5 compares a vector it never sets (kind 4's change of velocity, left on the stack by an earlier trail
         // at best): the C++ reads what its own frame holds there
@@ -173,9 +155,9 @@ bool TrailEmits(const TrailArguments* trail, TimeClock* clock, ObjectNode* node,
         asm volatile("" : "=m"(leftover));
         return PassesThreshold(SquaredLength(&leftover), trail->threshold);
     }
-    case KindAnimation:
+    case TrailArguments::KindAnimation:
         return TrailAnimationRestarted(trail, clock, node) != 0;
-    case KindStronger:
+    case TrailArguments::KindStronger:
         return trail->strength < strength;
     default:
         return false;
@@ -189,7 +171,7 @@ Matrix4x4 EmitterFrame(const TrailArguments* trail, ObjectNode* node, InstanceCo
     constexpr u32 ExitPointSpace = 0;
     constexpr u32 StartSpace = 1;
     constexpr u32 PlaceSpace = 2;
-    u32 space = trail->bits >> TrailArguments::SpaceShift & TrailArguments::SpaceMask;
+    u32 space = trail->bits.space;
     if (space == ExitPointSpace)
     {
         return TrailFrame(trail, instance);
@@ -213,7 +195,7 @@ Matrix4x4 EmitterFrame(const TrailArguments* trail, ObjectNode* node, InstanceCo
         return frame;
     }
 
-    if ((trail->bits & TrailArguments::OffsetGiven) != 0)
+    if (trail->bits.offsetGiven)
     {
         MoveAlongAxes(&frame, OffsetOf(trail));
     }
@@ -233,48 +215,49 @@ u16 SurfaceIdOf(const CollisionSurface* surface)
 u32 SlotSound(const TrailArguments* trail, ObjectNode* node)
 {
     // A count past the 8 slots reads the halfwords after them
-    u32 slot = trail->sounds[RandomBelow(trail->bits >> TrailArguments::SoundsShift & TrailArguments::SoundsMask)];
+    u32 slot = trail->sounds[RandomBelow(trail->bits.soundCount)];
     GameObject* object = node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
-    if (slot == NoSound)
+    if (slot == NoSoundSlot)
     {
-        return NoSound;
+        return NoSoundId;
     }
 
     u16 found;
     GetObjectSoundId(&found, object, slot);
-    if (found != NoSound)
+    if (found != NoSoundId)
     {
-        return found & 0x7FFF;
+        return found & ResourceIndexMask;
     }
 
     GameObject* own = node->OwnObject();
     if (own == nullptr)
     {
-        return NoSound;
+        return NoSoundId;
     }
 
     GetObjectSoundId(&found, own, slot);
-    return found != NoSound ? found & 0x7FFF : NoSound;
+    return found != NoSoundId ? found & ResourceIndexMask : NoSoundId;
 }
 }
 
 TrailArguments* ConstructTrailArguments(TrailArguments* trail)
 {
     // Bits 29-31 and 59-63 stay as they were; bits 4-9 and 14-17 are 1, the contact's kind none, everything else 0
-    constexpr u64 KeptBits = 0xF8000000E0000000;
-    constexpr u64 MadeBits = u64{1} << 4 | u64{1} << 14 | u64{NoContact} << TrailArguments::ContactShift;
-    constexpr u8 NoExitPoint = 0x3F;
-    trail->bits = (trail->bits & KeptBits) | MadeBits;
-    trail->exitPoint = NoExitPoint;
-    trail->system = NoSystem;
+    TrailBits made = {};
+    made.unused4 = 1;
+    made.unused14 = 1;
+    made.contact = NoContactKind;
+    trail->bits.value = (trail->bits.value & TrailBits::KeptOnMaking) | made.value;
+    trail->exitPoint = NoParticleExitPoint;
+    trail->system = NoParticleSystem;
     for (u16& sound : trail->sounds)
     {
-        sound = NoSound;
+        sound = NoSoundId;
     }
 
-    trail->unknown1E = 0xFFFF;
+    trail->extraSound = NoSoundId;
     trail->message = NoMessage;
-    trail->surface = NoSurface;
+    trail->surface = ObjectNode::NoSurface;
     trail->threshold = 0.0f;
     trail->interval = 0.0f;
     trail->randomInterval = 0.0f;
@@ -299,24 +282,24 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
     f32 strength = node->particleTrails->strength;
     bool emits = TrailOnItsSurface(trail, node) != 0 && TrailEmits(trail, clock, node, strength);
     InstanceContext* instance = node->owner;
-    u32 kind = trail->bits & TrailArguments::KindMask;
-    u32 contact = trail->bits >> TrailArguments::ContactShift & TrailArguments::ContactMask;
+    u32 kind = trail->bits.kind;
+    u32 contact = trail->bits.contact;
     // The surface of the water the node is in (and the point where it touches the water), else the one it stands on
     const Vector4* waterPoint = nullptr;
     const CollisionSurface* surface = nullptr;
-    if (contact != NoContact)
+    if (contact != NoContactKind)
     {
-        s32 index = node->unknown134;
-        if (index != NoSurface)
+        s32 index = node->waterSurface;
+        if (index != ObjectNode::NoSurface)
         {
-            waterPoint = &node->unknown140;
+            waterPoint = &node->waterPoint;
         }
         else
         {
             index = node->surface;
         }
 
-        if (index != NoSurface)
+        if (index != ObjectNode::NoSurface)
         {
             surface = &g_CollisionSurfaces.surfaces[index];
         }
@@ -327,9 +310,9 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
     bool framed = false;
     bool atWater = false;
     u32 system = surface != nullptr ? GetSurfaceParticle(surface, contact) : trail->system;
-    if (system != NoSystem)
+    if (system != NoParticleSystem)
     {
-        if (kind == KindAnimation)
+        if (kind == TrailArguments::KindAnimation)
         {
             if (emits)
             {
@@ -375,7 +358,7 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
         {
             // The emitter passed in follows the frame (none on the step that started one: it's at its instance until the next)
             Matrix4x4 emitterFrame = EmitterFrame(trail, node, instance);
-            if ((trail->bits & TrailArguments::GravityFrame) != 0)
+            if (trail->bits.gravityFrame)
             {
                 SetEmitterGravityFrame(emitter, &emitterFrame);
             }
@@ -385,7 +368,7 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
             }
         }
     }
-    else if (surface != nullptr && kind == KindAnimation && emits)
+    else if (surface != nullptr && kind == TrailArguments::KindAnimation && emits)
     {
         u16 id = surface->surfaceId;
         if (id == SandSurface || id == SnowSurface)
@@ -402,14 +385,14 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
         }
     }
 
-    f32 volume = (trail->bits & TrailArguments::VolumeGiven) != 0 ? trail->volume : -1.0f;
-    u32 sound = NoSound;
+    f32 volume = trail->bits.volumeGiven ? trail->volume : -1.0f;
+    u32 sound = NoSoundId;
     if (emits)
     {
         if (surface != nullptr)
         {
-            sound = (trail->bits & TrailArguments::NoSurfaceSound) != 0 ? NoSound : GetSurfaceSound(surface, contact, &volume);
-            if (kind == KindAnimation && !atWater)
+            sound = trail->bits.noSurfaceSound ? NoSoundId : GetSurfaceSound(surface, contact, &volume);
+            if (kind == TrailArguments::KindAnimation && !atWater)
             {
                 framed = true;
                 frame = TrailFrame(trail, instance);
@@ -426,10 +409,8 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
         }
     }
 
-    // The sound plays while its instance's seen stamp is below this
-    constexpr u32 SoundSeenLimit = 0x1FA4;
-    u32 seen = instance->seen[0] | instance->seen[1] << 8 | instance->seen[2] << 16;
-    if (sound != NoSound && emits && seen < SoundSeenLimit)
+    u32 seen = instance->seen;
+    if (sound != NoSoundId && emits && seen < InstanceContext::SoundSeenLimit)
     {
         if (!framed)
         {
@@ -437,7 +418,7 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
             frame = TrailFrame(trail, instance);
         }
 
-        u32 group = (trail->bits & TrailArguments::GroupMask) == TrailArguments::GroupOne ? 1 : 0;
+        u32 group = trail->bits.soundGroup == 1 ? 1 : 0;
         if (0.0f < trail->strength)
         {
             f32 louder = (strength - trail->strength) * LoudnessPerStrength;
@@ -453,13 +434,13 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
             }
         }
 
-        f32 pitch = (trail->bits & TrailArguments::PitchGiven) != 0 ? trail->pitch : 1.0f;
-        if ((trail->bits & TrailArguments::RandomPitch) != 0)
+        f32 pitch = trail->bits.pitchGiven ? trail->pitch : 1.0f;
+        if (trail->bits.randomPitch)
         {
             pitch = pitch + RandomSignedTimes(trail->randomPitch);
         }
 
-        if ((trail->bits & TrailArguments::PitchByThreshold) != 0)
+        if (trail->bits.pitchByThreshold)
         {
             pitch = pitch * trail->threshold;
         }
@@ -467,7 +448,7 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
         PlaySoundByIdAt(volume, pitch, sound, group, instance->chunk, RowOf(&frame, PositionRow), ListenerVoiceKind(), -1);
     }
 
-    if ((trail->bits & TrailArguments::ShakesCamera) != 0 && emits)
+    if (trail->bits.shakesCamera && emits)
     {
         if (!framed)
         {
@@ -489,7 +470,7 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
     {
         Reference* sender = instance != nullptr ? AddReference(instance) : nullptr;
         auto* memory = static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent)));
-        GameEvent* event = GameEvent::Construct(memory, trail->message, &sender, MessageKinds);
+        GameEvent* event = GameEvent::Construct(memory, trail->message, &sender, ObjectNodeKinds);
         Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
         QueueEvent(instance, &handle);
     }
@@ -499,14 +480,14 @@ s32 StepTrail(TrailArguments* trail, TimeClock* clock, ObjectNode* node, s32 emi
 
 void LeaveTrailDecals(const TrailArguments* trail, const Matrix4x4* frame, ChunkData* chunk)
 {
-    if ((trail->bits >> TrailArguments::DecalsShift & TrailArguments::DecalsMask) == 0)
+    if (trail->bits.decalCount == 0)
     {
         AddDecalFromDescriptor(frame, chunk);
         return;
     }
 
     // Each decal spread across x and z by up to the spacing either way (a third random number drawn for y goes unused)
-    for (u32 index = 0; index < (trail->bits >> TrailArguments::DecalsShift & TrailArguments::DecalsMask); index++)
+    for (u32 index = 0; index < trail->bits.decalCount; index++)
     {
         Matrix4x4 spread = *frame;
         Vector4 offset = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -526,15 +507,14 @@ void LeaveTrailDecals(const TrailArguments* trail, const Matrix4x4* frame, Chunk
 
 u32 TrailAnimationRestarted(const TrailArguments* trail, TimeClock*, ObjectNode* node)
 {
-    constexpr u32 RootJoint = 0xFF;
     s32* time = node->particleTrails->time;
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNode::NodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     if (model->animator == nullptr)
     {
         return 0;
     }
 
-    if (!(GetAnimationProgress(model->animator, RootJoint) < trail->progress))
+    if (!(GetAnimationProgress(model->animator, OgiAnimator::RootJoint) < trail->progress))
     {
         *time = 0;
         return 0;

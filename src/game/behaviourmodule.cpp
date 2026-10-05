@@ -1,7 +1,9 @@
 #include "game/array.h"
+#include "game/behaviours.h"
 #include "game/events.h"
 #include "game/memory.h"
 #include "game/objectnode.h"
+#include "game/objects.h"
 #include "game/place.h"
 #include "game/resources.h"
 
@@ -62,14 +64,13 @@ void ScriptEvent::Destroy(u32 destroyFlags)
 
 void ScriptEvent::Apply(ObjectNodeBase* node, GameResources* resources)
 {
-    constexpr u32 StartBehaviourSlot = 18;
-    constexpr u16 NoStarter = 0xFFFF;
     ResourceTable* scripts = resources->scripts;
     u16 index = starter;
-    auto* found = index != NoStarter ? static_cast<ScriptStarter*>(scripts->items[index & 0x7FFF]) : nullptr;
+    auto* found = index != NoScriptId ? static_cast<ScriptStarter*>(scripts->items[index & ResourceIndexMask]) : nullptr;
     if (found != nullptr)
     {
-        CallVirtual<u32>(node, node->vtable, StartBehaviourSlot, found, originator, u32{bits} & Forced, u32{slot});
+        CallVirtual<u32>(node, node->vtable, ObjectNode::StartBehaviourSlot, found, originator, u32{bits.forced},
+                         u32{slot});
     }
 }
 
@@ -159,8 +160,7 @@ UnusedArrayIterator* UnusedArrayIterator::Assign(const UnusedArrayIterator* othe
 
 void InitBehaviourStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -171,5 +171,5 @@ void InitBehaviourStatics(u32 initialise, u32 priority)
 
 void ConstructBehaviourModule()
 {
-    InitBehaviourStatics(1, 0xFFFF);
+    InitBehaviourStatics(1, DefaultInitPriority);
 }

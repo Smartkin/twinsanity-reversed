@@ -2,6 +2,7 @@
 
 #include "game/agents.h"
 #include "game/camerarig.h"
+#include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/collision.h"
 #include "game/instances.h"
@@ -18,16 +19,13 @@ EABI_EXPORT(FUN_00153770, &WrestleVehicle::Wobble);
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 BodyNodeKind = 5;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-
-// The script events run on the character: falling fast, pinning the creature and pinned by it
-constexpr u32 EventFell = 0xB;
+// The script events run on the character: pinning the creature and pinned by it (characters.h's EventLongDrop when it falls
+// fast)
 constexpr u32 EventPins = 0x67;
 constexpr u32 EventPinned = 0x69;
 
-// The ball: a sphere body of a unit mass in a 2.5 box, how it bounces and rubs, its steps and the triangles its cache keeps
+// The ball: a sphere body of a unit mass in a 2.5 box, how it bounces and rubs, and its steps (its cache keeps the triangles of
+// the surfaces solid to the player's probes)
 constexpr f32 BallRadius = Rounded(0.8);
 constexpr f32 BallMass = 1.0f;
 constexpr f32 BallSize = 2.5f;
@@ -37,7 +35,6 @@ constexpr f32 BallFriction = 1.5f;
 constexpr f32 BallSpinFriction = 0.5f;
 constexpr f32 BallRollFriction = Rounded(0.07);
 constexpr s32 BallSubsteps = 3;
-constexpr u32 BallCacheMask = 0x10;
 // The two sides of the ball (made units), in the body's space
 constexpr f32 SideX = Rounded(1.1);
 constexpr f32 SideZ = Rounded(0.4);
@@ -53,6 +50,7 @@ constexpr f32 FellSpeed = 40.0f;
 // 10, half again when it pushes against the motion)
 constexpr f32 AirPush = 8.0f;
 constexpr f32 GroundPush = 10.0f;
+constexpr f32 MostAgainstPush = 0.5f;
 // The drags: speeds and spins under 0.09 have none, past it a share of the rest
 constexpr f32 DragFreeSpeed = Rounded(0.09);
 constexpr f32 DragShare = -0.005f;
@@ -75,8 +73,6 @@ constexpr f32 CharacterPinTime = Rounded(1.7);
 constexpr f32 CreaturePinTime = 1.5f;
 constexpr f32 PinTime = 4.0f;
 constexpr f32 InversePinTurnTime = Rounded(1.0 / 0.7);
-// A pin's turn axis shorter than this (squared) turns nothing
-constexpr f32 PinAxisEpsilon = 5e-05f;
 // The pushes of a frame shorter than this (squared) don't count against each other
 constexpr f32 PushEpsilon = 0.0001f;
 
@@ -89,7 +85,7 @@ constexpr f32 HomeSpinLimit = 30.0f;
 constexpr f32 WanderLimit = 9.0f;
 constexpr f32 VelocityHomeTime = 1.5f;
 // The struggle: a new push one time in 60 less its side's height squared times 40, of a length squared between the round's
-// least and most; rounds 0 to 5, the last one pressing; pressing when the creature's side faces up more than 0.707
+// least and most (the last round's longer); pressing when the creature's side faces up more than 0.707
 constexpr s32 StruggleOdds = 60;
 constexpr f32 StruggleOddsScale = 40.0f;
 constexpr f32 RestingLeast = 0.25f;
@@ -98,8 +94,6 @@ constexpr f32 StruggleLeast = 0.5f;
 constexpr f32 StruggleMost = Rounded(0.8);
 constexpr f32 LastRoundLeast = 0.75f;
 constexpr f32 LastRoundMost = 1.05f;
-constexpr s32 Rounds = 6;
-constexpr s32 LastRound = 5;
 constexpr f32 PressFacing = Rounded(0.707);
 // Pressing down: toward the character's side laid flat (its length times 5 and 2 more), a quarter of the way from the velocity,
 // no longer than 0.4 and 0.3 a second more up to 1.3; done after 2.4 seconds or once its own side faces down
@@ -117,34 +111,7 @@ constexpr f32 InverseCreaturePinTime = Rounded(1.0 / 1.5);
 
 DynamicBody* BodyOf(InstanceContext* instance)
 {
-    return static_cast<DynamicBody*>(GetGameNode(&instance->nodes, BodyNodeKind));
-}
-
-// When the vehicle's Place says so, the character put at agentMatrix and the other at otherMatrix, each queued when its place
-// changed (retail works out the rotation of agentMatrix first and drops it)
-void PlaceRiders(Vehicle* vehicle)
-{
-    if (vehicle->Place() == 0)
-    {
-        return;
-    }
-
-    Vector4 rotation;
-    GetRotationVec(&rotation, &vehicle->agentMatrix);
-    InstanceContext* instance = vehicle->agent->instance;
-    if (SetPlaceMatrix(instance->place, &vehicle->agentMatrix) != 0)
-    {
-        QueueObject(instance);
-    }
-
-    if (vehicle->other != nullptr)
-    {
-        InstanceContext* otherInstance = vehicle->other->instance;
-        if (SetPlaceMatrix(otherInstance->place, &vehicle->otherMatrix) != 0)
-        {
-            QueueObject(otherInstance);
-        }
-    }
+    return static_cast<DynamicBody*>(GetGameNode(&instance->nodes, NodeRigidBody));
 }
 
 // A push cut to a length along itself when it's longer
@@ -178,10 +145,11 @@ f32 Saturated(f32 value)
 WrestleVehicle* WrestleVehicle::Construct(WrestleVehicle* vehicle, CharacterAgent* agent, Agent* creature)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->other = creature;
     vehicle->vtable = g_WrestleVehicleVTable;
-    vehicle->Bits() = (vehicle->Bits() | BitDrives) & ~u64{BitHeld};
+    vehicle->bits.drives = 1;
+    vehicle->bits.held = 0;
     vehicle->Start();
     return vehicle;
 }
@@ -194,7 +162,7 @@ void WrestleVehicle::Start()
     tactic = TacticNone;
     heading = *RowOf(&place->matrix, 2);
     radius = BallRadius;
-    unknown110 = 0;
+    unused110 = 0;
     characterSide = {-SideX, 1.0f, SideZ, 1.0f};
     f32 inverse = InverseLength(&characterSide, LengthEpsilon);
     characterSide.x = characterSide.x * inverse;
@@ -216,16 +184,16 @@ void WrestleVehicle::Start()
     body->SetSoftness(BallSoftness);
     body->SetFriction(BallFriction);
     body->SetSpinAndRollFriction(BallSpinFriction, BallRollFriction);
-    *reinterpret_cast<u64*>(&body->bits) &= ~u64{DynamicBody::BitPlacesInstance};
+    body->bits.placesInstance = 0;
     body->contactArgument = this;
     body->touchArgument = this;
     body->substeps = BallSubsteps;
     body->contactCallback = ContactCallback;
     body->touchCallback = TouchCallback;
-    body->SetCacheMask(BallCacheMask);
+    body->SetCacheMask(SurfaceFlags::SolidToPlayerProbes);
     body->lengthDrag = 0.0f;
     body->drag = 0.0f;
-    other->instance->flags &= ~ReferencedObject::FlagSphereContact;
+    other->instance->flags.collisionActive = 0;
     lastVelocity = body->velocity;
     wobbleAxis = g_DefaultBox.min;
     wobbleAxis.w = 1.0f;
@@ -294,14 +262,14 @@ u32 WrestleVehicle::Place()
 void WrestleVehicle::Destroy(u32 destroyFlags)
 {
     vtable = g_WrestleVehicleVTable;
-    other->instance->flags |= ReferencedObject::FlagSphereContact;
+    other->instance->flags.collisionActive = 1;
     Vehicle::Destroy(destroyFlags);
 }
 
 // Only through links with bit 18, its last velocity turned through it
 u32 WrestleVehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -361,7 +329,7 @@ void WrestleVehicle::Frame(f32 seconds)
     }
 
     // Retail doesn't check for the object node
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, NodeObject));
     ParticleTrails* trails = node->particleTrails;
     if (trails != nullptr)
     {
@@ -410,7 +378,7 @@ u32 WrestleVehicle::HasBody()
 void WrestleVehicle::RollFrame(f32 seconds)
 {
     DynamicBody* body = BodyOf(agent->instance);
-    u32 touching = (body->bodyFlags & (RigidBody::FlagTouchedBody | RigidBody::FlagTouched)) != 0;
+    u32 touching = body->bodyFlags.touchedBody != 0 || body->bodyFlags.touchedWorld != 0;
     // Its weight (retail drops the zero axes' products)
     const Vector4 weight = {0.0f, body->mass * -RollGravity, 0.0f, 1.0f};
     body->force.x = body->force.x + weight.x;
@@ -422,7 +390,7 @@ void WrestleVehicle::RollFrame(f32 seconds)
     Wobble(seconds);
     if (body->velocity.y < -FellSpeed)
     {
-        RunAgentEvent(agent, EventFell, reinterpret_cast<u32>(agent->instance), 0, 0);
+        RunAgentEvent(agent, EventLongDrop, reinterpret_cast<u32>(agent->instance), 0, 0);
     }
 }
 
@@ -525,7 +493,8 @@ void WrestleVehicle::StartPin(const Vector4* up)
     VuRotateVector(&place->matrix, &localUp, &currentUp);
     Vector4 axis = {currentUp.y * target.z - currentUp.z * target.y, currentUp.z * target.x - currentUp.x * target.z,
                     currentUp.x * target.y - currentUp.y * target.x, 1.0f};
-    if (PinAxisEpsilon < axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
+    // (an axis of no length turns nothing)
+    if (Epsilon < axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
     {
         f32 inverse = InverseLength(&axis, LengthEpsilon);
         f32 cosine = currentUp.x * target.x + currentUp.y * target.y + currentUp.z * target.z;
@@ -779,7 +748,7 @@ void WrestleVehicle::StickPush(u32 touching)
     moving.z = moving.z * inverse;
     characterPush = stick;
     f32 against = Saturated((1.0f - (stick.x * moving.x + stick.y * moving.y + stick.z * moving.z)) * 0.5f);
-    f32 scale = against * 0.5f + 1.0f;
+    f32 scale = against * MostAgainstPush + 1.0f;
     force.x = force.x * scale;
     force.y = force.y * scale;
     force.z = force.z * scale;
@@ -914,9 +883,9 @@ extern "C"
 {
     // The wrestle's balance for the HUD's slider: even at 0.5, toward 1 while the character is on top and 1 while it pins, toward
     // 0 while the creature is on top and 0 while it pins (only a wrestle is asked)
-    f32 VehicleGauge(CharacterControl* control)
+    f32 VehicleGauge(Vehicle* ridden)
     {
-        const auto* vehicle = reinterpret_cast<const WrestleVehicle*>(control);
+        const auto* vehicle = reinterpret_cast<const WrestleVehicle*>(ridden);
         switch (vehicle->state)
         {
         case WrestleVehicle::StateCharacterOnTop:

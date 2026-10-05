@@ -10,43 +10,60 @@ struct GameResources;
 struct InstanceContext;
 struct InstanceTemplate;
 
+// The instance factory's own flags (set and cleared before it makes an instance)
+union InstanceFactoryFlags
+{
+    // No subtype given
+    static constexpr u32 NoSubtype = 0xFF;
+
+    u32 value;
+    struct
+    {
+        // Every instance it makes without an ID gets one
+        u32 givesIds : 1;
+        // (Cleared before it makes an instance)
+        u32 unused1 : 1;
+        // The agents it makes take their instance's properties (else their object's)
+        u32 instanceProperties : 1;
+        // The agents keeping a persistent flag get their chunk's next slot as their ID
+        u32 givesFlagSlots : 1;
+        // (Set when it's made, set and cleared by the spawn commands)
+        u32 unused4 : 1;
+        // The subtype it gives the agents it makes (their first integer property; 0xFF none)
+        u32 subtype : 8;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(InstanceFactoryFlags, 4);
+
 // The game's factory of instances (the game context's, retail's GameResourceManager, 0x34 bytes; its vtable 0x24 bytes in makes
-// the nodes of an instance by its type): the flags the instances it makes get (0x2000: of a layout that isn't the
-// chunk's own), its own flags (bits 0-4, set and cleared before it makes an instance; bits 5-12 a byte it gives the instances,
-// 0xFF none), an ID, the game's resources and the instance templates the chunks' layouts read
+// the nodes of an instance by its type): the flags the instances it makes get (0x2000: of a layout that isn't the chunk's own),
+// the flags the triggers and cameras it makes lose, its own flags, the game's resources and the instance templates the chunks'
+// layouts read
 struct InstanceFactory
 {
-    enum Flags : u32
-    {
-        Flag0 = 0x1,
-        Flag1 = 0x2,
-        Flag2 = 0x4,
-        Flag3 = 0x8,
-        Flag4 = 0x10,
-    };
-
     // The flags of the instances of layouts that aren't the chunk's own
     static constexpr u32 NotChunkOwn = 0x2000;
 
     u32 creationFlags;
-    // The flags the triggers and cameras it makes lose
     u32 clearedFlags;
-    u32 flags;
-    u16 id;
-    u16 unknown0E;
+    InstanceFactoryFlags flags;
+    // (Made undefined)
+    u16 unused0C;
+    u16 unused0E;
     GameResources* resources;
     PointerArray<InstanceTemplate> templates;
     const GccVTableEntry* vtable;
-    u8 unknown28[0x34 - 0x28];
+    u8 unused28[0x34 - 0x28];
 
-    void SetFlag0() RETAIL(FUN_002627b0);
-    void ClearFlag0() RETAIL(FUN_002627c0);
-    void ClearFlag1() RETAIL(FUN_002627d8);
-    void SetFlag2() RETAIL(FUN_002627f0);
-    void SetFlag3() RETAIL(FUN_00262808);
-    void ClearFlag3() RETAIL(FUN_00262818);
-    void SetFlag4() RETAIL(FUN_00262830);
-    void ClearFlag4() RETAIL(FUN_00262840);
+    void SetGivesIds() RETAIL(FUN_002627b0);
+    void ClearGivesIds() RETAIL(FUN_002627c0);
+    void ClearUnused1() RETAIL(FUN_002627d8);
+    void SetInstanceProperties() RETAIL(FUN_002627f0);
+    void SetGivesFlagSlots() RETAIL(FUN_00262808);
+    void ClearGivesFlagSlots() RETAIL(FUN_00262818);
+    void SetUnused4() RETAIL(FUN_00262830);
+    void ClearUnused4() RETAIL(FUN_00262840);
 };
 CHECK_OFFSET(InstanceFactory, templates, 0x14);
 CHECK_OFFSET(InstanceFactory, vtable, 0x24);
@@ -98,8 +115,8 @@ extern "C"
     // 1 whether it makes the instance (both: always), 2 the instance's type node (the base: none; the game's: the agent of its
     // object's type, its class's property holder and their node), 3 its object node (the base: one with waypoints; the game's:
     // the kind its object's type has), 4 its model's node, 5 a trigger's node and 6 a camera's (the game's set the instances
-    // they tell), 7 the factory's byte given to an instance's first integer, 8 an instance to stand in for a new one (the base:
-    // none, its context's flags set; the game's keeps the playable characters) and 9 the destructor
+    // they tell), 7 the factory's subtype given to an instance's first integer, 8 an instance to stand in for a new one (the
+    // base: none, its context's flags set; the game's keeps the playable characters) and 9 the destructor
     u32 BaseFactoryCanMake(InstanceFactory* factory) RETAIL(FUN_002623f8);
     struct GameNode* BaseFactoryTypeNode(InstanceFactory* factory) RETAIL(FUN_002624c8);
     struct GameNode* BaseFactoryObjectNode(InstanceFactory* factory, ChunkEntry* chunk) RETAIL(FUN_00262488);
@@ -109,7 +126,7 @@ extern "C"
         RETAIL(FUN_002624d0);
     struct CameraNode* BaseFactoryCameraNode(InstanceFactory* factory, ChunkEntry* chunk, class CameraTrigger* camera)
         RETAIL(FUN_00262550);
-    void GiveFactoryByte(InstanceFactory* factory, ChunkEntry* chunk, class PropertyHolder* holder) RETAIL(FUN_00262728);
+    void GiveFactorySubtype(InstanceFactory* factory, ChunkEntry* chunk, class PropertyHolder* holder) RETAIL(FUN_00262728);
     InstanceContext* BaseFactoryStandIn(InstanceFactory* factory, ChunkEntry* chunk, struct GameObject* object,
                                         struct ObjectInstance* instance, InstanceContext* context) RETAIL(FUN_002625a0);
     void BaseFactoryDestroy(InstanceFactory* factory, u32 destroyFlags) RETAIL(FUN_002626c8);
@@ -127,8 +144,8 @@ extern "C"
     // character's with places, controls and follow nodes; other instances set up, then the base's stand-in)
     InstanceContext* GameFactoryStandIn(InstanceFactory* factory, ChunkEntry* chunk, struct GameObject* object,
                                         struct ObjectInstance* instance, InstanceContext* context) RETAIL(FUN_0012dee0);
-    // The factories made: the game's (the resources handed on to the base's constructor) and the base's (no flags, no ID, room
-    // for 10 templates, its byte none, its flag 4 set)
+    // The factories made: the game's (the resources handed on to the base's constructor) and the base's (no flags, room for 10
+    // templates, no subtype, its bit 4 set)
     InstanceFactory* ConstructGameFactory(InstanceFactory* factory, GameResources* resources) RETAIL(FUN_0013f218);
     InstanceFactory* ConstructBaseFactory(InstanceFactory* factory, GameResources* resources) RETAIL(FUN_00262648);
 }
@@ -136,8 +153,8 @@ extern "C"
 // The model nodes and the instances made outside the layouts (game/modelinstances.cpp)
 extern "C"
 {
-    // A model's node: its OGI (none for the model 0xFFFF) with an object's camera joints and exit points (bits 6-11 and 0-5 of its
-    // header's first word), or with neither
+    // A model's node: its OGI (none for the model 0xFFFF) with an object's react joints (OgiAnimator::reactJoints) and exit
+    // points, or with neither
     struct GameNode* MakeObjectModelNode(struct GameObject* object) RETAIL(GetOgiNodeFromObject);
     struct ModelNode* MakePlainModelNode(u16 model) RETAIL(FUN_002599b0);
     // New instances in a chunk, at a matrix's position and turn (none: where they're made): a shown instance of a model (a

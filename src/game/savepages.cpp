@@ -23,11 +23,16 @@ struct ChoiceItem
 };
 
 // The choices page's items, by their ids: "Format", "Continue", "Continue wihout saving", "Create save", "Retry", "Cancel", "Yes",
-// "No" (the save code's messages)
+// "No"
 constexpr ChoiceItem ChoiceItems[] = {
-    {0x1F, SaveCodeItem::AnswerChoose}, {0x20, SaveCodeItem::AnswerThird}, {0x21, SaveCodeItem::AnswerThird},
-    {0x22, SaveCodeItem::AnswerChoose}, {0x23, SaveCodeItem::AnswerChoose}, {0x1E, SaveCodeItem::AnswerBack},
-    {0x24, SaveCodeItem::AnswerChoose}, {0x25, SaveCodeItem::AnswerBack},
+    {SaveMessageFormat, SaveCodeItem::AnswerChoose},
+    {SaveMessageContinue, SaveCodeItem::AnswerContinue},
+    {SaveMessageLeave, SaveCodeItem::AnswerContinue},
+    {SaveMessageCreate, SaveCodeItem::AnswerChoose},
+    {SaveMessageRetry, SaveCodeItem::AnswerChoose},
+    {SaveMessageCancel, SaveCodeItem::AnswerBack},
+    {SaveMessageYes, SaveCodeItem::AnswerChoose},
+    {SaveMessageNo, SaveCodeItem::AnswerBack},
 };
 constexpr u32 ChoiceItemCount = 8;
 
@@ -44,18 +49,9 @@ enum ChoiceItemId : u32
 };
 
 // The save code page's items: "Continue wihout saving" (id 0) and "Cancel" (id 1), after the save slots' items
-constexpr s32 LeaveMessage = 0x21;
-constexpr s32 CancelMessage = 0x1E;
 constexpr u32 PageItemCount = 2;
 constexpr u32 LeavePageItem = 0;
 constexpr u32 CancelPageItem = 1;
-
-constexpr u8 Shown = 0xFF;
-// Player 1
-constexpr u32 FirstPlayer = 1;
-// Bits 16-19 of the save code's bits: the answer; 20-23: the slot chosen
-constexpr u32 AnswerMask = 0xF0000;
-constexpr u32 ChosenMask = 0xF00000;
 
 // The page's item at an index (none out of range)
 MenuItem* ItemAt(const MenuPage* page, s32 index)
@@ -74,7 +70,7 @@ extern "C"
     MenuItem* ConstructSaveCodeItem(void* memory, u32 value, u32 id, u32 operation, SaveManager* manager)
     {
         auto* item = static_cast<SaveCodeItem*>(memory);
-        LinkItem::ConstructNamed(item, g_SaveCodePageName, id, nullptr, FirstPlayer);
+        LinkItem::ConstructNamed(item, g_SaveCodePageName, id, nullptr, MenuPlayers);
         item->manager = manager;
         item->answer = operation;
         item->message = static_cast<s32>(value);
@@ -85,7 +81,7 @@ extern "C"
     MenuPage* SaveChoicesPageConstruct(void* memory, SaveManager* manager)
     {
         auto* page = static_cast<SaveChoicesPage*>(memory);
-        MenuPage::Construct(page, g_SaveCodePageName, FirstPlayer);
+        MenuPage::Construct(page, g_SaveCodePageName, MenuPlayers);
         page->manager = manager;
         page->vtable = g_SaveChoicesPageVTable;
         MenuItem* items[ChoiceItemCount];
@@ -106,7 +102,7 @@ extern "C"
 
 SaveCodePage* SaveCodePage::Construct(SaveCodePage* page, SaveManager* manager)
 {
-    MenuPage::Construct(page, g_SaveCodePageName, FirstPlayer);
+    MenuPage::Construct(page, g_SaveCodePageName, MenuPlayers);
     page->manager = manager;
     page->vtable = g_SaveCodePageVTable;
     return page;
@@ -115,9 +111,9 @@ SaveCodePage* SaveCodePage::Construct(SaveCodePage* page, SaveManager* manager)
 void SaveCodePage::AddItems()
 {
     void* memory = MemoryAllocate(sizeof(SaveCodeItem));
-    MenuItem* leave = ConstructSaveCodeItem(memory, LeaveMessage, LeavePageItem, SaveCodeItem::AnswerThird, manager);
+    MenuItem* leave = ConstructSaveCodeItem(memory, SaveMessageLeave, LeavePageItem, SaveCodeItem::AnswerContinue, manager);
     memory = MemoryAllocate(sizeof(SaveCodeItem));
-    MenuItem* cancel = ConstructSaveCodeItem(memory, CancelMessage, CancelPageItem, SaveCodeItem::AnswerBack, manager);
+    MenuItem* cancel = ConstructSaveCodeItem(memory, SaveMessageCancel, CancelPageItem, SaveCodeItem::AnswerBack, manager);
     Add(leave);
     Add(cancel);
 }
@@ -130,29 +126,29 @@ void SaveCodePage::Destroy(u32 destroyFlags)
 void SaveCodePage::ShowSlotItems(s32 mode, u32 saving)
 {
     SaveDevice* device = manager->device;
-    u32 slots = device->flags & SaveDevice::FileCountMask;
+    u32 slots = device->flags.fileCount;
     u8 shown[PageItemCount] = {0, 0};
-    if (mode == 0)
+    if (mode == SlotsPageLoad)
     {
-        auto* folder = static_cast<FolderFile*>(device->mainFile);
+        FolderFile* folder = device->folder;
         for (u32 slot = 0; slot < slots; slot++)
         {
             FolderSummary* summary = folder->summaries[slot];
             MenuItem* item = ItemAt(this, static_cast<s32>(slot));
-            item->shown = summary->HasSave() ? Shown : 0;
+            item->shown = summary->HasSave() ? EveryPlayer : 0;
         }
 
-        shown[CancelPageItem] = Shown;
+        shown[CancelPageItem] = EveryPlayer;
     }
-    else if (mode == 1)
+    else if (mode == SlotsPageSave)
     {
         for (u32 slot = 0; slot < slots; slot++)
         {
-            ItemAt(this, static_cast<s32>(slot))->shown = Shown;
+            ItemAt(this, static_cast<s32>(slot))->shown = EveryPlayer;
         }
 
-        shown[LeavePageItem] = saving != 0 ? Shown : 0;
-        shown[CancelPageItem] = Shown;
+        shown[LeavePageItem] = saving != 0 ? EveryPlayer : 0;
+        shown[CancelPageItem] = EveryPlayer;
     }
 
     for (u32 id = 0; id < PageItemCount; id++)
@@ -161,7 +157,7 @@ void SaveCodePage::ShowSlotItems(s32 mode, u32 saving)
         item->enabled = shown[id];
         if (shown[id] != 0)
         {
-            SetFirstItem(item->id & MenuItem::IdMask);
+            SetFirstItem(item->Id());
         }
     }
 }
@@ -174,48 +170,48 @@ void SaveChoicesPage::Destroy(u32 destroyFlags)
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) void SaveChoicesPage::ShowItems(s32 mode, u32 saving)
 {
     u8 shown[ChoiceItemCount] = {};
-    u8 leave = saving != 0 ? Shown : 0;
+    u8 leave = saving != 0 ? EveryPlayer : 0;
     switch (mode)
     {
-    case 0:
-    case 1:
-        shown[RetryItem] = Shown;
-        shown[ContinueItem] = Shown;
+    case ChoicesNoCard:
+    case ChoicesNoRoom:
+        shown[RetryItem] = EveryPlayer;
+        shown[ContinueItem] = EveryPlayer;
         break;
-    case 2:
+    case ChoicesCreate:
         shown[LeaveItem] = leave;
-        shown[CancelItem] = Shown;
-        shown[CreateItem] = Shown;
+        shown[CancelItem] = EveryPlayer;
+        shown[CreateItem] = EveryPlayer;
         break;
-    case 4:
-        shown[FormatItem] = Shown;
+    case ChoicesUnformatted:
+        shown[FormatItem] = EveryPlayer;
         shown[LeaveItem] = leave;
-        shown[CancelItem] = Shown;
+        shown[CancelItem] = EveryPlayer;
         break;
-    case 3:
-    case 6:
-    case 7:
+    case ChoicesInsertCard:
+    case ChoicesInsertSave:
+    case ChoicesInsertRoom:
         shown[LeaveItem] = leave;
-        shown[CancelItem] = Shown;
+        shown[CancelItem] = EveryPlayer;
         break;
-    case 5:
-    case 8:
-    case 9:
-        shown[NoItem] = Shown;
-        shown[YesItem] = Shown;
+    case ChoicesConfirmFormat:
+    case ChoicesOverwrite:
+    case ChoicesCancelSave:
+        shown[NoItem] = EveryPlayer;
+        shown[YesItem] = EveryPlayer;
         break;
-    case 11:
+    case ChoicesSaveFailed:
         shown[LeaveItem] = leave;
-        shown[CancelItem] = Shown;
-        shown[RetryItem] = Shown;
+        shown[CancelItem] = EveryPlayer;
+        shown[RetryItem] = EveryPlayer;
         break;
-    case 10:
-    case 12:
-        shown[CancelItem] = Shown;
-        shown[RetryItem] = Shown;
+    case ChoicesFormatFailed:
+    case ChoicesLoadFailed:
+        shown[CancelItem] = EveryPlayer;
+        shown[RetryItem] = EveryPlayer;
         break;
-    case 13:
-        shown[CancelItem] = Shown;
+    case ChoicesCancelOnly:
+        shown[CancelItem] = EveryPlayer;
         break;
     default:
         break;
@@ -227,7 +223,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void SaveChoicesPa
         item->enabled = shown[id];
         if (shown[id] != 0)
         {
-            Select(0, item->id & MenuItem::IdMask);
+            Select(0, item->Id());
         }
     }
 }
@@ -237,13 +233,14 @@ MenuPage* SaveCodeItem::Activate(u32, MenuPage*)
     switch (answer)
     {
     case AnswerChoose:
-        manager->bits = (manager->bits & ~AnswerMask & ~ChosenMask) | 1 << 16 | (id & 0xF) << 20;
+        manager->bits.answer = SaveCode::AnswerFirst;
+        manager->bits.chosen = Id();
         break;
     case AnswerBack:
-        manager->bits = (manager->bits & ~AnswerMask) | 2 << 16;
+        manager->bits.answer = SaveCode::AnswerBack;
         break;
-    case AnswerThird:
-        manager->bits = (manager->bits & ~AnswerMask) | 3 << 16;
+    case AnswerContinue:
+        manager->bits.answer = SaveCode::AnswerThird;
         break;
     default:
         break;
@@ -260,5 +257,5 @@ void SaveCodeItem::Destroy(u32 destroyFlags)
 void SaveCodeItem::Entered(u32, u32)
 {
     text = SaveMessage(message);
-    id &= ~(MenuItem::TextMask << MenuItem::TextShift);
+    bits.text = 0;
 }

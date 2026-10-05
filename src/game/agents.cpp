@@ -22,77 +22,20 @@ extern "C"
 {
     // An instance's model's joint's position (in the world when asked). Whether it has the joint
 
-    // The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), 0.01 twice, a black of half
-    // alpha, 0 and 45 degrees (65536ths)
+    // The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), the UI's shadow offset and
+    // colour, 0 and 45 degrees (65536ths)
     extern Vector4 g_AgentsUp RETAIL(D_0030BAD0);
-    extern f32 g_AgentsSmall RETAIL(D_0030A4E8);
-    extern f32 g_AgentsSmall2 RETAIL(D_0030A4EC);
-    extern u32 g_AgentsShade RETAIL(D_0030A4F0);
+    extern f32 g_AgentsShadowX RETAIL(D_0030A4E8);
+    extern f32 g_AgentsShadowY RETAIL(D_0030A4EC);
+    extern u32 g_AgentsShadowColour RETAIL(D_0030A4F0);
     extern u32 g_AgentsZero RETAIL(D_0030A4E0);
     extern s32 g_AgentsAngle45 RETAIL(D_0030A4F8);
 }
 
 namespace
 {
-// The holders' and parts' destructors, and an instance's vtable functions that wake it and put it to sleep
-constexpr u32 HolderDestroySlot = 7;
-constexpr u32 PartDestroySlot = 1;
-constexpr u32 PartResetSlot = 2;
-constexpr u32 WakeSlot = 2;
-constexpr u32 SleepSlot = 3;
-// The nodes an agent's functions use: the object node, the model's node and the rigid body
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 RigidBodyKind = 5;
-// An agent's vtable function applying its instance's state flags
-constexpr u32 ApplyStateSlot = 1;
-// Bit 0 of an agent's word at 0x1C: its events start nothing (cleared as it takes the resources and steps)
-constexpr u32 EventsOff = 0x1;
-// The behaviour slot of its object an agent starts with when it has no spawn starter
-constexpr u32 StartSlot = 0;
-// The nodes a behaviour's script event goes to (the object nodes, kind 1: a bit each)
-constexpr u32 ObjectNodeKinds = 0x2;
-// An exit point of none: the instance attached without one
-constexpr u8 NoExitPoint = 0xFF;
-// The object node's function given a physical contact's sender and strength
-constexpr u32 ObjectNodeContactSlot = 27;
-// The events the agents tell their scripts: a collision or an attack of no other kind, a contact message, the crates' functions
-// 4 and 5
-constexpr u32 CollisionEvent = 3;
-constexpr u32 ContactEvent = 2;
-constexpr u32 CrateEvent = 0xB;
-// An agent's function told contact messages, and the playable characters' agent node's kind
-constexpr u32 AgentContactSlot = 9;
-constexpr u32 CharacterNodeKind = 0xC;
-// What an agent hits back with
-constexpr u32 HitBackWord = 0x400;
-// The attack the character's part's low byte and the attack's kind both are when a creature that may damage it hits back
-constexpr u32 HitBackAttack = 3;
 // Through which links creatures change chunks
 constexpr u64 CreatureLinkBit = 0x40000;
-// A hard collision (or a crate's breaking one); what a crate falling onto an agent tells it: landed on (an agent that can be
-// stood on) or slammed (one it goes through); a crate's landing after its launch
-constexpr u32 HardCollisionEvent = 2;
-constexpr u32 LandedOnEvent = 5;
-constexpr u32 SlammedEvent = 7;
-constexpr u32 CrateLandedEvent = 0xC;
-// Its agent's state bits: a crate stays whole, a crate landing on it stands on it, a creature snaps to the ground
-constexpr u32 StateUnbreakable = 0x800;
-constexpr u32 StateCanBeStoodOn = 0x400;
-constexpr u32 StateSnapsToGround = 0x40000;
-// A crate's part's value: in the air (launched and not landed), resting on the ground
-constexpr u32 CrateInAir = 0x1;
-constexpr u32 CrateOnGround = 0x2;
-// The surfaces' bits the agents' casts collide with, and the kinds of nodes (a bit each) of the instances that stop them: the
-// solid agents (playable characters, crates, creatures, generic objects, pay gates and projectiles) and the crates
-constexpr u32 SolidToProbes = 0x10;
-constexpr u32 SolidToObjects = 0x40;
-constexpr u32 SolidAgentKinds = 0x15B010;
-constexpr u32 CrateKinds = 0x2000;
-constexpr f32 NoHit = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// The bit a snap to the ground sets in the object node's motion
-constexpr u32 MotionSnapped = 0x8;
 // The shadows of the crates (a square), and of the creatures and generic objects (their own box's half sizes, kinds of their
 // own); how far each reaches and its strength, the box's raised a little off the ground
 constexpr f32 CrateShadowSize = 0.5f;
@@ -104,34 +47,37 @@ constexpr u8 GenericShadowKind = 5;
 constexpr f32 BoxShadowDistance = 30.0f;
 constexpr f32 BoxShadowStrength = 16.0f;
 constexpr f32 BoxShadowLift = Rounded(0.1);
-// A shadow node's slot the agents' shadows take, and RegisterNode's second argument
+// A shadow node's slot the agents' shadows take
 constexpr u32 ShadowSlotIndex = 0;
-constexpr u32 AttachNode = 1;
+// An agent's chunk's index of none
+constexpr u16 NoChunkIndex = 0xFFFF;
+// The joint of a playable character's model at its center
+constexpr u32 CharacterCenterJoint = 1;
 
-// The script event of an attack's kind
+// The behaviour slot of an attack's kind
 u32 AttackScriptEvent(u32 kind)
 {
     switch (kind)
     {
-    case 4:
-        return 5;
-    case 5:
-        return 4;
-    case 6:
-    case 10:
-        return 6;
-    case 7:
-    case 9:
-    case 11:
-        return 7;
-    case 8:
-    case 12:
-        return 8;
-    case 13:
-    case 14:
-        return 0xA;
+    case AttackLandOn:
+        return OnLand;
+    case AttackFromBelow:
+        return OnHeadbutt;
+    case AttackSpin:
+    case AttackSpinVariant:
+        return OnSpinAttacked;
+    case AttackSlam:
+    case AttackTied:
+    case AttackSlamVariant:
+        return OnBodyslamAttacked;
+    case AttackSlide:
+    case AttackSlideVariant:
+        return OnSlideAttacked;
+    case AttackThrownFromSpin:
+    case AttackThrownFromJump:
+        return OnThrownAttacked;
     default:
-        return CollisionEvent;
+        return OnTouch;
     }
 }
 
@@ -139,35 +85,26 @@ u32 ClockTime(InstanceContext* instance)
 {
     return GetContextClock(instance)->time;
 }
-constexpr u16 NoId = 0xFFFF;
-constexpr u32 CharacterCacheMask = 0x10;
-constexpr u32 CharacterCenterJoint = 1;
 
 static_assert(offsetof(ReferencedObject, collision) + offsetof(ObjectCollision, box) == 0x40);
 
-
-void SetBit(u32& bits, u32 bit, bool set)
-{
-    bits = set ? bits | bit : bits & ~bit;
-}
-
 void DestroyHolder(PropertyHolder* holder)
 {
-    CallVirtual<void>(holder, holder->vtable, HolderDestroySlot, u32{DestroyAndFree});
+    CallVirtual<void>(holder, holder->vtable, PropertyHolder::DestroySlot, u32{DestroyAndFree});
 }
 
 void DestroyPart(AgentPart* part)
 {
-    CallVirtual<void>(part, part->vtable, PartDestroySlot, u32{DestroyAndFree});
+    CallVirtual<void>(part, part->vtable, AgentPart::DestroySlot, u32{DestroyAndFree});
 }
 
 // The message kept (its point, word and reaction) and told the script
 void KeepContact(Agent* agent, const ContactMessage* message, InstanceContext* sender)
 {
     agent->contact.point = message->point;
-    agent->contact.word = message->word;
-    agent->contact.byte = message->byte;
-    RunAgentEvent(agent, ContactEvent, reinterpret_cast<u32>(sender), 0, 0);
+    agent->contact.hitKinds = message->hitKinds;
+    agent->contact.damage = message->damage;
+    RunAgentEvent(agent, OnDamage, reinterpret_cast<u32>(sender), 0, 0);
 }
 
 // A handle copied the way retail's copy constructor does: its reference counted once more
@@ -176,8 +113,7 @@ Reference* CopyHandle(Reference* const* handle)
     Reference* reference = *handle;
     if (reference != nullptr)
     {
-        u32 count = ((reference->value & ReferenceBits::CountMask) + 1) & ReferenceBits::CountMask;
-        reference->value = (reference->value & ~ReferenceBits::CountMask) | count;
+        reference->bits.count++;
     }
 
     return reference;
@@ -185,15 +121,15 @@ Reference* CopyHandle(Reference* const* handle)
 
 // A query of the instances along a cast: the awake ones with their collision on (retail leaves the bits nothing reads as the
 // stack had them)
-void StartQuery(InstanceRayHit* query, void** results, u16 most)
+void StartQuery(InstanceQuery* query, void** results, u16 most)
 {
     query->results = results;
     query->count = 0;
     query->most = most;
-    query->distance = NoHit;
-    query->bits = InstanceRayHit::BitAllWanted;
-    query->wantedFlags = ReferencedObject::FlagSphereContact;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->distance = NoHitDistance;
+    query->bits.value = InstanceQueryBits::AllWanted;
+    query->wantedFlags = ReferencedObjectFlags::CollisionActive;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -217,7 +153,7 @@ void AddBoxShadow(InstanceContext* instance, u8 kind)
 
 bool HasShadowNode(InstanceContext* instance)
 {
-    return GetGameNode(&instance->nodes, ShadowNode::NodeKind) != nullptr;
+    return GetGameNode(&instance->nodes, NodeShadow) != nullptr;
 }
 }
 
@@ -226,11 +162,11 @@ AttackEvent* AttackEvent::Construct(AttackEvent* event, u32 kind, Reference** at
     // Retail copies the handle into its base's constructor (by value, twice) and lets the copies go again
     Reference* copy = CopyHandle(attacker);
     Reference* baseCopy = CopyHandle(&copy);
-    event->unknown04 = EventId;
+    event->id = EventId;
     event->vtable = g_GameEventVTable;
     event->kinds = kinds;
     event->reference = nullptr;
-    event->type = 0;
+    event->message = 0;
     event->argument = CopyHandle(&baseCopy);
     RemoveReference(&baseCopy);
     event->vtable = g_AttackEventBaseVTable;
@@ -277,15 +213,15 @@ Agent* Agent::Construct(Agent* agent, InstanceCreator* creator, PropertyHolder* 
     agent->instance = creator->context;
     SetUndefinedId(&agent->spawnScript);
     agent->objectId = static_cast<u16>(creator->instance->objectId);
-    agent->unknown1C &= ~1u;
+    agent->eventFlags.eventsOff = 0;
     agent->properties = holder;
     agent->part = part;
     agent->object = creator->object;
-    agent->id = NoId;
-    agent->chunkIndex = NoId;
+    agent->id = NoInstanceId;
+    agent->chunkIndex = NoChunkIndex;
     ContactMessage::Construct(&agent->contact);
     GameResources* resources = G_GameResourcesObjectPointer;
-    agent->ClearUnknown18();
+    agent->ClearCounters();
     u16 objectId = agent->objectId;
     LoadObjectResources(agent->object->references, &objectId, resources);
     return agent;
@@ -329,28 +265,28 @@ void StartAgentBehaviour(Agent* agent, const u16* starter, InstanceContext* orig
 
 void SetAgentModel(Agent* agent, GameResources* resources)
 {
-    auto* node = static_cast<ModelNode*>(GetGameNode(&agent->instance->nodes, ModelNodeKind));
+    auto* node = static_cast<ModelNode*>(GetGameNode(&agent->instance->nodes, NodeModel));
     if (node == nullptr)
     {
         return;
     }
 
     u16 id = agent->object->models.items[0];
-    auto* ogi = id != NoId ? static_cast<GameOGI*>(resources->models->items[id & 0x7FFF]) : nullptr;
+    auto* ogi = id != NoModelId ? static_cast<GameOGI*>(resources->models->items[id & ResourceIndexMask]) : nullptr;
     GameObject* object = agent->object;
-    node->SetOgi(ogi, object->ReactJoints(), object->ExitPoints());
+    node->SetOgi(ogi, object->header.reactJoints, object->header.exitPoints);
 }
 
 u32 RunAgentEvent(Agent* agent, u32 event, u32 originator, u32 force, u32 runner)
 {
     GameObject* object = agent->object;
-    if (object == nullptr || (agent->unknown1C & EventsOff) != 0 || event >= object->BehaviourSlotCount())
+    if (object == nullptr || agent->eventFlags.eventsOff != 0 || event >= object->header.behaviourSlots)
     {
         return 0;
     }
 
     u16 starter = object->behaviours.items[event];
-    if (starter != NoId)
+    if (starter != NoScriptId)
     {
         QueueStarter(agent, &starter, reinterpret_cast<InstanceContext*>(originator), force, static_cast<u8>(runner));
     }
@@ -365,46 +301,46 @@ void RestartAgent(Agent* agent)
         return;
     }
 
-    if (agent->spawnScript != NoId)
+    if (agent->spawnScript != NoScriptId)
     {
         u16 starter = agent->spawnScript;
         StartAgentBehaviour(agent, &starter, nullptr, 1, 0);
     }
     else
     {
-        RunAgentEvent(agent, StartSlot, 0, 1, 0);
+        RunAgentEvent(agent, OnSpawn, 0, 1, 0);
     }
 }
 
 void AgentTakeResources(Agent* agent, GameResources* resources)
 {
-    CallVirtual<void>(agent, agent->vtable, ApplyStateSlot, u32{0});
+    CallVirtual<void>(agent, agent->vtable, Agent::ApplyStateSlot, u32{0});
     SetAgentModel(agent, resources);
     RestartAgent(agent);
-    agent->ClearUnknown18();
-    agent->unknown1C &= ~EventsOff;
+    agent->ClearCounters();
+    agent->eventFlags.eventsOff = 0;
 }
 
-void AgentStep(Agent* agent, GameResources* resources, TimeClock*, u32 unknown)
+void AgentStep(Agent* agent, GameResources* resources, TimeClock*, u32 resetEntry)
 {
-    CallVirtual<void>(agent, agent->vtable, ApplyStateSlot, unknown);
-    agent->unknown1C &= ~EventsOff;
+    CallVirtual<void>(agent, agent->vtable, Agent::ApplyStateSlot, resetEntry);
+    agent->eventFlags.eventsOff = 0;
     ContactMessage::Construct(&agent->contact);
     SetAgentModel(agent, resources);
     RestartAgent(agent);
-    agent->ClearUnknown18();
+    agent->ClearCounters();
 }
 
-void LinkToAgent(Agent* agent, InstanceContext* linked, u32 unknown)
+void LinkToAgent(Agent* agent, InstanceContext* linked, u32 flag)
 {
-    LinkInstance(AttachmentsOf(agent->instance), linked, unknown);
+    LinkInstance(AttachmentsOf(agent->instance), linked, flag);
 }
 
 u32 AttachToAgent(Agent* agent, InstanceContext* instance, u32 flags, u32 exitPoint, const Matrix4x4* offset)
 {
     void* attachments = AttachmentsOf(agent->instance);
     u8 point = static_cast<u8>(exitPoint);
-    if (point != NoExitPoint)
+    if (point != GameOGI::NoExitPoint)
     {
         return HangOnExitPoint(attachments, agent->instance, instance, point, flags, offset, 0);
     }
@@ -412,12 +348,12 @@ u32 AttachToAgent(Agent* agent, InstanceContext* instance, u32 flags, u32 exitPo
     return AttachInstance(attachments, agent->instance, instance, flags, offset);
 }
 
-void Agent::ClearUnknown18()
+void Agent::ClearCounters()
 {
-    unknown18[3] = 0;
-    unknown18[0] = 0;
-    unknown18[1] = 0;
-    unknown18[2] = 0;
+    counters[3] = 0;
+    counters[0] = 0;
+    counters[1] = 0;
+    counters[2] = 0;
 }
 
 void Agent::Nothing6()
@@ -442,7 +378,7 @@ u32 Agent::CanChangeChunk(ChunkData*, ChunkLinkData*)
     return 1;
 }
 
-u32 Agent::Slot12()
+u32 Agent::IsCharacter()
 {
     return 0;
 }
@@ -499,44 +435,45 @@ void BasicAgent::Destroy(u32 destroyFlags)
     Agent::Destroy(destroyFlags);
 }
 
-void BasicAgent::ApplyState(u32 unknown)
+void BasicAgent::ApplyState(u32 resetEntry)
 {
     PropertyHolder* holder = properties;
     auto* basicPart = static_cast<BasicAgentPart*>(part);
-    CallVirtual<u32>(instance, instance->vtable, (holder->state & StateDeactivated) != 0 ? SleepSlot : WakeSlot);
-    SetBit(instance->flags, ReferencedObject::FlagSphereContact, (holder->state & StateCollisionActive) != 0);
-    SetBit(instance->flags, ReferencedObject::FlagVisible, (holder->state & StateVisible) != 0);
-    SetBit(instance->flags, ReferencedObject::FlagShadow, (holder->state & StateShadowActive) != 0);
-    CallVirtual<void>(basicPart, basicPart->vtable, PartResetSlot, unknown);
-    SetBit(instance->flags, ReferencedObject::FlagTriggerSignals, (holder->state & StateReceivesTriggerSignals) != 0);
-    SetBit(basicPart->bits, BasicAgentPart::CanDamageCharacter, (holder->state & StateCanDamageCharacter) != 0);
-    SetBit(basicPart->bits, BasicAgentPart::Targettable, (holder->state & StateTargettable) != 0);
-    SetBit(basicPart->bits, BasicAgentPart::CanAlwaysDamageCharacter, (holder->state & StateCanAlwaysDamageCharacter) != 0);
-    SetBit(basicPart->bits, BasicAgentPart::BulletsBounceBack, (holder->state & StateBulletsBounceBack) != 0);
+    CallVirtual<u32>(instance, instance->vtable,
+                     holder->state.deactivated != 0 ? InstanceContext::SleepSlot : InstanceContext::WakeSlot);
+    instance->flags.collisionActive = holder->state.collisionActive != 0;
+    instance->flags.visible = holder->state.visible != 0;
+    instance->flags.shadowActive = holder->state.shadowActive != 0;
+    CallVirtual<void>(basicPart, basicPart->vtable, AgentPart::ResetSlot, resetEntry);
+    instance->flags.receivesTriggerSignals = holder->state.receivesTriggerSignals != 0;
+    basicPart->bits.canDamageCharacter = holder->state.canDamageCharacter != 0;
+    basicPart->bits.targettable = holder->state.targettable != 0;
+    basicPart->bits.invulnerable = holder->state.canAlwaysDamageCharacter != 0;
+    basicPart->bits.bulletsBounceBack = holder->state.bulletsBounceBack != 0;
 }
 
-u32 BasicAgent::Slot3()
+u32 BasicAgent::IsCrate()
 {
     return 0;
 }
 
-void BasicAgent::Nothing4()
+void BasicAgent::StartFall()
 {
 }
 
-void BasicAgent::Nothing5()
+void BasicAgent::Unsupported()
 {
 }
 
 void BasicAgent::Contact(const ContactMessage* message, InstanceContext* sender, u32 physical)
 {
-    if (physical != 0 && (instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (physical != 0 && instance->flags.physicsBody)
     {
-        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-        CallVirtual<void>(node, node->vtable, ObjectNodeContactSlot, sender, message->point.w);
+        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, NodeObject));
+        CallVirtual<void>(node, node->vtable, ObjectNode::PushSlot, sender, message->point.w);
     }
 
-    if (message->byte != 0)
+    if (message->damage != 0)
     {
         KeepContact(this, message, sender);
     }
@@ -549,8 +486,7 @@ void BasicAgent::Touched(InstanceContext*, const Vector4*)
 void BasicAgent::Attacked(const AttackEvent* event, InstanceContext* sender)
 {
     auto* basicPart = static_cast<BasicAgentPart*>(part);
-    if ((instance->flags & ReferencedObject::FlagTriggerSignals) != 0 &&
-        (basicPart->bits & BasicAgentPart::CanAlwaysDamageCharacter) == 0)
+    if (instance->flags.receivesTriggerSignals && basicPart->bits.invulnerable == 0)
     {
         u32 kind = event->kind;
         u32 scriptEvent = AttackScriptEvent(kind);
@@ -562,12 +498,12 @@ void BasicAgent::Attacked(const AttackEvent* event, InstanceContext* sender)
         }
     }
 
-    if ((basicPart->bits & BasicAgentPart::CanDamageCharacter) == 0)
+    if (basicPart->bits.canDamageCharacter == 0)
     {
         return;
     }
 
-    if ((basicPart->bits & BasicAgentPart::CanAlwaysDamageCharacter) != 0)
+    if (basicPart->bits.invulnerable != 0)
     {
         HitBack(sender);
         return;
@@ -576,9 +512,9 @@ void BasicAgent::Attacked(const AttackEvent* event, InstanceContext* sender)
     u32 kind = event->kind;
     u32 time = ClockTime(instance);
     basicPart->RecordAttack(kind, &time);
-    auto* node = static_cast<AgentNode*>(GetGameNode(&sender->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&sender->nodes, NodeCharacter));
     auto* attacker = static_cast<BasicAgentPart*>(node->agent->part);
-    if ((attacker->bits & BasicAgentPart::LowByteMask) == HitBackAttack && kind == HitBackAttack)
+    if (attacker->bits.attackKind == AttackWalkInto && kind == AttackWalkInto)
     {
         HitBack(sender);
     }
@@ -597,28 +533,28 @@ void BasicAgent::HitBack(InstanceContext* target)
     place->SyncPosition();
     ContactMessage message;
     message.point = place->position;
-    message.word = HitBackWord;
-    message.byte = 1;
+    message.hitKinds = HitGeneric;
+    message.damage = 1;
     message.point.w = 0.0f;
-    CallVirtual<void>(other, other->vtable, AgentContactSlot, &message, instance, 1u);
+    CallVirtual<void>(other, other->vtable, Agent::ContactSlot, &message, instance, 1u);
 }
 
 void BasicAgent::Push(InstanceContext* other)
 {
-    auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-    CallVirtual<void>(node, node->vtable, ObjectNodeContactSlot, other, 0.0f);
+    auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, NodeObject));
+    CallVirtual<void>(node, node->vtable, ObjectNode::PushSlot, other, 0.0f);
 }
 
 void BasicAgent::Launch(const Vector4* velocity)
 {
-    auto* body = static_cast<RigidBody*>(GetGameNode(&instance->nodes, RigidBodyKind));
+    auto* body = static_cast<RigidBody*>(GetGameNode(&instance->nodes, NodeRigidBody));
     if (body != nullptr)
     {
         body->SetVelocity(velocity);
     }
 }
 
-u32 BasicAgent::LineOfSight(const Vector4* from, Vector4* way, u32 mask, InstanceRayHit* hit, u32 instanceMask)
+u32 BasicAgent::LineOfSight(const Vector4* from, Vector4* way, u32 mask, InstanceQuery* hit, u32 instanceMask)
 {
     return ::LineOfSight(instance->chunk, from, way, mask, hit, instanceMask);
 }
@@ -636,9 +572,9 @@ void PickupAgent::Destroy(u32 destroyFlags)
     BasicAgent::Destroy(destroyFlags);
 }
 
-void PickupAgent::ApplyState(u32 unknown)
+void PickupAgent::ApplyState(u32 resetEntry)
 {
-    BasicAgent::ApplyState(unknown);
+    BasicAgent::ApplyState(resetEntry);
 }
 
 void PickupAgent::Bumped(InstanceContext*, const Vector4*, const Vector4*)
@@ -671,27 +607,27 @@ void CrateAgent::Destroy(u32 destroyFlags)
     BasicAgent::Destroy(destroyFlags);
 }
 
-u32 CrateAgent::Slot3()
+u32 CrateAgent::IsCrate()
 {
     return 1;
 }
 
-void CrateAgent::Slot4()
+void CrateAgent::StartFall()
 {
     auto* cratePart = static_cast<CratePart*>(part);
-    if ((cratePart->value & 2) != 0 || (cratePart->value & 1) != 0)
+    if (cratePart->crate.resting != 0 || cratePart->crate.inAir != 0)
     {
         return;
     }
 
     launchSpeed = 0.0f;
-    bits = (bits & ~(StateMask << StateShift)) | StateLaunched << StateShift;
-    RunAgentEvent(this, CrateEvent, 0, 0, 0);
+    state.asked = StateLaunched;
+    RunAgentEvent(this, OnCrateFalling, 0, 0, 0);
 }
 
-void CrateAgent::Slot5()
+void CrateAgent::Unsupported()
 {
-    RunAgentEvent(this, CrateEvent, 0, 0, 0);
+    RunAgentEvent(this, OnCrateFalling, 0, 0, 0);
 }
 
 void CrateAgent::Bumped(InstanceContext*, const Vector4*, const Vector4*)
@@ -711,16 +647,21 @@ u32 CrateAgent::Velocity(Vector4*)
 void CrateAgent::Launch(const Vector4* velocity)
 {
     launchSpeed = velocity->y;
-    bits = (bits & ~(StateMask << StateShift)) | StateLaunched << StateShift;
+    state.asked = StateLaunched;
 }
 
-void CrateAgent::ApplyState(u32 unknown)
+void CrateAgent::ApplyState(u32 resetEntry)
 {
-    BasicAgent::ApplyState(unknown);
+    // The state it's in when made, which no frame takes for one (all its bits set)
+    constexpr u32 NoCurrentState = 0xF;
+    BasicAgent::ApplyState(resetEntry);
     launchSpeed = 0.0f;
     // Resting, after no state
-    bits = StateMask << CurrentShift | StateResting << StateShift;
-    if (unknown != 0 || HasShadowNode(instance))
+    CrateAgentState made = {};
+    made.current = NoCurrentState;
+    made.asked = StateResting;
+    state = made;
+    if (resetEntry != 0 || HasShadowNode(instance))
     {
         return;
     }
@@ -740,35 +681,34 @@ u32 CrateAgent::Collided(void* other, const Vector4*, const Vector4* impulse)
     constexpr f32 Steep = Rounded(0.707);
     constexpr f32 BreakingSquared = 25.0f;
     constexpr f32 HardSquared = 5.0f;
-    constexpr u32 HitFromBelowEvent = 4;
     f32 squared = impulse->x * impulse->x + impulse->y * impulse->y + impulse->z * impulse->z;
     Vector4 direction = *impulse;
     f32 inverse = InverseLength(&direction, LengthEpsilon);
     direction.y = direction.y * inverse;
-    bool intact = (bits & Broken) == 0;
-    bool unbreakable = (properties->state & StateUnbreakable) != 0;
+    bool intact = state.broken == 0;
+    bool unbreakable = properties->state.solidToSlide != 0;
     if (squared > BreakingSquared)
     {
-        RunAgentEvent(this, HardCollisionEvent, reinterpret_cast<u32>(other), 0, 0);
+        RunAgentEvent(this, OnDamage, reinterpret_cast<u32>(other), 0, 0);
         if (!unbreakable)
         {
-            bits |= Broken;
+            state.broken = 1;
             intact = false;
         }
 
         return intact;
     }
 
-    u32 event = CollisionEvent;
+    u32 event = OnTouch;
     if (squared > HardSquared)
     {
         if (direction.y < -Steep)
         {
-            event = LandedOnEvent;
+            event = OnLand;
         }
         else if (direction.y > Steep)
         {
-            event = HitFromBelowEvent;
+            event = OnHeadbutt;
         }
     }
 
@@ -780,14 +720,14 @@ void CrateAgent::Frame(TimeClock* clock)
 {
     constexpr u32 NotAsked = 0xFFFFFFFF;
     u32 asked = NotAsked;
-    u32 next = bits >> StateShift & StateMask;
+    u32 next = state.asked;
     if (next != StateNone)
     {
-        bits = (bits & ~(StateMask << CurrentShift)) | next << CurrentShift;
-        bits = (bits & ~(StateMask << StateShift)) | StateNone << StateShift;
+        state.current = next;
+        state.asked = StateNone;
     }
 
-    switch (bits >> CurrentShift & StateMask)
+    switch (state.current)
     {
     case StateResting:
         CheckGround(clock, &asked);
@@ -797,11 +737,11 @@ void CrateAgent::Frame(TimeClock* clock)
         u32 falling = Fall(clock);
         if (falling == 0)
         {
-            RunAgentEvent(this, CrateLandedEvent, 0, 0, 0);
+            RunAgentEvent(this, OnCrateLanded, 0, 0, 0);
             asked = StateSettled;
         }
 
-        SetBit(instance->flags, ReferencedObject::FlagShadow, falling != 0);
+        instance->flags.shadowActive = falling != 0;
         break;
     }
     default:
@@ -810,7 +750,7 @@ void CrateAgent::Frame(TimeClock* clock)
 
     if (asked != NotAsked)
     {
-        bits = (bits & ~(StateMask << StateShift)) | (asked & StateMask) << StateShift;
+        state.asked = asked;
     }
 }
 
@@ -827,36 +767,36 @@ u32 CrateAgent::Fall(TimeClock* clock)
     bool landed = false;
     if (launchSpeed >= 0.0f)
     {
-        cratePart->value |= CrateInAir;
+        cratePart->crate.inAir = 1;
     }
     else
     {
         void* found[1];
-        InstanceRayHit query;
+        InstanceQuery query;
         StartQuery(&query, found, 1);
         SkipInQuery(&query, instance);
-        landed = LineOfSight(&position, &move, SolidToObjects, &query, CrateKinds) != 0;
+        landed = LineOfSight(&position, &move, SurfaceFlags::SolidToObjects, &query, 1u << NodeCrate) != 0;
         if (query.count != 0)
         {
             Agent* other = AgentNodeOf(static_cast<InstanceContext*>(found[0]))->agent;
-            if ((other->properties->state & StateCanBeStoodOn) != 0)
+            if (other->properties->state.solidToBodySlam != 0)
             {
-                RunAgentEvent(other, LandedOnEvent, reinterpret_cast<u32>(instance), 0, 0);
+                RunAgentEvent(other, OnLand, reinterpret_cast<u32>(instance), 0, 0);
                 landed = true;
             }
             else
             {
                 move = {0.0f, drop, 0.0f, 1.0f};
-                RunAgentEvent(other, SlammedEvent, reinterpret_cast<u32>(instance), 0, 0);
+                RunAgentEvent(other, OnBodyslamAttacked, reinterpret_cast<u32>(instance), 0, 0);
                 landed = false;
             }
         }
         else if (landed)
         {
-            cratePart->value |= CrateOnGround;
+            cratePart->crate.resting = 1;
         }
 
-        SetBit(cratePart->value, CrateInAir, !landed);
+        cratePart->crate.inAir = !landed;
     }
 
     launchSpeed = launchSpeed - seconds * Gravity;
@@ -877,16 +817,16 @@ void CrateAgent::CheckGround(TimeClock*, u32* asked)
 {
     constexpr u16 MostFound = 32;
     constexpr f32 CastHeight = Rounded(0.9);
-    u32 wait = bits >> WaitShift & WaitMask;
+    u32 wait = state.wait;
     if (wait != 0)
     {
-        bits = (bits & ~(WaitMask << WaitShift)) | ((wait - 1) & WaitMask) << WaitShift;
+        state.wait = wait - 1;
         return;
     }
 
     Vector4 down = {0.0f, -1.0f, 0.0f, 1.0f};
     void* found[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, found, MostFound);
     auto* cratePart = static_cast<CratePart*>(part);
     ObjectPlace* place = instance->place;
@@ -894,12 +834,12 @@ void CrateAgent::CheckGround(TimeClock*, u32* asked)
     Vector4 from = place->position;
     SkipInQuery(&query, instance);
     from.y = from.y + CastHeight;
-    u32 hit = LineOfSight(&from, &down, SolidToObjects, &query, CrateKinds);
+    u32 hit = LineOfSight(&from, &down, SurfaceFlags::SolidToObjects, &query, 1u << NodeCrate);
     bool resting = hit != 0 && query.count == 0;
-    SetBit(cratePart->value, CrateOnGround, resting);
-    if ((instance->flags & ReferencedObject::FlagShadow) != 0)
+    cratePart->crate.resting = resting;
+    if (instance->flags.shadowActive)
     {
-        SetBit(instance->flags, ReferencedObject::FlagShadow, hit == 0);
+        instance->flags.shadowActive = hit == 0;
     }
 
     *asked = StateSettled;
@@ -908,14 +848,14 @@ void CrateAgent::CheckGround(TimeClock*, u32* asked)
 void CrateAgent::StartFalling()
 {
     auto* cratePart = static_cast<CratePart*>(part);
-    if ((cratePart->value & CrateOnGround) != 0 || (cratePart->value & CrateInAir) != 0)
+    if (cratePart->crate.resting != 0 || cratePart->crate.inAir != 0)
     {
         return;
     }
 
     launchSpeed = 0.0f;
-    bits = (bits & ~(StateMask << StateShift)) | StateLaunched << StateShift;
-    RunAgentEvent(this, CrateEvent, 0, 0, 0);
+    state.asked = StateLaunched;
+    RunAgentEvent(this, OnCrateFalling, 0, 0, 0);
 }
 
 CreatureAgent* CreatureAgent::Construct(CreatureAgent* agent, InstanceCreator* creator, PropertyHolder* holder,
@@ -940,12 +880,12 @@ void CreatureAgent::Bumped(InstanceContext*, const Vector4*, const Vector4*)
 void CreatureAgent::Contact(const ContactMessage* message, InstanceContext* sender, u32 physical)
 {
     auto* basicPart = static_cast<BasicAgentPart*>(part);
-    if (physical != 0 && (instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (physical != 0 && instance->flags.physicsBody)
     {
         Push(sender);
     }
 
-    if ((basicPart->bits & BasicAgentPart::CanAlwaysDamageCharacter) == 0)
+    if (basicPart->bits.invulnerable == 0)
     {
         KeepContact(this, message, sender);
     }
@@ -974,8 +914,7 @@ void CreatureAgent::Attacked(const AttackEvent* event, InstanceContext* sender)
 
 void CreatureAgent::FallFrame()
 {
-    constexpr u32 LandSlot = 25;
-    if ((static_cast<CreaturePart*>(part)->flags & CreaturePart::FlagOnGround) != 0)
+    if (static_cast<CreaturePart*>(part)->flags.onGround != 0)
     {
         CallVirtual<void>(this, vtable, LandSlot, 1u);
     }
@@ -983,30 +922,28 @@ void CreatureAgent::FallFrame()
 
 void CreatureAgent::StartFalling(u32)
 {
-    static_cast<CreaturePart*>(part)->flags |= CreaturePart::FlagFalling;
+    static_cast<CreaturePart*>(part)->flags.falling = 1;
 }
 
 void CreatureAgent::Land(u32)
 {
-    static_cast<CreaturePart*>(part)->flags &= ~CreaturePart::FlagFalling;
+    static_cast<CreaturePart*>(part)->flags.falling = 0;
 }
 
-void CreatureAgent::ApplyState(u32 unknown)
+void CreatureAgent::ApplyState(u32 resetEntry)
 {
     constexpr u32 HitPointsProperty = 2;
     auto* creature = static_cast<CreaturePart*>(part);
     PropertyHolder* holder = properties;
-    BasicAgent::ApplyState(unknown);
-    SetBit(creature->flags, CreaturePart::FlagSnapsToGround, (holder->state & StateSnapsToGround) != 0);
-    u32 hitPoints = holder->GetInt(HitPointsProperty);
-    creature->flags = (creature->flags & ~(CreaturePart::HitPointsMask << CreaturePart::HitPointsShift)) |
-                      (hitPoints & CreaturePart::HitPointsMask) << CreaturePart::HitPointsShift;
-    if ((creature->flags & CreaturePart::FlagSnapsToGround) != 0)
+    BasicAgent::ApplyState(resetEntry);
+    creature->flags.snapsToGround = holder->state.snapsToGround != 0;
+    creature->flags.hitPoints = holder->GetInt(HitPointsProperty);
+    if (creature->flags.snapsToGround != 0)
     {
         SnapToGround();
     }
 
-    if (unknown == 0 && !HasShadowNode(instance))
+    if (resetEntry == 0 && !HasShadowNode(instance))
     {
         AddBoxShadow(instance, CreatureShadowKind);
     }
@@ -1022,12 +959,12 @@ u32 CreatureAgent::Collided(void* other, const Vector4*, const Vector4* impulse)
     InverseLength(&direction, LengthEpsilon);
     if (squared > HardSquared)
     {
-        RunAgentEvent(this, CollisionEvent, reinterpret_cast<u32>(other), 0, 0);
-        RunAgentEvent(this, HardCollisionEvent, reinterpret_cast<u32>(other), 0, 0);
+        RunAgentEvent(this, OnTouch, reinterpret_cast<u32>(other), 0, 0);
+        RunAgentEvent(this, OnDamage, reinterpret_cast<u32>(other), 0, 0);
     }
     else if (squared > SoftSquared)
     {
-        RunAgentEvent(this, CollisionEvent, reinterpret_cast<u32>(other), 0, 0);
+        RunAgentEvent(this, OnTouch, reinterpret_cast<u32>(other), 0, 0);
     }
 
     return 1;
@@ -1035,17 +972,15 @@ u32 CreatureAgent::Collided(void* other, const Vector4*, const Vector4* impulse)
 
 void CreatureAgent::Frame(TimeClock* clock)
 {
-    constexpr u32 FallFrameSlot = 23;
-    constexpr u32 StartFallingSlot = 24;
     constexpr u32 FallSpeedProperty = 3;
     auto* creature = static_cast<CreaturePart*>(part);
-    if ((creature->flags & CreaturePart::FlagFalling) != 0)
+    if (creature->flags.falling != 0)
     {
         CallVirtual<void>(this, vtable, FallFrameSlot, clock);
         return;
     }
 
-    if ((creature->flags & CreaturePart::FlagSnapsToGround) != 0)
+    if (creature->flags.snapsToGround != 0)
     {
         SnapToGround();
         return;
@@ -1063,7 +998,7 @@ u32 CreatureAgent::SnapToGround()
     constexpr f32 Reach = 7.0f;
     constexpr f32 CastHeight = 1.0f;
     constexpr u32 LiftProperty = 5;
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     PropertyHolder* holder = properties;
     auto* creature = static_cast<CreaturePart*>(part);
     Vector4 way = {0.0f, -Reach, 0.0f, 1.0f};
@@ -1071,7 +1006,7 @@ u32 CreatureAgent::SnapToGround()
     place->SyncPosition();
     Vector4 from = place->position;
     from.y = from.y + CastHeight;
-    u32 hit = LineOfSight(&from, &way, SolidToObjects, nullptr, SolidAgentKinds);
+    u32 hit = LineOfSight(&from, &way, SurfaceFlags::SolidToObjects, nullptr, SolidOrProjectileNodeKinds);
     if (hit != 0)
     {
         f32 lift = holder->GetFloat(LiftProperty);
@@ -1085,10 +1020,11 @@ u32 CreatureAgent::SnapToGround()
             QueueObject(instance);
         }
 
-        node->motion->bits |= MotionSnapped;
+        // The bit a snap to the ground sets in the motion (nothing reads it)
+        node->motion->bits.unused3 = 1;
     }
 
-    SetBit(creature->flags, CreaturePart::FlagOnGround, hit != 0);
+    creature->flags.onGround = hit;
     return hit;
 }
 
@@ -1101,7 +1037,7 @@ void CharacterButtons::Clear()
     square = 0.0f;
     circle = 0.0f;
     shoulders = 0.0f;
-    locked = 0;
+    locked.value = 0;
 }
 
 CharacterAgent* CharacterAgent::Construct(CharacterAgent* agent, InstanceCreator* creator, PropertyHolder* holder,
@@ -1125,7 +1061,7 @@ CharacterAgent* CharacterAgent::Construct(CharacterAgent* agent, InstanceCreator
     agent->standingOn = nullptr;
     agent->pushedBody = nullptr;
     agent->probedInstance = nullptr;
-    ConstructCollisionCache(&agent->cache, agent->instance, CharacterCacheMask);
+    ConstructCollisionCache(&agent->cache, agent->instance, SurfaceFlags::SolidToPlayerProbes);
     agent->SetUp(1);
     agent->link = nullptr;
     return agent;
@@ -1149,7 +1085,7 @@ u32 CharacterAgent::Velocity(Vector4* out)
     return 1;
 }
 
-u32 CharacterAgent::Slot12()
+u32 CharacterAgent::IsCharacter()
 {
     return 1;
 }
@@ -1179,12 +1115,12 @@ void GenericObjectAgent::Destroy(u32 destroyFlags)
 
 u32 GenericObjectAgent::Collided(void* other, const Vector4*, const Vector4*)
 {
-    if ((static_cast<BasicAgentPart*>(part)->bits & BasicAgentPart::HitByKind3) == 0)
+    if (static_cast<BasicAgentPart*>(part)->bits.hitByWalkInto == 0)
     {
         return 0;
     }
 
-    RunAgentEvent(this, CollisionEvent, reinterpret_cast<u32>(other), 0, 0);
+    RunAgentEvent(this, OnTouch, reinterpret_cast<u32>(other), 0, 0);
     return 1;
 }
 
@@ -1197,10 +1133,10 @@ u32 GenericObjectAgent::Velocity(Vector4*)
     return 0;
 }
 
-void GenericObjectAgent::ApplyState(u32 unknown)
+void GenericObjectAgent::ApplyState(u32 resetEntry)
 {
-    BasicAgent::ApplyState(unknown);
-    if (unknown == 0 && !HasShadowNode(instance))
+    BasicAgent::ApplyState(resetEntry);
+    if (resetEntry == 0 && !HasShadowNode(instance))
     {
         AddBoxShadow(instance, GenericShadowKind);
     }
@@ -1296,7 +1232,7 @@ u32 GrapleAgent::Velocity(Vector4*)
 
 void GrapleAgent::Frame(TimeClock* clock)
 {
-    if ((instance->flags & ReferencedObject::FlagVisible) != 0)
+    if (instance->flags.visible)
     {
         Swing(clock);
     }
@@ -1305,13 +1241,12 @@ void GrapleAgent::Frame(TimeClock* clock)
 void GrapleAgent::Swing(TimeClock* clock)
 {
     constexpr u16 MostFound = 32;
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
     constexpr f32 ShortOfHit = 0.5f;
     constexpr f32 NearestHit = Rounded(0.51);
     constexpr f32 Least = Rounded(0.01);
     constexpr f32 BoxMargin = 0.5f;
     void* found[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, found, MostFound);
     Vector4 way = target;
     way.x = way.x - anchor.x;
@@ -1326,7 +1261,7 @@ void GrapleAgent::Swing(TimeClock* clock)
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     Matrix4x4 toLocal = place->matrix;
-    LineOfSight(&anchor, &way, SolidToProbes, &query, SolidAgentKinds);
+    LineOfSight(&anchor, &way, SurfaceFlags::SolidToPlayerProbes, &query, SolidOrProjectileNodeKinds);
     f32 reached = __builtin_sqrtf(way.x * way.x + way.y * way.y + way.z * way.z);
     f32 share;
     if (__builtin_fabsf(reached) <= Epsilon)
@@ -1379,10 +1314,10 @@ void ProjectileAgent::Destroy(u32 destroyFlags)
     BasicAgent::Destroy(destroyFlags);
 }
 
-void ProjectileAgent::ApplyState(u32 unknown)
+void ProjectileAgent::ApplyState(u32 resetEntry)
 {
-    BasicAgent::ApplyState(unknown);
-    instance->flags |= ReferencedObject::FlagProjectile;
+    BasicAgent::ApplyState(resetEntry);
+    instance->flags.movesBetweenChunks = 1;
 }
 
 void ProjectileAgent::Bumped(InstanceContext*, const Vector4*, const Vector4*)
@@ -1406,14 +1341,13 @@ void CharacterAgent::StartInvincibility(u32 kind)
 {
     constexpr f32 LongSeconds = 8.0f;
     auto* creature = static_cast<BasicAgentPart*>(part);
-    if ((creature->bits & CharacterPart::Invincible) != 0)
+    if (creature->bits.invulnerable != 0)
     {
         return;
     }
 
-    creature->bits |= CharacterPart::Invincible;
-    u64& bits = StateBits();
-    bits = (bits & ~u64{ModeMask << ModeShift}) | u64{ModeInvincible << ModeShift};
+    creature->bits.invulnerable = 1;
+    state.mode = ModeInvincible;
     if (kind == 0)
     {
         modeTicks = static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond);
@@ -1426,29 +1360,27 @@ void CharacterAgent::StartInvincibility(u32 kind)
 
 void InitAgentsModule(u32 initialize, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    constexpr f32 Small = Rounded(0.01);
     constexpr f32 GrapleGravity = -25.0f;
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
 
     g_AgentsUp.x = 0.0f;
     g_AgentsUp.w = 1.0f;
-    g_AgentsSmall2 = Small;
+    g_AgentsShadowY = UiShadowOffset;
     g_AgentsZero = 0;
     g_AgentsUp.y = 1.0f;
     g_AgentsUp.z = 0.0f;
-    g_AgentsSmall = Small;
-    ColourSet(&g_AgentsShade, 0.0f, 0.0f, 0.0f, 0.5f);
-    AngleFrom(&g_AgentsAngle45, 0x1.921fb6p-1f, AngleRadians);
+    g_AgentsShadowX = UiShadowOffset;
+    ColourSet(&g_AgentsShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
+    AngleFrom(&g_AgentsAngle45, QuarterPi, AngleRadians);
     AngleFrom(&g_AgentAngleMinus135, -135.0f, AngleDegrees);
     AngleFrom(&g_AgentAngle135, 135.0f, AngleDegrees);
     AngleFrom(&g_AgentAngleMinus45, -45.0f, AngleDegrees);
     AngleFrom(&g_AgentAngle45, 45.0f, AngleDegrees);
     g_GrapleGravity.w = 1.0f;
-    g_TriggerNodeKinds = 0x180;
+    g_TriggerNodeKinds = 1u << NodeMessageTrigger | 1u << NodeCameraTrigger;
     g_AgentDown.x = 0.0f;
     g_AgentDown.y = -1.0f;
     g_AgentDown.w = 1.0f;
@@ -1461,7 +1393,7 @@ void InitAgentsModule(u32 initialize, u32 priority)
 
 void ConstructAgentsModule()
 {
-    InitAgentsModule(1, 0xFFFF);
+    InitAgentsModule(1, DefaultInitPriority);
 }
 
 // The cases splat split off a switch of a function nothing calls (func_001412B0, fragments.txt), which its jump table

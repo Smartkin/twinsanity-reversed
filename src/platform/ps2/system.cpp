@@ -88,8 +88,35 @@ extern "C"
 namespace
 {
 // libscf's local time: the console's clock keeps Japan's time, the OSD settings say how many minutes the local time is from
-// UTC and whether it's summer time. Settings before version 1 had no time zone
+// UTC and whether it's summer time, which puts it an hour on. Settings before version 1 had no time zone
 constexpr s32 JapanTimeZone = 540;
+constexpr s32 SummerTimeMinutes = 60;
+
+// The OSD settings' first word (PS2SDK's ConfigParam): the time zone's offset is its top 11 bits, signed
+union OsdSettingsWord
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 21;
+        s32 timeZoneOffset : 11;
+    };
+};
+CHECK_SIZE(OsdSettingsWord, 4);
+
+// The second settings' byte at 1 (PS2SDK's Config2Param's)
+union OsdTimeSettings
+{
+    u8 value;
+    struct
+    {
+        u8 unused0 : 4;
+        u8 summerTime : 1;
+        u8 unused5 : 3;
+    };
+};
+CHECK_SIZE(OsdTimeSettings, 1);
+constexpr s32 TimeSettingsOffset = 1;
 
 s32 TimeZone()
 {
@@ -105,10 +132,9 @@ s32 TimeZone()
         return JapanTimeZone;
     }
 
-    // The offset is the word's top 11 bits, signed
-    u32 word;
-    __builtin_memcpy(&word, &config, sizeof(word));
-    return static_cast<s32>(word) >> 21;
+    OsdSettingsWord settings;
+    __builtin_memcpy(&settings.value, &config, sizeof(settings.value));
+    return settings.timeZoneOffset;
 }
 
 bool SummerTime()
@@ -125,12 +151,12 @@ bool SummerTime()
         return false;
     }
 
-    // The second byte of the second settings: bit 4 summer time
-    u8 settings;
-    GetOsdConfigParam2(&settings, 1, 1);
-    return (settings >> 4 & 1) != 0;
+    OsdTimeSettings settings;
+    GetOsdConfigParam2(&settings.value, sizeof(settings.value), TimeSettingsOffset);
+    return settings.summerTime != 0;
 }
 
+// A tens digit counts 16 in BCD, 6 too many
 u8 FromBcd(u8 value)
 {
     return static_cast<u8>(value - (value >> 4) * 6);
@@ -195,23 +221,23 @@ void PreviousHour(Platform::System::DateTime& time)
 }
 }
 
-s32 Platform::System::Language()
+Platform::System::ConsoleLanguage Platform::System::Language()
 {
     // libscf's sceScfGetLanguage: the OSD settings before version 1 only knew Japanese and English
     ConfigParam config;
     GetOsdConfigParam(&config);
     if (IsT10K())
     {
-        return g_DevelopmentKitLanguage;
+        return static_cast<ConsoleLanguage>(g_DevelopmentKitLanguage);
     }
 
     GetOsdConfigParam(&config);
     if (config.version != 0)
     {
-        return config.language;
+        return static_cast<ConsoleLanguage>(config.language);
     }
 
-    return config.japLanguage;
+    return static_cast<ConsoleLanguage>(config.japLanguage);
 }
 
 Platform::System::DateTime Platform::System::LocalTime()
@@ -224,7 +250,7 @@ Platform::System::DateTime Platform::System::LocalTime()
     time.day = FromBcd(clock.day);
     time.hour = FromBcd(clock.hour);
     time.second = FromBcd(clock.second);
-    s32 minute = FromBcd(clock.minute) + TimeZone() + (SummerTime() ? 60 : 0) - JapanTimeZone;
+    s32 minute = FromBcd(clock.minute) + TimeZone() + (SummerTime() ? SummerTimeMinutes : 0) - JapanTimeZone;
     while (minute < 0)
     {
         minute += 60;

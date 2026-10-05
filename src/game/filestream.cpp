@@ -11,6 +11,10 @@ namespace
 {
 constexpr const char* NoPath = "Nothing";
 constexpr const char* NewPath = "Initialising";
+// A read too big for the reader takes what the reader has in whole blocks of this, the rest straight from the file
+constexpr u32 ReadBlockSize = 0x40;
+constexpr u32 SoundBankBufferSize = 0x800;
+constexpr u32 SamplesPathSize = 0x100;
 
 // The reader through its vtable, as the retail code calls it
 Stream* Reader(FileStream* stream)
@@ -27,7 +31,7 @@ void HandOver(FileStream* stream)
         stream->pending = nullptr;
     }
 
-    stream->flags &= ~FileStream::FlagReading;
+    stream->flags.reading = 0;
 }
 }
 
@@ -40,7 +44,7 @@ StreamSystem* StreamSystem::Construct(StreamSystem* system, u16 capacity)
 {
     system->capacity = capacity;
     system->vtable = g_StreamSystemVTable;
-    system->growth = static_cast<u16>((capacity >> 2) + 10);
+    system->growth = static_cast<u16>((capacity >> 2) + PoolGrowth);
     system->used = 0;
     system->firstFree = 0;
     system->links = nullptr;
@@ -57,14 +61,14 @@ StreamSystem* StreamSystem::Construct(StreamSystem* system, u16 capacity)
     }
 
     s32 slots = static_cast<s16>(system->capacity);
-    system->links = static_cast<s16*>(MemoryAllocate2(static_cast<u32>(slots * 2)));
-    system->streams = static_cast<FileStream**>(MemoryAllocate2(static_cast<u32>(slots * 4)));
+    system->links = static_cast<s16*>(MemoryAllocate2(static_cast<u32>(slots) * sizeof(s16)));
+    system->streams = static_cast<FileStream**>(MemoryAllocate2(static_cast<u32>(slots) * sizeof(FileStream*)));
     for (s32 i = 0; i < static_cast<s16>(system->capacity); i++)
     {
         system->links[i] = static_cast<s16>(i + 1);
     }
 
-    system->links[static_cast<s16>(system->capacity) - 1] = -2;
+    system->links[static_cast<s16>(system->capacity) - 1] = PoolFreeListEnd;
     return system;
 }
 
@@ -81,7 +85,7 @@ void StreamSystem::Destroy(u32 flags)
         MemoryDeallocate_(streams);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -97,7 +101,7 @@ u16 StreamSystem::Allocate()
 
     s16 slot = static_cast<s16>(firstFree);
     firstFree = static_cast<u16>(links[slot]);
-    links[slot] = -1;
+    links[slot] = PoolSlotUsed;
     used++;
     return static_cast<u16>(slot);
 }
@@ -129,15 +133,15 @@ void StreamSystem::Grow()
     }
 
     s32 slots = static_cast<s16>(capacity) + static_cast<s16>(growth);
-    FileStream** newStreams = static_cast<FileStream**>(MemoryAllocate2(static_cast<u32>(slots * 4)));
-    s16* newLinks = static_cast<s16*>(MemoryAllocate2(static_cast<u32>(slots * 2)));
+    FileStream** newStreams = static_cast<FileStream**>(MemoryAllocate2(static_cast<u32>(slots) * sizeof(FileStream*)));
+    s16* newLinks = static_cast<s16*>(MemoryAllocate2(static_cast<u32>(slots) * sizeof(s16)));
     if (capacity != 0)
     {
         FileStream** oldStreams = streams;
         streams = newStreams;
         for (s32 i = 0; i < static_cast<s16>(capacity); i++)
         {
-            if (links[i] == -1)
+            if (links[i] == PoolSlotUsed)
             {
                 streams[i] = oldStreams[i];
             }
@@ -146,7 +150,7 @@ void StreamSystem::Grow()
         // The old slots are all in use
         for (s32 i = 0; i < static_cast<s16>(capacity); i++)
         {
-            newLinks[i] = -1;
+            newLinks[i] = PoolSlotUsed;
         }
 
         if (oldStreams != nullptr)
@@ -167,7 +171,7 @@ void StreamSystem::Grow()
         newLinks[slot] = static_cast<s16>(slot + 1);
     }
 
-    newLinks[slot - 1] = -2;
+    newLinks[slot - 1] = PoolFreeListEnd;
     u16 oldCapacity = capacity;
     links = newLinks;
     streams = newStreams;
@@ -219,7 +223,7 @@ extern "C"
         stream->archive = nullptr;
         stream->channel = 0;
         stream->archiveState = FileStream::NoArchive;
-        stream->flags = 0;
+        stream->flags.value = 0;
         stream->channel = static_cast<u8>(system->Add(&stream));
         FileStreamAttachBuffer(stream, bufferSize, location, used);
         return stream;
@@ -249,15 +253,15 @@ extern "C"
         }
 
         Platform::Stream::AttachBuffer(channel, size, location, used);
-        stream->flags |= FileStream::FlagBuffer;
+        stream->flags.hasBuffer = 1;
     }
 
     void FileStreamDetachBuffer(FileStream* stream)
     {
-        if ((stream->flags & FileStream::FlagBuffer) != 0)
+        if (stream->flags.hasBuffer)
         {
             Platform::Stream::DetachBuffer(stream->channel);
-            stream->flags &= ~FileStream::FlagBuffer;
+            stream->flags.hasBuffer = 0;
         }
     }
 
@@ -299,7 +303,7 @@ extern "C"
             stream->file = Platform::Stream::OpenFile(path);
             if (stream->file != Platform::Stream::NoFile)
             {
-                stream->flags |= FileStream::FlagReading;
+                stream->flags.reading = 1;
                 StringAssign(&stream->path, path);
             }
 
@@ -345,17 +349,17 @@ extern "C"
             stream->file = Platform::Stream::NoFile;
         }
 
-        stream->flags &= ~FileStream::FlagReading;
+        stream->flags.reading = 0;
         StringAssign(&stream->path, NoPath);
         if (stream->reader != nullptr)
         {
             Reader(stream)->Rewind();
             stream->readerStart = 0;
-            stream->flags &= ~FileStream::FlagBuffered;
+            stream->flags.buffered = 0;
         }
     }
 
-    void FileStreamOpenArchive(FileStream* stream, const char* path, s32 unknown, GameReadersStorage* storage)
+    void FileStreamOpenArchive(FileStream* stream, const char* path, s32 readNow, GameReadersStorage* storage)
     {
         if (stream->archiveState != FileStream::NoArchive)
         {
@@ -366,18 +370,15 @@ extern "C"
         StringAssign(&stream->archivePath, path);
         auto* archive = static_cast<Archive*>(MemoryAllocate(sizeof(Archive)));
         archive->files = nullptr;
-        archive->growth = 0x40;
+        archive->growth = Archive::FilesGrowth;
         archive->count = 0;
         archive->capacity = 0;
         archive->lastFound = nullptr;
         archive->lookups.count = 0;
-        archive->lookups.capacity = 10;
-        archive->lookups.growth = 10;
-        // 10 strings, after GCC's cookie of 16 bytes counting them
-        auto* block = static_cast<u32*>(MemoryAllocate2(0x10 + 10 * sizeof(String)));
-        block[0] = 10;
-        auto* lookups = reinterpret_cast<String*>(block + 4);
-        for (s32 i = 0; i < 10; i++)
+        archive->lookups.capacity = Archive::LookupsGrowth;
+        archive->lookups.growth = Archive::LookupsGrowth;
+        String* lookups = NewArray<String>(Archive::LookupsGrowth);
+        for (u32 i = 0; i < Archive::LookupsGrowth; i++)
         {
             lookups[i].string = nullptr;
             lookups[i].length = 0;
@@ -389,7 +390,7 @@ extern "C"
         archive->path.string = nullptr;
         archive->path.capacity = 0;
         archive->path.length = 0;
-        ArchiveLoad(archive, path, unknown, storage);
+        ArchiveLoad(archive, path, readNow, storage);
     }
 
     bool FileStreamRead(FileStream* stream, u32 offset, u32 size, u8* destination, s32 wait, u32* read)
@@ -414,7 +415,7 @@ extern "C"
                 else
                 {
                     Reader(stream)->Rewind();
-                    stream->flags &= ~FileStream::FlagBuffered;
+                    stream->flags.buffered = 0;
                 }
             }
             else if (position < readerEnd)
@@ -422,7 +423,7 @@ extern "C"
                 if (position < stream->readerStart)
                 {
                     Reader(stream)->Rewind();
-                    stream->flags &= ~FileStream::FlagBuffered;
+                    stream->flags.buffered = 0;
                 }
                 else
                 {
@@ -437,7 +438,7 @@ extern "C"
             }
         }
 
-        if ((stream->flags & FileStream::FlagBuffered) != 0)
+        if (stream->flags.buffered)
         {
             if (available >= size)
             {
@@ -461,7 +462,7 @@ extern "C"
 
                     Reader(stream)->Rewind();
                     stream->readerStart = next;
-                    stream->flags |= FileStream::FlagReading;
+                    stream->flags.reading = 1;
                     FileStreamStartRead(stream, next, left, stream->reader->begin);
                     if (wait)
                     {
@@ -477,10 +478,10 @@ extern "C"
                 }
                 else
                 {
-                    // Too much for the reader: what it has, in blocks of 64 bytes, and the rest straight into the destination
-                    u32 buffered = available & ~0x3Fu;
+                    // Too much for the reader: what it has, in whole blocks, and the rest straight into the destination
+                    u32 buffered = available & ~(ReadBlockSize - 1);
                     Reader(stream)->Read(destination, buffered, 1);
-                    stream->flags |= FileStream::FlagReading;
+                    stream->flags.reading = 1;
                     FileStreamStartRead(stream, position + buffered, size - buffered, destination + buffered);
                     if (wait)
                     {
@@ -488,7 +489,7 @@ extern "C"
                     }
 
                     done = wait != 0;
-                    stream->flags &= ~FileStream::FlagBuffered;
+                    stream->flags.buffered = 0;
                 }
             }
         }
@@ -504,7 +505,7 @@ extern "C"
                 fill = Reader(stream)->Size();
             }
 
-            stream->flags |= FileStream::FlagReading;
+            stream->flags.reading = 1;
             FileStreamStartRead(stream, position, fill, stream->reader->begin);
             if (wait)
             {
@@ -518,11 +519,11 @@ extern "C"
                 stream->pending = destination;
             }
 
-            stream->flags |= FileStream::FlagBuffered;
+            stream->flags.buffered = 1;
         }
         else
         {
-            stream->flags |= FileStream::FlagReading;
+            stream->flags.reading = 1;
             FileStreamStartRead(stream, position, size, destination);
             if (wait)
             {
@@ -538,7 +539,7 @@ extern "C"
             u32 told = Reader(stream)->Tell();
             if (reader->size == told)
             {
-                stream->flags &= ~FileStream::FlagBuffered;
+                stream->flags.buffered = 0;
             }
         }
 
@@ -547,7 +548,7 @@ extern "C"
 
     s32 FileStreamReadSoundBank(FileStream* stream, u32 bank, u32 offset, u32 size, s32 wait)
     {
-        stream->flags |= FileStream::FlagReading;
+        stream->flags.reading = 1;
         FileStreamStartSoundBankRead(stream, bank, stream->start + offset, size);
         if (wait)
         {
@@ -559,12 +560,12 @@ extern "C"
 
     bool FileStreamPoll(FileStream* stream)
     {
-        if ((stream->flags & FileStream::FlagReading) != 0 && !FileStreamIsReading(stream))
+        if (stream->flags.reading && !FileStreamIsReading(stream))
         {
             HandOver(stream);
         }
 
-        return (stream->flags & FileStream::FlagReading) != 0;
+        return stream->flags.reading;
     }
 
     void FileStreamWait(FileStream* stream)
@@ -604,11 +605,11 @@ extern "C"
     void FileStreamCreateReader(FileStream* stream, u32 size)
     {
         stream->readerSize = size;
-        void* memory = MemoryAllocateAligned(GetHeapManager(), stream->readerSize, 0x40);
+        void* memory = MemoryAllocateAligned(GetHeapManager(), stream->readerSize, MemoryStream::FileAlignment);
         auto* reader = static_cast<MemoryStream*>(MemoryAllocate(sizeof(MemoryStream)));
-        stream->reader = MemoryStream::Construct(reader, memory, stream->readerSize, 1, 0x40);
+        stream->reader = MemoryStream::Construct(reader, memory, stream->readerSize, 1, MemoryStream::FileAlignment);
         Reader(stream)->Rewind();
-        stream->flags &= ~FileStream::FlagBuffered;
+        stream->flags.buffered = 0;
     }
 
     void FileStreamEmptyReader(FileStream* stream)
@@ -616,7 +617,7 @@ extern "C"
         if (stream->reader != nullptr)
         {
             Reader(stream)->SeekToEnd();
-            stream->flags &= ~FileStream::FlagBuffered;
+            stream->flags.buffered = 0;
         }
     }
 
@@ -624,7 +625,7 @@ extern "C"
     {
         if (stream->reader != nullptr)
         {
-            Reader(stream)->Destroy(3);
+            Reader(stream)->Destroy(DestroyAndFree);
         }
 
         stream->reader = nullptr;
@@ -632,7 +633,7 @@ extern "C"
 
     void LoadSoundBank(SoundBankFiles* bank, const char* name)
     {
-        FileStream* stream = OpenFileStream(g_StreamSystem, 0x800, 0, 0);
+        FileStream* stream = OpenFileStream(g_StreamSystem, SoundBankBufferSize, 0, 0);
         if (bank->header != nullptr)
         {
             FreeMemory(GetHeapManager(), bank->header);
@@ -647,8 +648,8 @@ extern "C"
         u8* header = nullptr;
         if (FileStreamOpen(stream, path.string))
         {
-            header = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), stream->size, 0x40));
-            stream->flags |= FileStream::FlagReading;
+            header = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), stream->size, MemoryStream::FileAlignment));
+            stream->flags.reading = 1;
             FileStreamStartRead(stream, 0, stream->size, header);
             FileStreamWait(stream);
             FileStreamClose(stream);
@@ -657,7 +658,7 @@ extern "C"
         StringDestroy(&path);
         bank->header = header;
         CloseFileStream(g_StreamSystem, stream);
-        char samplesPath[0x100];
+        char samplesPath[SamplesPathSize];
         RetailLibc::Format(samplesPath, "%s.mb", name);
         if (bank->samples != Platform::Stream::NoFile)
         {

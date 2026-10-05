@@ -19,7 +19,7 @@ struct SpringPoint
     f32 mass;
     f32 drag;
     u8 pinned;
-    u8 unknown09[7];
+    u8 unused09[7];
     Vector4 position;
     Vector4 velocity;
     Vector4 force;
@@ -43,6 +43,8 @@ CHECK_SIZE(Spring, 0x14);
 class SpringChain
 {
 public:
+    static constexpr u32 DestroySlot = 1;
+
     PointerArray<Spring> springs;
     const GccVTableEntry* vtable;
     u32 segments;
@@ -65,7 +67,7 @@ CHECK_SIZE(SpringChain, 0x20);
 struct SpringBody
 {
     u32 passes;
-    u8 unknown04[0xC];
+    u8 unused04[0xC];
     Vector4 fixedAxis;
     PointerArray<SpringPoint> points;
     PointerArray<SpringChain> chains;
@@ -102,7 +104,7 @@ extern "C"
     void LayChain(SpringChain* chain, const Vector4* start, const Vector4* end) RETAIL(FUN_00191130);
 
     // A chain added to a body, and every point's drag set
-    void AddSpring(SpringBody* body, SpringChain* chain) RETAIL(FUN_00191828);
+    void AddSpringChain(SpringBody* body, SpringChain* chain) RETAIL(FUN_00191828);
     void SetPointsDrag(f32 drag, SpringBody* body) RETAIL_N32(FUN_00191780);
     // The forces a pass starts from: none on pinned points, the others' gravity times their mass (none without one) and a force
     // when there's one

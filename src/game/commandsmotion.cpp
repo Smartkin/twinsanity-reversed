@@ -11,6 +11,7 @@
 #include "game/memory.h"
 #include "game/navigation.h"
 #include "game/objectnode.h"
+#include "game/objects.h"
 #include "game/place.h"
 #include "game/player.h"
 #include "game/properties.h"
@@ -20,10 +21,10 @@
 #include <cstddef>
 #include <cstdint>
 
-// The commands that warp and turn an agent's instance, strafe and move it toward a designator, push it away from what it
+// The commands that warp and turn an agent's instance, strafe and move it toward a designator, push it along what it
 // perceives, set its keys and the trajectory controller's wobble, link it to the nearest AI position, set its head tracking's
-// target, change and arrange its linked objects, give it shadow shapes, spawn instances for it and let go of the ones attached
-// to it; and the module's statics
+// target, change its linked objects' counters and pick the one near the player, give it shadow shapes, spawn instances for it
+// and let go of the ones attached to it; and the module's statics
 
 extern "C"
 {
@@ -31,12 +32,11 @@ extern "C"
     void CopyShort(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
     // A rigid body pushed by a force at a point
     void ApplyRigidBodyForce(ObjectRigidBody* body, const Vector4* force, const Vector4* point) RETAIL(FUN_0024c508);
-    // The AI position of a chunk nearest a point, with its index
+    // The chunk manager the scripts' chunks are looked up in (the game context's)
     extern void* G_ChunkManager;
-    // An object node's keys and paths given another's
     // The instance the player operates (a vehicle's), and a word of the module's statics nothing reads
     extern Reference* g_OperatedInstance RETAIL(D_0030A930);
-    extern u32 g_StaticWord30A920 RETAIL(D_0030A920);
+    extern u32 g_UnusedMotionWord RETAIL(D_0030A920);
     void InitMotionCommandStatics(u32 initialise, u32 priority) RETAIL(FUN_00220620);
     // The module's global constructor
     void ConstructMotionCommandsModule() RETAIL(FUN_00225878);
@@ -44,47 +44,6 @@ extern "C"
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-// The object nodes' vtable functions: what slot 9 calls (an object node lets go of its links), whether it takes packets, the
-// byte the factory gives the instances it makes for it (0xFF none), a designator's instance, an instance given to a designator
-constexpr u32 ReleaseLinksSlot = 11;
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 FactoryByteSlot = 25;
-constexpr u32 GetDesignatorSlot = 36;
-constexpr u32 SetDesignatorSlot = 39;
-// The agents' vtable function giving a velocity of its own, and the referenced objects' sleep
-constexpr u32 OwnVelocitySlot = 11;
-constexpr u32 SleepSlot = 3;
-constexpr u8 NoDesignator = 0xFF;
-constexpr u8 NoExitPoint = 0xFF;
-constexpr u8 NoKey = 0xFF;
-constexpr u16 NoMessage = 0xFFFF;
-constexpr u32 ResourceIndexMask = 0x7FFF;
-// The messages' kinds of nodes
-constexpr u32 MessageKinds = 2;
-// The spaces the commands' values are in (the AgentLab tool's): the world, the instance's start, its own, its stored place
-constexpr u32 WorldSpace = 0;
-constexpr u32 StartSpace = 1;
-constexpr u32 OwnSpace = 2;
-constexpr u32 StoredSpace = 7;
-// A mark of the instances' flags (bit 8) the arranging of linked objects sets and passes over
-constexpr u32 Marked = 0x100;
-// The attachments node's word: the linked objects' count (bits 0-4) and the current one (bits 7-11), the instances after it
-constexpr u32 LinkedCountMask = 0x1F;
-constexpr u32 LinkedIndexShift = 7;
-constexpr u32 LinkedIndexMask = 0x1F;
-// The squared lengths too short to have a direction
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 UnitsPerDegree = Rounded(65536.0 / 360.0);
-// How far an instance turned toward where it goes leans into the turn at most (degrees)
-constexpr f32 MostLean = 90.0f;
-// The rigid body's 64 bits at 0x88: it moves (56) and stops once at rest (57); its word at 0x90: its steps since it was launched
-// (bits 11-14)
-constexpr u64 Moving = u64{1} << 56;
-constexpr u64 StopsAtRest = u64{1} << 57;
-constexpr u64 LaunchSteps = 0x7800;
 
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
@@ -99,17 +58,22 @@ NodeList* NodesOf(InstanceContext* instance)
 
 ObjectNode* ObjectNodeOf(InstanceContext* instance)
 {
-    return static_cast<ObjectNode*>(GetGameNode(NodesOf(instance), ObjectNodeKind));
+    return static_cast<ObjectNode*>(GetGameNode(NodesOf(instance), NodeObject));
+}
+
+AttachmentsNode* AttachmentsNodeOf(InstanceContext* instance)
+{
+    return static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, NodeAttachments));
 }
 
 bool Asleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 bool TakesPackets(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0;
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0;
 }
 
 InstanceContext* PlayerInstance()
@@ -130,7 +94,7 @@ InstanceContext* AwakeAgentRef1(ObjectNode* node)
 
 InstanceContext* AwakeAgentRef2(ObjectNode* node)
 {
-    if (node->agentRef2 != nullptr && Asleep(node->agentRef2) && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (node->agentRef2 != nullptr && Asleep(node->agentRef2) && !node->flags.keepsAgentRef2)
     {
         node->agentRef2 = nullptr;
     }
@@ -172,36 +136,19 @@ f32 SecondsSinceUpdate(const GameNode* node, const TimeClock* clock)
     return static_cast<f32>(units) * g_SecondsPerClockUnit;
 }
 
-u32* LinkedWord(void* attachments)
+u32 CurrentLinked(const AttachmentsNode* attachments)
 {
-    return reinterpret_cast<u32*>(static_cast<u8*>(attachments) + 0x18);
-}
-
-InstanceContext** LinkedInstances(void* attachments)
-{
-    return reinterpret_cast<InstanceContext**>(static_cast<u8*>(attachments) + 0x20);
-}
-
-u32 LinkedCount(void* attachments)
-{
-    return *LinkedWord(attachments) & LinkedCountMask;
-}
-
-// The path of the instances attached to the attachments' instance (none: nullptr)
-void* AttachmentPath(void* attachments)
-{
-    return *reinterpret_cast<void**>(static_cast<u8*>(attachments) + 0x70);
+    return attachments->bits.currentLinked;
 }
 
 // A counter of an agent's (its bytes 0x18 on) changed by an amount, kept within 0 and 255
 void AddToCounter(Agent* agent, u32 counter, s32 amount)
 {
-    constexpr s32 CounterMax = 0xFF;
-    u8* byte = reinterpret_cast<u8*>(agent) + offsetof(Agent, unknown18) + counter;
+    u8* byte = reinterpret_cast<u8*>(agent) + offsetof(Agent, counters) + counter;
     s32 value = *byte + amount;
-    if (value > CounterMax)
+    if (value > Agent::CounterMax)
     {
-        *byte = CounterMax;
+        *byte = Agent::CounterMax;
     }
     else if (value >= 0)
     {
@@ -224,25 +171,20 @@ void TurnInstanceTo(InstanceContext* instance, const Vector4& rotation)
     }
 }
 
-// An instance turned to a rotation in a space (bits 16-19 of the bits) of a node's: the rotation given in the world, the
-// instance's start rotation or its stored place's, those turned by the rotation given with bit 21, or its own turned by it
-// (only with bit 21; nothing in the other spaces); then with bit 22 rolled level about the way it faces, its y axis up as far
-// as it goes
-void TurnInSpace(ObjectNode* node, InstanceContext* instance, u32 bits, const Vector4* turn)
+// An instance turned to a rotation in a space of a node's: the rotation given in the world, the instance's start rotation or its
+// stored place's, those turned by the rotation when one is given, or its own turned by it (only with one; nothing in the other
+// spaces); then, when it levels, rolled level about the way it faces, its y axis up as far as it goes
+void TurnInSpace(ObjectNode* node, InstanceContext* instance, RotationWarpBits bits, const Vector4* turn)
 {
-    constexpr u32 SpaceShift = 16;
-    constexpr u32 SpaceMask = 0xF;
-    constexpr u32 TurnGiven = 0x200000;
-    constexpr u32 Levels = 0x400000;
-    switch (bits >> SpaceShift & SpaceMask)
+    switch (bits.space)
     {
-    case WorldSpace:
+    case ControlPacket::WorldSpace:
         TurnInstanceTo(instance, *turn);
         break;
-    case StartSpace:
+    case ControlPacket::InitialSpace:
     {
         Vector4 rotation = node->informationPointer->rotation;
-        if ((bits & TurnGiven) != 0)
+        if (bits.rotationGiven)
         {
             MultiplyRotations(&rotation, &rotation, turn);
         }
@@ -250,9 +192,9 @@ void TurnInSpace(ObjectNode* node, InstanceContext* instance, u32 bits, const Ve
         TurnInstanceTo(instance, rotation);
         break;
     }
-    case OwnSpace:
+    case ControlPacket::CurrentSpace:
     {
-        if ((bits & TurnGiven) == 0)
+        if (!bits.rotationGiven)
         {
             break;
         }
@@ -264,7 +206,7 @@ void TurnInSpace(ObjectNode* node, InstanceContext* instance, u32 bits, const Ve
         TurnInstanceTo(instance, rotation);
         break;
     }
-    case StoredSpace:
+    case ControlPacket::StoredSpace:
     {
         ObjectPlace* stored = node->storedPlace;
         if (stored == nullptr)
@@ -274,7 +216,7 @@ void TurnInSpace(ObjectNode* node, InstanceContext* instance, u32 bits, const Ve
 
         stored->SyncRotation();
         Vector4 rotation = stored->rotation;
-        if ((bits & TurnGiven) != 0)
+        if (bits.rotationGiven)
         {
             MultiplyRotations(&rotation, &rotation, turn);
         }
@@ -286,7 +228,7 @@ void TurnInSpace(ObjectNode* node, InstanceContext* instance, u32 bits, const Ve
         break;
     }
 
-    if ((bits & Levels) == 0)
+    if (!bits.levels)
     {
         return;
     }
@@ -328,7 +270,7 @@ void DesignatorTarget(ObjectNode* node, u8 designator, Vector4* target, bool foc
         break;
     }
     case DesignatesStoredPosition:
-        if ((node->flags & ObjectNodeBase::FlagStoredPosition) != 0)
+        if (node->flags.storedPosition)
         {
             *target = node->storedPosition;
         }
@@ -341,7 +283,7 @@ void DesignatorTarget(ObjectNode* node, u8 designator, Vector4* target, bool foc
         {
             *target = PositionOf(focus);
         }
-        else if (focusPosition && (node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+        else if (focusPosition && node->flags.focusPosition)
         {
             *target = node->focusPosition;
         }
@@ -349,7 +291,7 @@ void DesignatorTarget(ObjectNode* node, u8 designator, Vector4* target, bool foc
         break;
     }
     case DesignatesFocusPosition:
-        if ((node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+        if (node->flags.focusPosition)
         {
             *target = node->focusPosition;
         }
@@ -371,8 +313,7 @@ Waypoints* KeyWaypoints(ObjectNode* node)
 void GoToKey(Waypoints* waypoints, s32 key)
 {
     s32 count = waypoints->keyCount;
-    u8 wrapped = key == count ? Waypoints::FlagWrapped : 0;
-    waypoints->flags = (waypoints->flags & ~Waypoints::FlagWrapped) | wrapped;
+    waypoints->flags.wrapped = key == count;
     waypoints->key = static_cast<u8>(key < count ? key : key - count);
 }
 
@@ -391,56 +332,54 @@ Vector4 ShapeOffset(const TaggedValue& x, const TaggedValue& y, const TaggedValu
 }
 }
 
-// The agent's instance turned to a rotation in a space (the command's word's bits 16-19, see TurnInSpace)
+// The agent's instance turned to a rotation in a space (see TurnInSpace)
 void RotationWarpCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
-    TurnInSpace(node, node->owner, targetAndSpace, VectorAt(&quatX));
+    TurnInSpace(node, node->owner, warp, VectorAt(&quatX));
 }
 
-// A designator's instance (subject's low byte, 0xFF the agent's own) turned like RotationWarp turns the agent's, in the spaces
-// of its own node.
+// A designator's instance (DesignatesNone the agent's own) turned like RotationWarp turns the agent's, in the spaces of its own
+// node.
 // Retail bug: a designator without an instance turns none (its place read at address 8) with the agent's node's spaces
 void RotateAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
-    u8 designator = static_cast<u8>(subject);
-    if (designator != NoDesignator)
+    u8 designator = agent.designator;
+    if (designator != DesignatesNone)
     {
-        instance = CallVirtual<InstanceContext*>(node, node->vtable, GetDesignatorSlot, static_cast<u32>(designator));
+        instance = CallVirtual<InstanceContext*>(node, node->vtable, ObjectNode::GetDesignatorSlot,
+                                                 static_cast<u32>(designator));
         if (instance != nullptr)
         {
             node = ObjectNodeOf(instance);
         }
     }
 
-    TurnInSpace(node, instance, rotate, VectorAt(&quatX));
+    TurnInSpace(node, instance, warp, VectorAt(&quatX));
 }
 
 // The instance moved at a speed (for the time since its node's last update) along an axis, as far as the way to a designator's
-// position (the target's low byte, see DesignatorTarget; else the origin) goes along it, when that's over 0.1: the space's (bits
-// 8-11) x axis, the start's or its own, else the way itself. With a distance it only moves while it stays within it along the
-// axis from the start. It's turned toward the target with bit 12, and the trajectory controller's position is where it went.
+// position (see DesignatorTarget; else the origin) goes along it, when that's over 0.1: the space's x axis, the start's or its
+// own, else the way itself. With a distance it only moves while it stays within it along the axis from the start. It's turned
+// toward the target when it faces it, and the trajectory controller's position is where it went.
 // Retail bug: outside the start's space the distance is measured from what the stack held (the origin here)
 void StrafeTowardsTargetCommand::Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 SpaceShift = 8;
-    constexpr u32 SpaceMask = 0xF;
-    constexpr u32 Faces = 0x1000;
     constexpr f32 TooShort = Rounded(0.1);
     ObjectNode* node = NodeOf(runner);
     Vector4 to = {0.0f, 0.0f, 0.0f, 1.0f};
-    DesignatorTarget(node, static_cast<u8>(target), &to, true);
+    DesignatorTarget(node, target.designator, &to, true);
     f32 seconds = SecondsSinceUpdate(node, clock);
     InstanceContext* instance = node->owner;
     Vector4 position = PositionOf(instance);
     Vector4 way = {to.x - position.x, to.y - position.y, to.z - position.z, 1.0f};
     Vector4 axis = way;
     Vector4 start = {};
-    switch (target >> SpaceShift & SpaceMask)
+    switch (target.space)
     {
-    case StartSpace:
+    case ControlPacket::InitialSpace:
     {
         InstancePlacement* information = node->informationPointer;
         Matrix4x4 matrix;
@@ -449,7 +388,7 @@ void StrafeTowardsTargetCommand::Execute(TimeClock* clock, BehaviourRunner* runn
         start = information->position;
         break;
     }
-    case OwnSpace:
+    case ControlPacket::CurrentSpace:
     {
         ObjectPlace* place = instance->place;
         RotateAndTranslate(place);
@@ -488,9 +427,9 @@ void StrafeTowardsTargetCommand::Execute(TimeClock* clock, BehaviourRunner* runn
         QueueObject(instance);
     }
 
-    if ((target & Faces) != 0)
+    if (target.faces)
     {
-        SteerTowards(1.0f, 0.0f, MostLean, instance, &to);
+        SteerTowards(1.0f, 0.0f, SteerMostLean, instance, &to);
     }
 
     if (node->trajectory != nullptr)
@@ -499,9 +438,8 @@ void StrafeTowardsTargetCommand::Execute(TimeClock* clock, BehaviourRunner* runn
     }
 }
 
-// The instance moved toward a designator's position (the target's low byte, see DesignatorTarget: the focus without the focus
-// position; else the origin) at a speed (value2) for the time since its node's last update, its body turned toward where it
-// goes first
+// The instance moved toward a designator's position (see DesignatorTarget: the focus without the focus position; else the
+// origin) at a speed for the time since its node's last update, its body turned toward where it goes first
 void MoveTowardsDesignatorCommand::Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
@@ -511,12 +449,12 @@ void MoveTowardsDesignatorCommand::Execute(TimeClock* clock, BehaviourRunner* ru
     Vector4 velocity;
     CopyVelocity(node, &velocity);
     Vector4 to = {0.0f, 0.0f, 0.0f, 1.0f};
-    DesignatorTarget(node, static_cast<u8>(target), &to, false);
+    DesignatorTarget(node, target.designator, &to, false);
     f32 seconds = SecondsSinceUpdate(node, clock);
     Vector4 way = {to.x - position.x, to.y - position.y, to.z - position.z, 1.0f};
     f32 inverse = InverseLength(&way, LengthEpsilon);
-    Vector4 moved = {position.x + way.x * inverse * value2 * seconds, position.y + way.y * inverse * value2 * seconds,
-                     position.z + way.z * inverse * value2 * seconds, 1.0f};
+    Vector4 moved = {position.x + way.x * inverse * speed * seconds, position.y + way.y * inverse * speed * seconds,
+                     position.z + way.z * inverse * speed * seconds, 1.0f};
     SteerBodyTowards(1.0f, 0.0f, instance, &moved, 1);
     ObjectPlace* place = instance->place;
     place->SyncPosition();
@@ -526,104 +464,92 @@ void MoveTowardsDesignatorCommand::Execute(TimeClock* clock, BehaviourRunner* ru
     }
 }
 
-// A counter (filter's high half) of the agent's linked objects changed by an amount, kept within 0 and 255: of every one (bit 8
-// of the target) or of the one of the index in its low byte (0xFF none), which bits 10, 11 and 9 make the first, the last and
-// the current one (written into the command); only those of the object of filter's low half (0xFFFF any)
-void AddToLinkedObjectsByteCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// A counter of the agent's linked objects changed by an amount, kept within 0 and 255: of every one or of the one of an index,
+// which the choice of the first, the last or the current one writes into the command; only those of the counter's object
+void AddToLinkedCounterCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Every = 0x100;
-    constexpr u32 Current = 0x200;
-    constexpr u32 First = 0x400;
-    constexpr u32 Last = 0x800;
-    constexpr u16 AnyObject = 0xFFFF;
     ObjectNode* node = NodeOf(runner);
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
-    s32 amount = value.IntWith(node->PacketProperties());
-    if ((target & Every) != 0)
+    s32 change = amount.IntWith(node->PacketProperties());
+    if (linked.every)
     {
-        for (u32 index = 0; index < LinkedCount(attachments); index++)
+        for (u32 index = 0; index < attachments->LinkedCount(); index++)
         {
-            InstanceContext* linked = LinkedInstances(attachments)[index];
-            if (linked == nullptr)
+            InstanceContext* instance = attachments->linked[index];
+            if (instance == nullptr)
             {
                 continue;
             }
 
-            u32 counter = static_cast<u16>(filter >> 16);
-            Agent* agent = ObjectNodeOf(linked)->agent;
+            u32 counterIndex = counter.index;
+            Agent* agent = ObjectNodeOf(instance)->agent;
             u16 object;
             CopyShort(&object, &agent->objectId);
-            u16 wanted = static_cast<u16>(filter);
-            if (wanted != AnyObject && object != wanted)
+            u16 wanted = counter.object;
+            if (wanted != AnyObjectId && object != wanted)
             {
                 continue;
             }
 
-            AddToCounter(agent, counter, amount);
+            AddToCounter(agent, counterIndex, change);
         }
 
         return;
     }
 
-    if ((target & First) != 0)
+    if (linked.first)
     {
-        target &= ~0xFFu;
+        linked.index = 0;
     }
-    else if ((target & Last) != 0)
+    else if (linked.last)
     {
-        target = (target & ~0xFFu) | ((LinkedCount(attachments) - 1) & 0xFF);
+        linked.index = attachments->LinkedCount() - 1;
     }
-    else if ((target & Current) != 0)
+    else if (linked.current)
     {
-        target = (target & ~0xFFu) | (*LinkedWord(attachments) >> LinkedIndexShift & LinkedIndexMask);
+        linked.index = CurrentLinked(attachments);
     }
 
-    u8 index = static_cast<u8>(target);
-    if (index == NoDesignator)
+    u8 index = linked.index;
+    if (index == LinkedObjectChoice::NoIndex)
     {
         return;
     }
 
-    InstanceContext* linked = LinkedInstances(attachments)[index];
-    if (linked == nullptr)
+    InstanceContext* instance = attachments->linked[index];
+    if (instance == nullptr)
     {
         return;
     }
 
-    u32 counter = static_cast<u16>(filter >> 16);
-    Agent* agent = ObjectNodeOf(linked)->agent;
+    u32 counterIndex = counter.index;
+    Agent* agent = ObjectNodeOf(instance)->agent;
     u16 object;
     CopyShort(&object, &agent->objectId);
-    u16 wanted = static_cast<u16>(filter);
-    if (wanted != AnyObject && object != wanted)
+    u16 wanted = counter.object;
+    if (wanted != AnyObjectId && object != wanted)
     {
         return;
     }
 
-    AddToCounter(agent, counter, amount);
+    AddToCounter(agent, counterIndex, change);
 }
 
-// The linked object whose box's middle is nearest a point given to a designator of the agent's node and, with bit 23, marked
-// (bit 22 passes over the marked ones): the point is the player's position (the agent's own velocity times the lead added with
-// bit 21), turned about the agent's instance by an angle (degrees) with bit 20. Retail bugs: the designator is the flags' low 4
-// bits, which the parser never sets and no node takes (nothing is given the object); without a player its place is read at
-// address 8; with no linked object chosen the mark goes on the word at address 4
-void ArrangeLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The linked object whose box's middle is nearest a point given to a designator of the agent's node and marked busy when asked
+// (the busy ones passed over when asked): the point is the player's position (the agent's own velocity times the lead added
+// when it leads), turned about the agent's instance by an angle (degrees) when asked. Retail bugs: the designator is 4 bits,
+// which the parser never sets and no node takes (nothing is given the object); without a player its place is read at address
+// 8; with no linked object chosen the mark goes on the word at address 4
+void PickLinkedObjectNearPlayerCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 DesignatorMask = 0xF;
-    constexpr u32 Turned = 0x100000;
-    constexpr u32 Leads = 0x200000;
-    constexpr u32 PassesMarked = 0x400000;
-    constexpr u32 Marks = 0x800000;
-    constexpr f32 Far = Rounded(1e30);
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
-    void* attachments = GetGameNode(&instance->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(instance);
     if (attachments == nullptr)
     {
         return;
@@ -632,21 +558,21 @@ void ArrangeLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
     InstanceContext* player = PlayerInstance();
     Vector4 own = PositionOf(instance);
     Vector4 point = PositionOf(player);
-    if ((flags & Leads) != 0)
+    if (pick.leads)
     {
         Agent* agent = node->agent;
         Vector4 velocity;
-        CallVirtual<u32>(agent, agent->vtable, OwnVelocitySlot, &velocity);
-        point.x = point.x + velocity.x * value;
-        point.y = point.y + velocity.y * value;
-        point.z = point.z + velocity.z * value;
+        CallVirtual<u32>(agent, agent->vtable, Agent::VelocitySlot, &velocity);
+        point.x = point.x + velocity.x * leadSeconds;
+        point.y = point.y + velocity.y * leadSeconds;
+        point.z = point.z + velocity.z * leadSeconds;
     }
 
-    if ((flags & Turned) != 0)
+    if (pick.turned)
     {
         Vector4 offset = {point.x - own.x, point.y - own.y, point.z - own.z, point.w};
         s32 angle;
-        AngleFrom(&angle, angleValue, AngleDegrees);
+        AngleFrom(&angle, degrees, AngleDegrees);
         TurnAboutAxis(&offset, &g_YAxis, &angle, 1);
         point = own;
         point.x = own.x + offset.x;
@@ -655,16 +581,16 @@ void ArrangeLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
     }
 
     InstanceContext* chosen = nullptr;
-    f32 nearest = Far;
-    for (u32 index = 0; index < LinkedCount(attachments); index++)
+    f32 nearest = Infinite;
+    for (u32 index = 0; index < attachments->LinkedCount(); index++)
     {
-        InstanceContext* linked = LinkedInstances(attachments)[index];
+        InstanceContext* linked = attachments->linked[index];
         const Box& box = linked->collision.box;
         f32 x = point.x - ((box.max.x - box.min.x) * 0.5f + box.min.x);
         f32 y = point.y - ((box.max.y - box.min.y) * 0.5f + box.min.y);
         f32 z = point.z - ((box.max.z - box.min.z) * 0.5f + box.min.z);
         f32 squared = x * x + y * y + z * z;
-        if (!(squared < nearest) || ((flags & PassesMarked) != 0 && (linked->flags & Marked) != 0))
+        if (!(squared < nearest) || (pick.passesBusy && linked->flags.busy))
         {
             continue;
         }
@@ -673,42 +599,36 @@ void ArrangeLinkedObjectsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         nearest = squared;
     }
 
-    CallVirtual<u32>(node, node->vtable, SetDesignatorSlot, flags & DesignatorMask, chosen);
-    if ((flags & Marks) != 0)
+    CallVirtual<u32>(node, node->vtable, ObjectNode::SetDesignatorSlot, pick.designator, chosen);
+    if (pick.marksBusy)
     {
+        // The instance marked busy (at address 4 without one)
         std::uintptr_t address = reinterpret_cast<std::uintptr_t>(chosen) + offsetof(ReferencedObject, flags);
-        *reinterpret_cast<u32*>(address) |= Marked;
+        reinterpret_cast<ReferencedObjectFlags*>(address)->busy = 1;
     }
 }
 
-// The key the waypoints are at (the node's it takes its object from when there's one): the key of the low byte, else (0xFF) a
-// random one of the first (byte 1) to the last key (byte 2, the last key at most; a different one from the current key with
-// bit 25; key 0 with fewer than 2) with bit 27, or one below the last without a first (with neither, as without bit 27); the
-// one nearest the instance from the first (made 0 for good when it's none) to before the last with bit 26; the last key with
-// bit 28
+// The key the waypoints are at (the node's it takes its object from when there's one): the key's index, else (NoKey) a random
+// one of the range when asked (the last key at most; a different one from the current key with noRepeat; key 0 with fewer than
+// 2), or one below the range's end without a start (with neither, as when it isn't random); the one nearest the instance from
+// the range's start (made 0 for good when it's none) to before its end; the last key
 void SetKeyCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 FirstShift = 8;
-    constexpr u32 LastShift = 16;
-    constexpr u32 OtherThanCurrent = 0x2000000;
-    constexpr u32 Nearest = 0x4000000;
-    constexpr u32 Random = 0x8000000;
-    constexpr u32 Last = 0x10000000;
     constexpr f32 Far = 1e8f;
     ObjectNode* node = NodeOf(runner);
     Waypoints* waypoints = KeyWaypoints(node);
-    u8 key = static_cast<u8>(keyAndFlags);
-    if (key != NoKey)
+    u8 index = key.index;
+    if (index != Waypoints::NoKey)
     {
-        GoToKey(waypoints, key);
+        GoToKey(waypoints, index);
         return;
     }
 
-    u8 first = static_cast<u8>(keyAndFlags >> FirstShift);
-    u8 last = static_cast<u8>(keyAndFlags >> LastShift);
-    if ((keyAndFlags & Random) != 0)
+    u8 first = key.rangeStart;
+    u8 last = key.rangeEnd;
+    if (key.random)
     {
-        if (first != NoKey)
+        if (first != Waypoints::NoKey)
         {
             s32 lastKey = waypoints->keyCount - 1;
             s32 upTo = lastKey < last ? lastKey : last;
@@ -718,49 +638,48 @@ void SetKeyCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*
             {
                 do
                 {
-                    chosen = static_cast<u8>(keyAndFlags >> FirstShift) + RandomBelow(range);
-                } while ((keyAndFlags & OtherThanCurrent) != 0 && chosen == waypoints->key);
+                    chosen = key.rangeStart + RandomBelow(range);
+                } while (key.noRepeat && chosen == waypoints->key);
             }
 
             GoToKey(waypoints, chosen);
             return;
         }
 
-        if (last != NoKey)
+        if (last != Waypoints::NoKey)
         {
             GoToKey(waypoints, RandomBelow(last));
             return;
         }
     }
 
-    if ((keyAndFlags & Nearest) != 0)
+    if (key.nearest)
     {
-        if (first == NoKey)
+        if (first == Waypoints::NoKey)
         {
-            keyAndFlags &= ~(0xFFu << FirstShift);
+            key.rangeStart = 0;
         }
 
         Vector4 position = PositionOf(node->owner);
         f32 nearest = Far;
         s32 chosen = 0;
-        for (u32 index = static_cast<u8>(keyAndFlags >> FirstShift);
-             index < waypoints->keyCount && index < static_cast<u8>(keyAndFlags >> LastShift); index++)
+        for (u32 at = key.rangeStart; at < waypoints->keyCount && at < key.rangeEnd; at++)
         {
-            const Vector4& at = waypoints->positions.data[index]->position;
-            f32 x = position.x - at.x;
-            f32 y = position.y - at.y;
-            f32 z = position.z - at.z;
+            const Vector4& keyPosition = waypoints->positions.data[at]->position;
+            f32 x = position.x - keyPosition.x;
+            f32 y = position.y - keyPosition.y;
+            f32 z = position.z - keyPosition.z;
             f32 squared = x * x + y * y + z * z;
             if (squared < nearest)
             {
                 nearest = squared;
-                chosen = static_cast<s32>(index);
+                chosen = static_cast<s32>(at);
             }
         }
 
         GoToKey(waypoints, chosen);
     }
-    else if ((keyAndFlags & Last) != 0)
+    else if (key.last)
     {
         GoToKey(waypoints, waypoints->keyCount - 1);
     }
@@ -769,7 +688,7 @@ void SetKeyCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*
 // The agent's instance attached to its chunk's AI position nearest it when that's within 10
 void LinkToNearestPointCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr f32 Near = 100.0f;
+    constexpr f32 NearSquared = 100.0f;
     InstanceContext* instance = runner->agentNode->owner;
     ChunkEntry* chunk = ChunkOfInstance(G_ChunkManager, instance);
     Vector4 position = PositionOf(instance);
@@ -782,13 +701,13 @@ void LinkToNearestPointCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
     f32 x = position.x - nearest->position.x;
     f32 y = position.y - nearest->position.y;
     f32 z = position.z - nearest->position.z;
-    if (x * x + y * y + z * z < Near)
+    if (x * x + y * y + z * z < NearSquared)
     {
         AttachToAiPosition(AttachmentsOf(instance), instance, nearest);
     }
 }
 
-// The trajectory controller's wobble phases about x, y and z set (degrees), the ones the last value's bits say
+// The trajectory controller's wobble phases about x, y and z set (degrees), the ones of the axes given
 void AlterWobblePhaseCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
@@ -804,19 +723,19 @@ void AlterWobblePhaseCommand::Execute(TimeClock*, BehaviourRunner* runner, Behav
     }
 
     PropertyHolder* properties = node->PacketProperties();
-    const TaggedValue* phases[3] = {&value1, &value2, &value3};
+    const TaggedValue* phases[3] = {&phaseX, &phaseY, &phaseZ};
     for (u32 axis = 0; axis < 3; axis++)
     {
-        if ((value4.raw & 1 << axis) != 0)
+        if ((axes.value & 1 << axis) != 0)
         {
-            trajectory->wobblePhases[axis] = static_cast<s32>(phases[axis]->FloatWith(properties) * UnitsPerDegree);
+            trajectory->wobblePhases[axis] = static_cast<s32>(phases[axis]->FloatWith(properties) * DegreesToAngle);
         }
     }
 }
 
-// The trajectory controller's wobble phases about x, y and z turned by angles (degrees), the ones the last value's bits say.
+// The trajectory controller's wobble phases about x, y and z turned by angles (degrees), the ones of the axes given.
 // Retail bug: a phase is made radians and the sum taken as degrees, so each one shrinks to 1/57.3 of itself
-void AddMotionAnglesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void AddWobblePhaseCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
     if (!TakesPackets(node))
@@ -831,26 +750,22 @@ void AddMotionAnglesCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     }
 
     PropertyHolder* properties = node->PacketProperties();
-    const TaggedValue* angles[3] = {&x, &y, &z};
+    const TaggedValue* turns[3] = {&turnX, &turnY, &turnZ};
     for (u32 axis = 0; axis < 3; axis++)
     {
-        if ((set.raw & 1 << axis) != 0)
+        if ((axes.value & 1 << axis) != 0)
         {
-            f32 angle = angles[axis]->FloatWith(properties);
+            f32 turn = turns[axis]->FloatWith(properties);
             f32 phase = static_cast<f32>(trajectory->wobblePhases[axis]) * AngleToRadians;
-            trajectory->wobblePhases[axis] = static_cast<s32>((phase + angle) * UnitsPerDegree);
+            trajectory->wobblePhases[axis] = static_cast<s32>((phase + turn) * DegreesToAngle);
         }
     }
 }
 
-// The head tracking's target given with a weight (lingering with bit 11): a starter receiver's instance (the low byte, 0xFF
-// none), else the focus instance (bit 10), the player (bit 8) or AgentRef2 (bit 9); nothing without one
+// The head tracking's target given with a weight (remembered with it when asked): a starter receiver's instance, else the focus
+// instance, the player or AgentRef2; nothing without one
 void SetHeadTrackingTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 ToPlayer = 0x100;
-    constexpr u32 ToAgentRef2 = 0x200;
-    constexpr u32 ToFocus = 0x400;
-    constexpr u32 LingersShift = 11;
     ObjectNode* node = NodeOf(runner);
     HeadTracking* tracking = node->headTracking;
     if (tracking == nullptr)
@@ -859,33 +774,33 @@ void SetHeadTrackingTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, 
     }
 
     InstanceContext* instance = nullptr;
-    u8 receiver = static_cast<u8>(target);
-    if (receiver != NoDesignator)
+    u8 receiver = target.receiver;
+    if (receiver != DesignatesNone)
     {
         instance = ReceiverInstance(runner, receiver);
     }
-    else if ((target & ToFocus) != 0)
+    else if (target.focus)
     {
         instance = node->AwakeFocus();
     }
-    else if ((target & ToPlayer) != 0)
+    else if (target.player)
     {
         instance = PlayerInstance();
     }
-    else if ((target & ToAgentRef2) != 0)
+    else if (target.agentRef2)
     {
         instance = AwakeAgentRef2(node);
     }
 
     if (instance != nullptr)
     {
-        TrackHead(weightValue, tracking, instance, node, target >> LingersShift & 1);
+        TrackHead(weight, tracking, instance, node, target.remembers);
     }
 }
 
-// The instance's rigid body pushed at the node's middle over the ground away from what it perceives: by the perception's
-// direction (0x70 bytes in) with mode 0 (any other pushes by nothing) times a factor, for the time since the node's last update;
-// its trajectory controller made to follow its motion block first, the body set moving and stopping at rest
+// The instance's rigid body pushed at the node's middle over the ground: along the perception's direction (0x70 bytes in) by the
+// strength for perception slot 0 (any other pushes by nothing), for the time since the node's last update; its trajectory
+// controller made to follow its motion block first, the body set moving and stopping at rest
 void PushFromPerceptionCommand::Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel*)
 {
     ObjectNode* node = NodeOf(runner);
@@ -895,14 +810,14 @@ void PushFromPerceptionCommand::Execute(TimeClock* clock, BehaviourRunner* runne
     }
 
     Vector4 push = {0.0f, 0.0f, 0.0f, 1.0f};
-    if (mode.raw == 0)
+    if (perceptionSlot == 0)
     {
-        push = *reinterpret_cast<const Vector4*>(static_cast<u8*>(node->perception) + 0x70);
+        push = node->perception->direction;
     }
 
-    push.x = push.x * factor;
+    push.x = push.x * strength;
     push.y = 0.0f;
-    push.z = push.z * factor;
+    push.z = push.z * strength;
     f32 seconds = SecondsSinceUpdate(node, clock);
     push.x = push.x * seconds;
     push.z = push.z * seconds;
@@ -914,226 +829,186 @@ void PushFromPerceptionCommand::Execute(TimeClock* clock, BehaviourRunner* runne
         return;
     }
 
-    body->bits88 |= Moving | StopsAtRest;
-    body->bits90 &= ~LaunchSteps;
-    Vector4 point = node->unknown20;
+    body->bits.moving = 1;
+    body->bits.stopsAtRest = 1;
+    body->state.launchSteps = 0;
+    Vector4 point = node->middle;
     point.w = 1.0f;
     ApplyRigidBodyForce(body, &push, &point);
 }
 
-// A circle put in front of the shapes of a shadow slot (byte 0) of the node's instance: its kind (byte 1), its joint (byte 2),
-// its radius and height, its offset
+// A circle put in front of the shapes of a shadow slot of the node's instance: its kind, its joint, its radius and height, its
+// offset
 void SetShadowCircleCommand::ExecuteOn(GameNode* node)
 {
-    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, ShadowNode::NodeKind));
+    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, NodeShadow));
     if (shadow == nullptr)
     {
         return;
     }
 
     PropertyHolder* properties = static_cast<ObjectNodeBase*>(node)->PacketProperties();
-    ShadowShapes* shapes = SlotShapes(shadow, static_cast<u8>(meshSlotAndMode));
+    ShadowShapes* shapes = SlotShapes(shadow, shape.slot);
     auto* memory = static_cast<ShadowCircle*>(MemoryAllocate(sizeof(ShadowCircle)));
     f32 circleRadius = radius.FloatWith(properties);
-    f32 height = radius2.FloatWith(properties);
-    ShadowCircle* circle = ShadowCircle::Construct(circleRadius, height, memory, static_cast<u8>(meshSlotAndMode >> 8),
-                                                   static_cast<u8>(meshSlotAndMode >> 16));
+    f32 circleHeight = height.FloatWith(properties);
+    ShadowCircle* circle = ShadowCircle::Construct(circleRadius, circleHeight, memory, shape.kind, shape.joint);
     circle->offset = ShapeOffset(offsetX, offsetY, offsetZ, properties);
     shapes->AddCircle(circle);
 }
 
-// A shadow slot (byte 0) of the node's instance given new shapes (its shadow node made when it has none): the shapes of a
-// distance (size) and a strength (size2), the slot cast as strongly as height
+// A shadow slot of the node's instance given new shapes (its shadow node made when it has none): the shapes of a distance and a
+// strength at that distance, the slot cast as strongly as its near strength up close
 void SetShadowCommand::ExecuteOn(GameNode* node)
 {
     PropertyHolder* properties = static_cast<ObjectNodeBase*>(node)->PacketProperties();
     InstanceContext* instance = node->owner;
-    auto* shadow = static_cast<ShadowNode*>(GetGameNode(&instance->nodes, ShadowNode::NodeKind));
+    auto* shadow = static_cast<ShadowNode*>(GetGameNode(&instance->nodes, NodeShadow));
     if (shadow == nullptr)
     {
-        constexpr u32 AttachNode = 1;
         shadow = ShadowNode::Construct(static_cast<ShadowNode*>(MemoryAllocate(sizeof(ShadowNode))));
         RegisterNode(instance, AttachNode, shadow);
     }
 
     auto* memory = static_cast<ShadowShapes*>(MemoryAllocate(sizeof(ShadowShapes)));
-    f32 distance = size.FloatWith(properties);
-    f32 strength = size2.FloatWith(properties);
-    ShadowShapes* shapes = ShadowShapes::Construct(distance, strength, memory);
-    auto* slot = static_cast<ShadowSlot*>(MemoryAllocate(sizeof(ShadowSlot)));
-    slot = ShadowSlot::Construct(height.FloatWith(properties), slot, shapes);
-    shadow->SetSlot(static_cast<u8>(shadowSlot), slot);
+    f32 reach = distance.FloatWith(properties);
+    f32 strength = farStrength.FloatWith(properties);
+    ShadowShapes* shapes = ShadowShapes::Construct(reach, strength, memory);
+    auto* shadowSlot = static_cast<ShadowSlot*>(MemoryAllocate(sizeof(ShadowSlot)));
+    shadowSlot = ShadowSlot::Construct(nearStrength.FloatWith(properties), shadowSlot, shapes);
+    shadow->SetSlot(slot.slot, shadowSlot);
 }
 
-// A capsule put in front of the shapes of a shadow slot (byte 0) of the node's instance: its kind (byte 1), its two joints (bytes
-// 2 and 3), its radius, its offset
+// A capsule put in front of the shapes of a shadow slot of the node's instance: its kind, its two joints, its radius, its
+// offset
 void SetShadowMeshCommand::ExecuteOn(GameNode* node)
 {
-    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, ShadowNode::NodeKind));
+    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, NodeShadow));
     if (shadow == nullptr)
     {
         return;
     }
 
     PropertyHolder* properties = static_cast<ObjectNodeBase*>(node)->PacketProperties();
-    ShadowShapes* shapes = SlotShapes(shadow, static_cast<u8>(meshSlotAndMode));
+    ShadowShapes* shapes = SlotShapes(shadow, shape.slot);
     auto* memory = static_cast<ShadowCapsule*>(MemoryAllocate(sizeof(ShadowCapsule)));
-    f32 capsuleRadius = size.FloatWith(properties);
-    ShadowCapsule* capsule = ShadowCapsule::Construct(capsuleRadius, memory, static_cast<u8>(meshSlotAndMode >> 8),
-                                                      static_cast<u8>(meshSlotAndMode >> 16),
-                                                      static_cast<u8>(meshSlotAndMode >> 24));
+    f32 capsuleRadius = radius.FloatWith(properties);
+    ShadowCapsule* capsule = ShadowCapsule::Construct(capsuleRadius, memory, shape.kind, shape.joint, shape.secondJoint);
     capsule->offset = ShapeOffset(offsetX, offsetY, offsetZ, properties);
     shapes->AddCapsule(capsule);
 }
 
-// The plain shape of a shadow slot (byte 0) of the node's instance set: its kind (byte 1), its width and depth, its offset
+// The plain shape of a shadow slot of the node's instance set: its kind, its width and depth, its offset
 void SetShadowRectangleCommand::ExecuteOn(GameNode* node)
 {
-    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, ShadowNode::NodeKind));
+    GameNode* shadow = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, NodeShadow));
     if (shadow == nullptr)
     {
         return;
     }
 
     PropertyHolder* properties = static_cast<ObjectNodeBase*>(node)->PacketProperties();
-    ShadowShapes* shapes = SlotShapes(shadow, static_cast<u8>(slot));
+    ShadowShapes* shapes = SlotShapes(shadow, shape.slot);
     auto* memory = static_cast<ShadowPlain*>(MemoryAllocate(sizeof(ShadowPlain)));
-    f32 width = size.FloatWith(properties);
-    f32 depth = size3.FloatWith(properties);
-    ShadowPlain* plain = ShadowPlain::Construct(width, depth, memory, static_cast<u8>(slot >> 8));
+    f32 plainWidth = width.FloatWith(properties);
+    f32 plainDepth = depth.FloatWith(properties);
+    ShadowPlain* plain = ShadowPlain::Construct(plainWidth, plainDepth, memory, shape.kind);
     plain->offset = ShapeOffset(offsetX, offsetY, offsetZ, properties);
     shapes->SetPlain(plain);
 }
 
-// An instance made for the agent (its spawner the agent's instance, which its ID's entry links) of the object of objectAndKey's
-// low half, of the agent's own object (bit 36 of the flags' 64 bits) or of AgentRef2's (bit 40), the last two with their
-// instance's properties; the factory gives it the subtype with bit 47, the agent's ID with bit 39. It's turned like the agent's
-// instance, or (bit 35) none, like its start or like itself by the space (bits 24-28). It's made at the agent's instance and
-// attached to the agent (bit 31: at the exit point of byte 2, the two leaving each other out of their collisions), or at the
-// exit point of its model of byte 2 (turned like it) or at a designator's position (the designator of objectAndKey's byte 2, or
-// the focus (bit 34), the focus position (33) or the stored position (48)) in the space, the offset added with bit 30, then
-// linked to the agent with bit 32. Then: the flags' low half sent it as a trigger message (0xFFFF none), its flags' trigger
-// signals and sphere contact cleared (bit 29), its mark set (49) or cleared (50), its node's halfword 6 objectAndKey's byte 3
-// squared (0xFFFF for 0xFF, kept for 0), and the agent's node's focus (bit 37) or AgentRef2 (38) made it; it's given the
-// agent's AgentRef1 (42), AgentRef2 (43), focus (44), stored position (45), linked objects (46), keys (51) and paths (52), and
-// is linked to its spawner (41). Retail bugs: turned by a space (bit 35) other than the world, the start and its own, its
+// An instance made for the agent (its spawner the agent's instance, which its ID's entry links) of the command's object, of the
+// agent's own object or of AgentRef2's, the last two with their instance's properties; the factory gives it the subtype when it's
+// given, the agent's ID when asked. It's turned like the agent's instance, or (turned by the space) none, like its start or like
+// itself. It's made at the agent's instance and attached to the agent (at the exit point, the two leaving each other out of
+// their collisions), or at the exit point of its model (turned like it) or at a designator's position (the object's designator,
+// or the focus, the focus position or the stored position) in the space, the offset added when it's given, then linked to the
+// agent when asked. Then: the message sent it as a trigger message, its flags' trigger signals and collision cleared
+// (unsignalled), its busy mark set or cleared, its node's near distance the object's squared, and the agent's node's focus or
+// AgentRef2 made it; it's given the agent's AgentRef1, AgentRef2, focus, stored position, linked objects, keys and paths, and is
+// linked to its spawner, as the flags say. Retail bugs: turned by a space other than the world, the start and its own, its
 // angles are what the stack held; an instance made without an ID makes the spawner the word at address 4
 void SpawnResidentAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    // flags and flags2 are one word of 64 bits, read whole
-    constexpr u64 MessageMask = 0xFFFF;
-    constexpr u32 ExitPointShift = 16;
-    constexpr u32 SpaceShift = 24;
-    constexpr u64 SpaceMask = 0x1F;
-    constexpr u64 Unsignalled = u64{1} << 29;
-    constexpr u64 OffsetGiven = u64{1} << 30;
-    constexpr u64 AtAgent = u64{1} << 31;
-    constexpr u64 LinksToAgent = u64{1} << 32;
-    constexpr u64 AtFocusPosition = u64{1} << 33;
-    constexpr u64 AtFocus = u64{1} << 34;
-    constexpr u64 TurnedBySpace = u64{1} << 35;
-    constexpr u64 OwnObject = u64{1} << 36;
-    constexpr u64 BecomesFocus = u64{1} << 37;
-    constexpr u64 BecomesAgentRef2 = u64{1} << 38;
-    constexpr u64 AgentsId = u64{1} << 39;
-    constexpr u64 AgentRef2Object = u64{1} << 40;
-    constexpr u64 LinksSpawner = u64{1} << 41;
-    constexpr u64 SharesAgentRef1 = u64{1} << 42;
-    constexpr u64 SharesAgentRef2 = u64{1} << 43;
-    constexpr u64 SharesFocus = u64{1} << 44;
-    constexpr u64 SharesStoredPosition = u64{1} << 45;
-    constexpr u64 SharesLinked = u64{1} << 46;
-    constexpr u64 SubtypeGiven = u64{1} << 47;
-    constexpr u64 AtStoredPosition = u64{1} << 48;
-    constexpr u64 SetsMark = u64{1} << 49;
-    constexpr u64 ClearsMark = u64{1} << 50;
-    constexpr u64 SharesKeys = u64{1} << 51;
-    constexpr u64 SharesPaths = u64{1} << 52;
-    // The factory's byte of the instances it makes (bits 5-12 of its flags, 0xFF none)
-    constexpr u32 FactoryByteShift = 5;
-    constexpr u32 FactoryByteMask = 0x1FE0;
-    constexpr u8 RateNone = 0xFF;
-    constexpr u16 RateNever = 0xFFFF;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
     Agent* agent = node->agent;
     InstanceFactory* factory = g_InstanceFactory;
     ChunkEntry* chunk = ChunkOfInstance(G_ChunkManager, instance);
     PropertyHolder* properties = node->PacketProperties();
-    const u64 bits = *reinterpret_cast<const u64*>(&flags);
     u32 factoryByte = 0;
-    if ((bits & SubtypeGiven) != 0)
+    if (flags.subtypeGiven)
     {
         factoryByte = static_cast<u8>(subtype.IntWith(properties));
     }
 
-    u8 nodeByte8C = node->unknown8C;
+    u8 rank = node->rank;
     InstanceContext* source = nullptr;
     u32 objectId;
-    if ((bits & OwnObject) != 0)
+    if (flags.ownObject)
     {
         source = instance;
         u16 id;
         CopyShort(&id, &agent->objectId);
         objectId = id & ResourceIndexMask;
     }
-    else if ((bits & AgentRef2Object) != 0)
+    else if (flags.agentRef2Object)
     {
         source = AwakeAgentRef2(node);
         ObjectNode* sourceNode = ObjectNodeOf(source);
         u16 id;
         CopyShort(&id, &sourceNode->agent->objectId);
         objectId = id & ResourceIndexMask;
-        if ((bits & SubtypeGiven) == 0)
+        if (!flags.subtypeGiven)
         {
-            factoryByte = CallVirtual<u32>(sourceNode, sourceNode->vtable, FactoryByteSlot);
+            factoryByte = CallVirtual<u32>(sourceNode, sourceNode->vtable, ObjectNode::CustomSlotSlot);
         }
     }
     else
     {
-        objectId = static_cast<u16>(objectAndKey) & ResourceIndexMask;
+        objectId = object.id & ResourceIndexMask;
     }
 
-    u32 space = static_cast<u32>(bits >> SpaceShift & SpaceMask);
+    u32 space = flags.space;
     s32 angles[3];
-    if ((bits & TurnedBySpace) == 0 || space == OwnSpace)
+    if (!flags.turnedBySpace || space == ControlPacket::CurrentSpace)
     {
         ObjectPlace* place = instance->place;
         place->SyncRotation();
         AnglesOfRotation(&place->rotation, &angles[0], &angles[1], &angles[2]);
     }
-    else if (space == WorldSpace)
+    else if (space == ControlPacket::WorldSpace)
     {
         angles[0] = 0;
         angles[1] = 0;
         angles[2] = 0;
     }
-    else if (space == StartSpace)
+    else if (space == ControlPacket::InitialSpace)
     {
         AnglesOfRotation(&node->informationPointer->rotation, &angles[0], &angles[1], &angles[2]);
     }
 
-    factory->SetFlag2();
-    factory->ClearFlag1();
-    factory->SetFlag0();
-    if ((bits & AgentsId) != 0)
+    factory->SetInstanceProperties();
+    factory->ClearUnused1();
+    factory->SetGivesIds();
+    if (flags.agentsId)
     {
-        factory->SetFlag3();
+        factory->SetGivesFlagSlots();
     }
     else
     {
-        factory->ClearFlag3();
+        factory->ClearGivesFlagSlots();
     }
 
     factory->creationFlags = 0;
-    if ((bits & SubtypeGiven) != 0)
+    if (flags.subtypeGiven)
     {
-        factory->flags = (factory->flags & ~FactoryByteMask) | (factoryByte & 0xFF) << FactoryByteShift;
+        factory->flags.subtype = factoryByte;
     }
 
     InstanceContext* spawned;
-    u8 exitPoint = static_cast<u8>(flags >> ExitPointShift);
-    if ((bits & AtAgent) != 0)
+    u8 exitPoint = flags.exitPoint;
+    if (flags.atAgent)
     {
         Vector4 position = PositionOf(instance);
         spawned = CreateInstance(factory, chunk, objectId, &position, angles);
@@ -1147,28 +1022,28 @@ void SpawnResidentAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
     else
     {
         u8 designator;
-        if ((bits & AtFocus) != 0)
+        if (flags.atFocus)
         {
             designator = DesignatesFocus;
         }
-        else if ((bits & AtFocusPosition) != 0)
+        else if (flags.atFocusPosition)
         {
             designator = DesignatesFocusPosition;
         }
-        else if ((bits & AtStoredPosition) != 0)
+        else if (flags.atStoredPosition)
         {
             designator = DesignatesStoredPosition;
         }
         else
         {
-            designator = static_cast<u8>(objectAndKey >> 16);
+            designator = object.designator;
         }
 
         Vector4 position;
-        const Vector4* offset = (bits & OffsetGiven) != 0 ? VectorAt(&offsetX) : nullptr;
-        if (exitPoint == NoExitPoint)
+        const Vector4* offset = flags.offsetGiven ? VectorAt(&offsetX) : nullptr;
+        if (exitPoint == GameOGI::NoExitPoint)
         {
-            DesignatedPosition(&position, space, runner, offset, designator, NoDesignator, 0);
+            DesignatedPosition(&position, space, runner, offset, designator, DesignatesNone, 0);
         }
         else
         {
@@ -1186,7 +1061,7 @@ void SpawnResidentAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
             JointPosition(instance, exitPoint, &position, offset);
         }
 
-        if ((bits & (OwnObject | AgentRef2Object)) != 0)
+        if (flags.ownObject || flags.agentRef2Object)
         {
             spawned = CreateInstanceFrom(factory, chunk, source, objectId, &position, angles, 0);
         }
@@ -1195,7 +1070,7 @@ void SpawnResidentAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
             spawned = CreateInstance(factory, chunk, objectId, &position, angles);
         }
 
-        if ((bits & LinksToAgent) != 0)
+        if (flags.linksToAgent)
         {
             LinkToAgent(agent, spawned, 0);
         }
@@ -1205,137 +1080,138 @@ void SpawnResidentAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
     {
         s32 id = spawned->id;
         std::uintptr_t entry = id != -1 ? reinterpret_cast<std::uintptr_t>(&g_InstanceIds->entries[id]) : 0;
-        *reinterpret_cast<InstanceContext**>(entry + offsetof(InstanceIds::Entry, unknown04)) = instance;
+        *reinterpret_cast<InstanceContext**>(entry + offsetof(InstanceIds::Entry, spawner)) = instance;
         ObjectNode* spawnedNode = ObjectNodeOf(spawned);
         Agent* spawnedAgent = spawnedNode->agent;
-        if ((bits & AgentsId) != 0)
+        if (flags.agentsId)
         {
             spawnedAgent->id = agent->id;
         }
 
         RestartAgent(spawnedAgent);
-        if ((bits & LinksSpawner) != 0)
+        if (flags.linksSpawner)
         {
             LinkInstance(AttachmentsOf(spawned), instance, 0);
         }
 
-        u16 message = static_cast<u16>(bits & MessageMask);
+        u16 message = flags.message;
         if (message != NoMessage)
         {
             Reference* sender = instance != nullptr ? AddReference(instance) : nullptr;
             GameEvent* event = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))), message, &sender,
-                                                    MessageKinds);
+                                                    ObjectNodeKinds);
             Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
             QueueEvent(spawned, &handle);
         }
 
-        if ((bits & Unsignalled) != 0)
+        if (flags.unsignalled)
         {
-            spawned->flags &= ~ReferencedObject::FlagSphereContact & ~ReferencedObject::FlagTriggerSignals;
+            spawned->flags.collisionActive = 0;
+            spawned->flags.receivesTriggerSignals = 0;
         }
 
-        if ((bits & SetsMark) != 0)
+        if (flags.marksBusy)
         {
-            spawned->flags |= Marked;
+            spawned->flags.busy = 1;
         }
 
-        if ((bits & ClearsMark) != 0)
+        if (flags.clearsBusy)
         {
-            spawned->flags &= ~Marked;
+            spawned->flags.busy = 0;
         }
 
-        u8 rate = static_cast<u8>(objectAndKey >> 24);
-        if (rate != 0)
+        u8 nearDistance = object.nearDistance;
+        if (nearDistance != 0)
         {
-            spawnedNode->unknown06 = rate == RateNone ? RateNever : static_cast<u16>(rate * rate);
+            spawnedNode->nearDistance = nearDistance == SpawnedObject::AnyDistance
+                                            ? GameNode::AnyNearDistance
+                                            : static_cast<u16>(nearDistance * nearDistance);
         }
 
-        if ((bits & BecomesFocus) != 0)
+        if (flags.becomesFocus)
         {
             node->focusInstance = spawned;
-            node->flags = (node->flags | ObjectNodeBase::FlagFocusInstance) & ~ObjectNodeBase::FlagFocusPosition;
+            node->flags.focusInstance = 1;
+            node->flags.focusPosition = 0;
         }
 
-        if ((bits & BecomesAgentRef2) != 0)
+        if (flags.becomesAgentRef2)
         {
             node->agentRef2 = spawned;
         }
 
-        if ((bits & SharesAgentRef1) != 0)
+        if (flags.sharesAgentRef1)
         {
             spawnedNode->agentRef1 = AwakeAgentRef1(node);
         }
 
-        if ((bits & SharesAgentRef2) != 0)
+        if (flags.sharesAgentRef2)
         {
             spawnedNode->agentRef2 = AwakeAgentRef2(node);
         }
 
-        if ((bits & SharesFocus) != 0)
+        if (flags.sharesFocus)
         {
-            constexpr u32 FocusFlags = ObjectNodeBase::FlagFocusInstance | ObjectNodeBase::FlagFocusPosition;
             spawnedNode->focusPosition = node->focusPosition;
-            u32 kept = spawnedNode->flags & ~FocusFlags;
-            spawnedNode->flags = kept;
-            if ((node->flags & ObjectNodeBase::FlagFocusInstance) != 0)
+            spawnedNode->flags.value &= ~ObjectNodeFlags::FocusMask;
+            if (node->flags.focusInstance)
             {
-                spawnedNode->flags = kept | ObjectNodeBase::FlagFocusInstance;
+                spawnedNode->flags.focusInstance = 1;
             }
-            else if ((node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+            else if (node->flags.focusPosition)
             {
-                spawnedNode->flags = kept | ObjectNodeBase::FlagFocusPosition;
+                spawnedNode->flags.focusPosition = 1;
             }
         }
 
-        if ((bits & SharesStoredPosition) != 0 && (node->flags & ObjectNodeBase::FlagStoredPosition) != 0)
+        if (flags.sharesStoredPosition && node->flags.storedPosition)
         {
             Vector4 stored = node->storedPosition;
             SetStoredPosition(spawnedNode, &stored);
         }
 
-        if ((bits & SharesLinked) != 0)
+        if (flags.sharesLinked)
         {
-            void* linked = GetGameNode(&instance->nodes, AttachmentsKind);
+            AttachmentsNode* linked = AttachmentsNodeOf(instance);
             if (linked != nullptr)
             {
                 LinkAllOf(AttachmentsOf(spawned), linked);
             }
         }
 
-        if ((bits & SharesKeys) != 0 && TakesPackets(spawnedNode))
+        if (flags.sharesKeys && TakesPackets(spawnedNode))
         {
             CopyKeys(spawnedNode->waypoints, node->waypoints);
         }
 
-        if ((bits & SharesPaths) != 0 && TakesPackets(spawnedNode))
+        if (flags.sharesPaths && TakesPackets(spawnedNode))
         {
             CopyPaths(spawnedNode->waypoints, node->waypoints);
         }
 
-        spawnedNode->unknown8C = nodeByte8C;
+        spawnedNode->rank = rank;
     }
 
-    factory->ClearFlag3();
-    factory->flags |= FactoryByteMask;
+    factory->ClearGivesFlagSlots();
+    factory->flags.subtype = InstanceFactoryFlags::NoSubtype;
 }
 
-// The instance attached at an exit point (the low byte; 0xFF the one attached without one) let go of by the agent's
-// attachments and put to sleep, its object node told to let go of its links: only one with an ID (one made by a script). With
-// bit 8 and no exit point every linked object with an ID is let go of and put to sleep instead
+// The instance attached at an exit point (GameOGI::NoExitPoint the one attached without one) let go of by the agent's attachments
+// and put to sleep, its object node told to let go of its links: only one with an ID (one made by a script). With no exit point
+// every linked object with an ID is let go of and put to sleep instead when asked
 void DestroySpawnedAttachmentCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 EveryLinked = 0x100;
-    void* attachments = GetGameNode(&runner->agentNode->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(runner->agentNode->owner);
     if (attachments == nullptr)
     {
         return;
     }
 
     InstanceContext* attached;
-    u8 exitPoint = static_cast<u8>(value1);
-    if (exitPoint != NoExitPoint)
+    u8 exitPoint = attachment.exitPoint;
+    if (exitPoint != GameOGI::NoExitPoint)
     {
-        void* path = AttachmentPath(attachments);
+        AttachmentsPath* path = attachments->path;
         attached = path != nullptr ? SlottedAttachment(path, exitPoint) : nullptr;
         if (attached == nullptr || attached->id == -1)
         {
@@ -1344,14 +1220,14 @@ void DestroySpawnedAttachmentCommand::Execute(TimeClock*, BehaviourRunner* runne
 
         DetachExitPoint(attachments, exitPoint, 0, 0);
     }
-    else if ((value1 & EveryLinked) != 0)
+    else if (attachment.everyLinked)
     {
         UnlinkSpawned(attachments, 1);
         return;
     }
     else
     {
-        void* path = AttachmentPath(attachments);
+        AttachmentsPath* path = attachments->path;
         attached = path != nullptr ? UnslottedAttachment(path) : nullptr;
         if (attached == nullptr || attached->id == -1)
         {
@@ -1361,26 +1237,25 @@ void DestroySpawnedAttachmentCommand::Execute(TimeClock*, BehaviourRunner* runne
         DetachUnslotted(attachments);
     }
 
-    CallVirtual<u32>(attached, attached->vtable, SleepSlot);
+    CallVirtual<u32>(attached, attached->vtable, InstanceContext::SleepSlot);
     ObjectNode* attachedNode = ObjectNodeOf(attached);
-    CallVirtual<void>(attachedNode, attachedNode->vtable, ReleaseLinksSlot);
+    CallVirtual<void>(attachedNode, attachedNode->vtable, ObjectNode::ReleasePartsUnlessUnloadingSlot);
 }
 
 // The module's static constructor: the references it keeps (the player's instance, the operated one) made empty
 void InitMotionCommandStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
-    g_StaticWord30A920 = 0;
+    g_UnusedMotionWord = 0;
     g_PlayerInstance = nullptr;
     g_OperatedInstance = nullptr;
 }
 
 void ConstructMotionCommandsModule()
 {
-    InitMotionCommandStatics(1, 0xFFFF);
+    InitMotionCommandStatics(1, DefaultInitPriority);
 }

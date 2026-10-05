@@ -54,13 +54,17 @@ CHECK_SIZE(StringListIterator, 0xC);
 // An archive: the table of its files (read from the BH), sorted by path, growing by growth files
 struct Archive
 {
+    // What a new archive's table grows by, and its list of lookups' room and growth
+    static constexpr u16 FilesGrowth = 0x40;
+    static constexpr u32 LookupsGrowth = 10;
+
     ArchiveFile* files;
     u16 count;
     u16 capacity;
     u16 growth;
     // The last file looked up
     ArchiveFile* lastFound;
-    // Every path looked up, as asked for (10 to start with, growing by 10)
+    // Every path looked up, as asked for
     StringList lookups;
     String path;
 };
@@ -71,23 +75,30 @@ CHECK_OFFSET(Archive, path, 0x20);
 class SectionReader
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ReadSlot = 2,
+        MissingSlot = 3,
+    };
+
     const GccVTableEntry* vtable;
 
     void Destroy(u32 flags)
     {
-        CallVirtual<void>(this, vtable, 1, flags);
+        CallVirtual<void>(this, vtable, DestroySlot, flags);
     }
 
     // The readers of what's in the section go on the stack
     void Read(u8* data, u32 size, ReaderStack* readers)
     {
-        CallVirtual<void>(this, vtable, 2, data, size, readers);
+        CallVirtual<void>(this, vtable, ReadSlot, data, size, readers);
     }
 
     // The section's file wasn't there
     void Missing(u8* data, u32 size, ReaderStack* readers)
     {
-        CallVirtual<void>(this, vtable, 3, data, size, readers);
+        CallVirtual<void>(this, vtable, MissingSlot, data, size, readers);
     }
 
     // The base's destructor (its vtable's slot 1)

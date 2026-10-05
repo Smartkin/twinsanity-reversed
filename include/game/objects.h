@@ -4,6 +4,7 @@
 #include "common.h"
 #include "game/agentlab.h"
 #include "game/properties.h"
+#include "game/resources.h"
 #include "game/string.h"
 
 class Stream;
@@ -75,16 +76,27 @@ enum ResourceKind : u32
     ResourceSounds,
 };
 
-// A code model (0x18 bytes, a resource of the game's tables): two bytes 0xFF when made, the count of its script packs, the packs
-// (made with new[]), a command and the packs' IDs
+// A code model (0x18 bytes, a resource of the game's tables): its resource header, its kind and the slot of the custom pickups or
+// projectiles it sets up (both 0xFF when made), the count of its script packs, the packs (made with new[]), a command and the
+// packs' IDs
 struct CodeModel
 {
+    // The kinds that set up a custom slot (the others set up nothing)
+    enum Kind : u8
+    {
+        KindPickup = 0x11,
+        KindProjectile = 0x12,
+        KindNone = 0xFF,
+    };
+
+    static constexpr u8 NoSlot = 0xFF;
+
     u32 bits;
     u32 id;
-    u8 unknown08;
-    u8 unknown09;
+    u8 kind;
+    u8 slot;
     u8 packCount;
-    u8 unknown0B;
+    u8 unused0B;
     ScriptPack* packs;
     ScriptCommand* command;
     u16* packIds;
@@ -92,7 +104,8 @@ struct CodeModel
     // Made empty (no ID)
     static CodeModel* Construct(CodeModel* model) RETAIL(FUN_00263840);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00263898);
-    // Its four bytes, its packs with their IDs and its command read (what it had before is lost)
+    // Its four bytes (its kind, slot, pack count and a byte nothing reads), its packs with their IDs and its command read (what
+    // it had before is lost)
     void Read(Stream* stream) RETAIL(ReadCodeModel);
 };
 CHECK_SIZE(CodeModel, 0x18);
@@ -103,8 +116,8 @@ struct ScriptPack
     u32 count;
     ScriptCommand* commands;
 
-    // Every command run on an agent (an instance made of the object runs them as it's made)
-    void Run(void* agent) RETAIL(ExecuteGameObjectAppendCommands);
+    // Every command executed on a node (an instance made of the object runs them on its object node as it's made)
+    void Run(void* node) RETAIL(ExecuteGameObjectAppendCommands);
 };
 
 // An array of IDs or words as GCC 2.9x's new[] made it (a cookie of 16 bytes counting them before them), and its count
@@ -115,75 +128,99 @@ struct ObjectArray
     u32 count;
 };
 
-// The game's objects (0x60 bytes, the RM2's code section's): flags (bits 16 and 17 cleared when made), its ID, its header (12
-// bytes: bit 28 of its first word whether it has properties, 29 that properties follow it in the RM2, 30 that resource
-// references follow; its third word's first byte how many sounds it has), its name, its properties, the resources it names, its
-// script pack and its slots: its trigger behaviours (the second header word's top byte counts them), then the IDs of its models
-// (OGIs), animations, scripts, objects and sounds
+// A game object's header (12 bytes, the RM2's): its model's exit points and react joints (OgiAnimator::reactJoints), its
+// subtype (16 and 17 pickups with nodes of their own, 16's without properties) and type, whether it has properties, whether
+// properties and resource references follow it in the RM2, then how many behaviour slots, trigger behaviours and sounds it has
+// (and how many models and objects, which nothing reads)
+union ObjectHeader
+{
+    u32 words[3];
+    struct
+    {
+        u32 exitPoints : 6;
+        u32 reactJoints : 6;
+        u32 subtype : 8;
+        u32 type : 8;
+        u32 hasProperties : 1;
+        u32 readsProperties : 1;
+        u32 readsReferences : 1;
+        u32 unused31 : 1;
+        u8 unused4;
+        u8 behaviourSlots;
+        u8 unused6;
+        u8 triggerBehaviourCount;
+        u8 soundSlots;
+        u8 unused9[3];
+    };
+};
+CHECK_SIZE(ObjectHeader, 0xC);
+
+// A trigger behaviour of an object (the AgentLab tool's TwinObjectTriggerBehaviour): the message it answers, its behaviour
+// starter's ID and the runner it starts on (the Xbox version sets every bit above)
+union TriggerBehaviour
+{
+    u32 value;
+    struct
+    {
+        u32 message : 10;
+        u32 starter : 14;
+        u32 runner : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(TriggerBehaviour, 4);
+
+// An object's ID of none (an empty slot, a node without an object of its own), which also stands for any object where the
+// commands take an object's instances (every one when none is given)
+constexpr u16 NoObjectId = 0xFFFF;
+constexpr u16 AnyObjectId = 0xFFFF;
+
+// A sound slot of an object of none (a script's or a trail's: nothing is played)
+constexpr u16 NoSoundSlot = 0xFFFF;
+
+// The game's objects (0x60 bytes, the RM2's code section's): its resource header (game/resources.h: its references, bits and
+// ID), its header, its name, its properties, the resources it names, its script pack and its slots: its trigger behaviours, then
+// the IDs of its models (OGIs), animations, scripts, objects and sounds
 struct GameObject
 {
-    enum Header : u32
+    // The types of objects (their agents' classes)
+    enum Type : u32
     {
-        HeaderHasProperties = 0x10000000,
-        HeaderReadsProperties = 0x20000000,
-        HeaderReadsReferences = 0x40000000,
+        TypeCharacter,
+        TypePickup,
+        TypeCrate,
+        TypeCreature,
+        TypeGenericObject,
+        TypeGrabbable,
+        TypePayGate,
+        TypeGraple,
+        TypeProjectile,
+        TypeCount,
     };
 
-    // A trigger behaviour: the message it answers, the starter's ID and the runner it starts on (the AgentLab tool's
-    // TwinObjectTriggerBehaviour)
-    enum TriggerBehaviour : u32
-    {
-        MessageMask = 0x3FF,
-        StarterShift = 10,
-        StarterMask = 0x3FFF,
-        RunnerShift = 24,
-        RunnerMask = 0x1,
-    };
-
-    u32 flags;
+    u32 bits;
     s32 id;
-    u32 header[3];
+    ObjectHeader header;
     String name;
     PropertyList* properties;
     ResourceReferences* references;
     ScriptPack scripts;
-    ObjectArray<u32> triggerBehaviours;
+    ObjectArray<TriggerBehaviour> triggerBehaviours;
     ObjectArray<u16> models;
     ObjectArray<u16> animations;
     ObjectArray<u16> behaviours;
     ObjectArray<u16> objects;
     ObjectArray<u16> sounds;
 
-    // Made and read from a stream, or made empty (bits 12-27 of its header set)
+    // Made and read from a stream, or made empty (no subtype or type: 0xFF)
     static GameObject* Construct(GameObject* object, Stream* stream) RETAIL(CreateGameObject);
     static GameObject* ConstructEmpty(GameObject* object) RETAIL(FUN_0025d1e0);
     // Its header, name, slots, properties, resource references and script pack read (what it had before let go)
     void Read(Stream* stream) RETAIL(ReadGameObject);
     // Its properties (when it has them), resource references, slots, script pack and name let go
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025d380);
-
-    u32 TriggerBehaviourCount() const
-    {
-        return header[1] >> 24;
-    }
-
-    // How many behaviour slots its agents' events can run (the second header word's second byte)
-    u32 BehaviourSlotCount() const
-    {
-        return static_cast<u8>(header[1] >> 8);
-    }
-
-    // Its model's exit points and react joints (the first header word's bits 0-5 and 6-11)
-    u32 ExitPoints() const
-    {
-        return header[0] & 0x3F;
-    }
-
-    u32 ReactJoints() const
-    {
-        return header[0] >> 6 & 0x3F;
-    }
 };
+CHECK_OFFSET(GameObject, header, 0x8);
 CHECK_OFFSET(GameObject, name, 0x14);
 CHECK_OFFSET(GameObject, scripts, 0x28);
 CHECK_OFFSET(GameObject, sounds, 0x58);
@@ -200,7 +237,7 @@ extern "C"
     // A word of the object's first slots read, and an ID of a resource list
     void ReadObjectWord(u32* word, Stream* stream) RETAIL(FUN_00263a38);
     void ReadResourceId(u16* id, Stream* stream) RETAIL(FUN_00263ab0);
-    // A trigger behaviour of the object (game/objects.h's TriggerBehaviour)
+    // A trigger behaviour of the object (its word)
     const u32* GetObjectTriggerBehaviour(const GameObject* object, u32 index) RETAIL(GetTriggerReceiver);
     // A script pack made empty and read
     ScriptPack* ConstructScriptPack(ScriptPack* pack) RETAIL(InitGameObjectScriptAppend);

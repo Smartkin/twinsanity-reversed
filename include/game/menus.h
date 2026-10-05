@@ -10,32 +10,52 @@ struct MenuSounds;
 
 class MenuPage;
 
+// A menu item's ID (what the item is: pages refer to their items by it), its text in the text table (when it has no text of its
+// own), how many players it's for, and whether left and right step its value when pressed (held otherwise)
+union MenuItemBits
+{
+    u32 value;
+    struct
+    {
+        u32 id : 12;
+        u32 text : 12;
+        u32 players : 4;
+        u32 stepsOnPress : 1;
+        u32 unused29 : 3;
+    };
+};
+CHECK_SIZE(MenuItemBits, 4);
+
+// The players the menus are made for (the pages' and items' counts of players; an item's shown and enabled bits have a bit per
+// player), and every player's bits
+constexpr u32 MenuPlayers = 1;
+constexpr u8 EveryPlayer = 0xFF;
+
 // The UI's menus (their vtables the retail ones): pages of items, each player with a selected item on the page. An item has its
 // vtable after 0x10 bytes; its functions: 1 activated (for a player, on a page: where it leads), 2 the destructor, 3 and 4 told
 // when its page is entered and left (for a player, in a mode), 5 a frame of it while it's selected (for a player, on a page, with
-// the input and the sounds: where it leads), 6 still unknown, 7 its value's text (for a player, into a buffer: whether it has one),
-// then its value set and got for a player as an int (8, 9), unsigned (10, 11) and a float (12, 13)
+// the input and the sounds: where it leads), 6 the page it links to (nothing calls it), 7 its value's text (for a player, into a
+// buffer: whether it has one), then its value set and got for a player as an int (8, 9), unsigned (10, 11) and a float (12, 13)
 struct MenuItem
 {
-    enum IdBits : u32
+    enum Slot : u32
     {
-        IdMask = 0xFFF,
-        TextShift = 12,
-        TextMask = 0xFFF,
-        PlayersShift = 24,
-        PlayersMask = 0xF,
-        // Left and right step a value when pressed (held otherwise)
-        StepsOnPress = 0x10000000,
+        ActivateSlot = 1,
+        EnteredSlot = 3,
+        LeftSlot = 4,
+        FrameSlot = 5,
+        ValueTextSlot = 7,
+        SetIntSlot = 8,
+        GetIntSlot = 9,
     };
 
-    // Its text (none: the text table's of bits 12-23 of id)
+    // Its text (none: the text table's of its bits)
     const char* text;
-    // Bits 0-11: what the item is (pages refer to their items by it); 12-23: its text in the text table; 24-27: the players
-    u32 id;
+    MenuItemBits bits;
     // A bit per player: the item is shown, and it can be selected
     u8 shown;
     u8 enabled;
-    u8 unknown0A[2];
+    u8 unused0A[2];
     // Where activating it leads
     MenuPage* target;
     const GccVTableEntry* vtable;
@@ -53,18 +73,18 @@ struct MenuItem
 
     u32 Id() const
     {
-        return id & 0xFFF;
+        return bits.id;
     }
 
     // Its value set and got for a player as an int, through its vtable
     u32 SetIntValue(u32 player, s32 value)
     {
-        return CallVirtual<u32>(this, vtable, 8, player, value);
+        return CallVirtual<u32>(this, vtable, SetIntSlot, player, value);
     }
 
     u32 GetIntValue(u32 player, s32* value)
     {
-        return CallVirtual<u32>(this, vtable, 9, player, value);
+        return CallVirtual<u32>(this, vtable, GetIntSlot, player, value);
     }
 
     bool IsShownTo(u32 player) const
@@ -84,7 +104,7 @@ struct LinkItem : MenuItem
     static LinkItem* Construct(LinkItem* item, u32 text, u32 id, MenuPage* target, u32 players) RETAIL(FUN_0025c948);
     static LinkItem* ConstructNamed(LinkItem* item, const char* text, u32 id, MenuPage* target, u32 players) RETAIL(FUN_0025c8d0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025c9c8);
-    MenuPage* Unknown6() RETAIL(FUN_0025c9f8);
+    MenuPage* LinkedPage() RETAIL(FUN_0025c9f8);
     u32 ValueText(u32 player, char* text) RETAIL(func_0025CA00);
     u32 SetInt(u32 player, s32 value) RETAIL(FUN_0025ca10);
     u32 GetInt(u32 player, s32* value) RETAIL(func_0025CA18);
@@ -111,7 +131,7 @@ struct ValueItem : MenuItem
     s32 maximum;
     u8 wraps;
     u8 cycles;
-    u8 unknown3E[2];
+    u8 unused3E[2];
 
     static ValueItem* Construct(ValueItem* item, u32 text, u32 id, s32 minimum, s32 maximum, u32 wraps, s32 value, u32 players)
         RETAIL(FUN_0025bb38);
@@ -120,7 +140,8 @@ struct ValueItem : MenuItem
     MenuPage* Activate(u32 player, MenuPage* page) RETAIL(FUN_0025bac0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025bbc0);
     MenuPage* Frame(u32 player, MenuPage* page, MenuInput* input, MenuSounds* sounds) RETAIL(FUN_002576a8);
-    MenuPage* Unknown6() RETAIL(FUN_0025bc30);
+    // None (even with a target)
+    MenuPage* LinkedPage() RETAIL(FUN_0025bc30);
     u32 ValueText(u32 player, char* text) RETAIL(FUN_0025bc38);
     u32 SetInt(u32 player, s32 value) RETAIL(func_0025BC70);
     u32 GetInt(u32 player, s32* value) RETAIL(func_0025BC88);
@@ -155,33 +176,53 @@ struct ToggleItem : ChoiceItem
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025cb88);
 };
 
-// A page: its name, a byte of each player's (still unknown) and each player's selection, its flags, the pages next to it (with
-// the item each comes back to) and its items. Its vtable follows 0x4C bytes of members; its functions: 1 and 3 are told when the
-// page is entered and left (for a player, in a mode), 4 is the destructor
+// A page's title in the text table (when it has no name), whether moving past the last item goes on at the first and the other
+// way round, how many players it's for, the item selected when it's entered afresh, the actions it takes (select, asked for and
+// dropped: the selected item's frame takes it; back to the parent page; up and down moving the selection; left and right to the
+// pages next to it; leave, leaving the menu) and how it was entered (MenuPage::EntryMode)
+union MenuPageFlags
+{
+    u32 value;
+    struct
+    {
+        u32 title : 10;
+        u32 unused10 : 2;
+        u32 wraps : 1;
+        u32 players : 5;
+        u32 firstItem : 6;
+        u32 takesSelect : 1;
+        u32 takesBack : 1;
+        u32 takesUpDown : 1;
+        u32 takesLeftRight : 1;
+        u32 mode : 3;
+        u32 takesLeave : 1;
+    };
+};
+CHECK_SIZE(MenuPageFlags, 4);
+
+// A page: its name, a byte of each player's (never read) and each player's selection with their counts, its flags, the pages
+// next to it (with the item each comes back to) and its items. Its vtable follows 0x4C bytes of members; its functions: 1 and 3
+// are told when the page is entered and left (for a player, in a mode), 4 is the destructor
 class MenuPage
 {
 public:
-    enum Flags : u32
+    enum Slot : u32
     {
-        // Moving past the last item goes on at the first and the other way round
-        Wraps = 0x1000,
-        // Bits 13-17: the players
-        PlayersShift = 13,
-        PlayersMask = 0x1F,
-        // Bits 18-23: the item selected when the page is entered afresh
-        FirstItemShift = 18,
-        FirstItemMask = 0x3F,
-        // Bit 24: the select action asked for (and dropped); bit 25: back goes to the parent page; bit 26: up and down move the selection; bit 27: left and
-        // right go to the pages next to it
-        AsksSelect = 0x1000000,
-        TakesBack = 0x2000000,
-        TakesUpDown = 0x4000000,
-        TakesLeftRight = 0x8000000,
-        // Bits 28-30: how the page was entered (1 afresh, 2 back, else as the page it was entered from)
-        ModeShift = 28,
-        ModeMask = 7,
-        // The leave action leaves the menu
-        TakesLeave = 0x80000000,
+        EnteredSlot = 1,
+        FrameSlot = 2,
+        LeftSlot = 3,
+        DestroySlot = 4,
+        BackSlot = 5,
+        BeginFrameSlot = 6,
+        EndFrameSlot = 8,
+    };
+
+    // How a page was entered: going on to it, or going back to it (a page entered sideways takes the mode of the page it was
+    // entered from)
+    enum EntryMode : u32
+    {
+        EnteredAfresh = 1,
+        EnteredBack = 2,
     };
 
     // The pages left, right, above and below it
@@ -191,24 +232,25 @@ public:
         LinkRight = 1,
         LinkUp = 2,
         LinkDown = 3,
+        Links = 4,
     };
 
     const char* name;
-    u8* unknown04;
-    u32 unknown08;
+    u8* unused04;
+    u32 unused08;
     u8* selections;
-    u32 unknown10;
-    u32 flags;
+    u32 unused10;
+    MenuPageFlags flags;
     // Where going back goes
     MenuPage* parent;
     // The pages next to it (left and right: the nearest of the ring that shows the player anything) and the item each starts
     // on there (-1: the selection's place, or the end the page is entered at)
-    MenuPage* links[4];
-    s32 linkItems[4];
+    MenuPage* links[Links];
+    s32 linkItems[Links];
     PointerArray<MenuItem> items;
     const GccVTableEntry* vtable;
 
-    // A page for the players, named or with the text table's title of an index (the low 10 bits of its flags)
+    // A page for the players, named or with the text table's title of an index
     static MenuPage* Construct(MenuPage* page, const char* name, u32 players) RETAIL(FUN_0025bd08);
     static MenuPage* ConstructTitled(MenuPage* page, u32 title, u32 players) RETAIL(FUN_0025bde0);
     u32 Add(MenuItem* item) RETAIL(FUN_0025bf68);
@@ -218,23 +260,24 @@ public:
 
     u32 Players() const
     {
-        return (flags >> PlayersShift) & PlayersMask;
+        return flags.players;
     }
 
     u32 Mode() const
     {
-        return (flags >> ModeShift) & ModeMask;
+        return flags.mode;
     }
 
     // The base page's vtable functions: told it's entered and left (for a player, in a mode), a frame of it (for a player, with the
-    // input and the sounds), the back action (not taken: 0) and 6 to 8 (for a player, still unknown), all doing nothing
+    // input and the sounds), the back action (not taken: 0), the game's frame begun and ended (for a player: the menu widget's
+    // player 0) and 7 between them, which nothing calls, all doing nothing (no page has its own 6 to 8)
     void Entered(u32 player, u32 mode) RETAIL(FUN_0025aa30);
     void Frame(u32 player, MenuInput* input, MenuSounds* sounds) RETAIL(FUN_0025aa38);
     void Left(u32 player, u32 mode) RETAIL(FUN_0025aa40);
     u32 Back(u32 player) RETAIL(FUN_0025aa68);
-    void Unknown6(u32 player) RETAIL(FUN_0025aa70);
-    void Unknown7(u32 player) RETAIL(FUN_0025c268);
-    void Unknown8(u32 player) RETAIL(FUN_0025aa78);
+    void BeginFrame(u32 player) RETAIL(FUN_0025aa70);
+    void UnusedDoNothing(u32 player) RETAIL(FUN_0025c268);
+    void EndFrame(u32 player) RETAIL(FUN_0025aa78);
     // Its links and selections cleared, its flags made the defaults
     void Initialise() RETAIL(FUN_002579a8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025bed8);
@@ -266,28 +309,48 @@ struct ButtonBindings;
 struct GameSound;
 struct PadButtons;
 
+// A bit of each of the menu input's actions (MenuInput::Action)
+union MenuActionBits
+{
+    u8 value;
+    struct
+    {
+        u8 select : 1;
+        u8 back : 1;
+        u8 leave : 1;
+        u8 up : 1;
+        u8 down : 1;
+        u8 left : 1;
+        u8 right : 1;
+        u8 unused7 : 1;
+    };
+};
+CHECK_SIZE(MenuActionBits, 1);
+
 // What the menus take from a controller: seven actions of its button bindings, each pressed this frame (a bit of pressed) and
 // held (a bit of held). Its vtable follows 8 bytes (2: poll, 3: nothing)
 struct MenuInput
 {
     enum Action : u32
     {
-        // Picks the selected item (a page's flag bit 24 asks for it too, and drops it)
+        // Picks the selected item (a page that takes select asks for it too, and drops it)
         ActionSelect = 0,
         // Goes back to the parent page
         ActionBack = 1,
-        // Leaves the menu (a page whose flags' bit 31 is set)
+        // Leaves the menu (a page that takes leave)
         ActionLeave = 2,
         ActionUp = 3,
         ActionDown = 4,
         ActionLeft = 5,
         ActionRight = 6,
+        // How many there are (the bindings' count)
+        Actions = 7,
     };
 
     ButtonBindings* bindings;
-    u8 pressed;
-    u8 held;
-    u8 unknown06[2];
+    MenuActionBits pressed;
+    MenuActionBits held;
+    u8 unused06[2];
     const GccVTableEntry* vtable;
 
     static MenuInput* Construct(MenuInput* input, ButtonBindings* bindings) RETAIL(FUN_0025c388);
@@ -296,14 +359,34 @@ struct MenuInput
     void Poll(const PadButtons* pad, u32 withLeave) RETAIL(FUN_00258518);
     void Nothing() RETAIL(FUN_0025aaf0);
     void Clear() RETAIL(FUN_0025c3f0);
-    // Whether the action was pressed this frame (or is held)
-    u32 Has(u32 action, u32 pressedNow) RETAIL(FUN_0025c400);
+    // Whether the action was pressed this frame (or is held: ButtonBindings::Edge)
+    u32 Has(u32 action, u32 onPress) RETAIL(FUN_0025c400);
 };
 CHECK_SIZE(MenuInput, 0xC);
 
 // The sounds a menu plays (none in a slot without one), and the group each plays in (3 by default)
 struct MenuSounds
 {
+    // What each slot is played for: select on an item not shown to the player, an item selected, the selection not moved down
+    // (at the end) and moved down, not moved up and moved up, a value not stepped up and stepped up, not stepped down and stepped
+    // down, an item selected that leads to a page, going back, and the last slot, which nothing plays
+    enum Slot : u32
+    {
+        SoundNothing = 0,
+        SoundSelected = 1,
+        SoundNotDown = 2,
+        SoundDown = 3,
+        SoundNotUp = 4,
+        SoundUp = 5,
+        SoundValueNotUp = 6,
+        SoundValueUp = 7,
+        SoundValueNotDown = 8,
+        SoundValueDown = 9,
+        SoundSelectedOn = 10,
+        SoundBack = 11,
+        SoundUnused = 12,
+    };
+
     static constexpr u32 Count = 13;
 
     GameSound* sounds[Count];
@@ -316,13 +399,15 @@ CHECK_SIZE(MenuSounds, 0x68);
 
 class Font;
 struct Renderer;
+// A scale going round values (game/oleg.h)
+struct CyclingScale;
 
 // How a menu's pages are drawn: the page's title and the lines of its items (an item's text, " : " and its value when it has
 // one), each style (the title, the selected item, an item shown to the player and one that isn't) in its font and colour, the
 // title in its alignment and the items in theirs. Places and sizes are fractions of the size the page is drawn at. With a window
 // of lines the items are drawn at most that many at a time around the selection, and their scale and line spacing go from the
 // few-items values to the many-items ones as the count goes from the window's start to its size; without one they're the
-// many-items values. The selected item's colour and size pulse with the two scalers' scales
+// many-items values. The selected item's colour and size pulse with the two scales
 struct MenuDrawer
 {
     enum Style : u32
@@ -331,12 +416,14 @@ struct MenuDrawer
         StyleSelected = 1,
         StyleShown = 2,
         StyleHidden = 3,
+        Styles = 4,
     };
 
     u8 windowStart;
     u8 windowSize;
-    u8 titleFlags;
-    u8 itemFlags;
+    // The title's and the items' TextAlignment
+    u8 titleAlignment;
+    u8 itemAlignment;
     Vector2 titlePlace;
     Vector2 titleScale;
     Vector2 itemsPlace;
@@ -344,20 +431,15 @@ struct MenuDrawer
     f32 fewItemsSpacing;
     Vector2 manyItemsScale;
     f32 manyItemsSpacing;
-    // Something whose value (0x10 bytes in) the selected item's colour or size is scaled by
-    struct Pulse
-    {
-        u8 unknown00[0x10];
-        f32 value;
-    };
+    Font* fonts[Styles];
+    u32 colours[Styles];
+    // The scales the selected item's colour and size are scaled by
+    const CyclingScale* colourPulse;
+    const CyclingScale* sizePulse;
 
-    Font* fonts[4];
-    u32 colours[4];
-    const Pulse* colourPulse;
-    const Pulse* sizePulse;
-
-    // Every style in the font: the title at the top, centred (alignment 6) and full size, the items below it (alignment 3) at half
-    // size and spaced a twentieth apart, in the game's colours 15 (the title and the selected item), 19 and 21
+    // Every style in the font: the title at the top, its bottom there and centred, full size, the items below it (their tops at
+    // their places, centred) at half size and spaced a twentieth apart, in the game's colours white (the title and the selected
+    // item), grey and dark grey
     static MenuDrawer* Construct(MenuDrawer* drawer, Font* font) RETAIL(FUN_00258898);
 };
 CHECK_SIZE(MenuDrawer, 0x5C);

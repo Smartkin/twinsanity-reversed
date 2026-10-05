@@ -7,15 +7,15 @@
 namespace
 {
 // 800 blocks a frame, in two regions of a million bytes that take turns. A block starts 128 bytes aligned with room for 100
-// quadwords
+// quadwords after its tag's
 constexpr u32 BlockCount = 0x320;
 constexpr u32 RegionSize = 1000000;
 constexpr u32 BlockAlignment = 0x80;
 constexpr u16 BlockCapacity = 100;
+constexpr u32 BlockTagBytes = 0x10;
 // A rigid model's block needs this much of the region, and closes when it has room for less than 22 quadwords more
 constexpr u32 RigidBlockBytes = 0x6F0;
 constexpr u32 RigidRoom = 0x16;
-constexpr u16 RigidKind = 5;
 
 // An instance's flags: drawn clipped
 constexpr u32 InstanceClipped = 0x8000;
@@ -24,19 +24,14 @@ constexpr u32 InstanceClipped = 0x8000;
 constexpr u32 BasicSize = 0xD;
 constexpr u32 ClippedSize = 0x12;
 constexpr u32 EyeSize = 0x18;
-// Mode 1 draws the model unclipped
-constexpr u32 UnclippedMode = 1;
 
 // Placed models' blocks: they need this much of the region, and close when they have room for 14 quadwords more or less. Their
 // instances' sizes: the basic data, clipped, with the eye
 constexpr u32 PlacedBlockBytes = 0x650;
 constexpr u32 PlacedRoom = 0xE;
-constexpr u16 PlacedKind = 0xA;
 constexpr u32 PlacedBasicSize = 5;
 constexpr u32 PlacedClippedSize = 0xA;
 constexpr u32 PlacedEyeSize = 0xB;
-// The placed object's vtable function handing its world matrix
-constexpr u32 ObjectWorldMatrixSlot = 5;
 // A billboard looking at the camera from almost straight below or above takes an up a little tilted
 constexpr f32 BillboardEpsilon = 0x1.5798ECp-29f;
 constexpr Vector4 TiltedUp = {-0x1.9906CCp-5f, 0x1.FF5C28p-1f, 0.0f, 0.0f};
@@ -104,7 +99,7 @@ void Close(InstanceBlock& block)
     tag[0] = block.size | ReturnTag;
     tag[1] = 0;
     tag[2] = VifFlushE;
-    tag[3] = g_VuInstances | static_cast<u32>(block.size) << 16 | VifUnpackV4Count;
+    tag[3] = VifUnpackTo(VifUnpackV4Count, g_VuInstances, block.size);
     tag[5] = block.size + g_VuInstances;
     block.owner->block = nullptr;
     block.owner = nullptr;
@@ -118,45 +113,45 @@ void EyeIn(const Matrix4x4& inverse, Vector4* eye)
 }
 
 // The block's room for one more: the one open, a new one (nullptr when they're all taken or the region is full)
-u8* NewBlock(InstanceBlockOwner* owner, u32 bytes, u16 kind)
+u8* NewBlock(InstanceBlockOwner* owner, u32 bytes, InstanceBlockKind kind)
 {
     if (g_InstanceBlockCount >= BlockCount)
     {
         return nullptr;
     }
 
-    u8* data = reinterpret_cast<u8*>((Address(g_InstanceBlockNext) + BlockAlignment - 1) & ~(BlockAlignment - 1));
-    if (Address(g_InstanceRegion) + RegionSize < Address(data) + bytes)
+    u8* start = reinterpret_cast<u8*>((Address(g_InstanceBlockNext) + BlockAlignment - 1) & ~(BlockAlignment - 1));
+    if (Address(g_InstanceRegion) + RegionSize < Address(start) + bytes)
     {
         return nullptr;
     }
 
     InstanceBlock* block = &g_InstanceBlocks[g_InstanceBlockCount];
-    g_InstanceBlockNext = data;
-    block->data = data;
+    g_InstanceBlockNext = start;
+    block->data = start;
     block->count = 1;
     block->kind = kind;
     block->capacity = BlockCapacity;
     block->owner = owner;
     block->size = 0;
     owner->block = block;
-    return data;
+    return start;
 }
 
-// The new block is the frame's: the next one goes past its capacity
+// The new block is the frame's: the next one goes past its tag and capacity
 u8* TakeBlock(InstanceBlock* block)
 {
     g_InstanceBlockCount++;
-    g_InstanceBlockNext = block->data + block->capacity * 0x10 + 0x10;
+    g_InstanceBlockNext = block->data + block->capacity * 0x10 + BlockTagBytes;
     return block->data;
 }
 
-// The object's world matrix (its vtable's), or the one given without an object
+// The world matrix taken into the object's chunk's space (its vtable's), or the one given without an object
 Matrix4x4 WorldMatrix(const Matrix4x4* world, PlacedObject* object)
 {
     if (object != nullptr)
     {
-        return *CallVirtual<const Matrix4x4*>(object, object->vtable, ObjectWorldMatrixSlot, world);
+        return *CallVirtual<const Matrix4x4*>(object, object->vtable, PlacedObject::ChunkMatrixSlot, world);
     }
 
     return *world;
@@ -165,7 +160,7 @@ Matrix4x4 WorldMatrix(const Matrix4x4* world, PlacedObject* object)
 // A billboard's turn: its rows the side, up and back of the object facing the camera
 void Billboard(const Matrix4x4* world, PlacedObject* object, Matrix4x4* out)
 {
-    const auto* space = reinterpret_cast<const Matrix4x4*>(object->unknown100 + 0xC0);
+    const Matrix4x4* space = &object->matrices[PlacedObject::ChunkDrawInverse];
     Matrix4x4 inverse = *world;
     VuInvertRigidInPlace(&inverse);
     Vector4 camera = CameraPosition(object->view);
@@ -307,11 +302,11 @@ extern "C"
 
         InstanceBlock* block = owner->block;
         bool opened = block == nullptr;
-        u8* data;
+        u8* place;
         if (opened)
         {
-            data = NewBlock(owner, RigidBlockBytes, RigidKind);
-            if (data == nullptr)
+            place = NewBlock(owner, RigidBlockBytes, RigidInstances);
+            if (place == nullptr)
             {
                 return nullptr;
             }
@@ -320,10 +315,10 @@ extern "C"
         }
         else
         {
-            data = block->data + block->size * 0x10;
+            place = block->data + block->size * 0x10;
         }
 
-        auto* instance = reinterpret_cast<RigidInstance*>(data + 0x10);
+        auto* instance = reinterpret_cast<RigidInstance*>(place + BlockTagBytes);
         VuMultiplyMatrices(matrix, &view->toScreen, &instance->toScreen);
         VuTranspose(&lights, &instance->lights);
         instance->lightColours[0] = lightColours[0];
@@ -331,7 +326,7 @@ extern "C"
         instance->lightColours[2] = lightColours[2];
         instance->ambient = *ambient;
         u32 size;
-        if (mode != UnclippedMode)
+        if (mode != DrawUnclipped)
         {
             instance->flags = InstanceClipped;
             instance->basicSize = BasicSize;
@@ -354,7 +349,7 @@ extern "C"
             Matrix4x4 inverse;
             VuInvertRigid(&inverse, matrix);
             EyeIn(inverse, &instance->eye);
-            if (mode == UnclippedMode)
+            if (mode == DrawUnclipped)
             {
                 VuMultiplyMatrices(matrix, &view->toClip, &instance->toCamera);
                 instance->clip = view->clip;
@@ -364,7 +359,7 @@ extern "C"
             VuRotateVector(opened ? &inverse : &rotation, &Up, &instance->up);
             // The matrix goes where a new block's first instance has it: for an open block that's past the open blocks, where
             // the next new block goes (it writes over it)
-            *reinterpret_cast<Matrix4x4*>(g_InstanceBlockNext + 0x150) = *matrix;
+            reinterpret_cast<RigidInstance*>(g_InstanceBlockNext + BlockTagBytes)->matrix = *matrix;
             size = EyeSize;
         }
 
@@ -413,11 +408,11 @@ extern "C"
 
         InstanceBlock* block = owner->block;
         bool opened = block == nullptr;
-        u8* data;
+        u8* place;
         if (opened)
         {
-            data = NewBlock(owner, PlacedBlockBytes, PlacedKind);
-            if (data == nullptr)
+            place = NewBlock(owner, PlacedBlockBytes, PlacedInstances);
+            if (place == nullptr)
             {
                 return nullptr;
             }
@@ -426,13 +421,13 @@ extern "C"
         }
         else
         {
-            data = block->data + block->size * 0x10;
+            place = block->data + block->size * 0x10;
         }
 
-        auto* instance = reinterpret_cast<PlacedInstance*>(data + 0x10);
+        auto* instance = reinterpret_cast<PlacedInstance*>(place + BlockTagBytes);
         instance->toScreen = *toScreen;
         u32 size;
-        if (mode != UnclippedMode)
+        if (mode != DrawUnclipped)
         {
             instance->flags = InstanceClipped;
             instance->basicSize = PlacedBasicSize;
@@ -494,9 +489,9 @@ extern "C"
 
     void SetDefaultMeshDMA(RigidModel* model, const Matrix4x4* toScreen, const Matrix4x4* toCamera, const Matrix4x4* world)
     {
-        constexpr u32 ClippedMode = 2;
         u32 count = DrawnSubModels(model);
-        u8* block = SetPlacedModelRenderDMA(&model->instances, toScreen, ClippedMode, toCamera, &g_RenderView->clip, world, nullptr);
+        u8* block =
+            SetPlacedModelRenderDMA(&model->instances, toScreen, DrawClipped, toCamera, &g_RenderView->clip, world, nullptr);
         if (block != nullptr)
         {
             WriteSubModels(model, count, block, true);
@@ -521,7 +516,7 @@ extern "C"
         }
 
         RenderBucket& writer = material->writer;
-        auto* packet = FUN_001a0dd0(reinterpret_cast<u8*>(BeginInsertedPacket(writer)), 1);
+        auto* packet = WriteSharedCall(reinterpret_cast<u8*>(BeginInsertedPacket(writer)), CallRenderTarget);
         auto* at = reinterpret_cast<u32*>(packet);
         at[0] = CallTag;
         at[1] = Address(block);
@@ -597,7 +592,6 @@ void DeleteScreenModel(ScreenModel* model)
 
 void DrawScreenModel(ScreenModel* model, const Matrix4x4* toScreen, const Matrix4x4* toClip, const Vector4* clip)
 {
-    constexpr u32 ClippedMode = 2;
-    SetScreenModelDMA(model, toScreen, ClippedMode, toClip, clip);
+    SetScreenModelDMA(model, toScreen, DrawClipped, toClip, clip);
 }
 }

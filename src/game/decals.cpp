@@ -1,6 +1,8 @@
 #include "game/decals.h"
 
 #include "game/chunkdata.h"
+#include "game/clock.h"
+#include "game/colour.h"
 #include "game/memory.h"
 #include "game/reference.h"
 #include "game/stream.h"
@@ -10,9 +12,9 @@
 
 namespace
 {
-constexpr s32 BlockCount = 32;
-constexpr s32 BlockDecals = 32;
-constexpr s32 TypeCount = 16;
+constexpr s32 BlockCount = DecalData::BlockCount;
+constexpr s32 BlockDecals = DecalBlock::MostDecals;
+constexpr s32 TypeCount = DecalData::MostTypes;
 constexpr s16 NoBlock = -1;
 constexpr s16 FreeKey = -1;
 // A decal slot without a decal: its place's w and its first sizes' fourth half word
@@ -23,26 +25,22 @@ constexpr u32 PlacesUnpack = 0x6C208000;
 constexpr u32 SizesUnpack = 0x6D408020;
 constexpr u32 ColoursUnpack = 0x6E208060;
 constexpr u32 StartProgram = 0x17000000;
-// The UV packet's GIF tag (its registers and their count)
+// The UV packet's GIF tag: 8 loops of a triangle strip (PRE with PRIM 4, PACKED), each the 12 registers ST, RGBAQ and XYZ2 of four
+// corners (the register descriptors 2, 1 and 5 a nibble each, from the lowest)
 constexpr u64 UvGifTag = 0xC002400000008008;
 constexpr u32 UvRegisters = 0x12512512;
 constexpr u32 UvMoreRegisters = 0x5125;
+// What the UV packet's read takes: the packet, the type count and the three words after it
+constexpr u32 UvPacketReadSize = sizeof(DecalUvPacket) + 4 * sizeof(u32);
 // The two types the default data has without its section: the page's top and bottom halves (their UV rectangles)
 constexpr u32 DefaultTypes = 2;
 constexpr Vector4 DefaultTypeRectangles[DefaultTypes] = {{0.25f, 0.25f, 0.75f, 0.25f}, {0.25f, 0.75f, 0.75f, 0.75f}};
-constexpr f32 FramesPerSecond = 60.0f;
-constexpr s32 FlagBits = 0x3F;
-constexpr s32 LifeShift = 6;
-// The frames' directions' unit, and the lengths the frames take as none
+// The frames' directions' unit
 constexpr f32 FrameUnit = 32768.0f;
-constexpr f32 LengthEpsilon = 0x1.5798ECp-29f;
 constexpr f32 ApartEnough = 0x1.0624DEp-10f;
 constexpr f32 TooClose = 0x1.FAE148p-1f;
-// Footfalls stand a little above the ground
-constexpr f32 Lift = 0x1.70A3D8p-4f;
 // A frame shorter than this takes nothing off the decals' lives
 constexpr f32 NoTime = 0x1.A36E2Ep-14f;
-constexpr f32 SecondsPerFrame = 0x1.111112p-6f;
 
 // Its decals all none: no place, no sizes
 void EmptyDecals(DecalBlock* block)
@@ -65,11 +63,11 @@ void Cross(const Vector4& a, const Vector4& b, f32* out)
 
 extern "C"
 {
-    void InitDecalPool(DecalData* data)
+    void InitDecalPool(DecalData* decals)
     {
         for (s32 index = 0; index < BlockCount; index++)
         {
-            DecalBlock* block = &data->blocks[index];
+            DecalBlock* block = &decals->blocks[index];
             block->count = 0;
             block->index = 0;
             block->key = FreeKey;
@@ -90,27 +88,27 @@ extern "C"
             block->coloursUnpack[3] = ColoursUnpack;
         }
 
-        data->count = 0;
+        decals->count = 0;
         for (s32 type = 0; type < TypeCount; type++)
         {
-            data->types[type] = nullptr;
-            data->typeBlocks[type] = nullptr;
+            decals->types[type] = nullptr;
+            decals->typeBlocks[type] = nullptr;
         }
 
-        data->freeBlock = 0;
-        for (DecalBlock*& list : data->drawLists)
+        decals->freeBlock = 0;
+        for (DecalBlock*& list : decals->drawLists)
         {
             list = nullptr;
         }
 
         for (s32 index = 0; index < BlockCount; index++)
         {
-            data->nextFree[index] = static_cast<s16>(index + 1);
-            data->blocks[index].index = static_cast<s16>(index);
+            decals->nextFree[index] = static_cast<s16>(index + 1);
+            decals->blocks[index].index = static_cast<s16>(index);
         }
 
-        data->nextFree[BlockCount - 1] = NoBlock;
-        data->chunk = nullptr;
+        decals->nextFree[BlockCount - 1] = NoBlock;
+        decals->chunk = nullptr;
     }
 
     void ClearDecalBlock(DecalBlock* block)
@@ -119,9 +117,9 @@ extern "C"
         EmptyDecals(block);
     }
 
-    DecalBlock* AllocDecalBlock(DecalData* data, s16 key, s16 type)
+    DecalBlock* AllocDecalBlock(DecalData* decals, s16 key, s16 type)
     {
-        for (DecalBlock* block = data->typeBlocks[type]; block != nullptr; block = block->next)
+        for (DecalBlock* block = decals->typeBlocks[type]; block != nullptr; block = block->next)
         {
             if (block->count < BlockDecals && block->key == key)
             {
@@ -129,97 +127,97 @@ extern "C"
             }
         }
 
-        if (data->freeBlock == NoBlock)
+        if (decals->freeBlock == NoBlock)
         {
             return nullptr;
         }
 
-        DecalBlock* block = &data->blocks[data->freeBlock];
-        data->freeBlock = data->nextFree[data->freeBlock];
+        DecalBlock* block = &decals->blocks[decals->freeBlock];
+        decals->freeBlock = decals->nextFree[decals->freeBlock];
         block->key = key;
-        block->next = data->typeBlocks[type];
-        data->typeBlocks[type] = block;
+        block->next = decals->typeBlocks[type];
+        decals->typeBlocks[type] = block;
         return block;
     }
 
-    void FreeDecalBlock(DecalData* data, DecalBlock* block)
+    void FreeDecalBlock(DecalData* decals, DecalBlock* block)
     {
-        data->nextFree[block->index] = data->freeBlock;
-        data->freeBlock = block->index;
+        decals->nextFree[block->index] = decals->freeBlock;
+        decals->freeBlock = block->index;
     }
 
-    void ResetDecalPool(DecalData* data)
+    void ResetDecalPool(DecalData* decals)
     {
         for (s32 type = 0; type < TypeCount; type++)
         {
-            if (data->types[type] != nullptr)
+            if (decals->types[type] != nullptr)
             {
-                MemoryDeallocate2_(data->types[type]);
+                MemoryDeallocate2_(decals->types[type]);
             }
 
-            data->types[type] = nullptr;
-            data->typeBlocks[type] = nullptr;
+            decals->types[type] = nullptr;
+            decals->typeBlocks[type] = nullptr;
         }
 
-        for (DecalBlock*& list : data->drawLists)
+        for (DecalBlock*& list : decals->drawLists)
         {
             list = nullptr;
         }
 
-        data->freeBlock = 0;
+        decals->freeBlock = 0;
         for (s32 index = 0; index < BlockCount; index++)
         {
-            DecalBlock* block = &data->blocks[index];
-            data->nextFree[index] = static_cast<s16>(index + 1);
+            DecalBlock* block = &decals->blocks[index];
+            decals->nextFree[index] = static_cast<s16>(index + 1);
             block->count = 0;
             EmptyDecals(block);
             block->index = static_cast<s16>(index);
         }
 
-        data->nextFree[BlockCount - 1] = NoBlock;
-        data->chunk = nullptr;
-        data->count = 0;
+        decals->nextFree[BlockCount - 1] = NoBlock;
+        decals->chunk = nullptr;
+        decals->count = 0;
     }
 
-    void ClearDecals(DecalData* data)
+    void ClearDecals(DecalData* decals)
     {
         for (s32 type = 0; type < TypeCount; type++)
         {
-            while (data->typeBlocks[type] != nullptr)
+            while (decals->typeBlocks[type] != nullptr)
             {
-                DecalBlock* block = data->typeBlocks[type];
+                DecalBlock* block = decals->typeBlocks[type];
                 block->count = 0;
                 EmptyDecals(block);
-                data->typeBlocks[type] = block->next;
-                data->nextFree[block->index] = data->freeBlock;
-                data->freeBlock = block->index;
+                decals->typeBlocks[type] = block->next;
+                decals->nextFree[block->index] = decals->freeBlock;
+                decals->freeBlock = block->index;
             }
         }
 
-        data->chunk = nullptr;
-        data->count = 0;
+        decals->chunk = nullptr;
+        decals->count = 0;
     }
 
-    void ReadDecalData(DecalData* data, Stream* stream)
+    void ReadDecalData(DecalData* decals, Stream* stream)
     {
-        ResetDecalPool(data);
+        ResetDecalPool(decals);
         stream->Read(&g_DecalUnusedInt, sizeof(g_DecalUnusedInt), 1);
-        stream->Read(data->uvPacket, 0x420, 1);
-        *reinterpret_cast<u64*>(data->uvPacket) = UvGifTag;
-        reinterpret_cast<u32*>(data->uvPacket)[2] = UvRegisters;
-        reinterpret_cast<u32*>(data->uvPacket)[3] = UvMoreRegisters;
+        stream->Read(&decals->uvPacket, UvPacketReadSize, 1);
+        decals->uvPacket.gifTag = UvGifTag;
+        decals->uvPacket.gifRegisters[0] = UvRegisters;
+        decals->uvPacket.gifRegisters[1] = UvMoreRegisters;
         // The tools' pointers: a type follows for each that isn't null
-        stream->Read(data->types, sizeof(data->types), 1);
+        stream->Read(decals->types, sizeof(decals->types), 1);
         for (s32 type = 0; type < TypeCount; type++)
         {
-            if (data->types[type] == nullptr)
+            if (decals->types[type] == nullptr)
             {
                 continue;
             }
 
             auto* read = static_cast<DecalType*>(MemoryAllocate(sizeof(DecalType)));
             read->variantCount = 0;
-            data->types[type] = read;
+            decals->types[type] = read;
             stream->Read(read, sizeof(DecalType), 1);
         }
     }
@@ -300,10 +298,10 @@ extern "C"
         return object != nullptr ? object->chunk : nullptr;
     }
 
-    void AddDecal(DecalData* data, DecalDescriptor* decal)
+    void AddDecal(DecalData* decals, DecalDescriptor* decal)
     {
         ChunkData* camera = CameraChunk();
-        if (data->chunk != nullptr && camera != data->chunk)
+        if (decals->chunk != nullptr && camera != decals->chunk)
         {
             return;
         }
@@ -317,8 +315,8 @@ extern "C"
             VuRotateVector(&into, &decal->direction, &decal->direction);
         }
 
-        DecalBlock* block = AllocDecalBlock(data, static_cast<s16>(decal->key), static_cast<s16>(decal->type));
-        const DecalType* type = data->types[decal->type];
+        DecalBlock* block = AllocDecalBlock(decals, static_cast<s16>(decal->key), static_cast<s16>(decal->type));
+        const DecalType* type = decals->types[decal->type];
         if (block == nullptr)
         {
             return;
@@ -327,20 +325,25 @@ extern "C"
         s32 slot = block->count;
         block->count = static_cast<s16>(block->count + 1);
         // Its life in frames and its flags in its place's w
-        f32 life = type->variants[decal->variant].sizes[0][3];
-        block->places[slot] = decal->place;
-        s32 lifeAndFlags = static_cast<s32>(life * FramesPerSecond) << LifeShift | (decal->flags & FlagBits);
-        reinterpret_cast<s32*>(&block->places[slot])[3] = lifeAndFlags;
+        f32 seconds = type->variants[decal->variant].sizes[0][3];
+        DecalPlace& place = block->places[slot];
+        place.x = decal->place.x;
+        place.y = decal->place.y;
+        place.z = decal->place.z;
+        DecalLife life;
+        life.flags = decal->flags;
+        life.frames = static_cast<s32>(seconds * FramesPerSecond);
+        place.life = life;
         block->variants[slot] = static_cast<s8>(decal->variant);
         SetDecalFrame(decal, block, slot);
-        data->count++;
+        decals->count++;
     }
 
     void AddDecalFromDescriptor(const Matrix4x4* frame, ChunkData* chunk)
     {
         DecalDescriptor decal;
         decal.place = *reinterpret_cast<const Vector4*>(frame->m[3]);
-        decal.place.y = decal.place.y + Lift;
+        decal.place.y = decal.place.y + FootprintLift;
         decal.chunk = chunk;
         decal.normal = *reinterpret_cast<const Vector4*>(frame->m[1]);
         decal.direction = *reinterpret_cast<const Vector4*>(frame->m[2]);
@@ -351,7 +354,7 @@ extern "C"
         AddDecal(&g_DecalData, &decal);
     }
 
-    s32 UploadDecalCameraToVU0(DecalData* data)
+    s32 UploadDecalCameraToVU0(DecalData* decals)
     {
         ChunkData* camera = CameraChunk();
         if (camera == nullptr)
@@ -359,20 +362,20 @@ extern "C"
             return 0;
         }
 
-        ChunkData* from = data->chunk;
+        ChunkData* from = decals->chunk;
         Platform::Graphics::LoadDecalView(&camera->matrix, from != nullptr && from != camera ? &from->drawMatrix : nullptr);
-        data->chunk = camera;
+        decals->chunk = camera;
         return 1;
     }
 
-    s32 UpdateDecalsVU0(DecalData* data, f32 delta)
+    s32 UpdateDecalsVU0(DecalData* decals, f32 delta)
     {
-        if (data->count == 0)
+        if (decals->count == 0)
         {
             return 0;
         }
 
-        if (UploadDecalCameraToVU0(data) == 0)
+        if (UploadDecalCameraToVU0(decals) == 0)
         {
             return 0;
         }
@@ -380,28 +383,27 @@ extern "C"
         s32 lifeStep = NoTime < delta ? -1 : 0;
         for (s32 type = 0; type < TypeCount; type++)
         {
-            if (data->typeBlocks[type] == nullptr)
+            if (decals->typeBlocks[type] == nullptr)
             {
                 continue;
             }
 
-            Platform::Graphics::LoadDecalType(data->types[type]);
+            Platform::Graphics::LoadDecalType(decals->types[type]);
             DecalBlock* previous = nullptr;
-            DecalBlock* block = data->typeBlocks[type];
+            DecalBlock* block = decals->typeBlocks[type];
             while (block != nullptr)
             {
-                s32 decals = block->count;
+                s32 blockCount = block->count;
                 s32 kept = 0;
                 s32 variant = block->variants[0];
-                for (s32 slot = 0; slot < decals; slot++)
+                for (s32 slot = 0; slot < blockCount; slot++)
                 {
                     DecalFrame frame = block->frames[slot];
                     s8 ownVariant = block->variants[slot];
                     f32 place[4] = {block->places[slot].x, block->places[slot].y, block->places[slot].z, 0.0f};
-                    s32 lifeAndFlags = reinterpret_cast<const s32*>(&block->places[slot])[3];
-                    s32 life = lifeAndFlags >> LifeShift;
-                    s32 flags = lifeAndFlags & FlagBits;
-                    place[3] = static_cast<f32>(life) * SecondsPerFrame;
+                    DecalLife life = block->places[slot].life;
+                    s32 frames = life.frames;
+                    place[3] = static_cast<f32>(frames) * SecondsPerFrame;
                     s32 words[8] = {frame.normal[0],    frame.normal[1],    frame.normal[2],    frame.unused06,
                                     frame.direction[0], frame.direction[1], frame.direction[2], frame.unused0E};
                     Platform::Graphics::DecalLook look;
@@ -409,23 +411,28 @@ extern "C"
                     // Into the next slot kept, its life a frame less (dropped once that's below 0)
                     block->frames[kept] = frame;
                     block->variants[kept] = ownVariant;
-                    life = life + lifeStep;
-                    Vector4& out = block->places[kept];
+                    frames = frames + lifeStep;
+                    DecalPlace& out = block->places[kept];
                     out.x = look.place[0];
                     out.y = look.place[1];
                     out.z = look.place[2];
-                    reinterpret_cast<s32*>(&out)[3] = life << LifeShift | flags;
-                    block->colours[kept] = static_cast<u32>(look.colour[3]) << 24 | static_cast<u32>(look.colour[2]) << 16 |
-                                           static_cast<u32>(look.colour[1]) << 8 | look.colour[0];
+                    life.frames = frames;
+                    out.life = life;
+                    Rgba colour;
+                    colour.red = look.colour[0];
+                    colour.green = look.colour[1];
+                    colour.blue = look.colour[2];
+                    colour.alpha = look.colour[3];
+                    block->colours[kept] = colour.value;
                     for (u32 value = 0; value < 4; value++)
                     {
                         block->sizes[kept][value] = look.sizes[value];
                         block->moreSizes[kept][value] = look.moreSizes[value];
                     }
 
-                    if (life < 0)
+                    if (frames < 0)
                     {
-                        data->count--;
+                        decals->count--;
                     }
                     else
                     {
@@ -434,7 +441,7 @@ extern "C"
                 }
 
                 block->count = static_cast<s16>(kept);
-                for (s32 slot = kept; slot < decals; slot++)
+                for (s32 slot = kept; slot < blockCount; slot++)
                 {
                     block->sizes[slot][3] = NoSizes;
                 }
@@ -442,8 +449,8 @@ extern "C"
                 DecalBlock* next = block->next;
                 if (kept != 0)
                 {
-                    block->drawNext = data->drawLists[block->key];
-                    data->drawLists[block->key] = block;
+                    block->drawNext = decals->drawLists[block->key];
+                    decals->drawLists[block->key] = block;
                     previous = block;
                     block = next;
                     continue;
@@ -451,14 +458,14 @@ extern "C"
 
                 if (previous == nullptr)
                 {
-                    data->typeBlocks[type] = next;
+                    decals->typeBlocks[type] = next;
                 }
                 else
                 {
                     previous->next = next;
                 }
 
-                FreeDecalBlock(data, block);
+                FreeDecalBlock(decals, block);
                 block = next;
             }
         }
@@ -466,27 +473,26 @@ extern "C"
         return 1;
     }
 
-    void ReadDecalPage(DecalData* data, Stream* stream)
+    void ReadDecalPage(DecalData* decals, Stream* stream)
     {
-        Platform::Graphics::ReadParticlePage(&data->page, stream, true);
+        Platform::Graphics::ReadParticlePage(&decals->page, stream, true);
     }
 
-    void LoadDecals(DecalData* data, const char* path)
+    void LoadDecals(DecalData* decals, const char* path)
     {
-        Platform::Graphics::LoadParticlePage(&data->page, path, true);
-        SetDefaultDecalTypes(data);
+        Platform::Graphics::LoadParticlePage(&decals->page, path, true);
+        SetDefaultDecalTypes(decals);
     }
 
-    void SetDefaultDecalTypes(DecalData* data)
+    void SetDefaultDecalTypes(DecalData* decals)
     {
-        data->typeCount = DefaultTypes;
-        *reinterpret_cast<u64*>(data->uvPacket) = UvGifTag;
-        reinterpret_cast<u32*>(data->uvPacket)[2] = UvRegisters;
-        reinterpret_cast<u32*>(data->uvPacket)[3] = UvMoreRegisters;
-        auto* rectangles = reinterpret_cast<Vector4*>(data->uvPacket + sizeof(Vector4));
+        decals->typeCount = DefaultTypes;
+        decals->uvPacket.gifTag = UvGifTag;
+        decals->uvPacket.gifRegisters[0] = UvRegisters;
+        decals->uvPacket.gifRegisters[1] = UvMoreRegisters;
         for (u32 type = 0; type < DefaultTypes; type++)
         {
-            rectangles[type] = DefaultTypeRectangles[type];
+            decals->uvPacket.rectangles[type] = DefaultTypeRectangles[type];
         }
     }
 }

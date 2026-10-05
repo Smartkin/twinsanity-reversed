@@ -21,23 +21,27 @@
 #include "game/sound.h"
 #include "game/stream.h"
 #include "retail/libc.h"
-#include "retail/libc.h"
 
 // The chunks' loading: loaders of the chunks wanted around what the loading follows, and the links between chunks
 namespace
 {
-constexpr u32 CountMask = 0xFFFFFF;
-constexpr u32 Owns = 0x1000000;
-// GCC's pointers to the lists' members (their offsets + 1), passed along and unused
-constexpr s32 LinkPrevious = 0xC9;
-constexpr s32 LinkNext = 0xC5;
-constexpr s32 LoaderPrevious = 0x31;
-constexpr s32 LoaderNext = 0x2D;
-
-constexpr u32 Unloading = 0x40000000;
-// The chunk data's bits 18-21
-constexpr u32 ShownMask = 0x3C0000;
-constexpr u32 Shown = 0x40000;
+// GCC's pointers to the lists' members, passed along and unused
+constexpr s32 LinkPrevious = GCC2_MEMBER_POINTER(GameChunkLink, previous);
+constexpr s32 LinkNext = GCC2_MEMBER_POINTER(GameChunkLink, next);
+constexpr s32 LoaderPrevious = GCC2_MEMBER_POINTER(ChunkLoader, previous);
+constexpr s32 LoaderNext = GCC2_MEMBER_POINTER(ChunkLoader, next);
+// The seconds a loader waits before loading a wanted file and before unloading an unwanted one (a chunk no link reached this
+// frame's sooner)
+constexpr f32 LoadDelay = 1.0f;
+constexpr f32 UnloadDelay = 4.0f;
+constexpr f32 UnreachedUnloadDelay = Rounded(0.1);
+// The frames drawn empty before everything's unloaded
+constexpr s32 EmptyFrames = 2;
+// The shadows a chunk's made with (its constructor ignores it: its lists hold 100)
+constexpr s32 ShadowCount = 100;
+// A chunk's list of the object IDs its RM2 brings: a count, then room for MostObjects IDs
+constexpr u32 MostObjects = 0x200;
+constexpr u32 ObjectListSize = sizeof(u32) + MostObjects * sizeof(u16);
 }
 
 extern "C"
@@ -49,9 +53,9 @@ extern "C"
 
     extern const GccVTableEntry g_Sm2LoaderVTable[] RETAIL(ChunkSm2Loader_Methods);
     extern const GccVTableEntry g_Rm2LoaderVTable[] RETAIL(ChunkRm2Loader_Methods);
-    extern const GccVTableEntry g_ChunkLoadingUtilVTable[] RETAIL(D_002FC2E0);
-    extern const GccVTableEntry g_Sm2LoadingUtilVTable[] RETAIL(ChunkLoadUtil_Sm2_Methods);
-    extern const GccVTableEntry g_Rm2LoadingUtilVTable[] RETAIL(ChunkLoadUtil_Rm2_Methods);
+    extern const GccVTableEntry g_WantPolicyVTable[] RETAIL(D_002FC2E0);
+    extern const GccVTableEntry g_Sm2WantPolicyVTable[] RETAIL(ChunkLoadUtil_Sm2_Methods);
+    extern const GccVTableEntry g_Rm2WantPolicyVTable[] RETAIL(ChunkLoadUtil_Rm2_Methods);
 
     void DestroyPendingInstances() RETAIL(FUN_001996b0);
     // The chunk manager's base and the persistent flags' stores' base
@@ -67,20 +71,20 @@ namespace
 void ReleaseLoaderReference(LoaderReference** handle)
 {
     LoaderReference* reference = *handle;
-    u32 value = reference->value;
-    u32 count = ((value & CountMask) - 1) & CountMask;
-    reference->value = (value & ~CountMask) | count;
-    if (count == 0 && (value & Owns) != 0)
+    ReferenceBits bits = reference->bits;
+    bits.count--;
+    reference->bits = bits;
+    if (bits.count == 0 && bits.owns)
     {
         if (reference->loader != nullptr)
         {
-            reference->loader->Destroy(3);
+            reference->loader->Destroy(DestroyAndFree);
         }
 
         reference->loader = nullptr;
     }
 
-    if ((reference->value & CountMask) != 0)
+    if (reference->bits.count != 0)
     {
         return;
     }
@@ -89,7 +93,7 @@ void ReleaseLoaderReference(LoaderReference** handle)
     ChunkLoader* loader = reference->loader;
     if (loader == nullptr)
     {
-        if ((reference->value & Owns) != 0)
+        if (reference->bits.owns)
         {
             reference->loader = nullptr;
         }
@@ -102,11 +106,11 @@ void ReleaseLoaderReference(LoaderReference** handle)
     LoaderReference* block = loader->self;
     if (block != nullptr)
     {
-        if ((block->value & Owns) != 0)
+        if (block->bits.owns)
         {
             if (block->loader != nullptr)
             {
-                block->loader->Destroy(3);
+                block->loader->Destroy(DestroyAndFree);
             }
 
             block->loader = nullptr;
@@ -125,13 +129,16 @@ LoaderReference* AddLoaderReference(ChunkLoader* loader)
     {
         auto* block = static_cast<LoaderReference*>(MemoryAllocate(sizeof(LoaderReference)));
         block->loader = loader;
-        // The new block's top bits are kept
-        block->value &= 0xFE000000;
+        // The new block's bits above the count and the owning bit are kept
+        ReferenceBits leftover = block->bits;
+        leftover.count = 0;
+        leftover.owns = 0;
+        block->bits = leftover;
         loader->self = block;
     }
 
     LoaderReference* reference = loader->self;
-    reference->value = (reference->value & ~CountMask) | (((reference->value & CountMask) + 1) & CountMask);
+    reference->bits.count++;
     return reference;
 }
 
@@ -141,9 +148,9 @@ void LowerCase(String* string)
     {
         char* character = string->string + i;
         s8 value = *character;
-        if ((CasingTable[value] & 1) != 0)
+        if ((CasingTable[value] & RetailLibc::CasingUpperCase) != 0)
         {
-            *character = static_cast<char>(value + 0x20);
+            *character = static_cast<char>(value + ('a' - 'A'));
         }
     }
 }
@@ -174,7 +181,7 @@ void UnlinkAll(ChunkLoader* loader)
         LinkListRemove(link, &loader->links, LinkPrevious, LinkNext);
         if (link != nullptr)
         {
-            DestroyChunkLink(link, 3);
+            DestroyChunkLink(link, DestroyAndFree);
         }
 
         link = next;
@@ -184,7 +191,7 @@ void UnlinkAll(ChunkLoader* loader)
 
 extern "C"
 {
-    ChunkLoadingManager* ConstructChunkLoadingManager(ChunkLoadingManager* manager, TimeClock* clock, u32 state)
+    ChunkLoadingManager* ConstructChunkLoadingManager(ChunkLoadingManager* manager, TimeClock* clock, u32 mode)
     {
         manager->path.string = nullptr;
         manager->path.capacity = 0;
@@ -194,8 +201,8 @@ extern "C"
         manager->loaders = nullptr;
         manager->focusLoader = nullptr;
         manager->focus = nullptr;
-        manager->bits = 0;
-        manager->bits = (manager->bits & 0xF0FFFFFF) | (state & 0xF) << 24;
+        manager->bits.value = 0;
+        manager->bits.mode = mode;
         return manager;
     }
 
@@ -239,7 +246,7 @@ extern "C"
 
     void SetChunkLoadingFocus(ChunkLoadingManager* manager, ReferencedObject* object)
     {
-        if ((manager->bits & 0x40000000) != 0)
+        if (manager->bits.unloading != 0)
         {
             return;
         }
@@ -287,35 +294,36 @@ extern "C"
             // Not reached by the links this frame: wanted at no depth
             if (loader->frame != frame)
             {
-                loader->bits |= 0xFF;
+                loader->bits.depth = ChunkLoader::NoDepth;
+                loader->bits.keepDepth = ChunkLoader::NoDepth;
             }
 
             busy = loader->sm2->Step(now);
             busy |= loader->rm2->Step(now);
         }
 
-        ChunkData* data = nullptr;
+        ChunkData* chunk = nullptr;
         if (loader->sm2 != nullptr && loader->sm2->data != nullptr)
         {
-            data = loader->sm2->data->data;
+            chunk = loader->sm2->data->chunk;
         }
 
-        if (data == nullptr)
+        if (chunk == nullptr)
         {
             return busy;
         }
 
-        u64 shown = data->bits & ShownMask;
+        u32 state = chunk->flags.state;
         if (ChunkLoaderIsLoaded(loader, false))
         {
-            if (shown == 0)
+            if (state == ChunkHidden)
             {
-                data->bits = (data->bits & ~ShownMask) | Shown;
+                chunk->flags.state = ChunkShown;
             }
         }
-        else if (shown == Shown)
+        else if (state == ChunkShown)
         {
-            data->bits &= ~ShownMask;
+            chunk->flags.state = ChunkHidden;
         }
 
         return busy;
@@ -365,10 +373,10 @@ extern "C"
     ChunkLoader* QueueChunk(ChunkLoadingManager* manager, String* path, u32 depth)
     {
         ChunkLoader* loader = FindChunkLoader(manager, path);
-        u32 depths = (depth & 0xF) << 4 | (depth & 0xF);
         if (loader != nullptr)
         {
-            loader->bits = (loader->bits & 0xFFFFFF00) | depths;
+            loader->bits.depth = depth;
+            loader->bits.keepDepth = depth;
         }
         else
         {
@@ -384,19 +392,19 @@ extern "C"
             loader->links = nullptr;
             loader->next = nullptr;
             loader->previous = nullptr;
-            loader->bits = 0;
-            loader->bits = (loader->bits & 0xFFFFFF00) | depths;
+            loader->bits.value = 0;
+            loader->bits.depth = depth;
+            loader->bits.keepDepth = depth;
             LowerCase(&loader->path);
             loader->sm2 = Sm2Loader::Construct(static_cast<Sm2Loader*>(MemoryAllocate(sizeof(Sm2Loader))), loader);
             loader->rm2 = Rm2Loader::Construct(static_cast<Rm2Loader*>(MemoryAllocate(sizeof(Rm2Loader))), loader);
-            u32 bits = (loader->bits & ~0x100u) | (static_cast<s32>(manager->bits) >> 20 & 0x100);
-            loader->bits = bits;
-            loader->bits = (bits & ~0x200u) | (static_cast<s32>(manager->bits) >> 20 & 0x200);
+            loader->bits.queuesFiles = manager->bits.queuesFiles;
+            loader->bits.takesNoObjects = manager->bits.takesNoObjects;
             if (!LoaderListContains(loader, &manager->loaders, LoaderPrevious, LoaderNext))
             {
                 if (UnderManagerPath(loader))
                 {
-                    manager->bits = (manager->bits & ~0xFFFu) | (((manager->bits & 0xFFF) + 1) & 0xFFF);
+                    manager->bits.loaderCount++;
                 }
 
                 LoaderListPushFront(loader, &manager->loaders, LoaderPrevious, LoaderNext);
@@ -413,14 +421,13 @@ extern "C"
 
     bool UpdateChunkLoading(ChunkLoadingManager* manager, bool now, u8* read)
     {
-        u32 firstState = manager->bits >> 24 & 0xF;
-        bool loadAll = firstState - 1 < 2;
+        u32 firstMode = manager->bits.mode;
+        bool waits = firstMode == LoadingKnownAtOnce || firstMode == LoadingAllAtOnce;
         bool pending;
         do
         {
-            u32 bits = manager->bits;
-            manager->bits = bits & 0xFF000FFF;
-            u32 state = bits >> 24 & 0xF;
+            u32 mode = manager->bits.mode;
+            manager->bits.loadedCount = 0;
             // The loaders the links queue now are stepped next time
             ChunkLoader* loader = manager->loaders;
             if (manager->focusLoader != nullptr)
@@ -435,23 +442,22 @@ extern "C"
                 {
                     if (ChunkLoaderIsLoaded(loader, false))
                     {
-                        u32 loaded = ((manager->bits >> 12 & 0xFFF) + 1) & 0xFFF;
-                        manager->bits = (manager->bits & 0xFF000FFF) | loaded << 12;
+                        manager->bits.loadedCount++;
                     }
                 }
-                else if (state == 5)
+                else if (mode == LoadingStreamed)
                 {
                     if (LoaderListContains(loader, &manager->loaders, LoaderPrevious, LoaderNext))
                     {
                         if (UnderManagerPath(loader))
                         {
-                            manager->bits = (manager->bits & ~0xFFFu) | (((manager->bits & 0xFFF) - 1) & 0xFFF);
+                            manager->bits.loaderCount--;
                         }
 
                         LoaderListRemove(loader, &manager->loaders, LoaderPrevious, LoaderNext);
                     }
 
-                    loader->Destroy(3);
+                    loader->Destroy(DestroyAndFree);
                 }
 
                 loader = next;
@@ -469,29 +475,29 @@ extern "C"
             }
 
             // Fewer loaded than there are
-            pending = ((manager->bits ^ manager->bits >> 12) & 0xFFF) != 0;
+            pending = manager->bits.loadedCount != manager->bits.loaderCount;
             manager->frame++;
-        } while (now && loadAll && pending);
+        } while (now && waits && pending);
 
         return pending && *read != 0;
     }
 
     void UnloadEverything(ChunkLoadingManager* manager, bool now, ChunkManager* chunks)
     {
-        if ((manager->bits & Unloading) != 0)
+        if (manager->bits.unloading != 0)
         {
             return;
         }
 
         manager->focusLoader = nullptr;
-        manager->bits |= Unloading;
+        manager->bits.unloading = 1;
         if (manager->focus != nullptr && manager->focus->object != nullptr)
         {
             RemoveReference(&manager->focus);
             manager->focus = nullptr;
         }
 
-        // Without now the focus isn't followed until the next unloading clears the bit
+        // Without now (no caller asks for it) unloading stays set: the focus isn't followed again and later calls return at once
         if (!now)
         {
             return;
@@ -500,7 +506,7 @@ extern "C"
         StopAllSound();
         RenderTargetDescription* target = G_Renderer_->target;
         GameRendererController* renderer = G_GameRendererController;
-        for (s32 i = 0; i < 2; i++)
+        for (s32 i = 0; i < EmptyFrames; i++)
         {
             SetUpFrame(target, false, false);
             renderer->FinishScene(0);
@@ -524,46 +530,47 @@ extern "C"
             UnloadAllChunks(chunks);
         }
 
-        manager->bits &= ~Unloading;
+        manager->bits.unloading = 0;
     }
 
     void LoadLinkedChunks(ChunkLoader* loader, s32 frame, u32 keepDepth, u32 depth)
     {
         // Lower depths than this frame's, or a new frame
         bool newFrame = loader->frame != frame;
-        bool keepLower = keepDepth < (loader->bits >> 4 & 0xF);
-        bool lower = depth < (loader->bits & 0xF);
+        bool keepLower = keepDepth < loader->bits.keepDepth;
+        bool lower = depth < loader->bits.depth;
         if (!newFrame && !keepLower && !lower)
         {
             return;
         }
 
-        u32 state = loader->manager->bits >> 24 & 0xF;
+        u32 mode = loader->manager->bits.mode;
         if (newFrame)
         {
-            loader->bits = (loader->bits & 0xFFFFFF00) | (keepDepth & 0xF) << 4 | (depth & 0xF);
+            loader->bits.depth = depth;
+            loader->bits.keepDepth = keepDepth;
             loader->frame = frame;
         }
         else
         {
             if (keepLower)
             {
-                loader->bits = (loader->bits & ~0xF0u) | (keepDepth & 0xF) << 4;
+                loader->bits.keepDepth = keepDepth;
             }
 
             if (lower)
             {
-                loader->bits = (loader->bits & ~0xFu) | (depth & 0xF);
+                loader->bits.depth = depth;
             }
         }
 
-        if (state == 0)
+        if (mode == LoadingQueuedOnly)
         {
             return;
         }
 
-        // A chunk no file loader wants isn't followed while unloading
-        if ((loader->bits & 0x200) == 0 && state == 5)
+        // Streamed, a chunk no file loader wants isn't followed
+        if (loader->bits.takesNoObjects == 0 && mode == LoadingStreamed)
         {
             bool unwanted = loader->rm2 == nullptr || loader->rm2->IsUnwanted();
             if (loader->sm2 != nullptr)
@@ -582,9 +589,9 @@ extern "C"
         bool allQueued = link != nullptr;
         for (; link != nullptr; link = link->next)
         {
-            bool keep = (link->data.flags & ChunkLinkData::KeepMask) != 0;
-            u32 nextKeepDepth = keepDepth != 0xF && keep ? keepDepth + 1 : 0xF;
-            u32 nextDepth = depth != 0xF ? depth + 1 : 0xF;
+            bool keep = link->data.flags.keep != 0;
+            u32 nextKeepDepth = keepDepth != ChunkLoader::NoDepth && keep ? keepDepth + 1 : ChunkLoader::NoDepth;
+            u32 nextDepth = depth != ChunkLoader::NoDepth ? depth + 1 : ChunkLoader::NoDepth;
             ChunkLoader* linked = link->loader != nullptr ? link->loader->loader : nullptr;
             if (loader->sm2 != nullptr)
             {
@@ -599,9 +606,9 @@ extern "C"
             if (linked == nullptr)
             {
                 linked = FindChunkLoader(loader->manager, &link->path);
-                if (linked == nullptr && state != 1)
+                if (linked == nullptr && mode != LoadingKnownAtOnce)
                 {
-                    linked = QueueChunk(loader->manager, &link->path, 0xF);
+                    linked = QueueChunk(loader->manager, &link->path, ChunkLoader::NoDepth);
                 }
 
                 LoaderReference* reference = linked != nullptr ? AddLoaderReference(linked) : nullptr;
@@ -620,24 +627,24 @@ extern "C"
             }
 
             bool follow = true;
-            if ((loader->bits & 0x200) == 0 && link->hulls != nullptr)
+            if (loader->bits.takesNoObjects == 0 && link->hulls != nullptr)
             {
                 ReferencedObject* focus = loader->manager->focus != nullptr ? loader->manager->focus->object : nullptr;
                 if (focus == nullptr)
                 {
-                    follow = (link->type >> 1 & 1) != 0;
+                    follow = link->type.loadsWithoutPlayer != 0;
                 }
                 else
                 {
                     // The focus is an instance: its place is at 8
                     ObjectPlace* place = focus->place;
-                    if ((place->bits & 4) != 0)
+                    if (place->bits.matrixMoved != 0)
                     {
                         place->position.x = place->matrix.m[3][0];
                         place->position.w = place->matrix.m[3][3];
                         place->position.y = place->matrix.m[3][1];
                         place->position.z = place->matrix.m[3][2];
-                        place->bits &= ~static_cast<u64>(5);
+                        place->MarkPositionSynced();
                     }
 
                     Vector4 position = place->position;
@@ -663,7 +670,8 @@ extern "C"
             allQueued &= sm2 != nullptr && (sm2->IsQueued(false) || sm2->IsLoaded(false));
         }
 
-        loader->bits = (loader->bits & ~0xC00u) | static_cast<u32>(allLoaded) << 10 | static_cast<u32>(allQueued) << 11;
+        loader->bits.linkedLoaded = allLoaded;
+        loader->bits.linkedQueued = allQueued;
     }
 
     void LoadChunkLinks(ChunkLoader* loader, Stream* reader)
@@ -677,7 +685,7 @@ extern "C"
             link->path.capacity = 0;
             link->path.length = 0;
             link->loader = nullptr;
-            LinkMatricesConstruct(&link->data);
+            ConstructChunkLinkData(&link->data);
             link->hulls = nullptr;
             link->next = nullptr;
             link->previous = nullptr;
@@ -690,13 +698,13 @@ extern "C"
     {
         if (link->hulls != nullptr)
         {
-            FreeLinkHullList(link->hulls, 3);
+            FreeLinkHullList(link->hulls, DestroyAndFree);
         }
 
-        reader->Read(&link->type, 4, 1);
+        reader->Read(&link->type, sizeof(link->type), 1);
         StringRead(&link->path, reader);
-        LinkMatricesRead(&link->data, reader);
-        if ((link->type & 1) != 0)
+        ReadChunkLinkData(&link->data, reader);
+        if (link->type.hasHulls != 0)
         {
             link->hulls = InitLinkHullList(static_cast<LinkHullList*>(MemoryAllocate(sizeof(LinkHullList))), reader);
         }
@@ -710,10 +718,10 @@ extern "C"
     {
         if (link->hulls != nullptr)
         {
-            FreeLinkHullList(link->hulls, 3);
+            FreeLinkHullList(link->hulls, DestroyAndFree);
         }
 
-        LinkMatricesDestroy(&link->data, 2);
+        DestroyChunkLinkData(&link->data, DestroyOnly);
         if (link->loader != nullptr)
         {
             ReleaseLoaderReference(&link->loader);
@@ -741,7 +749,7 @@ extern "C"
         *to = *from;
         if (*to != nullptr)
         {
-            (*to)->value = ((*to)->value & ~CountMask) | ((((*to)->value & CountMask) + 1) & CountMask);
+            (*to)->bits.count++;
         }
 
         return to;
@@ -759,10 +767,10 @@ extern "C"
     {
         if (list->next != nullptr)
         {
-            FreeLinkHullList(list->next, 3);
+            FreeLinkHullList(list->next, DestroyAndFree);
         }
 
-        HullDestroy(&list->hull, 2);
+        HullDestroy(&list->hull, DestroyOnly);
         if ((flags & 1) != 0)
         {
             MemoryDeallocate2_(list);
@@ -771,8 +779,7 @@ extern "C"
 
     void* MakeChunkLinkItem(void*, u32 type)
     {
-        constexpr u32 LinkHullListType = 0x1D02;
-        if (type != LinkHullListType)
+        if (type != LinkHullList::TypeId)
         {
             return nullptr;
         }
@@ -810,16 +817,16 @@ extern "C"
         {
             if (old->next != nullptr)
             {
-                FreeLinkHullList(old->next, 3);
+                FreeLinkHullList(old->next, DestroyAndFree);
             }
 
-            HullDestroy(&old->hull, 2);
+            HullDestroy(&old->hull, DestroyOnly);
             MemoryDeallocate2_(old);
         }
 
-        reader->Read(&list->flags, 4, 1);
+        reader->Read(&list->flags, sizeof(list->flags), 1);
         ReadModelCollisionData(&list->hull, reader);
-        if ((list->flags & 1) == 0)
+        if (list->flags.hasNext == 0)
         {
             list->next = nullptr;
             return;
@@ -934,12 +941,12 @@ void ChunkLoader::Destroy(u32 flags)
     UnlinkAll(this);
     if (rm2 != nullptr)
     {
-        rm2->Destroy(3);
+        rm2->Destroy(DestroyAndFree);
     }
 
     if (sm2 != nullptr)
     {
-        sm2->Destroy(3);
+        sm2->Destroy(DestroyAndFree);
     }
 
     StringDestroy(&path);
@@ -959,7 +966,7 @@ ChunkLoaderBase* ChunkLoaderBase::Construct(ChunkLoaderBase* base, ChunkLoader* 
     base->loader = loader;
     base->vtable = g_ChunkLoaderBaseVTable;
     base->state = None;
-    base->util = nullptr;
+    base->policy = nullptr;
     return base;
 }
 
@@ -974,31 +981,31 @@ void ChunkLoaderBase::DestroyBase(u32 flags)
 
 bool ChunkLoaderBase::StepStates(bool now)
 {
-    u32 managerState = loader->manager->bits >> 24 & 0xF;
+    u32 managerMode = loader->manager->bits.mode;
     u32 clockTime = loader->clock->time;
     if (state != None)
     {
-        s32 elapsed = static_cast<s32>(clockTime - static_cast<u32>(time));
+        s32 elapsed = static_cast<s32>(clockTime - static_cast<u32>(stateTime));
         s32 next = -1;
         switch (state)
         {
         case Queued:
-            if (managerState - 1 < 3)
+            if (managerMode >= LoadingKnownAtOnce && managerMode <= LoadingAtOnce)
             {
                 if (StartLoading(0, now))
                 {
                     next = Loading;
                 }
             }
-            else if (loader->rm2 != nullptr && loader->rm2->state == Queued && util->Wants(loader))
+            else if (loader->rm2 != nullptr && loader->rm2->state == Queued && policy->Wants(loader))
             {
-                delay = static_cast<s32>(g_ClockUnitsPerSecond);
+                delay = static_cast<s32>(g_ClockUnitsPerSecond * LoadDelay);
                 next = WaitingToLoad;
             }
 
             break;
         case WaitingToLoad:
-            if (util->DoesNotWant(loader))
+            if (policy->DoesNotWant(loader))
             {
                 next = Queued;
             }
@@ -1024,27 +1031,27 @@ bool ChunkLoaderBase::StepStates(bool now)
                 loading &= chunk->sm2->IsLoading(true);
             }
 
-            if (loading || managerState != 5)
+            if (loading || managerMode != LoadingStreamed)
             {
                 break;
             }
 
             // Not reached by any link this frame: gone soon
-            if ((chunk->bits & 0xFF) == 0xFF)
+            if (chunk->bits.depth == ChunkLoader::NoDepth && chunk->bits.keepDepth == ChunkLoader::NoDepth)
             {
-                delay = static_cast<s32>(g_ClockUnitsPerSecond * Rounded(0.1));
+                delay = static_cast<s32>(g_ClockUnitsPerSecond * UnreachedUnloadDelay);
                 next = WaitingToUnload;
             }
-            else if (util->DoesNotWant(chunk))
+            else if (policy->DoesNotWant(chunk))
             {
-                delay = static_cast<s32>(g_ClockUnitsPerSecond * 4.0f);
+                delay = static_cast<s32>(g_ClockUnitsPerSecond * UnloadDelay);
                 next = WaitingToUnload;
             }
 
             break;
         }
         case WaitingToUnload:
-            if (util->Wants(loader))
+            if (policy->Wants(loader))
             {
                 next = Loaded;
             }
@@ -1075,43 +1082,43 @@ bool ChunkLoaderBase::StepStates(bool now)
         if (next != -1)
         {
             state = next;
-            time = static_cast<s32>(clockTime);
+            stateTime = static_cast<s32>(clockTime);
         }
     }
 
     return state != Queued && state != Unloaded;
 }
 
-bool ChunkLoaderBase::AnyUtilWants()
+bool ChunkLoaderBase::PolicyWants()
 {
-    return util->Wants(loader);
+    return policy->Wants(loader);
 }
 
-bool ChunkLoaderBase::NoUtilWants()
+bool ChunkLoaderBase::PolicyDoesNotWant()
 {
-    return util->DoesNotWant(loader);
+    return policy->DoesNotWant(loader);
 }
 
 bool ChunkLoaderBase::IsQueued(bool any)
 {
-    return any ? static_cast<u32>(state - Queued) < 2 : state == Queued;
+    return any ? state == Queued || state == WaitingToLoad : state == Queued;
 }
 
 bool ChunkLoaderBase::IsLoading(bool any)
 {
-    return any ? static_cast<u32>(state - WaitingToLoad) < 2 : state == Loading;
+    return any ? state == WaitingToLoad || state == Loading : state == Loading;
 }
 
 bool ChunkLoaderBase::IsLoaded(bool any)
 {
-    return any ? static_cast<u32>(state - Loaded) < 2 : state == Loaded;
+    return any ? state == Loaded || state == WaitingToUnload : state == Loaded;
 }
 
 namespace
 {
 ChunkData* DataOf(const ChunkDataReference* reference)
 {
-    return reference != nullptr ? reference->data : nullptr;
+    return reference != nullptr ? reference->chunk : nullptr;
 }
 
 ChunkData* ChunkDataOf(ChunkLoader* loader)
@@ -1120,52 +1127,52 @@ ChunkData* ChunkDataOf(ChunkLoader* loader)
 }
 }
 
-void Sm2LoadingUtil::Destroy(u32 flags)
+void Sm2WantPolicy::Destroy(u32 flags)
 {
-    vtable = g_ChunkLoadingUtilVTable;
+    vtable = g_WantPolicyVTable;
     if ((flags & 1) != 0)
     {
         MemoryDeallocate2_(this);
     }
 }
 
-bool Sm2LoadingUtil::Wants(ChunkLoader* loader)
+bool Sm2WantPolicy::Wants(ChunkLoader* loader)
 {
-    return (loader->bits & 0xF) < 2;
+    return loader->bits.depth < ChunkLoader::WantedDepths;
 }
 
-bool Sm2LoadingUtil::DoesNotWant(ChunkLoader* loader)
+bool Sm2WantPolicy::DoesNotWant(ChunkLoader* loader)
 {
-    return !((loader->bits & 0xF) < 2);
+    return !(loader->bits.depth < ChunkLoader::WantedDepths);
 }
 
-bool Sm2LoadingUtil::AtSecondDepth(ChunkLoader* loader)
+bool Sm2WantPolicy::JustPastWanted(ChunkLoader* loader)
 {
-    return (loader->bits & 0xF) == 2;
+    return loader->bits.depth == ChunkLoader::WantedDepths;
 }
 
-void Rm2LoadingUtil::Destroy(u32 flags)
+void Rm2WantPolicy::Destroy(u32 flags)
 {
-    vtable = g_ChunkLoadingUtilVTable;
+    vtable = g_WantPolicyVTable;
     if ((flags & 1) != 0)
     {
         MemoryDeallocate2_(this);
     }
 }
 
-bool Rm2LoadingUtil::Wants(ChunkLoader* loader)
+bool Rm2WantPolicy::Wants(ChunkLoader* loader)
 {
-    return (loader->bits >> 4 & 0xF) < 2;
+    return loader->bits.keepDepth < ChunkLoader::WantedDepths;
 }
 
-bool Rm2LoadingUtil::DoesNotWant(ChunkLoader* loader)
+bool Rm2WantPolicy::DoesNotWant(ChunkLoader* loader)
 {
-    return !((loader->bits >> 4 & 0xF) < 2);
+    return !(loader->bits.keepDepth < ChunkLoader::WantedDepths);
 }
 
-bool Rm2LoadingUtil::AtSecondDepth(ChunkLoader* loader)
+bool Rm2WantPolicy::JustPastWanted(ChunkLoader* loader)
 {
-    return (loader->bits >> 4 & 0xF) == 2;
+    return loader->bits.keepDepth == ChunkLoader::WantedDepths;
 }
 
 Sm2Loader* Sm2Loader::Construct(Sm2Loader* loader, ChunkLoader* chunk)
@@ -1175,9 +1182,9 @@ Sm2Loader* Sm2Loader::Construct(Sm2Loader* loader, ChunkLoader* chunk)
     loader->data = nullptr;
     loader->vtable = g_Sm2LoaderVTable;
     loader->state = Queued;
-    auto* util = static_cast<ChunkLoadingUtil*>(MemoryAllocate(sizeof(ChunkLoadingUtil)));
-    loader->util = util;
-    util->vtable = g_Sm2LoadingUtilVTable;
+    auto* policy = static_cast<WantPolicy*>(MemoryAllocate(sizeof(WantPolicy)));
+    loader->policy = policy;
+    policy->vtable = g_Sm2WantPolicyVTable;
     return loader;
 }
 
@@ -1186,12 +1193,12 @@ void Sm2Loader::Destroy(u32 flags)
     vtable = g_Sm2LoaderVTable;
     if (reader != nullptr)
     {
-        reader->Destroy(3);
+        reader->Destroy(DestroyAndFree);
     }
 
-    if (util != nullptr)
+    if (policy != nullptr)
     {
-        util->Destroy(3);
+        policy->Destroy(DestroyAndFree);
     }
 
     if (data != nullptr)
@@ -1214,13 +1221,12 @@ bool Sm2Loader::StartLoading(s32 index, bool now)
     path.length = 0;
     path.capacity = 0;
     StringAssign(&path, loader->path.string);
-    auto* chunk = static_cast<ChunkData*>(MemoryAllocate(0x1F0));
+    auto* chunk = static_cast<ChunkData*>(MemoryAllocate(sizeof(ChunkData)));
     AssignChunkData(&data, ConstructChunkData(chunk, GetChunkList(), path.string));
     ChunkDataLights(DataOf(data));
-    ChunkDataContext(DataOf(data));
+    ChunkDataInstances(DataOf(data));
     reader = Sm2Reader::Construct(static_cast<Sm2Reader*>(MemoryAllocate(sizeof(Sm2Reader))), this);
-    // The loader's bit 8 queues the file's reading
-    reader->Queue(now, (loader->bits >> 8 & 1) != 0);
+    reader->Queue(now, loader->bits.queuesFiles != 0);
     StringDestroy(&path);
     return true;
 }
@@ -1234,7 +1240,7 @@ bool Sm2Loader::ContinueLoading(s32, bool)
 
     if (reader != nullptr)
     {
-        reader->Destroy(3);
+        reader->Destroy(DestroyAndFree);
     }
 
     reader = nullptr;
@@ -1253,16 +1259,16 @@ bool Sm2Loader::ContinueUnloading(s32, bool)
         return false;
     }
 
-    if (ChunkDataReleasing(DataOf(data), true, nullptr) != 0)
+    if (StepChunkData(DataOf(data), true, nullptr) != 0)
     {
         return true;
     }
 
-    ChunkListRemove(GetChunkList(), data->data);
+    ChunkListRemove(GetChunkList(), data->chunk);
     ChunkData* chunk = DataOf(data);
     if (chunk != nullptr)
     {
-        DestroyChunkData(chunk, 3);
+        DestroyChunkData(chunk, DestroyAndFree);
     }
 
     AssignChunkData(&data, nullptr);
@@ -1278,8 +1284,7 @@ bool Sm2Loader::Holds(ReferencedObject* object)
         return false;
     }
 
-    // An object's chunk is at 0xA0
-    return *reinterpret_cast<ChunkData**>(reinterpret_cast<u8*>(object) + 0xA0) == chunk;
+    return object->chunk == chunk;
 }
 
 bool Sm2Loader::Step(bool now)
@@ -1287,18 +1292,19 @@ bool Sm2Loader::Step(bool now)
     ChunkData* chunk = DataOf(data);
     if (chunk != nullptr)
     {
-        u32 depth = loader->bits & 0xF;
-        s32 detail = 0;
-        if (depth < 2)
+        u32 depth = loader->bits.depth;
+        s32 steppedKinds = 0;
+        if (depth < ChunkLoader::WantedDepths)
         {
-            detail = -1;
+            steppedKinds = ChunkData::EveryKindStepped;
         }
-        else if (depth == 2)
+        else if (depth == ChunkLoader::WantedDepths)
         {
-            detail = 8;
+            // Its models still animate
+            steppedKinds = 1 << NodeModel;
         }
 
-        chunk->detail = detail;
+        chunk->steppedKinds = steppedKinds;
     }
 
     return StepStates(now);
@@ -1315,7 +1321,7 @@ void Sm2Loader::UpdateLink(GameChunkLink* link)
 
     ChunkData* linkedData = DataOf(linked->sm2->data);
     link->data.linkedData = linkedData;
-    link->data.flags = (link->data.flags & ~ChunkLinkData::HasLinkedData) | static_cast<u32>(linkedData != nullptr) << 17;
+    link->data.flags.hasLinkedData = linkedData != nullptr;
 }
 
 void Sm2Loader::Unlink(GameChunkLink* link)
@@ -1333,18 +1339,18 @@ Rm2Loader* Rm2Loader::Construct(Rm2Loader* loader, ChunkLoader* chunk)
     loader->entry = nullptr;
     loader->vtable = g_Rm2LoaderVTable;
     loader->state = Queued;
-    auto* util = static_cast<ChunkLoadingUtil*>(MemoryAllocate(sizeof(ChunkLoadingUtil)));
-    loader->util = util;
-    util->vtable = g_Rm2LoadingUtilVTable;
+    auto* policy = static_cast<WantPolicy*>(MemoryAllocate(sizeof(WantPolicy)));
+    loader->policy = policy;
+    policy->vtable = g_Rm2WantPolicyVTable;
     return loader;
 }
 
 void Rm2Loader::Destroy(u32 flags)
 {
     vtable = g_Rm2LoaderVTable;
-    if (util != nullptr)
+    if (policy != nullptr)
     {
-        util->Destroy(3);
+        policy->Destroy(DestroyAndFree);
     }
 
     DestroyBase(flags);
@@ -1364,27 +1370,27 @@ bool Rm2Loader::StartLoading(s32 index, bool now)
     }
 
     entry = g_ChunkManager->AddChunk(loader->path.string, chunk);
-    chunk->rm2Loads++;
-    ChunkDataContext(chunk);
-    ChunkShadowsOf(chunk, 100);
+    chunk->holds++;
+    ChunkDataInstances(chunk);
+    ChunkShadowsOf(chunk, ShadowCount);
     ChunkDataCollision(chunk);
     ChunkEntry* added = entry;
-    auto* objects = static_cast<u32*>(MemoryAllocate(0x404));
+    auto* objects = static_cast<u32*>(MemoryAllocate(ObjectListSize));
     objects[0] = 0;
     added->objects = objects;
     reader = Rm2Reader::Construct(static_cast<Rm2Reader*>(MemoryAllocate(sizeof(Rm2Reader))), entry);
-    reader->Queue(now, (loader->bits >> 8 & 1) != 0);
+    reader->Queue(now, loader->bits.queuesFiles != 0);
     return true;
 }
 
 bool Rm2Loader::ContinueLoading(s32, bool)
 {
-    if ((static_cast<s32>(reader->bits) >> 1 & 1) != 0)
+    if (reader->bits.reading != 0)
     {
         return true;
     }
 
-    if ((static_cast<s32>(loader->bits) >> 9 & 1) == 0)
+    if (loader->bits.takesNoObjects == 0)
     {
         ChunkEntry* chunk = entry;
         ChunkManager* owner = chunk->manager;
@@ -1406,7 +1412,7 @@ bool Rm2Loader::ContinueLoading(s32, bool)
 
     if (reader != nullptr)
     {
-        reader->Destroy(3);
+        reader->Destroy(DestroyAndFree);
     }
 
     reader = nullptr;
@@ -1424,7 +1430,7 @@ bool Rm2Loader::StartUnloading(s32, bool)
 
     if (chunk != nullptr)
     {
-        chunk->rm2Loads--;
+        chunk->holds--;
         ReleaseChunkData(chunk, true, false, true);
     }
 
@@ -1443,9 +1449,9 @@ bool Rm2Loader::Holds(ReferencedObject* object)
         return false;
     }
 
-    Reference* reference = entry->data;
-    ReferencedObject* chunk = reference != nullptr ? reference->object : nullptr;
-    return *reinterpret_cast<ReferencedObject**>(reinterpret_cast<u8*>(object) + 0xA0) == chunk;
+    ChunkDataReference* reference = entry->data;
+    ChunkData* chunk = reference != nullptr ? reference->chunk : nullptr;
+    return object->chunk == chunk;
 }
 
 void Rm2Loader::UpdateLink(GameChunkLink* link)
@@ -1464,7 +1470,7 @@ void Rm2Loader::UpdateLink(GameChunkLink* link)
         }
     }
 
-    link->data.flags = (link->data.flags & ~ChunkLinkData::LinkedRm2Loaded) | (loaded & 1) << 18;
+    link->data.flags.linkedRm2Loaded = loaded;
 }
 
 void Rm2Loader::Unlink(GameChunkLink*)
@@ -1473,33 +1479,8 @@ void Rm2Loader::Unlink(GameChunkLink*)
 
 namespace
 {
-// A store of persistent flags' vtable (at its start) functions: 5 the destructor, 6 read from a stream
-constexpr u32 FlagsDestroySlot = 5;
-constexpr u32 FlagsReadSlot = 6;
-// A path's vtable is 8 bytes into it
-constexpr u32 PathVTable = 0x8;
-// The instances a chunk's search for an ID looks at (the awake ones), and the object nodes, kind 1
+// The most instances a chunk's search for an ID looks at (those with an object node)
 constexpr u16 MostInstances = 0x400;
-constexpr u32 AwakeFlags = 0x2;
-constexpr u32 ObjectNodeKind = 1;
-constexpr f32 NoHitDistance = Rounded(1e30);
-// The object nodes' vtable functions: their parts let go, slot 20, their runners stopped (and released)
-constexpr u32 ReleasePartsSlot = 35;
-constexpr u32 Slot20 = 20;
-constexpr u32 StopRunnersSlot = 21;
-// The collector's instance pools a filter's walk goes through (both)
-constexpr u32 BothPools = 0x3;
-
-const GccVTableEntry* FlagsVTable(PersistentFlags* flags)
-{
-    return *reinterpret_cast<const GccVTableEntry* const*>(flags);
-}
-
-// A chunk's reference to its data is a ChunkDataReference (game/chunkdata.h)
-ChunkDataReference** DataReferenceOf(ChunkEntry* chunk)
-{
-    return reinterpret_cast<ChunkDataReference**>(&chunk->data);
-}
 
 // Every element of a list destroyed (none skipped), then the list freed and forgotten (no list: nothing)
 template <typename Destroy>
@@ -1543,22 +1524,22 @@ void ChunkEntry::DestroyPositions()
 void ChunkEntry::DestroyPaths()
 {
     DestroyList(&paths, [](void* path) {
-        auto* vtable = *reinterpret_cast<const GccVTableEntry**>(static_cast<u8*>(path) + PathVTable);
-        CallVirtual<void>(path, vtable, 1, u32{DestroyAndFree});
+        auto* points = static_cast<PointList*>(path);
+        CallVirtual<void>(points, points->vtable, PointList::DestroySlot, u32{DestroyAndFree});
     });
 }
 
 void ChunkEntry::Destroy(u32 destroyFlags)
 {
     UnloadChunkEntry(this);
-    if (flags != nullptr)
+    if (savedFlags != nullptr)
     {
-        CallVirtual<void>(flags, FlagsVTable(flags), FlagsDestroySlot, u32{DestroyAndFree});
+        savedFlags->Destroy(DestroyAndFree);
     }
 
     if (data != nullptr)
     {
-        ReleaseChunkDataReference(DataReferenceOf(this));
+        ReleaseChunkDataReference(&data);
     }
 
     StringDestroy(&path);
@@ -1570,33 +1551,33 @@ void ChunkEntry::Destroy(u32 destroyFlags)
 
 InstanceContext* FindChunkInstance(ChunkEntry* chunk, u16 id)
 {
-    if (id == 0xFFFF)
+    if (id == NoInstanceId)
     {
         return nullptr;
     }
 
-    Reference* data = chunk->data;
-    if (data == nullptr || data->object == nullptr)
+    ChunkDataReference* reference = chunk->data;
+    if (reference == nullptr || reference->chunk == nullptr)
     {
         return nullptr;
     }
 
     InstanceContext* found[MostInstances];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = reinterpret_cast<void**>(found);
     query.count = 0;
     query.most = MostInstances;
-    query.distance = NoHitDistance;
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.distance = Infinite;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.wantedFlags = 0;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.skipped[0] = nullptr;
     query.skipped[1] = nullptr;
     query.instance = nullptr;
-    u32 count = QueryChunkInstancesByFlags(reinterpret_cast<ChunkData*>(data->object), AwakeFlags, &query);
+    u32 count = QueryChunkInstancesOfKinds(reference->chunk, ObjectNodeKinds, &query);
     for (u32 index = 0; index < count; index++)
     {
-        auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&found[index]->nodes, ObjectNodeKind));
+        auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&found[index]->nodes, NodeObject));
         if (node->agent->id == id)
         {
             return found[index];
@@ -1606,12 +1587,12 @@ InstanceContext* FindChunkInstance(ChunkEntry* chunk, u16 id)
     return nullptr;
 }
 
-ChunkEntry* ChunkManager::AddChunkEntry(const char* path, ChunkData* data)
+ChunkEntry* ChunkManager::AddChunkEntry(const char* path, ChunkData* chunk)
 {
     ChunkEntry* entry = FindChunkEntry(this, path);
     if (entry != nullptr)
     {
-        AssignChunkData(DataReferenceOf(entry), data);
+        AssignChunkData(&entry->data, chunk);
         return entry;
     }
 
@@ -1620,12 +1601,12 @@ ChunkEntry* ChunkManager::AddChunkEntry(const char* path, ChunkData* data)
     StringConstruct(&entry->path, path);
     entry->index = index;
     entry->manager = this;
-    *DataReferenceOf(entry) = data != nullptr ? AddChunkDataReference(data) : nullptr;
+    entry->data = chunk != nullptr ? AddChunkDataReference(chunk) : nullptr;
     entry->objects = nullptr;
     entries[count] = entry;
     count++;
-    entry->flags = nullptr;
-    entry->otherFlags = nullptr;
+    entry->savedFlags = nullptr;
+    entry->unsavedFlags = nullptr;
     entry->nextFlagSlot = 0;
     entry->navigation = nullptr;
     entry->positions = nullptr;
@@ -1647,11 +1628,11 @@ void ReadChunkStates(ChunkManager* chunks, Stream* stream)
         path.capacity = 0;
         StringRead(&path, stream);
         ChunkEntry* chunk = chunks->AddChunk(path.string, nullptr);
-        bool ownStore;
-        stream->ReadBool(&ownStore);
-        if (ownStore)
+        bool savedStore;
+        stream->ReadBool(&savedStore);
+        if (savedStore)
         {
-            CallVirtual<void>(chunk->flags, FlagsVTable(chunk->flags), FlagsReadSlot, stream);
+            chunk->savedFlags->Read(stream);
         }
 
         StringDestroy(&path);
@@ -1665,15 +1646,16 @@ void StopFilteredObjectNodes(ChunkManager*, const u32* filter)
     if (CollectChunksInstances(GetChunkList(), filter[0], &collector) != 0)
     {
         PoolsWalk<InstanceContext*> walk;
-        ConstructPoolsWalk(&walk, g_InstancePoolsWalkVTable, g_InstanceWalkVTable, &collector.instances, BothPools);
+        ConstructPoolsWalk(&walk, g_InstancePoolsWalkVTable, g_InstanceWalkVTable, &collector.instances,
+                           InstanceCollector::BothPools);
         for (walk.First(); !walk.AtEnd(); walk.Next())
         {
-            auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&(*walk.Item())->nodes, ObjectNodeKind));
+            auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&(*walk.Item())->nodes, NodeObject));
             if (node != nullptr)
             {
-                CallVirtual<void>(node, node->vtable, ReleasePartsSlot);
-                CallVirtual<void>(node, node->vtable, Slot20);
-                CallVirtual<void>(node, node->vtable, StopRunnersSlot, u32{1});
+                CallVirtual<void>(node, node->vtable, ObjectNode::ReleasePartsSlot);
+                CallVirtual<void>(node, node->vtable, ObjectNode::DoNothingSlot);
+                CallVirtual<void>(node, node->vtable, ObjectNode::StopRunnersSlot, u32{1});
             }
         }
 
@@ -1700,19 +1682,8 @@ u16 ChunkEntry::NextFlagSlot()
 
 namespace
 {
-// A store of persistent flags' vtable function that writes it to a stream
-constexpr u32 FlagsWriteSlot = 7;
-// The default chunk's list of object IDs: a count, then room for 0x200 IDs
-constexpr u32 DefaultObjectsSize = 0x404;
-// The resources' vtable function told the resources were read (with 0)
-constexpr u32 ResourcesReadSlot = 2;
 // A chunk's AI navigation's destructor
 constexpr u32 NavigationDestroySlot = 1;
-
-InstanceIds* InstanceIdsOf(ChunkManager* manager)
-{
-    return reinterpret_cast<InstanceIds*>(manager->instanceIds);
-}
 }
 
 void UnloadChunkEntry(ChunkEntry* chunk)
@@ -1732,13 +1703,13 @@ void UnloadChunkEntry(ChunkEntry* chunk)
 
     chunk->DestroyPositions();
     chunk->DestroyPaths();
-    PersistentFlags* otherFlags = chunk->otherFlags;
-    if (otherFlags != nullptr)
+    PersistentFlags* unsavedFlags = chunk->unsavedFlags;
+    if (unsavedFlags != nullptr)
     {
-        CallVirtual<void>(otherFlags, otherFlags->vtable, FlagsDestroySlot, u32{DestroyAndFree});
+        unsavedFlags->Destroy(DestroyAndFree);
     }
 
-    chunk->otherFlags = nullptr;
+    chunk->unsavedFlags = nullptr;
     if (chunk->objects != nullptr)
     {
         resources->ReleaseObjects(chunk->objects);
@@ -1746,13 +1717,13 @@ void UnloadChunkEntry(ChunkEntry* chunk)
         chunk->objects = nullptr;
     }
 
-    AssignChunkData(DataReferenceOf(chunk), nullptr);
+    AssignChunkData(&chunk->data, nullptr);
     chunk->nextFlagSlot = 0;
 }
 
-void SetOtherFlags(ChunkEntry* entry, PersistentFlags* flags)
+void SetUnsavedFlags(ChunkEntry* entry, PersistentFlags* flags)
 {
-    entry->otherFlags = flags;
+    entry->unsavedFlags = flags;
 }
 
 AiPosition* NearestAiPosition(ChunkEntry* chunk, const Vector4* point, u16* index)
@@ -1782,19 +1753,19 @@ AiPosition* NearestFlaggedAiPosition(ChunkEntry* chunk, const Vector4* point, u1
     return navigation->NearestWithFlags(point, index, required & 0xFFFF, ruledOut & 0xFFFF);
 }
 
-ChunkEntry* ChunkManager::NewEntry(const char* path, ChunkData* data, void*, PersistentFlags* store)
+ChunkEntry* ChunkManager::NewEntry(const char* path, ChunkData* chunk, void*, PersistentFlags* store)
 {
     auto* entry = static_cast<ChunkEntry*>(MemoryAllocate(sizeof(ChunkEntry)));
     u16 index = count;
     StringConstruct(&entry->path, path);
     entry->index = index;
     entry->manager = this;
-    *DataReferenceOf(entry) = data != nullptr ? AddChunkDataReference(data) : nullptr;
-    entry->flags = store;
+    entry->data = chunk != nullptr ? AddChunkDataReference(chunk) : nullptr;
+    entry->savedFlags = store;
     entries[count] = entry;
     count++;
     entry->objects = nullptr;
-    entry->otherFlags = nullptr;
+    entry->unsavedFlags = nullptr;
     entry->nextFlagSlot = 0;
     entry->navigation = nullptr;
     entry->positions = nullptr;
@@ -1809,18 +1780,19 @@ u32 ChunkManager::RemoveChunkEntry(ChunkEntry* entry)
     return 1;
 }
 
-ChunkManager* ChunkManager::Construct(ChunkManager* manager, GameResources* resources, u32 queueDefaultRm2, u32 keepDefaultObjects)
+ChunkManager* ChunkManager::Construct(ChunkManager* manager, GameResources* resources, u32 queuesDefaultRm2, u32 takesNoObjects)
 {
     manager->defaultReader = nullptr;
     manager->defaultObjects = nullptr;
     manager->pathFinder = nullptr;
     manager->resources = resources;
     manager->vtable = g_ChunkManagerBaseVTable;
-    InstanceIds::Construct(InstanceIdsOf(manager));
+    InstanceIds::Construct(&manager->instanceIds);
     g_ChunkManager = manager;
     RetailLibc::MemorySet(manager, 0, sizeof(manager->count) + sizeof(manager->flags));
-    manager->flags = (queueDefaultRm2 & 1) | (keepDefaultObjects & 1) << 1;
-    g_InstanceIds = InstanceIdsOf(manager);
+    manager->flags.queuesDefaultRm2 = queuesDefaultRm2;
+    manager->flags.takesNoObjects = takesNoObjects;
+    g_InstanceIds = &manager->instanceIds;
     return manager;
 }
 
@@ -1834,7 +1806,7 @@ void ChunkManager::Destroy(u32 destroyFlags)
     }
 
     MemoryDeallocate2_(defaultObjects);
-    InstanceIdsOf(this)->Destroy(DestroyOnly);
+    instanceIds.Destroy(DestroyOnly);
     if ((destroyFlags & 1) != 0)
     {
         MemoryDeallocate2_(this);
@@ -1844,11 +1816,11 @@ void ChunkManager::Destroy(u32 destroyFlags)
 void ChunkManager::LoadDefault(const char* path)
 {
     ClearCounters();
-    defaultObjects = static_cast<u32*>(MemoryAllocate(DefaultObjectsSize));
+    defaultObjects = static_cast<u32*>(MemoryAllocate(ObjectListSize));
     defaultObjects[0] = 0;
     auto* reader = static_cast<Rm2Reader*>(MemoryAllocate(sizeof(Rm2Reader)));
     defaultReader = Rm2Reader::ConstructDefault(reader, path, resources, defaultObjects);
-    if ((flags & FlagQueueDefaultRm2) != 0)
+    if (flags.queuesDefaultRm2 != 0)
     {
         SetUpDefaultParticles();
         defaultReader->Queue(true, true);
@@ -1861,12 +1833,13 @@ void ChunkManager::LoadDefault(const char* path)
         defaultReader->Queue(true, false);
     }
 
-    if ((flags & FlagKeepDefaultObjects) == 0)
+    if (flags.takesNoObjects == 0)
     {
         resources->TakeObjects(defaultObjects);
     }
 
-    CallVirtual<void>(resources, resources->vtable, ResourcesReadSlot, 0u);
+    // The resources told they were read: the code models' slots set up again
+    CallVirtual<void>(resources, resources->vtable, GameResources::SetUpCodeModelsSlot, 0u);
 }
 
 void ChunkManager::ClearCounters()
@@ -1911,11 +1884,11 @@ ChunkEntry* ChunkOfInstance(void* chunks, InstanceContext* instance)
 {
     auto* manager = static_cast<ChunkManager*>(chunks);
     u32 count = manager->count;
-    ChunkData* data = instance->chunk;
+    ChunkData* chunk = instance->chunk;
     for (u32 index = 0; index < count; index++)
     {
-        ChunkDataReference* reference = *DataReferenceOf(manager->entries[index]);
-        if ((reference != nullptr ? reference->data : nullptr) == data)
+        ChunkDataReference* reference = manager->entries[index]->data;
+        if ((reference != nullptr ? reference->chunk : nullptr) == chunk)
         {
             return manager->entries[index];
         }
@@ -1932,12 +1905,11 @@ void WriteChunkStates(ChunkManager* chunks, Stream* stream)
     {
         ChunkEntry* chunk = chunks->entries[index];
         StringWrite(&chunk->path, stream);
-        bool ownStore = chunk->flags != nullptr;
-        stream->WriteBool(ownStore);
-        if (ownStore)
+        bool savedStore = chunk->savedFlags != nullptr;
+        stream->WriteBool(savedStore);
+        if (savedStore)
         {
-            PersistentFlags* flags = chunk->flags;
-            CallVirtual<void>(flags, flags->vtable, FlagsWriteSlot, stream);
+            chunk->savedFlags->Write(stream);
         }
     }
 }
@@ -1954,14 +1926,14 @@ void ResetChunks(ChunkManager* chunks, u32, u32 dropInstances)
     for (u32 index = 0; index < chunks->count; index++)
     {
         ChunkEntry* chunk = chunks->entries[index];
-        if (chunk->otherFlags != nullptr)
+        if (chunk->unsavedFlags != nullptr)
         {
-            chunk->otherFlags->Clear();
+            chunk->unsavedFlags->Clear();
         }
 
-        if (dropInstances != 0 && chunk->flags != nullptr)
+        if (dropInstances != 0 && chunk->savedFlags != nullptr)
         {
-            chunk->flags->Clear();
+            chunk->savedFlags->Clear();
         }
     }
 
@@ -2030,7 +2002,7 @@ void SetPersistentFlag(PersistentFlags* flags, u32 index, u32 value)
     }
 
     u32* words = flags->Words();
-    u32 bit = 1u << (index & 0x1F);
+    u32 bit = 1u << (index & ShiftMask);
     if (value != 0)
     {
         words[index >> 5] |= bit;
@@ -2048,7 +2020,7 @@ void TogglePersistentFlag(PersistentFlags* flags, u32 index)
         return;
     }
 
-    flags->Words()[index >> 5] ^= 1u << (index & 0x1F);
+    flags->Words()[index >> 5] ^= 1u << (index & ShiftMask);
 }
 
 u32 GetPersistentFlag(PersistentFlags* flags, u32 index)
@@ -2058,5 +2030,5 @@ u32 GetPersistentFlag(PersistentFlags* flags, u32 index)
         return 0;
     }
 
-    return (flags->WordsToRead()[index >> 5] & 1u << (index & 0x1F)) != 0 ? 1 : 0;
+    return (flags->WordsToRead()[index >> 5] & 1u << (index & ShiftMask)) != 0 ? 1 : 0;
 }

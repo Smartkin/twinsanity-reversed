@@ -8,6 +8,7 @@
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/menus.h"
+#include "game/oleg.h"
 #include "game/overlay.h"
 #include "game/place.h"
 #include "game/reference.h"
@@ -31,56 +32,34 @@ extern "C"
 
 namespace
 {
-// The vtable's functions
-constexpr u32 EnterHiddenSlot = 1;
-constexpr u32 StartAppearingSlot = 2;
-constexpr u32 EnterShownSlot = 3;
-constexpr u32 StartDisappearingSlot = 4;
-constexpr u32 WhileHiddenSlot = 5;
-constexpr u32 WhileAppearingSlot = 6;
-constexpr u32 WhileShownSlot = 7;
-constexpr u32 WhileDisappearingSlot = 8;
-constexpr u32 HideSlot = 10;
-constexpr u32 Unknown11Slot = 11;
-constexpr u32 UpdateSlot = 12;
-constexpr u32 Unknown13Slot = 13;
-constexpr u32 DrawSlot = 14;
-// A shape's destructor
-constexpr u32 ShapeDestroySlot = 1;
-
-// Texts' alignment: centred both ways
-constexpr u32 CentredText = 0x22;
-constexpr s32 DefaultColourIndex = 0xF;
-
-// The overlay layer a widget starts in
+// The overlay layer a widget starts in (its drop shadow's colour is black at UiShadowAlpha: the constructors hand in the progress
+// they just made 0 for the black)
 constexpr u32 DefaultLayer = 3;
 // A tiled picture's rows and columns
 constexpr u32 TileRows = 2;
 constexpr u32 TileColumns = 4;
+// The credits: how fast they roll (screens a second), a line's height (a fraction of the screen) and the text's size; they start
+// at the screen's bottom and are drawn down to it
+constexpr f32 CreditsSpeed = Rounded(0.1);
+constexpr f32 CreditsLineHeight = Rounded(0.05);
+constexpr f32 CreditsTextSize = 0.75f;
+constexpr f32 ScreenBottom = 1.0f;
 
-// How far into the appearing or disappearing the widget is: the time's fraction of the duration, cut down to whole clock units
-// as if it were a time
-// A sprite widget's sines: of half a turn (the pulse) and of a turn (the bob and the wobble) of a time's fraction of its period,
-// the wobble's radians made an angle (65536ths of a turn), and the drop shadow's least offset
-constexpr f32 HalfTurnRadians = 0x1.921FB6p+1f;
-constexpr f32 TurnRadians = 0x1.921FB6p+2f;
-constexpr f32 RadiansToAngle = 0x1.45F306p+13f;
-constexpr f32 ShadowEpsilon = 0x1.A36E2Ep-15f;
-// The emitter's and the effect's draw placed by the widget's turn and middle, the effect's step and its draw with the size
+// The effect's vtable functions: its step, the widget's matrix changed and its draw placed by the widget's turn and middle
 constexpr u32 EffectStepSlot = 2;
-constexpr u32 EffectDrawSizedSlot = 3;
-constexpr u32 PlacedDrawSlot = 4;
+constexpr u32 EffectChangeSlot = 3;
+constexpr u32 EffectDrawPlacedSlot = 4;
 
 // The state a widget is in once what it was asked for takes effect
 u32 StateToBe(const Widget* widget)
 {
-    u32 flags = widget->flags;
-    if ((flags & Widget::StateAsked) != 0)
+    WidgetFlags flags = widget->flags;
+    if (flags.stateAsked != 0)
     {
-        flags = flags >> Widget::NextStateShift;
+        return flags.nextState;
     }
 
-    return flags & Widget::StateMask;
+    return flags.state;
 }
 
 // A widget's duration made the time it has been appearing or disappearing for, to turn back over
@@ -97,7 +76,9 @@ constexpr f32 RectangleAspect = 0x1.553F7Cp+0f;
 // The colour faded out
 u32 Transparent(u32 colour)
 {
-    return colour & 0x00FFFFFF;
+    Rgba faded = {colour};
+    faded.alpha = 0;
+    return faded.value;
 }
 
 // A rectangle's corners round its middle
@@ -116,9 +97,10 @@ void RectangleCorners(const Vector2* middle, const Vector2* size, Vector2* start
     end->y = end->y + half.y;
 }
 
+// A drop shadow is drawn while its offset isn't about 0
 bool HasShadow(const Widget* widget)
 {
-    return !(__builtin_fabsf(widget->shadowOffset.x) <= ShadowEpsilon && __builtin_fabsf(widget->shadowOffset.y) <= ShadowEpsilon);
+    return !(__builtin_fabsf(widget->shadowOffset.x) <= Epsilon && __builtin_fabsf(widget->shadowOffset.y) <= Epsilon);
 }
 
 f32 Sine(f32 radians)
@@ -141,10 +123,11 @@ void Advance(f32& time, f32 period, f32 seconds)
     }
 }
 
-// The matrix turned by a sprite widget's wobble (the turn first)
+// The matrix turned by a sprite widget's wobble (the turn first): a sine of a turn of its time's fraction of its period, the
+// radians made an angle
 void Wobble(const SpriteWidget* widget, Matrix4x4* matrix)
 {
-    f32 radians = Sine(widget->wobbleTime / widget->wobblePeriod * TurnRadians) * widget->wobbleAmount + widget->wobbleBase;
+    f32 radians = Sine(widget->wobbleTime / widget->wobblePeriod * TwoPi) * widget->wobbleAmount + widget->wobbleBase;
     s32 angle = static_cast<s32>(radians * RadiansToAngle);
     Matrix4x4 turn;
     MatrixRotationZ(&turn, &angle);
@@ -172,12 +155,12 @@ void ConstructAnchored(AnimatedWidget* widget, f32 anchor, const GccVTableEntry*
     widget->scaler = nullptr;
     widget->anchor.y = 0.5f;
     widget->vtable = g_WidgetVTable;
-    ColourSet(&widget->shadowColour, widget->progress, widget->progress, widget->progress, 0.5f);
+    ColourSet(&widget->shadowColour, widget->progress, widget->progress, widget->progress, UiShadowAlpha);
     widget->shadowOffset.x = 0.0f;
     widget->shadowOffset.y = 0.0f;
-    widget->flags = 0;
-    widget->flags = (((widget->flags | Widget::Widescreen) & ~Widget::LayerMask) | DefaultLayer << Widget::LayerShift) &
-                    ~Widget::StateMask;
+    widget->flags.value = 0;
+    widget->flags.widescreen = 1;
+    widget->flags.layer = DefaultLayer;
     widget->vtable = vtable;
     widget->start = 0;
     widget->duration = 0;
@@ -208,6 +191,8 @@ void ConstructSprite(SpriteWidget* widget, Sprite* sprite)
     widget->wobbleAmount = 0.0f;
 }
 
+// How far into the appearing or disappearing the widget is: the time's fraction of the duration, cut down to whole clock units
+// as if it were a time
 f32 Progress(s32 elapsed, s32 duration)
 {
     f32 seconds = static_cast<f32>(duration) * g_SecondsPerClockUnit;
@@ -231,7 +216,7 @@ bool TurnAboutWorld(InstanceContext* instance, s32 angle)
     }
 
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
     Vector4 turn;
     MakeTurn(&turn, &angle);
     MultiplyRotations(&turn, &turn, &place->rotation);
@@ -258,7 +243,7 @@ f32 ShownFraction(const Widget* widget)
 void Widget::Destroy(u32 destroyFlags)
 {
     vtable = g_WidgetVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -273,21 +258,22 @@ void Widget::Hide()
     progress = 0.0f;
 }
 
-void Widget::Unknown11()
+void Widget::BeginFrame()
 {
     if (next != nullptr)
     {
-        CallVirtual<void>(next, next->vtable, Unknown11Slot);
+        CallVirtual<void>(next, next->vtable, BeginFrameSlot);
     }
 }
 
 void Widget::Update(TimeClock* clock)
 {
     s32 now = static_cast<s32>(clock->time);
-    if ((flags & StateAsked) != 0)
+    if (flags.stateAsked != 0)
     {
-        u32 state = (flags & NextStateMask) >> NextStateShift;
-        flags = ((flags & ~StateMask) | state) & ~StateAsked;
+        u32 state = flags.nextState;
+        flags.state = state;
+        flags.stateAsked = 0;
         start = now;
         progress = 0.0f;
         switch (state)
@@ -370,11 +356,11 @@ void Widget::Update(TimeClock* clock)
     }
 }
 
-void Widget::Unknown13()
+void Widget::EndFrame()
 {
     if (next != nullptr)
     {
-        CallVirtual<void>(next, next->vtable, Unknown13Slot);
+        CallVirtual<void>(next, next->vtable, EndFrameSlot);
     }
 }
 
@@ -388,7 +374,7 @@ void Widget::Draw(Renderer* renderer)
 
 void Widget::FitPlace(u32 inPixels, Vector2* place)
 {
-    if ((flags & Widescreen) != 0)
+    if (flags.widescreen != 0)
     {
         FitPlaceToScreen(inPixels, &anchor, place);
     }
@@ -396,7 +382,7 @@ void Widget::FitPlace(u32 inPixels, Vector2* place)
 
 void Widget::FitSize(u32 inPixels, Vector2* size)
 {
-    if ((flags & Widescreen) != 0)
+    if (flags.widescreen != 0)
     {
         FitSizeToScreen(inPixels, size);
     }
@@ -417,11 +403,11 @@ Widget* Widget::Construct(Widget* widget)
     widget->anchor.x = 0.5f;
     widget->anchor.y = 0.5f;
     widget->vtable = g_WidgetVTable;
-    ColourSet(&widget->shadowColour, widget->progress, widget->progress, widget->progress, 0.5f);
+    ColourSet(&widget->shadowColour, widget->progress, widget->progress, widget->progress, UiShadowAlpha);
     widget->shadowOffset.x = 0.0f;
     widget->shadowOffset.y = 0.0f;
-    widget->flags = 0;
-    widget->flags = ((widget->flags & ~LayerMask) | DefaultLayer << LayerShift) & ~StateMask;
+    widget->flags.value = 0;
+    widget->flags.layer = DefaultLayer;
     widget->start = 0;
     widget->duration = 0;
     widget->hold = 0;
@@ -613,7 +599,7 @@ void SpriteWidget::Destroy(u32 destroyFlags)
 void SpriteWidget::Update(TimeClock* clock)
 {
     Widget::Update(clock);
-    if ((flags & Invisible) != 0 || State() < StateAppearing)
+    if (flags.invisible != 0 || State() < StateAppearing)
     {
         return;
     }
@@ -645,9 +631,9 @@ void SpriteWidget::Update(TimeClock* clock)
 
 void SpriteWidget::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
-        u32 layer = (flags & LayerMask) >> LayerShift;
+        u32 layer = flags.layer;
         u32 drawColour = colour;
         Vector2 start;
         Vector2 end;
@@ -659,13 +645,13 @@ void SpriteWidget::Draw(Renderer* renderer)
         size.y = size.y - start.y;
         size.x = size.x / sprite->texture.width;
         size.y = size.y / sprite->texture.height;
-        if ((flags & Widescreen) != 0)
+        if (flags.widescreen != 0)
         {
             FitPlaceToScreen(0, &anchor, &start);
-            if ((flags & Widescreen) != 0)
+            if (flags.widescreen != 0)
             {
                 FitPlaceToScreen(0, &anchor, &end);
-                if ((flags & Widescreen) != 0)
+                if (flags.widescreen != 0)
                 {
                     FitSizeToScreen(0, &size);
                 }
@@ -678,10 +664,11 @@ void SpriteWidget::Draw(Renderer* renderer)
             size.y = size.y * scaler->scale;
         }
 
+        // The pulse a sine of half a turn: it only grows
         f32 pulse = 1.0f;
         if (0.0f < pulsePeriod)
         {
-            pulse = Sine(pulseTime / pulsePeriod * HalfTurnRadians) * pulseAmount + 1.0f;
+            pulse = Sine(pulseTime / pulsePeriod * Pi) * pulseAmount + 1.0f;
         }
 
         size.x = size.x * pulse;
@@ -695,7 +682,7 @@ void SpriteWidget::Draw(Renderer* renderer)
         f32 bob = 0.0f;
         if (0.0f < bobBase || 0.0f < bobAmount)
         {
-            bob = bobBase + Sine(bobTime / bobPeriod * TurnRadians) * bobAmount;
+            bob = bobBase + Sine(bobTime / bobPeriod * TwoPi) * bobAmount;
         }
 
         start.y = start.y + bob;
@@ -712,7 +699,7 @@ void SpriteWidget::Draw(Renderer* renderer)
 
         if (effect != nullptr)
         {
-            CallVirtual<void>(effect, effect->vtable, EffectDrawSizedSlot, &matrix);
+            CallVirtual<void>(effect, effect->vtable, EffectChangeSlot, &matrix);
         }
 
         // The drop shadow: the colour tinted, moved by its offset as far as the widget has appeared, a layer lower
@@ -725,7 +712,7 @@ void SpriteWidget::Draw(Renderer* renderer)
             ColourTint(&tinted, shadowColour);
             offset.x = offset.x * shown;
             offset.y = offset.y * shown;
-            if ((flags & Widescreen) != 0)
+            if (flags.widescreen != 0)
             {
                 FitSizeToScreen(0, &offset);
             }
@@ -764,12 +751,12 @@ void SpriteWidget::Draw(Renderer* renderer)
             turn.m[3][1] = start.y;
             if (emitter != nullptr)
             {
-                CallVirtual<void>(emitter, emitter->vtable, PlacedDrawSlot, &turn);
+                CallVirtual<void>(emitter, emitter->vtable, Emitter2D::DrawPlacedSlot, &turn);
             }
 
             if (effect != nullptr)
             {
-                CallVirtual<void>(effect, effect->vtable, PlacedDrawSlot, &turn);
+                CallVirtual<void>(effect, effect->vtable, EffectDrawPlacedSlot, &turn);
             }
         }
     }
@@ -780,9 +767,6 @@ void SpriteWidget::Draw(Renderer* renderer)
     }
 }
 
-// The current page's vtable functions widget slots 11 and 13 pass on to (with 0)
-constexpr u32 PageUnknown6Slot = 6;
-constexpr u32 PageUnknown8Slot = 8;
 // The input's poll
 constexpr u32 InputPollSlot = 2;
 
@@ -797,7 +781,7 @@ MenuWidget* MenuWidget::Construct(MenuWidget* widget, f32 anchor, MenuInput* inp
     widget->home = nullptr;
     widget->current = nullptr;
     widget->shown = nullptr;
-    widget->menuFlags = 0;
+    widget->menuFlags.value = 0;
     widget->Hide();
     return widget;
 }
@@ -807,31 +791,31 @@ void MenuWidget::Destroy(u32 destroyFlags)
     Widget::Destroy(destroyFlags);
 }
 
-void MenuWidget::Unknown11()
+void MenuWidget::BeginFrame()
 {
     if (current != nullptr)
     {
-        CallVirtual<void>(current, current->vtable, PageUnknown6Slot, 0u);
+        CallVirtual<void>(current, current->vtable, MenuPage::BeginFrameSlot, 0u);
     }
 
-    Widget::Unknown11();
+    Widget::BeginFrame();
 }
 
-void MenuWidget::Unknown13()
+void MenuWidget::EndFrame()
 {
     if (current != nullptr)
     {
-        CallVirtual<void>(current, current->vtable, PageUnknown8Slot, 0u);
+        CallVirtual<void>(current, current->vtable, MenuPage::EndFrameSlot, 0u);
     }
 
-    Widget::Unknown13();
+    Widget::EndFrame();
 }
 
 // The page left: remembered as the start when the widget does (but the resume page)
 static void LeavePage(MenuWidget* widget, MenuPage* page)
 {
     page->Leave();
-    if ((widget->menuFlags & MenuWidget::RemembersPage) != 0 && widget->current != &g_ResumePage)
+    if (widget->menuFlags.remembersPage != 0 && widget->current != &g_ResumePage)
     {
         widget->home = widget->current;
     }
@@ -840,11 +824,11 @@ static void LeavePage(MenuWidget* widget, MenuPage* page)
 void MenuWidget::Update(TimeClock* clock)
 {
     Widget::Update(clock);
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
         if (State() == StateShown)
         {
-            CallVirtual<void>(input, input->vtable, InputPollSlot, pad, menuFlags & Leaves);
+            CallVirtual<void>(input, input->vtable, InputPollSlot, pad, menuFlags.leaves);
         }
         else
         {
@@ -875,7 +859,7 @@ void MenuWidget::Update(TimeClock* clock)
     u32 state = State();
     if (state == StateAppearing || state == StateShown)
     {
-        bool leaving = (menuFlags & Leaves) != 0 && current == &g_ResumePage;
+        bool leaving = menuFlags.leaves != 0 && current == &g_ResumePage;
         if (!leaving)
         {
             shown = current;
@@ -891,7 +875,7 @@ void MenuWidget::Update(TimeClock* clock)
 
 void MenuWidget::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && shown != nullptr)
+    if (flags.invisible == 0 && shown != nullptr)
     {
         u32 drawColour = colour;
         Vector2 at;
@@ -909,11 +893,11 @@ void MenuWidget::Draw(Renderer* renderer)
     }
 }
 
-StringLabel* StringLabel::Construct(StringLabel* label, f32 anchor, Font* font, u32 textFlags)
+StringLabel* StringLabel::Construct(StringLabel* label, f32 anchor, Font* font, u32 alignment)
 {
     AnimatedWidget::Construct(label, anchor);
     label->font = font;
-    label->textFlags = textFlags;
+    label->alignment.value = alignment;
     label->vtable = g_StringLabelVTable;
     label->text.string = nullptr;
     label->text.capacity = 0;
@@ -929,7 +913,7 @@ void StringLabel::Destroy(u32 destroyFlags)
 
 void StringLabel::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
         u32 drawColour = colour;
         Vector2 at;
@@ -940,7 +924,7 @@ void StringLabel::Draw(Renderer* renderer)
         FitSize(0, &size);
         renderer->font = font;
         renderer->textScale.x = size.x;
-        renderer->textFlags = textFlags;
+        renderer->textAlignment = alignment;
         renderer->textScale.y = size.y;
         renderer->colour = drawColour;
         QueueText(renderer, text.string, at.x, at.y);
@@ -957,11 +941,11 @@ extern "C"
     TextLine* TextLineConstruct(TextLine* line, Font* font)
     {
         line->font = font;
-        line->flags = CentredText;
+        line->alignment.value = TextAlignment::Centred;
         line->text.string = nullptr;
         line->text.capacity = 0;
         line->text.length = 0;
-        GetColor(&line->colour, DefaultColourIndex);
+        GetColor(&line->colour, ColourWhite);
         line->place.y = 0.5f;
         line->scale.y = 1.0f;
         line->place.x = 0.5f;
@@ -982,7 +966,7 @@ extern "C"
         renderer->colour = line->colour;
         renderer->textScale.x = line->scale.x;
         renderer->textScale.y = line->scale.y;
-        renderer->textFlags = line->flags;
+        renderer->textAlignment = line->alignment;
         renderer->font = line->font;
         QueueText(renderer, line->text.string, line->place.x, line->place.y);
     }
@@ -1009,11 +993,11 @@ extern "C"
     }
 }
 
-Label* Label::Construct(Label* label, f32 anchor, Font* font, u32 text, u32 textFlags)
+Label* Label::Construct(Label* label, f32 anchor, Font* font, u32 text, u32 alignment)
 {
     AnimatedWidget::Construct(label, anchor);
     label->font = font;
-    label->textFlags = textFlags;
+    label->alignment.value = alignment;
     label->text = text;
     label->vtable = g_LabelVTable;
     return label;
@@ -1026,7 +1010,7 @@ void Label::Destroy(u32 destroyFlags)
 
 void Label::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
         const char* string = GameText(text);
         u32 drawColour = colour;
@@ -1039,7 +1023,7 @@ void Label::Draw(Renderer* renderer)
 
         renderer->font = font;
         renderer->colour = drawColour;
-        renderer->textFlags = textFlags;
+        renderer->textAlignment = alignment;
         renderer->textScale.x = size.x;
         renderer->textScale.y = size.y;
         QueueText(renderer, string, at.x, at.y);
@@ -1066,9 +1050,9 @@ void TiledPicture::Destroy(u32 destroyFlags)
 
 void TiledPicture::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
-        u32 layer = (flags & LayerMask) >> LayerShift;
+        u32 layer = flags.layer;
         Sprite* tile = tiles;
         Vector2 corner;
         Vector2 size;
@@ -1076,7 +1060,7 @@ void TiledPicture::Draw(Renderer* renderer)
         CopyVector2(&size, &scale);
         FitPlace(0, &corner);
         FitSize(0, &size);
-        // The place is the picture's middle: its corner and a tile's size
+        // The place is the picture's middle: its corner, and a tile's size (a quarter of its width, half its height)
         f32 halfHeight = size.y * 0.5f;
         f32 halfWidth = size.x * 0.5f;
         corner.y = corner.y - halfHeight;
@@ -1192,7 +1176,7 @@ WidgetController* WidgetController::Construct(WidgetController* controller)
         widget = nullptr;
     }
 
-    for (u64& mask : controller->masks)
+    for (u64& mask : controller->screens)
     {
         mask = 0;
     }
@@ -1203,7 +1187,7 @@ WidgetController* WidgetController::Construct(WidgetController* controller)
 void WidgetController::Destroy(u32 flags)
 {
     vtable = g_WidgetControllerVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1220,18 +1204,18 @@ void WidgetController::HideAll()
     {
         if (widget != nullptr)
         {
-            CallVirtual<void>(widget, widget->vtable, HideSlot);
+            CallVirtual<void>(widget, widget->vtable, Widget::HideSlot);
         }
     }
 }
 
-void WidgetController::Unknown3()
+void WidgetController::BeginFrame()
 {
     for (Widget* widget : widgets)
     {
         if (widget != nullptr)
         {
-            CallVirtual<void>(widget, widget->vtable, Unknown11Slot);
+            CallVirtual<void>(widget, widget->vtable, Widget::BeginFrameSlot);
         }
     }
 }
@@ -1242,7 +1226,7 @@ void WidgetController::Update(TimeClock* clock)
     {
         if (widget != nullptr)
         {
-            CallVirtual<void>(widget, widget->vtable, UpdateSlot, clock);
+            CallVirtual<void>(widget, widget->vtable, Widget::UpdateSlot, clock);
         }
     }
 }
@@ -1253,18 +1237,18 @@ void WidgetController::Draw(Renderer* renderer)
     {
         if (widget != nullptr)
         {
-            CallVirtual<void>(widget, widget->vtable, DrawSlot, renderer);
+            CallVirtual<void>(widget, widget->vtable, Widget::DrawSlot, renderer);
         }
     }
 }
 
-void WidgetController::Unknown6()
+void WidgetController::EndFrame()
 {
     for (Widget* widget : widgets)
     {
         if (widget != nullptr)
         {
-            CallVirtual<void>(widget, widget->vtable, Unknown13Slot);
+            CallVirtual<void>(widget, widget->vtable, Widget::EndFrameSlot);
         }
     }
 }
@@ -1303,7 +1287,7 @@ s32 WidgetController::IndexOf(u64 bits)
 {
     s32 found = -1;
     u64 bit = 1;
-    for (s32 index = 0; index < 64; index++)
+    for (s32 index = 0; index < static_cast<s32>(Slots); index++)
     {
         if ((bits & bit) != 0)
         {
@@ -1401,7 +1385,7 @@ RingWidget* RingWidget::Construct(RingWidget* widget, f32 anchor, u32 count, u32
     AnimatedWidget::Construct(widget, anchor);
     widget->inside = inside;
     widget->vtable = g_RingWidgetVTable;
-    widget->ringFlags = 0;
+    widget->ringFlags.value = 0;
     widget->segments = static_cast<u8>(segments);
     widget->steps = static_cast<u8>(steps);
     widget->count = static_cast<u8>(count);
@@ -1422,7 +1406,7 @@ void RingWidget::Destroy(u32 destroyFlags)
         Ring* ring = rings[index];
         if (ring != nullptr)
         {
-            CallVirtual<void>(ring, ring->vtable, ShapeDestroySlot, 3u);
+            CallVirtual<void>(ring, ring->vtable, Shape2D::DestroySlot, static_cast<u32>(DestroyAndFree));
         }
     }
 
@@ -1450,7 +1434,7 @@ void RingWidget::PointAt(Vector2* out, f32 t)
 void RingWidget::Update(TimeClock* clock)
 {
     Widget::Update(clock);
-    if ((flags & Invisible) != 0 || State() < StateAppearing)
+    if (flags.invisible != 0 || State() < StateAppearing)
     {
         return;
     }
@@ -1461,7 +1445,7 @@ void RingWidget::Update(TimeClock* clock)
     CopyVector2(&at, &place);
     CopyVector2(&size, &scale);
     FitPlace(0, &at);
-    if ((ringFlags & StandApart) != 0)
+    if (ringFlags.standApart != 0)
     {
         for (u32 index = 0; index < count; index++)
         {
@@ -1499,9 +1483,9 @@ void RingWidget::Update(TimeClock* clock)
 
 void RingWidget::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
-        u32 layer = (flags & LayerMask) >> LayerShift;
+        u32 layer = flags.layer;
         bool shadow = HasShadow(this);
         u32 shadowTint = colour;
         // The shadow's offset in pixels, like the rings' places
@@ -1514,7 +1498,7 @@ void RingWidget::Draw(Renderer* renderer)
             ColourTint(&shadowTint, shadowColour);
             offset.x = offset.x * shown;
             offset.y = offset.y * shown;
-            if ((flags & Widescreen) != 0)
+            if (flags.widescreen != 0)
             {
                 FitSizeToScreen(1, &offset);
             }
@@ -1545,7 +1529,7 @@ void RingWidget::Draw(Renderer* renderer)
             }
 
             u32 own;
-            GetColor(&own, DefaultColourIndex);
+            GetColor(&own, ColourWhite);
             renderer->colour = own;
             QueueShape(renderer, ring, layer);
         }
@@ -1564,9 +1548,9 @@ void ShapeWidget::Destroy(u32 destroyFlags)
 
 void ShapeWidget::Draw(Renderer* renderer)
 {
-    if ((flags & Invisible) == 0 && State() >= StateAppearing)
+    if (flags.invisible == 0 && State() >= StateAppearing)
     {
-        u32 layer = (flags & LayerMask) >> LayerShift;
+        u32 layer = flags.layer;
         u32 drawColour = colour;
         Vector2 at;
         Vector2 size;
@@ -1595,11 +1579,11 @@ CreditsRoll* CreditsRoll::Construct(CreditsRoll* roll, Font* font, const char* p
     roll->font = font;
     MemoryStream::ConstructFromFile(&roll->text, path, true);
     roll->lines = nullptr;
-    roll->speed = Rounded(0.1);
-    roll->lineHeight = Rounded(0.05);
-    roll->textSize = 0.75f;
-    roll->top = 1.0f;
-    roll->bits = 0;
+    roll->speed = CreditsSpeed;
+    roll->lineHeight = CreditsLineHeight;
+    roll->textSize = CreditsTextSize;
+    roll->top = ScreenBottom;
+    roll->bits.value = 0;
     roll->speedScale = 1.0f;
     roll->SplitLines(reinterpret_cast<char*>(roll->text.begin));
     return roll;
@@ -1613,8 +1597,8 @@ void CreditsRoll::Destroy(u32 flags)
     }
 
     lines = nullptr;
-    text.Destroy(2);
-    if ((flags & 1) != 0)
+    text.Destroy(DestroyOnly);
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1622,7 +1606,8 @@ void CreditsRoll::Destroy(u32 flags)
 
 void CreditsRoll::SplitLines(char* string)
 {
-    bits &= ~(CountMask | CountMask << FirstShift);
+    bits.count = 0;
+    bits.first = 0;
     char* at = string;
     while (*at != '\0')
     {
@@ -1643,12 +1628,12 @@ void CreditsRoll::SplitLines(char* string)
             continue;
         }
 
-        bits = (bits & ~CountMask) | (((bits & CountMask) + 1) & CountMask);
+        bits.count++;
     }
 
-    lines = static_cast<const char**>(MemoryAllocate2((bits & CountMask) * sizeof(const char*)));
+    lines = static_cast<const char**>(MemoryAllocate2(bits.count * sizeof(const char*)));
     at = string;
-    for (u32 line = 0; line < (bits & CountMask); line++)
+    for (u32 line = 0; line < bits.count; line++)
     {
         lines[line] = at;
         while (*at++ != '\0')
@@ -1666,13 +1651,13 @@ u32 CreditsRoll::Update(TimeClock* clock)
 {
     f32 seconds = static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit;
     top -= seconds * (speed * speedScale);
-    u32 first = bits >> FirstShift & CountMask;
-    if (first < (bits & CountMask))
+    u32 first = bits.first;
+    if (first < bits.count)
     {
         f32 below = top + lineHeight;
         if (below < 0.0f)
         {
-            bits = (bits & ~(CountMask << FirstShift)) | ((first + 1) & CountMask) << FirstShift;
+            bits.first = first + 1;
             top = below;
         }
 
@@ -1684,26 +1669,26 @@ u32 CreditsRoll::Update(TimeClock* clock)
 
 void CreditsRoll::Draw(Renderer* renderer)
 {
-    renderer->textFlags = 3;
-    u32 line = bits >> FirstShift & CountMask;
+    renderer->textAlignment.value = TextAlignment::TopCentre;
+    u32 line = bits.first;
     f32 y = top;
     renderer->textScale.y = textSize;
     renderer->textScale.x = textSize;
     renderer->font = font;
     u32 colour;
-    GetColor(&colour, 0xF);
+    GetColor(&colour, ColourWhite);
     renderer->colour = colour;
-    if (!(y < 1.0f))
+    if (!(y < ScreenBottom))
     {
         return;
     }
 
-    while (line < (bits & CountMask))
+    while (line < bits.count)
     {
         QueueText(renderer, lines[line], 0.5f, y);
         line++;
         y += lineHeight;
-        if (!(y < 1.0f))
+        if (!(y < ScreenBottom))
         {
             break;
         }
@@ -1731,11 +1716,10 @@ void PadInstanceMover::Destroy(u32 destroyFlags)
 
 void PadInstanceMover::BaseDestroy(u32 destroyFlags)
 {
-    // An instance's release (its slot 4), handed the flags the destructor got as the retail code leaves them
-    constexpr u32 ReleaseSlot = 4;
     vtable = g_PadInstanceMoverBaseVTable;
-    CallVirtual<u32>(instance, instance->vtable, ReleaseSlot, destroyFlags);
-    if ((destroyFlags & 1) != 0)
+    // The instance released, handed the flags the destructor got as the retail code leaves them
+    CallVirtual<u32>(instance, instance->vtable, InstanceContext::ReleaseSlot, destroyFlags);
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1743,22 +1727,21 @@ void PadInstanceMover::BaseDestroy(u32 destroyFlags)
 
 void WidgetsStaticInit()
 {
-    InitWidgetStatics(1, 0xFFFF);
+    InitWidgetStatics(1, DefaultInitPriority);
 }
 
 void InitWidgetStatics(s32 initialise, s32 priority)
 {
-    constexpr s32 AllPriorities = 0xFFFF;
     constexpr u32 ResumePagePlayers = 1;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
-    GetColor(&g_WidgetColour, DefaultColourIndex);
+    GetColor(&g_WidgetColour, ColourWhite);
     g_WidgetPlace = {0.5f, 0.5f};
     g_WidgetScale = {1.0f, 1.0f};
-    GetColor(&g_RectangleColour, DefaultColourIndex);
+    GetColor(&g_RectangleColour, ColourWhite);
     g_RectangleStart = {0.0f, 0.0f};
     g_RectangleEnd = {1.0f, 1.0f};
     MenuPage::Construct(&g_ResumePage, g_ResumePageName, ResumePagePlayers);

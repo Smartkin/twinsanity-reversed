@@ -2,6 +2,7 @@
 
 #include "game/agentparts.h"
 #include "game/agents.h"
+#include "game/attachments.h"
 #include "game/clock.h"
 #include "game/gamecontroller.h"
 #include "game/instances.h"
@@ -18,54 +19,8 @@ EABI_EXPORT(FUN_0014a100, &Gun::Frame);
 
 namespace
 {
-// A spring of an instance's attachments: the instance at its other end and its bits (4-6 its kind)
-struct Spring
-{
-    static constexpr u32 KindMask = 0x70;
-
-    u8 unknown00[0x94];
-    Reference* other;
-    u8 unknown98[0x20];
-    u32 bits;
-};
-
-// The springs tying an instance to others: their count in bits 0-4
-struct SpringSet
-{
-    static constexpr u32 CountMask = 0x1F;
-
-    Spring* springs[16];
-    u32 count;
-};
-
-// An instance's attachments (its kind 6 node): its springs
-struct AttachmentsNode
-{
-    u8 unknown00[0x70];
-    SpringSet* springs;
-};
-
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-// The agents' node kinds the locks take
-constexpr u32 CrateNodeKind = 0xD;
-constexpr u32 CreatureNodeKind = 0xF;
-constexpr u32 GenericObjectNodeKind = 0x10;
-// The characters (their first int property)
-constexpr s32 Cortex = 1;
-constexpr s32 MechaBandicoot = 5;
 // The area (the progress's) where Cortex's gun aims with a lock of its own
 constexpr u32 GunArea = 24;
-// The part's attack kinds of the slide and its move bit of the crawl: the gun doesn't start charging during them
-constexpr u8 AttackSlide = 8;
-constexpr u8 AttackSlideKind12 = 12;
-constexpr u32 MoveCrawling = 0x200;
-// The events run on the character
-constexpr u32 EventDrawn = 0x47;
-constexpr u32 EventPutAway = 0x48;
-constexpr u32 EventShot = 0x49;
-constexpr u32 EventCharged = 0x6A;
-constexpr u32 EventNoAmmo = 0x6B;
 // Its float properties (seconds): how long square is held to charge, the charged shot's delay, and the time after a shot (charged
 // and normal, with and without the ammo)
 constexpr u32 ChargeSecondsProperty = 0x32;
@@ -79,13 +34,8 @@ constexpr u32 ChargedShotAmmo = 5;
 constexpr u32 ShotAmmo = 1;
 constexpr u32 ResetAmmo = 15;
 constexpr u32 AmmoLimit = 100;
-constexpr u32 ResetValue9 = 5;
-constexpr u32 Value9Mask = 0xF;
-constexpr u32 Value9Limit = 10;
-constexpr u32 NextMask = Gun::StateMask << Gun::NextShift;
-constexpr u32 AmmoBits = Gun::AmmoMask << Gun::AmmoShift;
-constexpr u32 Value9Bits = Value9Mask << Gun::Value9Shift;
-constexpr s32 NoState = -1;
+constexpr u32 ResetSecondCount = 5;
+constexpr u32 SecondCountLimit = 10;
 
 ReferencedObject* ObjectOf(const Reference* handle)
 {
@@ -94,29 +44,19 @@ ReferencedObject* ObjectOf(const Reference* handle)
 
 s32 CharacterOf(const CharacterAgent* agent)
 {
-    return agent->properties->GetInt(0);
-}
-
-u32 AmmoOf(const Gun* gun)
-{
-    return gun->bits >> Gun::AmmoShift & Gun::AmmoMask;
-}
-
-void SetAmmo(Gun* gun, u32 ammo)
-{
-    gun->bits = (gun->bits & ~AmmoBits) | (ammo & Gun::AmmoMask) << Gun::AmmoShift;
+    return agent->properties->GetInt(CharacterKindProperty);
 }
 
 // The lock it aims with: the Mecha-Bandicoot's, Cortex's in its area, in a vehicle or on foot
 u32 LockOf(const Gun* gun)
 {
-    if (CharacterOf(gun->agent) == MechaBandicoot)
+    if (CharacterOf(gun->agent) == CharacterMecha)
     {
         return Gun::LockMecha;
     }
 
-    u32 area = G_GameController_00309914->progress.bits >> GameProgress::AreaShift & GameProgress::AreaMask;
-    if (area == GunArea && CharacterOf(gun->agent) == Cortex)
+    u32 area = g_AgentsGameController->progress.play.area;
+    if (area == GunArea && CharacterOf(gun->agent) == CharacterCortex)
     {
         return Gun::LockArea24;
     }
@@ -127,33 +67,27 @@ u32 LockOf(const Gun* gun)
 // The instance of the character played (none without one)
 InstanceContext* PlayedInstance()
 {
-    GameProgress* progress = &G_GameController_00309914->progress;
-    u32 played = progress->bits >> GameProgress::CharacterShift & GameProgress::FieldMask;
-    if (played == GameProgress::NoCharacter)
-    {
-        return nullptr;
-    }
-
-    return static_cast<InstanceContext*>(ObjectOf(progress->characters[played]));
+    GameProgress* progress = &g_AgentsGameController->progress;
+    return progress->Instance(progress->play.character);
 }
 
-// The gun's instance taken from the character's attachments' springs: the instance at the other end of the last one of no kind
+// The gun's instance taken from what hangs on the character: the last instance held
 void TakeGunInstance(Gun* gun)
 {
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&gun->agent->instance->nodes, AttachmentsKind));
-    if (attachments == nullptr || attachments->springs == nullptr)
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&gun->agent->instance->nodes, NodeAttachments));
+    if (attachments == nullptr || attachments->path == nullptr)
     {
         return;
     }
 
-    Spring* const* springs = attachments->springs->springs;
-    u32 count = attachments->springs->count & SpringSet::CountMask;
+    Attachment* const* entries = attachments->path->entries;
+    u32 count = attachments->path->Count();
     for (u32 index = 0; index < count; index++)
     {
-        Spring* spring = springs[index];
-        if (spring != nullptr && (spring->bits & Spring::KindMask) == 0)
+        Attachment* attachment = entries[index];
+        if (attachment != nullptr && attachment->bits.kind == Attachment::KindInstance)
         {
-            AssignReference(&gun->gunInstance, ObjectOf(spring->other));
+            AssignReference(&gun->gunInstance, ObjectOf(attachment->instanceReference));
         }
     }
 }
@@ -164,17 +98,17 @@ bool StateOver(const Gun* gun, const TimeClock* clock, s32 duration)
     return static_cast<s32>(clock->time - gun->stateStart) >= duration;
 }
 
-// Not while sliding or crawling
+// Not while sliding (or the slide's variant kind) or crawling
 bool MayCharge(const CharacterAgent* agent)
 {
     auto* part = static_cast<const CharacterPart*>(agent->part);
-    u8 kind = static_cast<u8>(part->bits);
-    if (kind == AttackSlide || kind == AttackSlideKind12)
+    u8 kind = part->bits.attackKind;
+    if (kind == AttackSlide || kind == AttackSlideVariant)
     {
         return false;
     }
 
-    return (part->moveBits & MoveCrawling) == 0;
+    return part->moveBits.crawling == 0;
 }
 }
 
@@ -191,23 +125,23 @@ Gun* Gun::Construct(Gun* gun, CharacterAgent* agent)
     TargetLock* lock = &gun->locks[LockOnFoot];
     lock->offset = g_GunOnFootLockOffset;
     lock->SetFlatShape(20.0f, 1.25f, 7.5f);
-    lock->AddKind(CrateNodeKind, 3);
-    lock->AddKind(GenericObjectNodeKind, 2);
-    lock->AddKind(CreatureNodeKind, 1);
+    lock->AddKind(NodeCrate, 3);
+    lock->AddKind(NodeGenericObject, 2);
+    lock->AddKind(NodeCreature, 1);
     lock = &gun->locks[LockVehicle];
     lock->offset = g_GunVehicleLockOffset;
     lock->SetShape(50.0f, 1.25f, 24.0f);
-    lock->AddKind(GenericObjectNodeKind, 2);
-    lock->AddKind(CreatureNodeKind, 1);
+    lock->AddKind(NodeGenericObject, 2);
+    lock->AddKind(NodeCreature, 1);
     lock = &gun->locks[LockMecha];
     lock->offset = g_GunMechaLockOffset;
     lock->SetShape(40.0f, 2.5f, 15.0f);
-    lock->AddKind(GenericObjectNodeKind, 2);
-    lock->AddKind(CreatureNodeKind, 1);
+    lock->AddKind(NodeGenericObject, 2);
+    lock->AddKind(NodeCreature, 1);
     lock = &gun->locks[LockArea24];
     lock->offset = g_GunArea24LockOffset;
     lock->SetFlatShape(50.0f, 10.0f, 10.0f);
-    lock->AddKind(GenericObjectNodeKind, 1);
+    lock->AddKind(NodeGenericObject, 1);
     return gun;
 }
 
@@ -216,7 +150,11 @@ void Gun::Reset()
     duration = 0;
     stateStart = 0;
     // Retail clears the word with memset first
-    bits = StatePutAway | NoNext << NextShift | ResetValue9 << Value9Shift | ResetAmmo << AmmoShift;
+    bits.value = 0;
+    bits.state = StatePutAway;
+    bits.next = StateNoNext;
+    bits.secondCount = ResetSecondCount;
+    bits.ammo = ResetAmmo;
     shotTime = 0;
     shotCharge = -1.0f;
     for (TargetLock& lock : locks)
@@ -245,7 +183,7 @@ u32 Gun::Shoot(f32 charge, TimeClock* clock)
     }
 
     duration = static_cast<s32>(properties->GetFloat(property) * g_ClockUnitsPerSecond);
-    RunAgentEvent(agent, loaded != 0 ? EventShot : EventNoAmmo, 0, 0, 1);
+    RunAgentEvent(agent, loaded != 0 ? EventGunShot : EventGunNoAmmo, 0, 0, 1);
     return StateShot;
 }
 
@@ -253,15 +191,15 @@ void Gun::Frame(f32 square, f32 allowed, TimeClock* clock)
 {
     bool squareHeld = 0.0f < square;
     bool mayAim = 0.0f < allowed;
-    s32 next = NoState;
+    s32 next = NoNextState;
     TargetLock* lock = &locks[LockOf(this)];
     s32 now = clock->time;
-    if ((bits & StateMask) != StatePutAway && ObjectOf(gunInstance) == nullptr)
+    if (bits.state != StatePutAway && ObjectOf(gunInstance) == nullptr)
     {
         TakeGunInstance(this);
     }
 
-    if (ObjectOf(gunInstance) != nullptr && (bits & StateMask) != StatePutAway && mayAim)
+    if (ObjectOf(gunInstance) != nullptr && bits.state != StatePutAway && mayAim)
     {
         lock->Search(clock, agent->instance, static_cast<InstanceContext*>(ObjectOf(gunInstance)));
     }
@@ -270,19 +208,19 @@ void Gun::Frame(f32 square, f32 allowed, TimeClock* clock)
         lock->Drop();
     }
 
-    if ((bits & NextMask) != NoNext << NextShift)
+    if (bits.next != StateNoNext)
     {
-        bits = (bits & ~StateMask) | (bits >> NextShift & StateMask);
-        bits = (bits & ~NextMask) | NoNext << NextShift;
+        bits.state = bits.next;
+        bits.next = StateNoNext;
         stateStart = now;
     }
 
-    switch (bits & StateMask)
+    switch (bits.state)
     {
     case StatePutAway:
         if (PlayedInstance() == agent->instance)
         {
-            RunAgentEvent(agent, EventDrawn, 0, 0, 0);
+            RunAgentEvent(agent, EventGunDrawn, 0, 0, 0);
             next = StateDrawing;
         }
 
@@ -301,7 +239,7 @@ void Gun::Frame(f32 square, f32 allowed, TimeClock* clock)
     case StateOut:
         if (PlayedInstance() != agent->instance)
         {
-            RunAgentEvent(agent, EventPutAway, 0, 0, 0);
+            RunAgentEvent(agent, EventGunPutAway, 0, 0, 0);
             next = StatePuttingAway;
         }
         else if (MayCharge(agent) && squareHeld)
@@ -331,7 +269,7 @@ void Gun::Frame(f32 square, f32 allowed, TimeClock* clock)
             f32 seconds = properties->GetFloat(ChargeSecondsProperty);
             if (StateOver(this, clock, static_cast<s32>(seconds * g_ClockUnitsPerSecond)))
             {
-                RunAgentEvent(agent, EventCharged, 0, 0, 0);
+                RunAgentEvent(agent, EventGunCharged, 0, 0, 0);
                 f32 delay = properties->GetFloat(ChargedDelayProperty);
                 next = StateCharged;
                 duration = static_cast<s32>(delay * g_ClockUnitsPerSecond);
@@ -355,10 +293,10 @@ void Gun::Frame(f32 square, f32 allowed, TimeClock* clock)
     }
     }
 
-    bits = (bits & ~SquareHeld) | (squareHeld ? SquareHeld : 0);
-    if (next != NoState)
+    bits.squareHeld = squareHeld;
+    if (next != NoNextState)
     {
-        bits = (bits & ~NextMask) | (next & StateMask) << NextShift;
+        bits.next = next;
     }
 }
 
@@ -375,8 +313,8 @@ u32 Gun::AimPoint(Vector4* point)
     }
 
     // Else the middle of AgentRef1's box, an asleep one forgotten first
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, ObjectNodeKind));
-    if (node->agentRef1 != nullptr && (node->agentRef1->flags & ReferencedObject::FlagAsleep) != 0)
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&agent->instance->nodes, NodeObject));
+    if (node->agentRef1 != nullptr && node->agentRef1->flags.asleep)
     {
         node->agentRef1 = nullptr;
     }
@@ -397,40 +335,40 @@ u32 Gun::AimPoint(Vector4* point)
 
 u32 Gun::TakeAmmo(u32 count)
 {
-    u32 ammo = AmmoOf(this);
+    u32 ammo = bits.ammo;
     if (ammo < count)
     {
         // Retail bug: without enough ammo for the shot, the ammo left is lost
-        SetAmmo(this, 0);
+        bits.ammo = 0;
         return 0;
     }
 
-    SetAmmo(this, ammo - count);
+    bits.ammo = ammo - count;
     return 1;
 }
 
-u32 Gun::AddValue9(s32 amount)
+u32 Gun::AddSecondCount(s32 amount)
 {
-    u32 value = (bits >> Value9Shift & Value9Mask) + amount;
-    if (value < Value9Limit)
+    u32 count = bits.secondCount + amount;
+    if (count < SecondCountLimit)
     {
-        bits = (bits & ~Value9Bits) | (value & Value9Mask) << Value9Shift;
+        bits.secondCount = count;
         return 1;
     }
 
-    bits = (bits & ~Value9Bits) | (Value9Limit - 1) << Value9Shift;
+    bits.secondCount = SecondCountLimit - 1;
     return 0;
 }
 
 u32 Gun::AddAmmo(s32 amount)
 {
-    u32 ammo = AmmoOf(this) + amount;
+    u32 ammo = bits.ammo + amount;
     if (ammo < AmmoLimit)
     {
-        SetAmmo(this, ammo);
+        bits.ammo = ammo;
         return 1;
     }
 
-    SetAmmo(this, AmmoLimit - 1);
+    bits.ammo = AmmoLimit - 1;
     return 0;
 }

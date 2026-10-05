@@ -3,23 +3,21 @@
 #include "game/animation.h"
 #include "game/instances.h"
 #include "game/memory.h"
+#include "game/springbody.h"
 
 EABI_EXPORT(FUN_00162098, ConstructGrapleRope);
 
 namespace
 {
-// The rope: 10 solver passes a step, one chain (kind 1) of a spring between two points
+// The rope: 10 solver passes a step, a chain of one segment (a spring between two points)
 constexpr u32 RopePasses = 10;
-constexpr u32 RopeChainSize = 0x20;
-constexpr u32 RopeChainKind = 1;
+constexpr u32 RopeSegments = 1;
 constexpr f32 RopeStiffness = 10000.0f;
 constexpr f32 RopeDamping = 100.0f;
 // The graple's joints: 0 at the anchor, turned toward 1 at the hook
 constexpr u32 AnchorJoint = 0;
 constexpr u32 HookJoint = 1;
 constexpr u32 RopeJoints = 2;
-// The joint PoseJointFromPoints turns another toward: none moves it to its own point
-constexpr u32 NoJoint = 0xFF;
 // The ragdoll's joints, in the order its callbacks go on
 constexpr u32 RagdollJoints[] = {0, 1, 5, 23, 15, 14, 13, 22, 19, 18, 17, 8, 7, 6, 11, 10, 9};
 }
@@ -30,8 +28,8 @@ GrapleRope* ConstructGrapleRope(f32 mass, void* memory, InstanceContext* instanc
     SpringSkeleton::Construct(rope, RopePasses, instance);
     rope->vtable = g_GrapleRopeVTable;
     SpringBody* body = &rope->body;
-    rope->chain = ConstructSpringChain(MemoryAllocate(RopeChainSize), RopeChainKind, body);
-    AddSpring(body, rope->chain);
+    rope->chain = ConstructSpringChain(MemoryAllocate(sizeof(SpringChain)), RopeSegments, body);
+    AddSpringChain(body, rope->chain);
     SetPointsDrag(0.0f, body);
     SetChainSprings(RopeStiffness, RopeDamping, rope->chain);
     rope->chain->last->mass = mass;
@@ -67,7 +65,7 @@ u32 GrapleRope::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
     u32 toward;
     if (joint == HookJoint)
     {
-        toward = NoJoint;
+        toward = GameOGI::NoJoint;
     }
     else if (joint == AnchorJoint)
     {
@@ -132,7 +130,7 @@ u32 Ragdoll::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
     case 11:
     case 22:
     case 23:
-        toward = NoJoint;
+        toward = GameOGI::NoJoint;
         break;
     case 1:
         toward = 0;

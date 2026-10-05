@@ -14,12 +14,10 @@ extern "C"
 
 namespace
 {
-constexpr u8 PropertyRecord = 10;
-
 void DestroyReader(ScriptTokenReader* reader, u32 destroyFlags, const GccVTableEntry* base)
 {
     reader->vtable = base;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(reader);
     }
@@ -97,29 +95,25 @@ void ScriptTokenReader::OtherNext()
 
 void ParseTaggedValueRecord(const ScriptToken* token, TaggedValue* value)
 {
-    constexpr u32 IntType = 0;
-    constexpr u32 AngleType = 1;
-    constexpr u32 FloatType = 2;
-    constexpr u32 Degrees = 1;
-    u32 type = (static_cast<u32>(value->raw) & TaggedValue::TypeMask) >> TaggedValue::TypeShift;
-    if (token->type == PropertyRecord)
+    u32 type = value->type;
+    if (token->type == TokenProperty)
     {
         value->SetProperty(type, token->value);
         return;
     }
 
-    if (type == AngleType)
+    if (type == TaggedValue::TypeAngle)
     {
         s32 angle[4];
-        AngleFrom(angle, token->Float(), Degrees);
+        AngleFrom(angle, token->Float(), AngleDegrees);
         s32 turned = angle[0];
         value->SetAngle(&turned);
     }
-    else if (type == IntType)
+    else if (type == TaggedValue::TypeInt)
     {
         value->SetInt(static_cast<s32>(token->value));
     }
-    else if (type == FloatType)
+    else if (type == TaggedValue::TypeFloat)
     {
         value->SetFloat(token->Float());
     }

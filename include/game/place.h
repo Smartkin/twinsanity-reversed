@@ -33,46 +33,83 @@ extern "C"
     void RotateAndTranslate(ObjectPlace* place) RETAIL(RotateAndTranslate);
 }
 
+// Which side of a place is newer: the position and the rotation changed, or the matrix moved (the position is its translation's)
+// and turned (the rotation is worked out from it again)
+union PlaceBits
+{
+    u64 value;
+    struct
+    {
+        u64 moved : 1;
+        u64 turned : 1;
+        u64 matrixMoved : 1;
+        u64 matrixTurned : 1;
+        u64 unused4 : 60;
+    };
+
+    // The bits' masks, for what's tested and changed on one read of the word (as retail does: the changes of several at once)
+    enum Mask : u64
+    {
+        Moved = 0x1,
+        Turned = 0x2,
+        MatrixMoved = 0x4,
+        MatrixTurned = 0x8,
+    };
+};
+CHECK_SIZE(PlaceBits, 8);
+
 // An object's place (an instance's, 0x70 bytes): its matrix, its position and its rotation (a quaternion). Either side can change:
 // the bits say which one is newer, the position and the rotation being worked out from the matrix when asked once it moved or
 // turned, the matrix made again from them (RotateAndTranslate) once they changed
 struct alignas(16) ObjectPlace
 {
-    enum Bits : u64
-    {
-        // The position and the rotation changed; the matrix moved (the position is its translation's) and turned (the rotation
-        // is worked out from it again)
-        BitMoved = 0x1,
-        BitTurned = 0x2,
-        BitMatrixMoved = 0x4,
-        BitMatrixTurned = 0x8,
-    };
-
     Matrix4x4 matrix;
     Vector4 position;
     Vector4 rotation;
-    u64 bits;
+    PlaceBits bits;
+
+    // The position newer than the matrix (which RotateAndTranslate makes again from it), the rotation newer, and the position
+    // or the rotation taken from the matrix (the two in step)
+    void MarkMoved()
+    {
+        bits.value = (bits.value | PlaceBits::Moved) & ~u64{PlaceBits::MatrixMoved};
+    }
+
+    void MarkTurned()
+    {
+        bits.value = (bits.value | PlaceBits::Turned) & ~u64{PlaceBits::MatrixTurned};
+    }
+
+    void MarkPositionSynced()
+    {
+        bits.value &= ~u64{PlaceBits::Moved} & ~u64{PlaceBits::MatrixMoved};
+    }
+
+    void MarkRotationSynced()
+    {
+        bits.value &= ~u64{PlaceBits::Turned} & ~u64{PlaceBits::MatrixTurned};
+    }
 
     // The position taken from the matrix once it moved
     void SyncPosition()
     {
-        if ((bits & BitMatrixMoved) != 0)
+        if ((bits.value & PlaceBits::MatrixMoved) != 0)
         {
             position.x = matrix.m[3][0];
             position.w = matrix.m[3][3];
             position.y = matrix.m[3][1];
             position.z = matrix.m[3][2];
-            bits &= ~u64{BitMoved} & ~u64{BitMatrixMoved};
+            MarkPositionSynced();
         }
     }
 
     // The rotation worked out from the matrix once it turned
     void SyncRotation()
     {
-        if ((bits & BitMatrixTurned) != 0)
+        if ((bits.value & PlaceBits::MatrixTurned) != 0)
         {
             GetRotationVec(&rotation, &matrix);
-            bits &= ~u64{BitTurned} & ~u64{BitMatrixTurned};
+            MarkRotationSynced();
         }
     }
 
@@ -84,7 +121,7 @@ struct alignas(16) ObjectPlace
             return false;
         }
 
-        bits = (bits | BitMoved) & ~u64{BitMatrixMoved};
+        MarkMoved();
         position = *to;
         return true;
     }
@@ -97,7 +134,7 @@ struct alignas(16) ObjectPlace
             return false;
         }
 
-        bits = (bits | BitTurned) & ~u64{BitMatrixTurned};
+        MarkTurned();
         rotation.x = to->x;
         rotation.y = to->y;
         rotation.z = to->z;
@@ -108,14 +145,13 @@ struct alignas(16) ObjectPlace
     // Moved by a vector (x, y and z) unless it's within 5e-05 of none on each axis: whether it moved
     bool MoveBy(const Vector4* move)
     {
-        constexpr f32 Epsilon = 0x1.a36e2ep-15f;
         if (__builtin_fabsf(move->x) <= Epsilon && __builtin_fabsf(move->y) <= Epsilon && __builtin_fabsf(move->z) <= Epsilon)
         {
             return false;
         }
 
         SyncPosition();
-        bits = (bits | BitMoved) & ~u64{BitMatrixMoved};
+        MarkMoved();
         position.x = position.x + move->x;
         position.y = position.y + move->y;
         position.z = position.z + move->z;

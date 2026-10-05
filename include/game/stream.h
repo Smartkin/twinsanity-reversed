@@ -10,175 +10,213 @@
 class Stream
 {
 public:
+    // The vtable's slots (slot 0 is empty)
+    enum Slot : u32
+    {
+        SlotDestroy = 1,
+        SlotRead,
+        SlotPutBack,
+        SlotWrite,
+        SlotFlush,
+        SlotError,
+        SlotSize,
+        SlotTell,
+        SlotAtEnd,
+        SlotRewind,
+        SlotSeekToEnd,
+        SlotSkip,
+        SlotSeek,
+        SlotReadS8,
+        SlotReadS16,
+        SlotReadS64,
+        SlotReadS32,
+        SlotReadU8,
+        SlotReadU16,
+        SlotReadU64,
+        SlotReadU32,
+        SlotReadBool,
+        SlotReadF32,
+        SlotWriteS8,
+        SlotWriteS16,
+        SlotWriteS64,
+        SlotWriteS32,
+        SlotWriteU8,
+        SlotWriteU16,
+        SlotWriteU64,
+        SlotWriteU32,
+        SlotWriteBool,
+        SlotWriteF32,
+    };
+
     const GccVTableEntry* vtable;
 
     void Destroy(u32 flags)
     {
-        CallVirtual<void>(this, vtable, 1, flags);
+        CallVirtual<void>(this, vtable, SlotDestroy, flags);
     }
 
-    // Returns how much it read. The last argument is 1 at every call
-    s32 Read(void* buffer, u32 size, u32 unknown)
+    // Returns how much it read. The last argument (1 at every call) is never read
+    s32 Read(void* buffer, u32 size, u32 unused)
     {
-        return CallVirtual<s32>(this, vtable, 2, buffer, size, unknown);
+        return CallVirtual<s32>(this, vtable, SlotRead, buffer, size, unused);
     }
 
     // Goes back over what was just read
     void PutBack(const void* buffer, u32 size)
     {
-        CallVirtual<void>(this, vtable, 3, buffer, size);
+        CallVirtual<void>(this, vtable, SlotPutBack, buffer, size);
     }
 
     s32 Write(const void* buffer, u32 size)
     {
-        return CallVirtual<s32>(this, vtable, 4, buffer, size);
+        return CallVirtual<s32>(this, vtable, SlotWrite, buffer, size);
     }
 
     void Flush()
     {
-        CallVirtual<void>(this, vtable, 5);
+        CallVirtual<void>(this, vtable, SlotFlush);
     }
 
     // 0 while it's usable
     s32 Error()
     {
-        return CallVirtual<s32>(this, vtable, 6);
+        return CallVirtual<s32>(this, vtable, SlotError);
     }
 
     u32 Size()
     {
-        return CallVirtual<u32>(this, vtable, 7);
+        return CallVirtual<u32>(this, vtable, SlotSize);
     }
 
     u32 Tell()
     {
-        return CallVirtual<u32>(this, vtable, 8);
+        return CallVirtual<u32>(this, vtable, SlotTell);
     }
 
     bool AtEnd()
     {
-        return CallVirtual<bool>(this, vtable, 9);
+        return CallVirtual<bool>(this, vtable, SlotAtEnd);
     }
 
     void Rewind()
     {
-        CallVirtual<void>(this, vtable, 10);
+        CallVirtual<void>(this, vtable, SlotRewind);
     }
 
     void SeekToEnd()
     {
-        CallVirtual<void>(this, vtable, 11);
+        CallVirtual<void>(this, vtable, SlotSeekToEnd);
     }
 
     void Skip(s32 offset)
     {
-        CallVirtual<void>(this, vtable, 12, offset);
+        CallVirtual<void>(this, vtable, SlotSkip, offset);
     }
 
     void Seek(u32 position)
     {
-        CallVirtual<void>(this, vtable, 13, position);
+        CallVirtual<void>(this, vtable, SlotSeek, position);
     }
 
     // The values, in the vtable's order (GCC 2.9x's long is 64 bits)
     void ReadS8(s8* value)
     {
-        CallVirtual<void>(this, vtable, 14, value);
+        CallVirtual<void>(this, vtable, SlotReadS8, value);
     }
 
     void ReadS16(s16* value)
     {
-        CallVirtual<void>(this, vtable, 15, value);
+        CallVirtual<void>(this, vtable, SlotReadS16, value);
     }
 
     void ReadS64(s64* value)
     {
-        CallVirtual<void>(this, vtable, 16, value);
+        CallVirtual<void>(this, vtable, SlotReadS64, value);
     }
 
     void ReadS32(s32* value)
     {
-        CallVirtual<void>(this, vtable, 17, value);
+        CallVirtual<void>(this, vtable, SlotReadS32, value);
     }
 
     void ReadU8(u8* value)
     {
-        CallVirtual<void>(this, vtable, 18, value);
+        CallVirtual<void>(this, vtable, SlotReadU8, value);
     }
 
     void ReadU16(u16* value)
     {
-        CallVirtual<void>(this, vtable, 19, value);
+        CallVirtual<void>(this, vtable, SlotReadU16, value);
     }
 
     void ReadU64(u64* value)
     {
-        CallVirtual<void>(this, vtable, 20, value);
+        CallVirtual<void>(this, vtable, SlotReadU64, value);
     }
 
     void ReadU32(u32* value)
     {
-        CallVirtual<void>(this, vtable, 21, value);
+        CallVirtual<void>(this, vtable, SlotReadU32, value);
     }
 
     void ReadBool(bool* value)
     {
-        CallVirtual<void>(this, vtable, 22, value);
+        CallVirtual<void>(this, vtable, SlotReadBool, value);
     }
 
     void ReadF32(f32* value)
     {
-        CallVirtual<void>(this, vtable, 23, value);
+        CallVirtual<void>(this, vtable, SlotReadF32, value);
     }
 
     void WriteS8(s8 value)
     {
-        CallVirtual<void>(this, vtable, 24, value);
+        CallVirtual<void>(this, vtable, SlotWriteS8, value);
     }
 
     void WriteS16(s16 value)
     {
-        CallVirtual<void>(this, vtable, 25, value);
+        CallVirtual<void>(this, vtable, SlotWriteS16, value);
     }
 
     void WriteS64(s64 value)
     {
-        CallVirtual<void>(this, vtable, 26, value);
+        CallVirtual<void>(this, vtable, SlotWriteS64, value);
     }
 
     void WriteS32(s32 value)
     {
-        CallVirtual<void>(this, vtable, 27, value);
+        CallVirtual<void>(this, vtable, SlotWriteS32, value);
     }
 
     void WriteU8(u8 value)
     {
-        CallVirtual<void>(this, vtable, 28, value);
+        CallVirtual<void>(this, vtable, SlotWriteU8, value);
     }
 
     void WriteU16(u16 value)
     {
-        CallVirtual<void>(this, vtable, 29, value);
+        CallVirtual<void>(this, vtable, SlotWriteU16, value);
     }
 
     void WriteU64(u64 value)
     {
-        CallVirtual<void>(this, vtable, 30, value);
+        CallVirtual<void>(this, vtable, SlotWriteU64, value);
     }
 
     void WriteU32(u32 value)
     {
-        CallVirtual<void>(this, vtable, 31, value);
+        CallVirtual<void>(this, vtable, SlotWriteU32, value);
     }
 
     void WriteBool(bool value)
     {
-        CallVirtual<void>(this, vtable, 32, value);
+        CallVirtual<void>(this, vtable, SlotWriteBool, value);
     }
 
     void WriteF32(f32 value)
     {
-        CallVirtual<void>(this, vtable, 33, value);
+        CallVirtual<void>(this, vtable, SlotWriteF32, value);
     }
 
     // The abstract stream's destructor, its vtable's only function
@@ -201,13 +239,17 @@ public:
         ModeReadWrite = 3,
     };
 
-    // Negative while it's closed
+    // A closed file's descriptor (any negative one is)
+    static constexpr s32 Closed = -1;
+    // ReadChecked's result when it read nothing
+    static constexpr s32 ReadNothing = -1;
+
     s32 descriptor;
 
     static File* Construct(File* file) RETAIL(FUN_002b6ab8);
 
     void Destroy(u32 flags) RETAIL(FUN_002b6ae0);
-    s32 Read(void* buffer, u32 size, u32 unknown) RETAIL(FUN_002b6b78);
+    s32 Read(void* buffer, u32 size, u32 unused) RETAIL(FUN_002b6b78);
     void PutBack(const void* buffer, u32 size) RETAIL(FUN_002b6c38);
     s32 Write(const void* buffer, u32 size) RETAIL(FUN_002b6c10);
     void Flush() RETAIL(FUN_002b6c40);
@@ -243,24 +285,35 @@ public:
     // Its own virtual functions (slots 34 to 36). Open takes a path on the disc and returns the descriptor
     s32 Open(const char* path, Mode mode) RETAIL(FUN_002b4ab0);
     void Close() RETAIL(FUN_002b6b38);
-    // Read, but returns -1 when it read nothing of what it was asked for and endIsError
+    // Read, but returns ReadNothing when it read nothing of what it was asked for and endIsError
     s32 ReadChecked(void* buffer, u32 size, bool endIsError) RETAIL(FUN_002b6ba0);
 };
 CHECK_SIZE(File, 8);
+
+union MemoryStreamFlags
+{
+    u16 value;
+    struct
+    {
+        // Its memory is freed when it's destroyed
+        u16 ownsMemory : 1;
+        // Written past its end, it grows
+        u16 grows : 1;
+        u16 unused2 : 14;
+    };
+};
+CHECK_SIZE(MemoryStreamFlags, 2);
 
 // A stream over memory, which it may own (freeing it when it's destroyed) and grow when written past its end
 class MemoryStream : public Stream
 {
 public:
-    enum Flags : u16
-    {
-        FlagOwnsMemory = 0x1,
-        FlagGrows = 0x2,
-    };
+    // The memory of the streams over files' data is aligned to it
+    static constexpr u16 FileAlignment = 0x40;
 
     // What its memory is allocated at
     u16 alignment;
-    u16 flags;
+    MemoryStreamFlags flags;
     u8* begin;
     u8* position;
     u32 size;
@@ -275,7 +328,7 @@ public:
     bool LoadFile(const char* path, bool terminate) RETAIL(FUN_002b4538);
 
     void Destroy(u32 flags) RETAIL(DeleteBinaryReader);
-    s32 Read(void* buffer, u32 size, u32 unknown) RETAIL(ReadBytesIntoMemory);
+    s32 Read(void* buffer, u32 size, u32 unused) RETAIL(ReadBytesIntoMemory);
     void PutBack(const void* buffer, u32 size) RETAIL(MoveCurPositionBackwards);
     s32 Write(const void* buffer, u32 size) RETAIL(WriteBlock);
     void Flush() RETAIL(SyncMemory);

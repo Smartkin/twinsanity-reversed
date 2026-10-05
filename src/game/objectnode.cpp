@@ -12,10 +12,12 @@
 #include "game/hull.h"
 #include "game/layout.h"
 #include "game/memory.h"
+#include "game/nodecontrollers.h"
 #include "game/objects.h"
 #include "game/player.h"
 #include "game/resources.h"
 #include "game/rigidbody.h"
+#include "game/sound.h"
 #include "game/string.h"
 #include "game/place.h"
 #include "game/reference.h"
@@ -23,45 +25,22 @@
 #include <cstddef>
 #include <cstdint>
 
-extern "C"
-{
-    // A playing sound's slot let go
-    void StopSoundChannel(u32 channel) RETAIL(FUN_001e5858);
-}
-
 namespace
 {
-// The node's flags: it's updated every frame (bits 5 and 6), it was updated this frame (3), its frame left it unsettled (4), it
-// moved (24), and it's put back where it was before its frame unless it moved (23)
-constexpr u32 FlagAlwaysUpdated = 0x60;
-constexpr u32 FlagUpdated = 0x8;
-constexpr u32 FlagPinned = 0x800000;
-constexpr u32 FlagUpdating = 0x20;
-// The node's vtable function told when a runner's behaviour finished
-constexpr u32 RunnerFinishedSlot = 22;
-// The object 0x114 bytes into the node steps with the clock through its vtable (8 bytes in) function 3
-constexpr u32 PartStepSlot = 3;
 
-struct SteppedPart
-{
-    u8 unknown00[8];
-    const GccVTableEntry* vtable;
-};
-
-// Whether the trajectory controller asks for its frame while the node isn't updated (bit 7 of the byte 0x6D bytes into what it
-// follows, 0xE0 bytes in)
+// Whether the trajectory controller asks for its frame while the node isn't updated
 bool TrajectoryKeepsStepping(const Trajectory* trajectory)
 {
-    return (trajectory->followed->flags & MotionBlock::KeepsStepping) != 0;
+    return trajectory->followed->flags.keepsStepping;
 }
 
-// The instance's seen stamp past the node's own (0xFFFF none), past the grace: 0 within it
+// The instance's seen stamp past the node's own (none: 0), past the grace: 0 within it
 u32 StampsUnseen(const ObjectNode* node)
 {
     const InstanceContext* owner = node->owner;
-    u32 seen = owner->seen[0] | owner->seen[1] << 8 | owner->seen[2] << 16;
-    u32 since = node->unknown06;
-    if (since == 0xFFFF || !(since < seen))
+    u32 seen = owner->seen;
+    u32 since = node->nearDistance;
+    if (since == GameNode::AnyNearDistance || !(since < seen))
     {
         return 0;
     }
@@ -75,7 +54,7 @@ u32 StampsUnseen(const ObjectNode* node)
 u32 ObjectNode::Update(TimeClock* clock)
 {
     InstanceContext* instance = owner;
-    u32 running = clock->flags & TimeClock::FlagRunning;
+    u32 running = clock->flags.running;
     if (instance->chunk == nullptr)
     {
         return 0;
@@ -84,18 +63,19 @@ u32 ObjectNode::Update(TimeClock* clock)
     if (running != 0)
     {
         u32 unseen = StampsUnseen(this);
-        bool always = (flags & FlagAlwaysUpdated) != 0;
+        bool always = flags.handledEvent || flags.riding;
         if (always || unseen < g_ObjectUpdateRate.cutoff)
         {
             bool now = always || unseen == 0;
             if (!now)
             {
-                // Every 2^n frames, staggered by the node's address
-                u32 mask = 0xFFFF;
-                if (unseen != 0xFFFFFFFF)
+                // Every 2^n frames, n growing with the stamps it went unseen (every 65536 frames without a count), staggered by
+                // the node's address
+                u32 mask = UpdateRate::RarestMask;
+                if (unseen != UpdateRate::NoCount)
                 {
                     s32 power = static_cast<s32>(g_ObjectUpdateRate.slope * static_cast<f32>(unseen)) + 1;
-                    mask = (1u << (power & 0x1F)) - 1;
+                    mask = (1u << (power & ShiftMask)) - 1;
                 }
 
                 now = ((g_RenderedFrames + (reinterpret_cast<u32>(this) >> 8)) & mask) == 0;
@@ -103,18 +83,19 @@ u32 ObjectNode::Update(TimeClock* clock)
 
             if (!now)
             {
-                GameNode::flags |= FlagKeepTime;
+                GameNode::flags.keepsTime = 1;
             }
             else
             {
                 ObjectPlace* place = owner->place;
                 place->SyncPosition();
-                unknownB0 = place->position;
-                flags = (flags | FlagUpdated) & ~FlagMoves & ~FlagUnsettled;
-                auto* part = static_cast<SteppedPart*>(reinterpret_cast<void*>(unknown114));
-                if (part != nullptr)
+                frameStart = place->position;
+                flags.updated = 1;
+                flags.moves = 0;
+                flags.unused4 = 0;
+                if (controller != nullptr)
                 {
-                    CallVirtual<void>(part, part->vtable, PartStepSlot, clock);
+                    CallVirtual<void>(controller, controller->vtable, NodeController::FrameSlot, clock);
                 }
 
                 if (particleTrails != nullptr)
@@ -171,33 +152,33 @@ u32 ObjectNode::Update(TimeClock* clock)
                 }
 
                 StepMovement(this, clock);
-                if ((flags & FlagPinned) != 0)
+                if (flags.pinned)
                 {
-                    // The frame's move kept (unknownC0), and the instance put back unless it moves by itself
+                    // The frame's move kept, and the instance put back unless it moves by itself
                     place = owner->place;
                     place->SyncPosition();
-                    unknownC0 = place->position;
-                    unknownC0.x = unknownC0.x - unknownB0.x;
-                    unknownC0.y = unknownC0.y - unknownB0.y;
-                    unknownC0.z = unknownC0.z - unknownB0.z;
-                    if ((flags & FlagMoves) == 0)
+                    frameMove = place->position;
+                    frameMove.x = frameMove.x - frameStart.x;
+                    frameMove.y = frameMove.y - frameStart.y;
+                    frameMove.z = frameMove.z - frameStart.z;
+                    if (!flags.moves)
                     {
                         InstanceContext* pinned = owner;
                         place = pinned->place;
                         place->SyncPosition();
-                        if (place->MoveTo(&unknownB0))
+                        if (place->MoveTo(&frameStart))
                         {
                             QueueObject(pinned);
                         }
                     }
                 }
 
-                flags &= ~FlagUpdating;
+                flags.handledEvent = 0;
                 return GameNode::Update(clock);
             }
         }
 
-        flags &= ~FlagUpdated;
+        flags.updated = 0;
         if (trajectory != nullptr && TrajectoryKeepsStepping(trajectory))
         {
             StepTrajectory(trajectory, clock, this);
@@ -209,58 +190,52 @@ u32 ObjectNode::Update(TimeClock* clock)
         }
     }
 
-    flags &= ~FlagUpdating;
+    flags.handledEvent = 0;
     return GameNode::Update(clock);
 }
 
 void StepMovement(ObjectNode* node, TimeClock* clock)
 {
-    // The rigid body's bits: it moves (8, 13, 15 of the high word), its contacts (19-21 of the high word, 51 and 52 handed on as
-    // bit 24 of the other word), and what makes the node told (54)
-    constexpr u64 Moves = 0x102200000000000;
-    constexpr u64 Touching = 0x18000000000000;
-    constexpr u64 Contacts = 0x38000000000000;
-    constexpr u64 TellsNode = 0x40000000000000;
-    constexpr u64 TouchingHandedOn = 0x1000000;
-    constexpr u64 Cleared90 = 0x2 | 0x20;
-    // The instance's flag 6 holds its body still
-    constexpr u32 InstanceHeld = 0x40;
     ObjectRigidBody* body = node->rigidBody;
     if (body != nullptr)
     {
-        if ((body->bits88 & Moves) != 0 && (node->owner->flags & InstanceHeld) == 0)
+        // An attached instance's body is held still
+        if ((body->bits.dragged || body->bits.falls || body->bits.moving) && !node->owner->flags.attached)
         {
             StepRigidBody(body, clock, nullptr);
         }
 
-        // The middle of the instance's collision box (its bounds 0x40 bytes in)
-        InstanceContext* instance = node->owner;
-        const auto* bounds = reinterpret_cast<const Vector4*>(reinterpret_cast<const u8*>(instance) + 0x40);
-        Vector4& middle = node->unknown20;
-        middle = bounds[1];
-        middle.x = middle.x - bounds[0].x;
-        middle.y = middle.y - bounds[0].y;
-        middle.z = middle.z - bounds[0].z;
+        // The middle of the instance's collision box
+        const Box* box = node->owner->CollisionBox();
+        Vector4& middle = node->middle;
+        middle = box->max;
+        middle.x = middle.x - box->min.x;
+        middle.y = middle.y - box->min.y;
+        middle.z = middle.z - box->min.z;
         middle.x = middle.x * 0.5f;
         middle.y = middle.y * 0.5f;
         middle.z = middle.z * 0.5f;
-        middle.x = middle.x + bounds[0].x;
-        middle.y = middle.y + bounds[0].y;
-        middle.z = middle.z + bounds[0].z;
+        middle.x = middle.x + box->min.x;
+        middle.y = middle.y + box->min.y;
+        middle.z = middle.z + box->min.z;
+        // The frame's contacts forgotten (whether it touched an instance or the world kept), not on the ground nor against a wall
         body = node->rigidBody;
-        u64 bits88 = body->bits88;
-        u64 touching = (bits88 & Touching) != 0 ? TouchingHandedOn : 0;
-        body->bits88 = bits88 & ~Contacts;
-        body->bits90 = ((body->bits90 & ~TouchingHandedOn) | touching) & ~Cleared90;
-        if ((node->rigidBody->bits88 & TellsNode) != 0)
+        ObjectRigidBodyBits bits = body->bits;
+        body->bits.touchingInstance = 0;
+        body->bits.touchingWorld = 0;
+        body->bits.touching = 0;
+        body->state.touched = bits.touchingInstance || bits.touchingWorld;
+        body->state.onGround = 0;
+        body->state.againstWall = 0;
+        if (node->rigidBody->bits.releasedAtRest)
         {
             ReleaseRigidBodyAtRest(node);
         }
     }
 
-    if ((node->flags & FlagPinned) == 0 && node->unknown154 != 0)
+    if (!node->flags.pinned && node->reactions.knockCountdown != 0)
     {
-        node->unknown154--;
+        node->reactions.knockCountdown--;
     }
 }
 
@@ -269,7 +244,7 @@ InstancePlacement* InstancePlacement::Construct(InstancePlacement* information, 
     information->chunk.string = nullptr;
     information->chunk.length = 0;
     information->chunk.capacity = 0;
-    information->flags = 0;
+    information->flags.value = 0;
     if (chunk != nullptr)
     {
         StringAssign(&information->chunk, chunk->path.string);
@@ -282,11 +257,11 @@ ObjectNodeBase* ObjectNodeBase::Construct(ObjectNodeBase* node, ChunkEntry* chun
 {
     GameNode::Construct(node);
     node->vtable = g_NodePrototypeVTable;
-    Reference* data = chunk->data;
-    InstancePlacement::Construct(&node->information, data != nullptr ? reinterpret_cast<ChunkData*>(data->object) : nullptr);
+    ChunkDataReference* data = chunk->data;
+    InstancePlacement::Construct(&node->information, data != nullptr ? data->chunk : nullptr);
     node->ownInformation = nullptr;
     node->informationPointer = &node->information;
-    node->ownObjectId = 0xFFFF;
+    node->ownObjectId = NoObjectId;
     node->Reset();
     node->tracked = nullptr;
     node->vtable = g_ObjectNodeBaseVTable;
@@ -335,17 +310,15 @@ void ObjectNodeBase::HandleEvent(Reference** handle)
     constexpr u16 FirstNodeEvent = 0x100;
     constexpr u16 LastAppliedEvent = 0x101;
     constexpr u16 TriggerMessage = 0x103;
-    constexpr u32 ApplySlot = 2;
-    constexpr u32 TriggerMessageSlot = 19;
-    flags |= FlagHandledEvent;
+    flags.handledEvent = 1;
     auto* event = *handle != nullptr ? reinterpret_cast<GameEvent*>((*handle)->object) : nullptr;
-    u16 kind = event->unknown04;
+    u16 kind = event->id;
     if (kind >= FirstNodeEvent)
     {
         if (kind <= LastAppliedEvent)
         {
             auto* applied = reinterpret_cast<GameEvent*>((*handle)->object);
-            CallVirtual<void>(applied, applied->vtable, ApplySlot, this, G_GameResourcesObjectPointer);
+            CallVirtual<void>(applied, applied->vtable, GameEvent::ApplySlot, this, G_GameResourcesObjectPointer);
         }
         else if (kind == TriggerMessage)
         {
@@ -353,9 +326,9 @@ void ObjectNodeBase::HandleEvent(Reference** handle)
             Reference* sender = event->argument;
             messageSender = sender != nullptr ? static_cast<InstanceContext*>(sender->object) : nullptr;
             event = *handle != nullptr ? reinterpret_cast<GameEvent*>((*handle)->object) : nullptr;
-            message = event->type;
+            message = event->message;
             messageTime = GetContextClock(owner)->time;
-            if (object->TriggerBehaviourCount() != 0)
+            if (object->header.triggerBehaviourCount != 0)
             {
                 CallVirtual<void>(this, vtable, TriggerMessageSlot, static_cast<u32>(message));
             }
@@ -383,23 +356,21 @@ u32 ObjectNodeBase::StartBehaviour(ScriptStarter* starter, InstanceContext* orig
 
 void ObjectNodeBase::OnTriggerMessage(u32 received)
 {
-    constexpr u32 StartBehaviourSlot = 18;
-    constexpr u16 NoStarter = 0xFFFF;
-    u32 count = object->TriggerBehaviourCount();
+    u32 count = object->header.triggerBehaviourCount;
     u32 wanted = received & 0xFFFF;
     for (u32 index = 0; index < count;)
     {
-        const u32* behaviour = &object->triggerBehaviours.items[index];
+        const TriggerBehaviour* behaviour = &object->triggerBehaviours.items[index];
         index++;
-        if ((*behaviour & GameObject::MessageMask) != wanted)
+        if (behaviour->message != wanted)
         {
             continue;
         }
 
-        u16 id = *behaviour >> GameObject::StarterShift & GameObject::StarterMask;
+        u16 id = behaviour->starter;
         ResourceTable* scripts = G_GameResourcesObjectPointer->scripts;
-        auto* starter = id != NoStarter ? static_cast<ScriptStarter*>(scripts->items[id & 0x7FFF]) : nullptr;
-        u32 runner = reinterpret_cast<const u8*>(behaviour)[GameObject::RunnerShift / 8] & GameObject::RunnerMask;
+        auto* starter = id != NoScriptId ? static_cast<ScriptStarter*>(scripts->items[id & ResourceIndexMask]) : nullptr;
+        u32 runner = behaviour->runner;
         CallVirtual<u32>(this, vtable, StartBehaviourSlot, starter, messageSender, 0u, runner);
         return;
     }
@@ -420,121 +391,121 @@ void ObjectNodeBase::StopRunners(u32 release)
 
 u32 ObjectNodeBase::Kind()
 {
+    return NodeObject;
+}
+
+void ObjectNodeBase::Removed()
+{
+}
+
+void ObjectNodeBase::Sleep()
+{
+}
+
+void ObjectNodeBase::RunnerFinished()
+{
+}
+
+u32 ObjectNodeBase::AddParticleTrail()
+{
+    constexpr u32 NoTrail = 0xFF;
+    return NoTrail;
+}
+
+void ObjectNodeBase::DestroyParticleTrails()
+{
+}
+
+void ObjectNodeBase::Launch()
+{
+}
+
+void ObjectNodeBase::Push()
+{
+}
+
+u32 ObjectNodeBase::Collided()
+{
     return 1;
 }
 
-void ObjectNodeBase::DefaultSlot9()
-{
-}
-
-void ObjectNodeBase::DefaultSlot11()
-{
-}
-
-void ObjectNodeBase::DefaultSlot22()
-{
-}
-
-u32 ObjectNodeBase::DefaultSlot23()
-{
-    return 0xFF;
-}
-
-void ObjectNodeBase::DefaultSlot24()
-{
-}
-
-void ObjectNodeBase::DefaultSlot26()
-{
-}
-
-void ObjectNodeBase::DefaultSlot27()
-{
-}
-
-u32 ObjectNodeBase::DefaultSlot28()
-{
-    return 1;
-}
-
-u32 ObjectNodeBase::DefaultSlot29()
+u32 ObjectNodeBase::Landed()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot30()
+u32 ObjectNodeBase::LandedHard()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot31()
+u32 ObjectNodeBase::Scraped()
 {
     return 0;
 }
 
-void ObjectNodeBase::DefaultSlot33()
+void ObjectNodeBase::UnusedDoNothing()
 {
 }
 
-void ObjectNodeBase::DefaultSlot34()
+void ObjectNodeBase::ForgetDesignator()
 {
 }
 
-void ObjectNodeBase::DefaultSlot35()
+void ObjectNodeBase::ReleaseParts()
 {
 }
 
-u32 ObjectNodeBase::DefaultSlot36()
-{
-    return 0;
-}
-
-u32 ObjectNodeBase::DefaultSlot37()
+u32 ObjectNodeBase::GetDesignator()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot38()
+u32 ObjectNodeBase::GetDesignatorPosition()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot39()
+u32 ObjectNodeBase::SetDesignatorPosition()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot40()
+u32 ObjectNodeBase::SetDesignator()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::DefaultSlot41()
+u32 ObjectNodeBase::HasNoTrackedSound()
 {
     return 0;
 }
 
-u32 ObjectNodeBase::PrototypeSlot18()
+u32 ObjectNodeBase::CodeModelKind()
 {
     return 0;
 }
 
-void ObjectNodeBase::PrototypeSlot19()
+u32 ObjectNodeBase::PrototypeStartBehaviour()
+{
+    return 0;
+}
+
+void ObjectNodeBase::PrototypeOnTriggerMessage()
 {
 }
 
-void ObjectNodeBase::PrototypeSlot21()
+void ObjectNodeBase::PrototypeStopRunners()
 {
 }
 
 void ObjectNodeBase::Reset()
 {
-    constexpr u32 SetAgentSlot = 12;
-    flags = 0;
+    flags.value = 0;
     CallVirtual<void>(this, vtable, SetAgentSlot, static_cast<Agent*>(nullptr));
     ClearMessages();
-    ownObjectId = 0xFFFF;
-    unknown8C = 0xFF;
+    ownObjectId = NoObjectId;
+    rank = NoRank;
     sourceNode = nullptr;
 }
 
@@ -566,7 +537,7 @@ ObjectRigidBody* ObjectNode::RigidBody()
 void ObjectNodeBase::ClearMessages()
 {
     messageTime = 0;
-    message = 0xFFFF;
+    message = NoMessage;
     messageSender = nullptr;
 }
 
@@ -616,38 +587,38 @@ void ObjectNode::Initialise(u32 wanted)
     motion = MotionState::Construct(static_cast<MotionState*>(MemoryAllocate(sizeof(MotionState))));
     waypoints = wanted != 0 ? Waypoints::Construct(static_cast<Waypoints*>(MemoryAllocate(sizeof(Waypoints)))) : nullptr;
     rollRadius = 2.0f;
-    unknown134 = -1;
+    waterSurface = NoSurface;
     rigidBody = nullptr;
     translator = nullptr;
     rotator = nullptr;
     physics = nullptr;
-    unknown114 = 0;
+    controller = nullptr;
     particleTrails = nullptr;
     trajectory = nullptr;
     motionBlock = nullptr;
     headTracking = nullptr;
     perception = nullptr;
-    surface = -1;
-    flags = 0;
+    surface = NoSurface;
+    flags.value = 0;
     agentRef1 = nullptr;
     agentRef2 = nullptr;
-    unknown154 = 0;
-    f32 w = unknownC0.w;
-    unknownC0 = g_DefaultBox.min;
-    unknownC0.w = w;
+    reactions.knockCountdown = 0;
+    f32 w = frameMove.w;
+    frameMove = g_DefaultBox.min;
+    frameMove.w = w;
     ForgetStoredPosition();
-    // Bit fields of the 64 bits from 0x150: bits 40 and 41 clear, the 16 bits from 42 on none
-    u64& bits = *reinterpret_cast<u64*>(&unknown150);
-    bits = ((bits & ~(u64{1} << 40)) | u64{0xFFFF} << 42) & ~(u64{1} << 41);
-    *reinterpret_cast<s32*>(&unknown155[0x164 - 0x155]) = -1;
-    *reinterpret_cast<f32*>(&unknown155[0x16C - 0x155]) = -1.0f;
-    unknown155[0x158 - 0x155] = 0xFF;
-    unknown150 = 0;
-    *reinterpret_cast<u32*>(&unknown155[0x170 - 0x155]) = 0;
-    unknown155[0x168 - 0x155] = 0xFF;
-    unknown155[0x169 - 0x155] = 0xFF;
-    *reinterpret_cast<u32*>(&unknown155[0x174 - 0x155]) = 0;
-    unknown155[0x160 - 0x155] = 0xFF;
+    reactions.passesNoises = 0;
+    reactions.noiseMessage = NoMessage;
+    reactions.noContactSounds = 0;
+    unused164 = -1;
+    contactSoundValue = -1.0f;
+    playingSound = NoInstanceSound;
+    reactions.splashTime = 0;
+    lastContactTime = 0;
+    contactSoundFirst = NoContactSoundSlot;
+    contactSoundLast = NoContactSoundSlot;
+    countedValue = 0.0f;
+    trackedSound = NoInstanceSound;
 }
 
 void ObjectNode::Destroy(u32 destroyFlags)
@@ -664,43 +635,38 @@ void ObjectNode::Destroy(u32 destroyFlags)
     }
 
     MemoryDeallocate2_(storedPlace);
-    ReleaseLinks();
-    DestroyPart114();
+    ReleasePartsUnlessUnloading();
+    DestroyController();
     ObjectNodeBase::Destroy(destroyFlags);
 }
 
 void ObjectNode::ForgetStoredPosition()
 {
-    flags &= ~ObjectNodeBase::FlagStoredPosition;
+    flags.storedPosition = 0;
 }
 
-void ObjectNode::ReleaseLinks()
+void ObjectNode::ReleasePartsUnlessUnloading()
 {
-    constexpr u32 ReleaseLinksSlot = 35;
     if (g_UnloadingEverything == 0)
     {
-        CallVirtual<void>(this, vtable, ReleaseLinksSlot, this);
+        CallVirtual<void>(this, vtable, ReleasePartsSlot, this);
     }
 }
 
-void ObjectNode::DestroyPart114()
+void ObjectNode::DestroyController()
 {
-    constexpr u32 TellSlot = 5;
-    constexpr u32 DestructorSlot = 1;
-    auto* part = reinterpret_cast<SteppedPart*>(unknown114);
-    if (part == nullptr)
+    if (controller == nullptr)
     {
         return;
     }
 
-    CallVirtual<void>(part, part->vtable, TellSlot);
-    part = reinterpret_cast<SteppedPart*>(unknown114);
-    if (part != nullptr)
+    CallVirtual<void>(controller, controller->vtable, NodeController::StopSlot);
+    if (controller != nullptr)
     {
-        CallVirtual<void>(part, part->vtable, DestructorSlot, DestroyAndFree);
+        CallVirtual<void>(controller, controller->vtable, NodeController::DestroySlot, DestroyAndFree);
     }
 
-    unknown114 = 0;
+    controller = nullptr;
 }
 
 void ObjectNode::SetOwner(InstanceContext* instance)
@@ -708,9 +674,9 @@ void ObjectNode::SetOwner(InstanceContext* instance)
     information.Take(instance, 1);
     ObjectPlace* place = instance->place;
     place->SyncPosition();
-    unknownB0 = place->position;
+    frameStart = place->position;
     GameNode::SetOwner(instance);
-    unknown20 = unknownB0;
+    middle = frameStart;
 }
 
 void ObjectNode::LeftChunk(u32 why)
@@ -721,18 +687,17 @@ void ObjectNode::LeftChunk(u32 why)
     }
 }
 
-void ObjectNode::CallSlot11()
+void ObjectNode::Removed()
 {
-    constexpr u32 Slot11 = 11;
-    CallVirtual<void>(this, vtable, Slot11);
+    CallVirtual<void>(this, vtable, ReleasePartsUnlessUnloadingSlot);
 }
 
 u32 ObjectNode::ItemType()
 {
-    return 0x180D;
+    return ClassId;
 }
 
-u32 ObjectNode::Slot14()
+u32 ObjectNode::UnusedTakesPackets()
 {
     return 1;
 }
@@ -742,60 +707,55 @@ u32 ObjectNode::TakesPackets()
     return 1;
 }
 
-u32 ObjectNode::Slot16()
+u32 ObjectNode::UnpinCollision()
 {
     return 0;
 }
 
-u32 ObjectNode::Slot17()
+u32 ObjectNode::PinCollision()
 {
     return 0;
 }
 
-void ObjectNode::Slot20()
+void ObjectNode::DoNothing()
 {
 }
 
-u32 ObjectNode::Slot25()
+u32 ObjectNode::CustomSlot()
 {
-    return 0xFF;
+    constexpr u32 NoCustomSlot = 0xFF;
+    return NoCustomSlot;
 }
 
-void ObjectNode::Slot33()
+void ObjectNode::UnusedDoNothing()
 {
 }
 
-u32 ObjectNode::HasNoByte160()
+u32 ObjectNode::HasNoTrackedSound()
 {
-    return unknown155[0x160 - 0x155] == 0xFF;
+    return trackedSound == NoInstanceSound;
 }
 
-u32 ObjectNode::Slot41()
+u32 ObjectNode::CodeModelKind()
 {
     return 1;
 }
 
-void ObjectNode::Slot43()
+void ObjectNode::PacketStarted()
 {
 }
 
 void ObjectNode::StopSound()
 {
-    constexpr u8 NoSound = 0xFF;
-    u8& sound = unknown155[0x158 - 0x155];
-    if (sound != NoSound)
+    if (playingSound != NoInstanceSound)
     {
-        StopSoundChannel(sound);
-        sound = NoSound;
+        StopInstanceSound(playingSound);
+        playingSound = NoInstanceSound;
     }
 }
 
 void ObjectNode::Reset()
 {
-    constexpr u32 PacketEndedSlot = 42;
-    constexpr u32 DestroyParticlesSlot = 24;
-    // The instance's flag 8 (cleared)
-    constexpr u32 InstanceFlag8 = 0x100;
     ResetRunners();
     if (motion != nullptr)
     {
@@ -808,18 +768,18 @@ void ObjectNode::Reset()
     }
 
     CallVirtual<void>(this, vtable, PacketEndedSlot, static_cast<BehaviourRunner*>(nullptr));
-    f32 w = unknownC0.w;
-    unknownC0 = g_DefaultBox.min;
-    unknownC0.w = w;
+    f32 w = frameMove.w;
+    frameMove = g_DefaultBox.min;
+    frameMove.w = w;
     sourceNode = nullptr;
-    DestroyPart114();
+    DestroyController();
     ReleaseTrajectory();
-    CallVirtual<void>(this, vtable, DestroyParticlesSlot);
+    CallVirtual<void>(this, vtable, DestroyParticleTrailsSlot);
     ReleaseRigidBody();
     ReleaseAttachments();
     agentRef1 = nullptr;
     ReleasePerception();
-    if ((flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (!flags.keepsAgentRef2)
     {
         agentRef2 = nullptr;
     }
@@ -829,18 +789,18 @@ void ObjectNode::Reset()
     ReleaseHeadTracking();
     ReleaseMotionBlock();
     ClearMessages();
-    owner->flags &= ~InstanceFlag8;
-    unknown155[0x158 - 0x155] = 0xFF;
-    *reinterpret_cast<s32*>(&unknown155[0x164 - 0x155]) = -1;
-    *reinterpret_cast<u32*>(&unknown155[0x174 - 0x155]) = 0;
-    unknown155[0x160 - 0x155] = 0xFF;
+    owner->flags.busy = 0;
+    playingSound = NoInstanceSound;
+    unused164 = -1;
+    countedValue = 0.0f;
+    trackedSound = NoInstanceSound;
 }
 
 void ObjectNode::PacketEnded(BehaviourRunner* runner)
 {
     if (runner != nullptr)
     {
-        u32 slot = runner->flags >> BehaviourRunner::SlotShift & BehaviourRunner::SlotMask;
+        u32 slot = runner->flags.slot;
         BehaviourRunner* other = runners[static_cast<u8>(1 - slot)];
         if (other != nullptr && other->receivers != nullptr && other->packet != nullptr)
         {
@@ -870,7 +830,7 @@ void ObjectNode::PacketEnded(BehaviourRunner* runner)
 void ObjectNode::ResetRunners()
 {
     DestroyRunners();
-    flags &= ~ObjectNodeBase::FlagFocusPosition & ~ObjectNodeBase::FlagFocusInstance;
+    flags.value &= ~ObjectNodeFlags::FocusMask;
     tracked = nullptr;
 }
 
@@ -913,17 +873,14 @@ void ObjectNode::ReleaseRigidBody()
 
 void ObjectNode::ReleaseAttachments()
 {
-    constexpr u32 InstanceFlag6 = 0x40;
-    constexpr u32 InstanceFlag7 = 0x80;
-    constexpr u32 AttachmentsKind = 6;
-    void* attachments = GetGameNode(&owner->nodes, AttachmentsKind);
+    void* attachments = GetGameNode(&owner->nodes, NodeAttachments);
     if (attachments != nullptr)
     {
         ReleaseAttachmentsNode(attachments, 0, 0, 0);
     }
 
-    owner->flags &= ~InstanceFlag6;
-    owner->flags &= ~InstanceFlag7;
+    owner->flags.attached = 0;
+    owner->flags.hasAttachment = 0;
     owner->parent = nullptr;
 }
 
@@ -962,9 +919,6 @@ void ObjectNode::ReleaseHeadTracking()
 
 void ObjectNode::ReleaseMotionBlock()
 {
-    // The instance's flag 15 (cleared), the node's vtable slot 44 (its sound stopped)
-    constexpr u32 InstanceFlag15 = 0x8000;
-    constexpr u32 StopSoundSlot = 44;
     if (motionBlock != nullptr)
     {
         if (trajectory != nullptr)
@@ -978,32 +932,31 @@ void ObjectNode::ReleaseMotionBlock()
 
         trajectory = nullptr;
         motionBlock = nullptr;
-        flags &= ~ObjectNodeBase::FlagMovesStoredPlace;
+        flags.movesStoredPlace = 0;
     }
 
-    owner->flags &= ~InstanceFlag15;
+    owner->flags.physicsBody = 0;
     CallVirtual<void>(this, vtable, StopSoundSlot);
 }
 
 void ObjectNode::RunnerFinished()
 {
-    constexpr u32 DestroyParticlesSlot = 24;
     constexpr u32 RunnerTrails = 1;
-    if ((flags & FlagKeepsParticles) == 0)
+    if (!flags.keepsParticles)
     {
-        CallVirtual<void>(this, vtable, DestroyParticlesSlot);
+        CallVirtual<void>(this, vtable, DestroyParticleTrailsSlot);
     }
     else if (particleTrails != nullptr)
     {
         particleTrails->RemoveKind(RunnerTrails);
     }
 
-    if ((flags & FlagKeepsTrajectory) == 0)
+    if (!flags.keepsTrajectory)
     {
         ReleaseTrajectory();
     }
 
-    if ((flags & FlagKeepsPerception) == 0)
+    if (!flags.keepsPerception)
     {
         ReleasePerception();
     }
@@ -1011,23 +964,19 @@ void ObjectNode::RunnerFinished()
 
 void ObjectNode::ForgetDesignator(u32 designator)
 {
-    constexpr u32 Focus = 0;
-    constexpr u32 AgentRef1 = 1;
-    constexpr u32 AgentRef2 = 2;
-    constexpr u32 StoredPosition = 3;
-    if (designator == AgentRef1)
+    if (designator == SlotAgentRef1)
     {
         agentRef1 = nullptr;
     }
-    else if (designator == Focus)
+    else if (designator == SlotFocus)
     {
-        flags &= ~FlagFocusPosition & ~FlagFocusInstance;
+        flags.value &= ~ObjectNodeFlags::FocusMask;
     }
-    else if (designator == AgentRef2)
+    else if (designator == SlotAgentRef2)
     {
         agentRef2 = nullptr;
     }
-    else if (designator == StoredPosition)
+    else if (designator == SlotStoredPosition)
     {
         ForgetStoredPosition();
     }
@@ -1035,10 +984,7 @@ void ObjectNode::ForgetDesignator(u32 designator)
 
 void ObjectNode::ReleaseParts()
 {
-    constexpr u32 DestroyParticlesSlot = 24;
-    constexpr u32 StopSoundSlot = 44;
-    constexpr u32 PacketEndedSlot = 42;
-    CallVirtual<void>(this, vtable, DestroyParticlesSlot);
+    CallVirtual<void>(this, vtable, DestroyParticleTrailsSlot);
     ReleaseTrajectory();
     ReleaseRigidBody();
     ReleaseAttachments();
@@ -1070,10 +1016,10 @@ u32 ObjectNode::SetDesignator(u32 designator, InstanceContext* instance)
         focusInstance = instance;
         if (instance != nullptr)
         {
-            flags |= FlagFocusInstance;
+            flags.focusInstance = 1;
         }
 
-        flags &= ~FlagFocusPosition;
+        flags.focusPosition = 0;
         return 1;
     default:
         return 0;
@@ -1082,7 +1028,7 @@ u32 ObjectNode::SetDesignator(u32 designator, InstanceContext* instance)
 
 u32 ObjectNode::CanChangeChunk(ChunkData* from, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -1114,36 +1060,30 @@ u32 ObjectNode::CanChangeChunk(ChunkData* from, ChunkLinkData* link)
 
 void ObjectNode::Restart(TimeClock* clock, u32 word)
 {
-    constexpr u32 PartRestartSlot = 4;
-    constexpr u32 ReleasePartsSlot = 35;
-    constexpr u32 Slot20 = 20;
-    constexpr u32 StopRunnersSlot = 21;
-    constexpr u32 ResetSlot = 13;
-    auto* part = static_cast<SteppedPart*>(reinterpret_cast<void*>(unknown114));
-    if (part != nullptr)
+    if (controller != nullptr)
     {
-        CallVirtual<void>(part, part->vtable, PartRestartSlot, word);
+        CallVirtual<void>(controller, controller->vtable, NodeController::RestartSlot, word);
     }
 
     CallVirtual<void>(this, vtable, ReleasePartsSlot);
-    CallVirtual<void>(this, vtable, Slot20);
+    CallVirtual<void>(this, vtable, DoNothingSlot);
     CallVirtual<void>(this, vtable, StopRunnersSlot, 1u);
     CallVirtual<void>(this, vtable, ResetSlot, owner);
     informationPointer->Apply(owner);
     const Box* box = owner->CollisionBox();
-    unknown20 = box->max;
-    unknown20.x -= box->min.x;
-    unknown20.y -= box->min.y;
-    unknown20.z -= box->min.z;
-    unknown20.x *= 0.5f;
-    unknown20.y *= 0.5f;
-    unknown20.z *= 0.5f;
-    unknown20.x += box->min.x;
-    unknown20.y += box->min.y;
-    unknown20.z += box->min.z;
+    middle = box->max;
+    middle.x -= box->min.x;
+    middle.y -= box->min.y;
+    middle.z -= box->min.z;
+    middle.x *= 0.5f;
+    middle.y *= 0.5f;
+    middle.z *= 0.5f;
+    middle.x += box->min.x;
+    middle.y += box->min.y;
+    middle.z += box->min.z;
     ObjectPlace* place = owner->place;
     place->SyncPosition();
-    unknownB0 = place->position;
+    frameStart = place->position;
     time = clock->time;
 }
 
@@ -1151,7 +1091,6 @@ void ObjectNode::Collided(void* other, const Vector4* point, const Vector4* impu
 {
     constexpr f32 HardKnock = 10.0f;
     constexpr f32 ImpactRadius = 12.0f;
-    constexpr u32 AgentCollidedSlot = 7;
     if (other != nullptr)
     {
         HitWhileMoving(other, point, impulse);
@@ -1169,35 +1108,33 @@ void ObjectNode::Collided(void* other, const Vector4* point, const Vector4* impu
         SendImpact(ImpactRadius, strength, owner, point);
     }
 
-    CallVirtual<void>(agent, agent->vtable, AgentCollidedSlot, other, point, impulse);
+    CallVirtual<void>(agent, agent->vtable, Agent::CollidedSlot, other, point, impulse);
 }
 
 EABI_EXPORT(FUN_0022f440, LaunchNode);
 
 void LaunchNode(f32 gravity, ObjectNode* node, const Vector4* velocity)
 {
-    constexpr f32 DefaultGravity = 30.0f;
-    // The rigid body's bits 40-41
-    constexpr u64 LaunchMask = u64{3} << 40;
-    constexpr u64 Launched = u64{2} << 40;
+    // In both lists: its node's motion moves it and its collision cache's triangles stop it
+    constexpr u32 PlainKind = 1;
     if (node->rigidBody == nullptr)
     {
-        ObjectRigidBody* body = ConstructRigidBody(MemoryAllocate(0xE0), node);
+        ObjectRigidBody* body = ConstructRigidBody(MemoryAllocate(sizeof(ObjectRigidBody)), node);
         node->rigidBody = body;
-        SetRigidBodyGravity(0.0f <= gravity ? gravity : DefaultGravity, body);
-        ListRigidBodyFirst(node->rigidBody, 1);
-        ListRigidBodySecond(node->rigidBody, 1);
+        SetRigidBodyGravity(0.0f <= gravity ? gravity : DefaultLaunchGravity, body);
+        ListRigidBodyFirst(node->rigidBody, PlainKind);
+        ListRigidBodySecond(node->rigidBody, PlainKind);
         Box box;
         HullBox(GetCollisionModel(&node->owner->collision, 0), &box);
         node->rollRadius = GetBoxReach(&box);
     }
     else
     {
-        SetRigidBodyGravity(0.0f <= gravity ? gravity : DefaultGravity, node->rigidBody);
+        SetRigidBodyGravity(0.0f <= gravity ? gravity : DefaultLaunchGravity, node->rigidBody);
     }
 
     ObjectRigidBody* body = node->rigidBody;
-    body->bits88 = (body->bits88 & ~LaunchMask) | Launched;
+    body->bits.launch = ObjectRigidBodyBits::Launched;
     MotionState* motion = node->motion;
     motion->startVelocity = motion->velocity;
     motion->velocity = *velocity;
@@ -1207,7 +1144,6 @@ EABI_EXPORT(FUN_00230428, PushNode);
 
 void PushNode(f32 strength, ObjectNode* node, InstanceContext* other)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     MotionBlock* block = node->motionBlock;
     if (block != nullptr)
     {
@@ -1220,7 +1156,7 @@ void PushNode(f32 strength, ObjectNode* node, InstanceContext* other)
                 body->physicsBody->ReleaseRide();
             }
         }
-        else if ((block->flags & MotionBlock::FollowedWhenTouched) != 0)
+        else if (block->flags.followedWhenTouched)
         {
             node->FollowMotionBlock(node->motionBlock, GetContextClock(node->owner));
         }
@@ -1252,12 +1188,6 @@ void PushNode(f32 strength, ObjectNode* node, InstanceContext* other)
 
 namespace
 {
-// The contact kinds of a surface's sounds and particles
-constexpr u32 ImpactContact = 0;
-constexpr u32 HardImpactContact = 4;
-constexpr u32 ScrapeContact = 5;
-constexpr u16 NoSound = 0xFFFF;
-
 f32 SquaredSpeed(const Vector4* velocity)
 {
     return velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z;
@@ -1275,9 +1205,9 @@ u32 ObjectNode::Landed(CollisionSurface* surface, const Vector4* point, const Ve
     }
 
     f32 speed = SquaredSpeed(velocity);
-    if (surface->impactSound != NoSound && Threshold < speed)
+    if (surface->impactSound != NoSoundId && Threshold < speed)
     {
-        PlaySurfaceContact(speed - Threshold, this, surface, ImpactContact, point, velocity);
+        PlaySurfaceContact(speed - Threshold, this, surface, ContactImpact, point, velocity);
         played = 1;
     }
 
@@ -1304,12 +1234,12 @@ u32 ObjectNode::LandedHard(CollisionSurface* surface, const Vector4* point, cons
     }
 
     f32 speed = SquaredSpeed(velocity);
-    if (surface->impactSound == NoSound || !(Threshold < speed))
+    if (surface->impactSound == NoSoundId || !(Threshold < speed))
     {
         return 0;
     }
 
-    PlaySurfaceContactHard(speed - Threshold, this, surface, HardImpactContact, point, velocity);
+    PlaySurfaceContactHard(speed - Threshold, this, surface, ContactHardImpact, point, velocity);
     return 1;
 }
 
@@ -1322,21 +1252,20 @@ u32 ObjectNode::Scraped(CollisionSurface* surface, const Vector4* point, const V
     }
 
     f32 speed = SquaredSpeed(velocity);
-    if (surface->impactSound == NoSound || !(Threshold < speed))
+    if (surface->impactSound == NoSoundId || !(Threshold < speed))
     {
         return 0;
     }
 
-    PlaySurfaceContactHard(speed - Threshold, this, surface, ScrapeContact, point, velocity);
+    PlaySurfaceContactHard(speed - Threshold, this, surface, ContactScrape, point, velocity);
     return 1;
 }
 
 u32 ObjectNode::AddParticleTrail(const void* arguments)
 {
-    constexpr u32 TrailsSize = 0x6C;
     if (particleTrails == nullptr)
     {
-        particleTrails = ParticleTrails::Construct(static_cast<ParticleTrails*>(MemoryAllocate(TrailsSize)));
+        particleTrails = ParticleTrails::Construct(static_cast<ParticleTrails*>(MemoryAllocate(sizeof(ParticleTrails))));
     }
 
     return particleTrails->Add(arguments);
@@ -1363,7 +1292,7 @@ ObjectPlace* RetailPlaceOf(const InstanceContext* instance)
 
 bool IsAsleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // Whether the head tracking has a target (the instance its reference is to)
@@ -1385,7 +1314,7 @@ void MoveInstanceTo(InstanceContext* instance, ObjectPlace* place, const Vector4
 
 InstanceContext* ObjectNodeBase::AwakeFocus()
 {
-    if ((flags & FlagFocusInstance) == 0 || focusInstance == nullptr)
+    if (!flags.focusInstance || focusInstance == nullptr)
     {
         return nullptr;
     }
@@ -1395,7 +1324,7 @@ InstanceContext* ObjectNodeBase::AwakeFocus()
         return focusInstance;
     }
 
-    flags &= ~FlagFocusPosition & ~FlagFocusInstance;
+    flags.value &= ~ObjectNodeFlags::FocusMask;
     focusInstance = nullptr;
     return nullptr;
 }
@@ -1409,7 +1338,7 @@ InstanceContext* ObjectNode::GetDesignator(u32 designator)
         // An instance without an ID reads the word at address 4
         s32 id = owner->id;
         std::uintptr_t entry = id != -1 ? reinterpret_cast<std::uintptr_t>(&g_InstanceIds->entries[id]) : 0;
-        return *reinterpret_cast<InstanceContext* const*>(entry + offsetof(InstanceIds::Entry, unknown04));
+        return *reinterpret_cast<InstanceContext* const*>(entry + offsetof(InstanceIds::Entry, spawner));
     }
     case DesignatesItself:
         return owner;
@@ -1447,7 +1376,7 @@ u32 ObjectNode::GetDesignatorPosition(u32 designator, Vector4* position)
         place = RetailPlaceOf(agentRef1);
         break;
     case DesignatesStoredPosition:
-        if ((flags & FlagStoredPosition) == 0)
+        if (!flags.storedPosition)
         {
             return 0;
         }
@@ -1455,7 +1384,7 @@ u32 ObjectNode::GetDesignatorPosition(u32 designator, Vector4* position)
         *position = storedPosition;
         return 1;
     case DesignatesAgentRef2:
-        if (agentRef2 != nullptr && IsAsleep(agentRef2) && (flags & FlagKeepsAgentRef2) == 0)
+        if (agentRef2 != nullptr && IsAsleep(agentRef2) && !flags.keepsAgentRef2)
         {
             agentRef2 = nullptr;
         }
@@ -1492,7 +1421,7 @@ u32 ObjectNode::GetDesignatorPosition(u32 designator, Vector4* position)
         break;
     }
     case DesignatesFocusPosition:
-        if ((flags & FlagFocusPosition) == 0)
+        if (!flags.focusPosition)
         {
             return 0;
         }
@@ -1521,10 +1450,11 @@ u32 ObjectNode::SetDesignatorPosition(u32 designator, const Vector4* position)
         focusPosition.y = position->y;
         focusPosition.z = position->z;
         focusPosition.w = position->w;
-        flags = (flags | FlagFocusPosition) & ~FlagFocusInstance;
+        flags.focusPosition = 1;
+        flags.focusInstance = 0;
         return 1;
     case DesignatesStoredPosition:
-        flags |= FlagStoredPosition;
+        flags.storedPosition = 1;
         storedPosition = *position;
         return 1;
     case DesignatesFocus:
@@ -1551,7 +1481,7 @@ u32 ObjectNode::SetDesignatorPosition(u32 designator, const Vector4* position)
         MoveInstanceTo(moved, moved->place, position);
         return 1;
     case DesignatesAgentRef2:
-        if (agentRef2 != nullptr && IsAsleep(agentRef2) && (flags & FlagKeepsAgentRef2) == 0)
+        if (agentRef2 != nullptr && IsAsleep(agentRef2) && !flags.keepsAgentRef2)
         {
             agentRef2 = nullptr;
         }
@@ -1580,15 +1510,14 @@ u32 ObjectNode::SetDesignatorPosition(u32 designator, const Vector4* position)
 
 u32 ExitPointPlace(InstanceContext* instance, u32 slot, Vector4* position, Vector4* direction)
 {
-    constexpr u32 ModelNodeKind = 3;
-    constexpr u32 Slots = 0x3F;
+    constexpr u32 ExitPointSlots = 0x3F;
     slot &= 0xFF;
-    if (slot >= Slots)
+    if (slot >= ExitPointSlots)
     {
         return 0;
     }
 
-    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
@@ -1626,7 +1555,7 @@ PropertyHolder* GetPropsHolderFromInstanceNode(GameNode* node)
 
 GameObject* ObjectNodeBase::OwnObject()
 {
-    if (ownObjectId == 0xFFFF)
+    if (ownObjectId == NoObjectId)
     {
         return nullptr;
     }
@@ -1638,5 +1567,5 @@ GameObject* ObjectNodeBase::OwnObject()
     }
 
     u16 id = ownObjectId;
-    return id != 0xFFFF ? static_cast<GameObject*>(objects->items[id & 0x7FFF]) : nullptr;
+    return id != NoObjectId ? static_cast<GameObject*>(objects->items[id & ResourceIndexMask]) : nullptr;
 }

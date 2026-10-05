@@ -7,12 +7,25 @@
 class Stream;
 struct ChunkData;
 
+// A light's header (TT Lab's LightType and Enabled): its kind (Light::Kind) and whether it's enabled, which nothing reads
+union LightHeader
+{
+    u32 value;
+    struct
+    {
+        u32 kind : 8;
+        u32 enabled : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(LightHeader, 4);
+
 // A light of a chunk's scenery (TT Lab's Light: verified in the PAL executable, its notes there), its vtable 0x50 bytes in: its
-// header (the low byte its kind, bit 8 set when enabled, never read), its intensity (which multiplies its colour), its colour,
-// position and the box around it the game works out again when it's read (never read either). Its vtable's functions: 1 the
-// destructor, 2 and 3 enabled and disabled, 4 its own kind set, 5 a kind set, 6 its kind, 7 another's base values taken, 8 what
-// it comes to at a place (the direction toward it, a row, and its strength there; a place and a direction can stand in for its
-// own), 9 its box worked out, 10 read, 11 nothing, 12 another's values taken (its kind's and the base's)
+// header, its intensity (which multiplies its colour), its colour, position and the box around it the game works out again when
+// it's read (never read either). Its vtable's functions: 1 the destructor, 2 and 3 enabled and disabled, 4 its own kind set, 5 a
+// kind set, 6 its kind, 7 another's base values taken, 8 what it comes to at a place (the direction toward it, a row, and its
+// strength there; a place and a direction can stand in for its own), 9 its box worked out, 10 read, 11 its place taken from what
+// it follows (nothing for the scenery's lights), 12 another's values taken (its kind's and the base's)
 struct Light
 {
     enum Kind : u8
@@ -23,15 +36,24 @@ struct Light
         KindSpot = 3,
         // The base's: none
         KindNone = 4,
+        // The lights that follow an instance
+        KindAttachedAmbient = 5,
+        KindAttachedDirectional = 6,
+        KindAttachedPoint = 7,
+        KindAttachedSpot = 8,
     };
 
-    enum Header : u32
+    // Its vtable's slots the lights call
+    enum Slot : u32
     {
-        KindMask = 0xFF,
-        Enabled = 0x100,
+        SlotDestroy = 1,
+        SlotKind = 6,
+        SlotAssignBase = 7,
+        SlotLightAt = 8,
+        SlotRead = 10,
     };
 
-    u32 header;
+    LightHeader header;
     f32 intensity;
     Vector4 colour;
     Vector4 position;
@@ -47,21 +69,21 @@ struct Light
     u32 GetKind() const RETAIL(GetLightType);
     Light* AssignBase(const Light* other) RETAIL(FUN_001cb540);
     void Read(Stream* stream) RETAIL(ReadBaseLight);
-    void Nothing() RETAIL(FUN_001cb4c0);
+    void Follow() RETAIL(FUN_001cb4c0);
 
     u32 Kind() const
     {
-        return CallVirtual<u32>(this, vtable, 6);
+        return CallVirtual<u32>(this, vtable, SlotKind);
     }
 
     void LightAt(const Vector4* at, Vector4* direction, f32* strength, const Vector4* position, const Vector4* towards) const
     {
-        CallVirtual<void>(this, vtable, 8, at, direction, strength, position, towards);
+        CallVirtual<void>(this, vtable, SlotLightAt, at, direction, strength, position, towards);
     }
 
     void ReadVirtual(Stream* stream)
     {
-        CallVirtual<void>(this, vtable, 10, stream);
+        CallVirtual<void>(this, vtable, SlotRead, stream);
     }
 };
 CHECK_OFFSET(Light, vtable, 0x50);
@@ -138,7 +160,7 @@ CHECK_SIZE(SpotLight, 0x90);
 // The lights that follow an instance (kinds 5 to 8, which chunks never have): an ambient light glowing out from where it is and a
 // directional light, both falling off with the distance by 25 / (d² + 25) once, a point light and a spot light. Their vtables'
 // slot 11 takes their position (and direction) into the world through their instance's place; 9 (their bounds) does nothing, 13
-// says no
+// says no (nothing calls it)
 struct AttachedAmbientLight : AmbientLight
 {
     // After the base's whole size (GCC 2.9x didn't put members into a base's tail padding)
@@ -151,7 +173,7 @@ struct AttachedAmbientLight : AmbientLight
         RETAIL(func_001CBA40);
     void ComputeBounds() RETAIL(FUN_001cb7e0);
     void Follow() RETAIL(FUN_001cb9f0);
-    u32 Slot13() RETAIL(FUN_001cb7e8);
+    u32 Unused13() RETAIL(FUN_001cb7e8);
 };
 CHECK_OFFSET(AttachedAmbientLight, instance, 0x60);
 CHECK_OFFSET(AttachedAmbientLight, worldPosition, 0x70);
@@ -169,7 +191,7 @@ struct AttachedDirectionalLight : DirectionalLight
         RETAIL(func_001CBB50);
     void ComputeBounds() RETAIL(FUN_001cb838);
     void Follow() RETAIL(FUN_001cbaf0);
-    u32 Slot13() RETAIL(FUN_001cb840);
+    u32 Unused13() RETAIL(FUN_001cb840);
 };
 CHECK_OFFSET(AttachedDirectionalLight, instance, 0x80);
 CHECK_OFFSET(AttachedDirectionalLight, worldPosition, 0x90);
@@ -186,7 +208,7 @@ struct AttachedPointLight : PointLight
         RETAIL(func_001C88D0);
     void ComputeBounds() RETAIL(FUN_001cb788);
     void Follow() RETAIL(FUN_001cbbf0);
-    u32 Slot13() RETAIL(FUN_001cb790);
+    u32 Unused13() RETAIL(FUN_001cb790);
 };
 CHECK_OFFSET(AttachedPointLight, instance, 0x70);
 CHECK_OFFSET(AttachedPointLight, worldPosition, 0x80);
@@ -204,7 +226,7 @@ struct AttachedSpotLight : SpotLight
         RETAIL(FUN_001c89a8);
     void ComputeBounds() RETAIL(FUN_001cb890);
     void Follow() RETAIL(FUN_001cbc40);
-    u32 Slot13() RETAIL(FUN_001cb898);
+    u32 Unused13() RETAIL(FUN_001cb898);
 };
 CHECK_OFFSET(AttachedSpotLight, instance, 0x90);
 CHECK_OFFSET(AttachedSpotLight, worldPosition, 0xA0);
@@ -223,6 +245,10 @@ struct LightReference
 // game's own
 struct ChunkLights
 {
+    // The strongest lights kept, the last one the object's own light's slot when it has one
+    static constexpr u32 Strongest = 3;
+    static constexpr u32 OwnSlot = 2;
+
     ChunkData* chunk;
     AmbientLight* ambientLights;
     DirectionalLight* directionalLights;
@@ -234,10 +260,10 @@ struct ChunkLights
     s32 directionalCount;
     s32 pointCount;
     s32 spotCount;
-    u8 unknown428[0x430 - 0x428];
+    u8 unused428[0x430 - 0x428];
     Vector4 position;
-    Vector4 colours[3];
-    Vector4 directions[3];
+    Vector4 colours[Strongest];
+    Vector4 directions[Strongest];
     f32 strengths[4];
     Vector4 ambient;
     Light* extraLights[16];
@@ -249,6 +275,15 @@ CHECK_OFFSET(ChunkLights, strengths, 0x4A0);
 CHECK_OFFSET(ChunkLights, ambient, 0x4B0);
 CHECK_SIZE(ChunkLights, 0x500);
 
+// Where the lighting's constants keep the point and spot lights' fall off (K in K / (d² + K)) and the way shadows are cast from an
+// instance (a Vector4, times the shadow's strength)
+enum LightingConstant : u32
+{
+    FalloffConstant = 3,
+    ShadowDirection = 0x20,
+    LightingConstantCount = 36,
+};
+
 extern "C"
 {
     extern const GccVTableEntry g_LightVTable[] RETAIL(LightBase_Methods);
@@ -256,9 +291,9 @@ extern "C"
     extern const GccVTableEntry g_DirectionalLightVTable[] RETAIL(DirectionalLight_Methods);
     extern const GccVTableEntry g_PointLightVTable[] RETAIL(PointLight_Methods);
     extern const GccVTableEntry g_SpotLightVTable[] RETAIL(NegativeLight_Methods);
-    // The lighting's constants (a static constructor sets them): 25 the point and spot lights' fall off by (the fourth), then
-    // colours and directions
-    extern f32 g_LightingConstants[36] RETAIL(LightingConstants);
+    // The lighting's constants (a static constructor sets them, LightingConstant): 25 the point and spot lights' fall off by,
+    // then colours and directions
+    extern f32 g_LightingConstants[LightingConstantCount] RETAIL(LightingConstants);
     // How many objects had their lights gathered (only counted)
     extern s32 g_LightGathers RETAIL(D_00309D84);
     void InitLightingConstants(u32 initialise, u32 priority) RETAIL(InitLightingConstants);

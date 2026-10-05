@@ -83,6 +83,14 @@ struct FloatCurve
 class Emitter2D
 {
 public:
+    enum Slot : u32
+    {
+        SpawnSlot = 1,
+        StepSlot = 2,
+        DestroySlot = 3,
+        DrawPlacedSlot = 4,
+    };
+
     SlotPool particles;
     Vector2 size;
     Vector2 spread;
@@ -112,7 +120,7 @@ CHECK_SIZE(Emitter2D, 0x4C);
 class RadialEmitter2D : public Emitter2D
 {
 public:
-    u32 unknown4C;
+    u32 unused4C;
     Vector4 colour;
 
     void Destroy(u32 flags) RETAIL(FUN_001ac268);

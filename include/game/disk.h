@@ -23,20 +23,33 @@ enum DiskNodeState : u32
     DiskNodeReleasedExpired = 8,
 };
 
-// A node's bits: its state, a count of rounds of releases (it waits until the count wraps to 0), and its flags
-namespace DiskNodeBits
+// What reading into a node did: the hardware (DMA) reads into it from DiskAllocate until DiskMarkLoaded
+enum DiskLoadState : u32
 {
-constexpr u32 State = 0xF;
-constexpr u32 CountShift = 4;
-constexpr u32 Count = 0x3FF << CountShift;
-// Its memory can be used: it wasn't read into, or reading it was seen done (DiskLoadedMemory)
-constexpr u32 Ready = 0x4000;
-// Being read into by the hardware (DMA), until DiskMarkLoaded
-constexpr u32 Loading = 0x8000;
-constexpr u32 Loaded = 0x10000;
-// Released a couple of frames late, the hardware may still read it
-constexpr u32 DeferRelease = 0x20000;
-}
+    DiskNotReadInto = 0,
+    DiskLoading = 1,
+    DiskLoaded = 2,
+};
+
+union DiskNodeBits
+{
+    u32 value;
+    struct
+    {
+        // DiskNodeState
+        u32 state : 4;
+        // Counted up by every round of releases, which moves a waiting release on when it finds it 0 (it wraps at 10 bits)
+        u32 waitCount : 10;
+        // Its memory can be used: it wasn't read into, or reading it was seen done (DiskLoadedMemory)
+        u32 ready : 1;
+        // DiskLoadState
+        u32 loadState : 2;
+        // Released a couple of frames late, the hardware may still read it
+        u32 deferRelease : 1;
+        u32 unused18 : 14;
+    };
+};
+CHECK_SIZE(DiskNodeBits, 4);
 
 struct DiskNode
 {
@@ -50,8 +63,9 @@ struct DiskNode
     // In the pool, by address
     DiskNode* previous;
     DiskNode* next;
-    u32 bits;
+    DiskNodeBits bits;
 };
+CHECK_OFFSET(DiskNode, bits, 0x1C);
 CHECK_SIZE(DiskNode, 0x20);
 
 // The move in progress
@@ -76,6 +90,8 @@ struct DiskPendingRelease
 };
 CHECK_SIZE(DiskPendingRelease, 0xC);
 
+// A handle of no memory (a reader's before it has any)
+constexpr s32 NoDiskHandle = -1;
 constexpr u32 DiskSizeClasses = 16;
 constexpr u32 DiskHandles = 5500;
 

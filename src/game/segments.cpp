@@ -12,12 +12,9 @@ extern "C"
 
 namespace
 {
-// Lengths this short have no inverse, and segments this near parallel are taken for parallel
-constexpr f32 NoLength = 0x1.b7cdfep-34f;
-
 f32 InverseUnlessShort(f32 value)
 {
-    if (NoLength < value || value < -NoLength)
+    if (InverseEpsilon < value || value < -InverseEpsilon)
     {
         return 1.0f / value;
     }
@@ -122,6 +119,8 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
 {
     // Eberly's distance between two segments (Magic Software's, the second segment's share decided first): the shares s and t
     // along them minimise |(first + s d0) - (second + t d1)|², a quadratic of a00 s² + 2 a01 s t + a11 t² + 2 b0 s + 2 b1 t + c.
+    // The slopes are halves of its derivatives along a share at a corner of the square: tSlopeAtS1 along t at s = 1, t = 0,
+    // sSlopeAtT1 along s at s = 0, t = 1 and tSlopeAtT1 along t at s = 0, t = 1.
     // Retail bug: in four of its regions the distance is worked out wrong (the shares are right): noted where
     Vector4 firstDirection;
     firstDirection.x = first[1].x - first[0].x;
@@ -145,7 +144,8 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
     f32 s;
     f32 t;
     f32 distance;
-    if (NoLength <= determinant)
+    // Segments this near parallel are taken for parallel
+    if (InverseEpsilon <= determinant)
     {
         f32 betweenDot0 = Dot(between, firstDirection);
         f32 b0 = -betweenDot0;
@@ -169,22 +169,22 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
                     else
                     {
                         s = 1.0f;
-                        f32 tmp = a01 + b1;
+                        f32 tSlopeAtS1 = a01 + b1;
                         t = 0.0f;
-                        if (0.0f <= tmp)
+                        if (0.0f <= tSlopeAtS1)
                         {
                             distance = b0 + b0 + a00 + c;
                         }
-                        else if (a11 <= -tmp)
+                        else if (a11 <= -tSlopeAtS1)
                         {
                             t = 1.0f;
-                            f32 sum = tmp + b0;
+                            f32 sum = tSlopeAtS1 + b0;
                             distance = sum + sum + a11 + a00 + c;
                         }
                         else
                         {
-                            t = -tmp / a11;
-                            distance = b0 + b0 + c + a00 + tmp * t;
+                            t = -tSlopeAtS1 / a11;
+                            distance = b0 + b0 + c + a00 + tSlopeAtS1 * t;
                         }
                     }
                 }
@@ -212,62 +212,62 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
             {
                 if (s <= determinant)
                 {
-                    f32 tmp = a01 + b0;
+                    f32 sSlopeAtT1 = a01 + b0;
                     t = 1.0f;
                     s = 0.0f;
-                    if (0.0f <= tmp)
+                    if (0.0f <= sSlopeAtT1)
                     {
                         distance = b1 + b1 + c + a11;
                     }
-                    else if (a00 <= -tmp)
+                    else if (a00 <= -sSlopeAtT1)
                     {
                         s = 1.0f;
-                        f32 sum = b1 + tmp;
+                        f32 sum = b1 + sSlopeAtT1;
                         distance = sum + sum + c + a00 + a11;
                     }
                     else
                     {
-                        s = -tmp / a00;
-                        distance = b1 + b1 + c + a11 + tmp * s;
+                        s = -sSlopeAtT1 / a00;
+                        distance = b1 + b1 + c + a11 + sSlopeAtT1 * s;
                     }
                 }
                 else
                 {
-                    f32 tmp = a01 + b1;
-                    if (-tmp <= a11)
+                    f32 tSlopeAtS1 = a01 + b1;
+                    if (-tSlopeAtS1 <= a11)
                     {
                         s = 1.0f;
                         t = 0.0f;
-                        if (0.0f <= tmp)
+                        if (0.0f <= tSlopeAtS1)
                         {
                             distance = b0 + b0 + c + a00;
                         }
                         else
                         {
-                            t = -tmp / a11;
+                            t = -tSlopeAtS1 / a11;
                             // Retail bug: three times b0 where a00 + 2 b0 + c belongs
-                            distance = b0 + b0 + b0 + tmp * t;
+                            distance = b0 + b0 + b0 + tSlopeAtS1 * t;
                         }
                     }
                     else
                     {
-                        tmp = a01 + b0;
+                        f32 sSlopeAtT1 = a01 + b0;
                         t = 1.0f;
                         s = 0.0f;
-                        if (0.0f <= tmp)
+                        if (0.0f <= sSlopeAtT1)
                         {
                             distance = b1 + b1 + c + a11;
                         }
-                        else if (a00 <= -tmp)
+                        else if (a00 <= -sSlopeAtT1)
                         {
                             s = 1.0f;
-                            f32 sum = b1 + tmp;
+                            f32 sum = b1 + sSlopeAtT1;
                             distance = sum + sum + c + a00 + a11;
                         }
                         else
                         {
-                            s = -tmp / a00;
-                            distance = b1 + b1 + c + a11 + tmp * s;
+                            s = -sSlopeAtT1 / a00;
+                            distance = b1 + b1 + c + a11 + sSlopeAtT1 * s;
                         }
                     }
                 }
@@ -290,23 +290,23 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
                 }
                 else
                 {
-                    f32 tmp = a01 + b0;
+                    f32 sSlopeAtT1 = a01 + b0;
                     t = 1.0f;
-                    if (0.0f <= tmp)
+                    if (0.0f <= sSlopeAtT1)
                     {
                         distance = b1 + b1 + c + a11;
                     }
-                    else if (a00 <= -tmp)
+                    else if (a00 <= -sSlopeAtT1)
                     {
                         s = 1.0f;
-                        // Retail bug: tmp + b1 not doubled
-                        distance = tmp + b1 + c + a00 + a11;
+                        // Retail bug: sSlopeAtT1 + b1 not doubled
+                        distance = sSlopeAtT1 + b1 + c + a00 + a11;
                     }
                     else
                     {
-                        s = -tmp / a00;
+                        s = -sSlopeAtT1 / a00;
                         // Retail bug: a11 + 2 b1 + c left out
-                        distance = tmp * s;
+                        distance = sSlopeAtT1 * s;
                     }
                 }
             }
@@ -334,20 +334,20 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
             }
             else
             {
-                f32 tmp = a01 + b1;
-                if (tmp < 0.0f)
+                f32 tSlopeAtS1 = a01 + b1;
+                if (tSlopeAtS1 < 0.0f)
                 {
                     s = 1.0f;
                     t = 1.0f;
-                    if (a11 <= -tmp)
+                    if (a11 <= -tSlopeAtS1)
                     {
-                        f32 sum = tmp + b0;
+                        f32 sum = tSlopeAtS1 + b0;
                         distance = sum + sum + c + a00 + a11;
                     }
                     else
                     {
-                        t = -tmp / a11;
-                        distance = b0 + b0 + c + a00 + tmp * t;
+                        t = -tSlopeAtS1 / a11;
+                        distance = b0 + b0 + c + a00 + tSlopeAtS1 * t;
                     }
                 }
                 else if (t <= b0)
@@ -420,8 +420,8 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
         {
             t = 1.0f;
             f32 b0 = -Dot(between, firstDirection);
-            f32 tmp = a11 + b1;
-            if (a01 <= -tmp)
+            f32 tSlopeAtT1 = a11 + b1;
+            if (a01 <= -tSlopeAtT1)
             {
                 s = 1.0f;
                 f32 sum = a01 + b1 + b0;
@@ -429,7 +429,7 @@ f32 SegmentsDistanceSquared(const Vector4* first, const Vector4* second, f32* fi
             }
             else
             {
-                s = -tmp / a01;
+                s = -tSlopeAtT1 / a01;
                 // Retail bug: b1 where c belongs
                 distance = (a01 + b0 + (a01 + b0) + a00 * s) * s + b1 + (b1 + b1) + a11;
             }

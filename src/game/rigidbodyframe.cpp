@@ -30,8 +30,8 @@ extern "C"
     void ApplyVolumeForces(ObjectRigidBody* body) RETAIL(FUN_002480c0);
     // Its sphere pushed away from the instances a query found (the push added up, the other way round), and its instance moved
     // by it
-    void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query, Vector4* push) RETAIL(FUN_00248838);
-    void RepelFromInstances(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query) RETAIL(FUN_00248a68);
+    void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceQuery* query, Vector4* push) RETAIL(FUN_00248838);
+    void RepelFromInstances(ObjectRigidBody* body, Vector4* sphere, InstanceQuery* query) RETAIL(FUN_00248a68);
     // Carried by an instance's movement node: where it is in that instance's space kept when it starts riding it, else its
     // instance moved and turned (about y) as the instance did over its last frame
     void RideMovement(ObjectRigidBody* body, MovementNode* movement) RETAIL(FUN_002490a8);
@@ -72,101 +72,41 @@ EABI_EXPORT(FUN_00254868, ClampLengthToShorter);
 
 namespace
 {
-// A volume controller's node (kind 7): the force it applies in its own space and its bits (bit 0: on)
-struct VolumeController : GameNode
-{
-    u8 unknown18[0x170 - 0x18];
-    Vector4 force;
-    u64 bits;
-};
-CHECK_OFFSET(VolumeController, force, 0x170);
-CHECK_OFFSET(VolumeController, bits, 0x180);
 
-constexpr u32 MovementNodeKind = 0;
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 PhysicsBodyKind = 5;
-constexpr u32 VolumeControllerKind = 7;
-constexpr u32 VolumeControllers = 1 << VolumeControllerKind;
-constexpr u64 VolumeOn = 0x1;
-// The object node's vtable functions: whether it takes packets, pushed (a strength and the other), collided (with what, where,
-// the impulse); the physics body's: whether it's a sphere; the agent's: collided, a contact message, its own velocity
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 PushSlot = 27;
-constexpr u32 CollidedSlot = 28;
-constexpr u32 IsSphereSlot = 15;
-constexpr u32 AgentCollidedSlot = 7;
-constexpr u32 AgentContactSlot = 9;
-constexpr u32 AgentVelocitySlot = 11;
-
-// The rigid body's 64 bits at 0x88: the kind of its motion (32-35: 5 an upright cylinder as wide as its radius times the value
-// at 0xA0, 6 pushed away from the instances around it instead) and of its collisions with the world (36-39: 5 an upright
-// ellipsoid, 6 slid out by its friction, the others a sphere), its launch (40-41), bits 42-43 (no collisions with the world),
-// its velocity dragged (45), gripped by what it touches (46), its gravity (49), touching an instance (51) and the world (52),
-// touching anything (53), it doesn't move for other rigid bodies or hulls (55), moving (56), stopping once it rests (57),
-// steering itself (59), its size the least slope it stands on (60) and its restitution the rate its contact normal follows (61)
-constexpr u32 MotionKindShift = 32;
-constexpr u32 CollisionKindShift = 36;
-constexpr u64 KindMask = 0xF;
-constexpr u32 UprightKind = 5;
-constexpr u32 RepelledKind = 6;
-constexpr u32 UprightCollision = 5;
-constexpr u32 SlidingCollision = 6;
-constexpr u64 LaunchMask = u64{3} << 40;
-constexpr u64 LaunchKind2 = u64{2} << 40;
-constexpr u64 NoWorldCollisions = u64{3} << 42;
-constexpr u64 Dragged = u64{1} << 45;
-constexpr u64 Gripped = u64{1} << 46;
-constexpr u64 Falls = u64{1} << 49;
-constexpr u64 TouchingInstance = u64{1} << 51;
-constexpr u64 TouchingWorld = u64{1} << 52;
-constexpr u64 Touching = u64{1} << 53;
-constexpr u64 Immovable = u64{1} << 55;
-constexpr u64 Moving = u64{1} << 56;
-constexpr u64 StopsAtRest = u64{1} << 57;
-constexpr u64 SteersItself = u64{1} << 59;
-constexpr u64 SlopeLimited = u64{1} << 60;
-constexpr u64 OwnNormalRate = u64{1} << 61;
-// Its word at 0x90: on the ground (1) and against a wall (5) this frame (the movement step clears them), bit 4, the steps since
-// its launch (11-14, up to 15) and since it last touched what it rides (15-18, the ride let go at 5), a surface's contact message
-// told (20), the impulses it gives no longer than the value at 0xBC (21) or that long (22), the volume controllers push it (23)
-constexpr u64 OnGround = 0x2;
-constexpr u64 Bit4 = 0x10;
-constexpr u64 AgainstWall = 0x20;
-constexpr u32 LaunchStepsShift = 11;
-constexpr u64 LaunchStepsMask = 0x7800;
-constexpr u32 RideStepsShift = 15;
-constexpr u64 RideStepsMask = 0x78000;
-constexpr u64 RideLost = 5;
-constexpr u64 TouchedMessageSurface = 0x100000;
-constexpr u64 ImpulseCapped = 0x200000;
-constexpr u64 ImpulseFixed = 0x400000;
-constexpr u64 PushedByVolumes = 0x800000;
-// The motion block's body bits' bit 14: the volume controllers push the node's physics body
-constexpr u32 BodyPushedByVolumes = 0x4000;
-// An instance's flags: it's attached to its parent (6), it moves and what stands on it rides along (14)
-constexpr u32 AttachedFlag = 0x40;
-constexpr u32 CarriesFlag = 0x4000;
-// Bit 0 of an instance's collision's bits: its hulls stop rigid bodies
-constexpr u64 HullsStopBodies = 0x1;
-// A movement node's bit 0 (set when it's made): what rides its instance is carried
-constexpr u32 MovementCarries = 0x1;
-// Surfaces' collision masks: solid to objects (water otherwise), touching it sends its contact message
-constexpr u32 SolidToObjects = 0x40;
-constexpr u32 SendsContactMessage = 0x100;
-constexpr u16 NoSurface = 0xFFFF;
 constexpr u16 MostTouched = 64;
 constexpr u16 MostVolumes = 32;
-
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+// The share of a push out of a triangle or a hull the instance moves by
+constexpr f32 PushShare = Rounded(0.99);
+// The impulses (squared) past which the agents are told of a collision, with a physics body's sphere
+constexpr f32 ToldImpulse = Rounded(0.001);
+constexpr f32 ToldSphereImpulse = Rounded(0.01);
+// A push's knock: the push along the velocity times this, doubled
+constexpr f32 PushKnock = Rounded(0.3);
+// A slide's knock: the slope times this
+constexpr f32 SlopeKnock = Rounded(0.3);
+// What it grips with once it touches something
+constexpr f32 TouchGrip = Rounded(0.8);
+// A normal's y above which it's ground, and below which (either way) a wall
+constexpr f32 GroundNormalY = Rounded(0.7);
+constexpr f32 WallNormalY = Rounded(0.3);
+// Below any rise out of a triangle
+constexpr f32 NoRise = -10000.0f;
+// The rates its contact normal follows a normal at (while it steers itself, while it follows the surface) and turns upright at
+// (or its restitution times the share) once it has touched nothing for the time
+constexpr f32 SteeringNormalRate = 6.0f;
+constexpr f32 SurfaceNormalRate = 5.0f;
+constexpr f32 UprightRate = 21.0f;
+constexpr f32 UprightRateShare = 1.5f;
+constexpr f32 UprightAfter = Rounded(0.2);
 
 u32 MotionKind(const ObjectRigidBody* body)
 {
-    return body->bits88 >> MotionKindShift & KindMask;
+    return body->bits.motionKind;
 }
 
 u32 CollisionKind(const ObjectRigidBody* body)
 {
-    return body->bits88 >> CollisionKindShift & KindMask;
+    return body->bits.collisionKind;
 }
 
 // The node's first float property, through its agent
@@ -207,17 +147,17 @@ void Ease(Vector4* vector, const Vector4* target, f32 share)
 
 void RaiseGrip(ObjectRigidBody* body, f32 grip)
 {
-    if (body->unknownC8 < grip)
+    if (body->grip < grip)
     {
-        body->unknownC8 = grip;
+        body->grip = grip;
     }
 }
 
-// An impulse the body gives: cut down to the length at 0xBC, made that long, or scaled by it
+// An impulse the body gives: cut down to its impulse length, made that long, or scaled by it
 void ScaleImpulse(const ObjectRigidBody* body, Vector4* impulse)
 {
-    f32 size = body->unknownBC;
-    if ((body->bits90 & ImpulseCapped) != 0)
+    f32 size = body->impulseLength;
+    if (body->state.impulseCapped)
     {
         f32 length = __builtin_sqrtf(impulse->x * impulse->x + impulse->y * impulse->y + impulse->z * impulse->z);
         if (!(size < length))
@@ -225,7 +165,7 @@ void ScaleImpulse(const ObjectRigidBody* body, Vector4* impulse)
             return;
         }
     }
-    else if ((body->bits90 & ImpulseFixed) == 0)
+    else if (!body->state.impulseFixed)
     {
         impulse->x = impulse->x * size;
         impulse->y = impulse->y * size;
@@ -234,22 +174,22 @@ void ScaleImpulse(const ObjectRigidBody* body, Vector4* impulse)
     }
 
     f32 inverse = InverseLength(impulse, LengthEpsilon);
-    size = body->unknownBC;
+    size = body->impulseLength;
     impulse->x = impulse->x * inverse * size;
     impulse->y = impulse->y * inverse * size;
     impulse->z = impulse->z * inverse * size;
 }
 
-void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted)
+void StartQuery(InstanceQuery* query, void** results, u16 most, u32 wanted)
 {
     query->results = results;
     query->count = 0;
     query->most = most;
-    query->distance = Rounded(1e30);
+    query->distance = Infinite;
     // Retail keeps the stack's other bits (nothing reads them)
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = wanted;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -259,19 +199,20 @@ void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted)
 void CountContact(ObjectRigidBody* body)
 {
     body->contactCount = body->contactCount + 1.0f;
-    body->bits88 = body->bits88 | TouchingInstance | Touching;
+    body->bits.touchingInstance = 1;
+    body->bits.touching = 1;
 }
 
 // What touching an instance's hulls or rigid body tells: its object node pushed, its physics body sharing the impulse (else the
 // two agents told unless the body rides something), and its own node pushing back
 void TellTouched(ObjectRigidBody* body, InstanceContext* instance, InstanceContext* other)
 {
-    if ((other->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (other->flags.physicsBody)
     {
         PushInstanceNode(body, other);
     }
 
-    auto* physics = static_cast<DynamicBody*>(GetGameNode(&other->nodes, PhysicsBodyKind));
+    auto* physics = static_cast<DynamicBody*>(GetGameNode(&other->nodes, NodeRigidBody));
     if (physics != nullptr)
     {
         PushPhysicsBody(body, physics);
@@ -281,10 +222,10 @@ void TellTouched(ObjectRigidBody* body, InstanceContext* instance, InstanceConte
         BumpInstance(body, other);
     }
 
-    if ((instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (instance->flags.physicsBody)
     {
         ObjectNode* node = body->node;
-        CallVirtual<void>(node, node->vtable, PushSlot, 0.0f, other);
+        CallVirtual<void>(node, node->vtable, ObjectNode::PushSlot, 0.0f, other);
     }
 }
 
@@ -293,16 +234,16 @@ void TellSurfaces(ObjectRigidBody* body, InstanceContext* instance, ObjectRigidB
 {
     CollisionSurface* surface = GetHullSurface(&instance->collision, 0);
     CollisionSurface* otherSurface = GetHullSurface(&otherInstance->collision, 0);
-    if (surface != nullptr && (surface->collisionMask & SendsContactMessage) != 0)
+    if (surface != nullptr && surface->flags.sendsContactMessageToObjects != 0)
     {
         Agent* agent = other->node->agent;
-        CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &surface->contact, instance, 0u);
+        CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &surface->contact, instance, 0u);
     }
 
-    if (otherSurface != nullptr && (otherSurface->collisionMask & SendsContactMessage) != 0)
+    if (otherSurface != nullptr && otherSurface->flags.sendsContactMessageToObjects != 0)
     {
         Agent* agent = body->node->agent;
-        CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &otherSurface->contact, otherInstance, 0u);
+        CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &otherSurface->contact, otherInstance, 0u);
     }
 }
 
@@ -310,7 +251,7 @@ void TellSurfaces(ObjectRigidBody* body, InstanceContext* instance, ObjectRigidB
 void KnockByPush(ObjectRigidBody* body, const Vector4* push)
 {
     const Vector4* velocity = &body->node->motion->velocity;
-    f32 knock = (push->x * velocity->x + push->y * velocity->y + push->z * velocity->z) * Rounded(0.3);
+    f32 knock = (push->x * velocity->x + push->y * velocity->y + push->z * velocity->z) * PushKnock;
     knock = knock + knock;
     KnockNode(knock * (push->x * push->x + push->z * push->z), body->node);
 }
@@ -326,32 +267,32 @@ u32 FinishWorldContacts(ObjectRigidBody* body, u32 touched, u32 inWater, u16 sur
     if (touched != 0)
     {
         body->node->surface = surfaceId;
-        if (surfaceId != NoSurface)
+        if (surfaceId != NoSurfaceId)
         {
             CollisionSurface* surface = &g_CollisionSurfaces.surfaces[surfaceId];
-            if (surface->contact.word != 0)
+            if (surface->contact.hitKinds != 0)
             {
-                body->bits90 = body->bits90 | TouchedMessageSurface;
+                body->state.touchedMessageSurface = 1;
                 Agent* agent = body->node->agent;
-                CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &surface->contact, instance, 0u);
+                CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &surface->contact, instance, 0u);
             }
         }
 
-        center->x = (center->x - start->x) * Rounded(0.99);
-        center->y = (center->y - start->y) * Rounded(0.99);
-        center->z = (center->z - start->z) * Rounded(0.99);
+        center->x = (center->x - start->x) * PushShare;
+        center->y = (center->y - start->y) * PushShare;
+        center->z = (center->z - start->z) * PushShare;
         MoveInstance(instance, center);
         // (Retail hands the move to IgnoreAttachedMove here while the instance is attached)
         SlideAlong(seconds, body, center, velocity);
     }
-    else if ((body->bits88 & SteersItself) != 0)
+    else if (body->bits.steersItself)
     {
-        body->unknownC0 = body->unknownC0 + seconds;
+        body->untouchedTime = body->untouchedTime + seconds;
     }
 
     if (inWater == 0)
     {
-        body->node->unknown134 = -1;
+        body->node->waterSurface = ObjectNode::NoSurface;
     }
 
     return touched;
@@ -385,9 +326,9 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
     box.max.x = box.max.x + radius;
     box.max.y = box.max.y + radius;
     box.max.z = box.max.z + radius;
-    if (MotionKind(body) == UprightKind)
+    if (MotionKind(body) == BodyKindUpright)
     {
-        f32 across = radius * body->unknownA0;
+        f32 across = radius * body->widthScale;
         f32 middleX = (box.min.x + box.max.x) * 0.5f;
         f32 middleZ = (box.min.z + box.max.z) * 0.5f;
         box.max.x = middleX + across;
@@ -397,16 +338,16 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
     }
 
     void* results[MostTouched];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostTouched, ReferencedObject::FlagSphereContact);
+    InstanceQuery query;
+    StartQuery(&query, results, MostTouched, ReferencedObjectFlags::CollisionActive);
     SkipInQuery(&query, instance);
     QueryChunkInstances(chunk, &box, g_SolidKinds, &query);
-    if ((body->bits90 & PushedByVolumes) != 0)
+    if (body->state.pushedByVolumes)
     {
         ApplyVolumeForces(body);
     }
 
-    if (MotionKind(body) == RepelledKind)
+    if (MotionKind(body) == BodyKindSlide)
     {
         RepelFromInstances(body, sphere, &query);
     }
@@ -421,8 +362,8 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
                 continue;
             }
 
-            auto* physics = static_cast<DynamicBody*>(GetGameNode(&other->nodes, PhysicsBodyKind));
-            if (physics != nullptr && CallVirtual<u32>(physics, physics->vtable, IsSphereSlot) != 0)
+            auto* physics = static_cast<DynamicBody*>(GetGameNode(&other->nodes, NodeRigidBody));
+            if (physics != nullptr && CallVirtual<u32>(physics, physics->vtable, DynamicBody::IsSphereSlot) != 0)
             {
                 if (CollideWithSphereBody(body, sphere, static_cast<SphereBody*>(physics)) != 0)
                 {
@@ -432,7 +373,7 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
                 continue;
             }
 
-            if ((other->collision.bits & HullsStopBodies) != 0)
+            if (other->collision.bits.stopsBodies)
             {
                 if (CollideWithHulls(body, &center, &box, other, &other->collision) != 0)
                 {
@@ -449,8 +390,8 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
                 continue;
             }
 
-            auto* node = static_cast<ObjectNode*>(GetGameNode(&other->nodes, ObjectNodeKind));
-            if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+            auto* node = static_cast<ObjectNode*>(GetGameNode(&other->nodes, NodeObject));
+            if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
             {
                 continue;
             }
@@ -465,7 +406,7 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
     }
 
     // Slid along the touched hulls' normals on average
-    if ((body->bits88 & TouchingInstance) != 0)
+    if (body->bits.touchingInstance)
     {
         f32 seconds = FrameSeconds(instance);
         f32 share = 1.0f / body->contactCount;
@@ -477,7 +418,7 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
 
     // Carried by what it stands on, and for a few frames after it last touched it
     MovementNode* movement = body->rideMovement;
-    if (movement != nullptr && (movement->bits & MovementCarries) != 0)
+    if (movement != nullptr && movement->bits.carries != 0)
     {
         ObjectPlace* place = body->node->owner->place;
         place->SyncPosition();
@@ -487,15 +428,13 @@ void CollideRigidBodyWithInstances(ObjectRigidBody* body, Vector4* sphere)
         return;
     }
 
-    if (rideMovement == nullptr || (rideMovement->bits & MovementCarries) == 0)
+    if (rideMovement == nullptr || rideMovement->bits.carries == 0)
     {
         return;
     }
 
-    u64 bits = body->bits90;
-    bits = (bits & ~RideStepsMask) | (((bits >> RideStepsShift) + 1) & KindMask) << RideStepsShift;
-    body->bits90 = bits;
-    if ((bits & RideStepsMask) == RideLost << RideStepsShift)
+    body->state.rideSteps++;
+    if (body->state.rideSteps == ObjectRigidBodyState::RideLostSteps)
     {
         StopRiding(body);
         return;
@@ -549,7 +488,7 @@ u32 CollideWithSphereBody(ObjectRigidBody* body, const Vector4* sphere, SphereBo
         pushes = false;
     }
 
-    Vector4 middle = node->unknown20;
+    Vector4 middle = node->middle;
     middle.w = 1.0f;
     Vector4 point = middle;
     if (pushes)
@@ -561,15 +500,15 @@ u32 CollideWithSphereBody(ObjectRigidBody* body, const Vector4* sphere, SphereBo
     }
 
     ScaleImpulse(body, &impulse);
-    if (Rounded(0.01) < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z)
+    if (ToldSphereImpulse < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z)
     {
         impulse.x = -impulse.x;
         impulse.y = -impulse.y;
         impulse.z = -impulse.z;
         node = body->node;
-        CallVirtual<void>(node, node->vtable, CollidedSlot, other->owner, &point, &impulse);
+        CallVirtual<void>(node, node->vtable, ObjectNode::CollidedSlot, other->owner, &point, &impulse);
         Agent* agent = body->node->agent;
-        CallVirtual<u32>(agent, agent->vtable, AgentCollidedSlot, other->owner, &point, &impulse);
+        CallVirtual<u32>(agent, agent->vtable, Agent::CollidedSlot, other->owner, &point, &impulse);
     }
 
     if (pushes)
@@ -591,14 +530,14 @@ void ApplyVolumeForces(ObjectRigidBody* body)
 {
     InstanceContext* instance = body->node->owner;
     void* results[MostVolumes];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, results, MostVolumes, 0);
-    s32 count = QueryChunkInstances(instance->chunk, &instance->collision.box, VolumeControllers, &query);
+    s32 count = QueryChunkInstances(instance->chunk, &instance->collision.box, 1u << NodeMessageTrigger, &query);
     for (u32 index = 0; index < static_cast<u32>(count); index++)
     {
-        auto* volume = static_cast<VolumeController*>(GetGameNode(&static_cast<InstanceContext*>(results[index])->nodes,
-                                                                  VolumeControllerKind));
-        if ((volume->bits & VolumeOn) == 0)
+        auto* volume = static_cast<MessageTriggerNode*>(GetGameNode(&static_cast<InstanceContext*>(results[index])->nodes,
+                                                                    NodeMessageTrigger));
+        if (volume->messageBits.forceOn == 0)
         {
             continue;
         }
@@ -636,7 +575,7 @@ void PushPhysicsBody(ObjectRigidBody* body, DynamicBody* other)
     impulse.x = impulse.x * share;
     impulse.y = impulse.y * share;
     impulse.z = impulse.z * share;
-    Vector4 middle = node->unknown20;
+    Vector4 middle = node->middle;
     middle.w = 1.0f;
     Vector4 point = middle;
     Matrix4x4 inverseMatrix = other->matrix;
@@ -644,13 +583,13 @@ void PushPhysicsBody(ObjectRigidBody* body, DynamicBody* other)
     VuTransformPoint(&inverseMatrix, &middle, &middle);
     other->ApplyImpulse(&impulse, &middle);
     ScaleImpulse(body, &impulse);
-    if (Rounded(0.001) < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z)
+    if (ToldImpulse < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z)
     {
         impulse.x = -impulse.x;
         impulse.y = -impulse.y;
         impulse.z = -impulse.z;
         Agent* agent = body->node->agent;
-        CallVirtual<u32>(agent, agent->vtable, AgentCollidedSlot, other->owner, &point, &impulse);
+        CallVirtual<u32>(agent, agent->vtable, Agent::CollidedSlot, other->owner, &point, &impulse);
     }
 
     f32 kept = -rest;
@@ -667,7 +606,7 @@ void PushPhysicsBody(ObjectRigidBody* body, DynamicBody* other)
 // agent told it hit the instance
 void BumpInstance(ObjectRigidBody* body, InstanceContext* other)
 {
-    auto* otherNode = static_cast<ObjectNode*>(GetGameNode(&other->nodes, ObjectNodeKind));
+    auto* otherNode = static_cast<ObjectNode*>(GetGameNode(&other->nodes, NodeObject));
     if (otherNode == nullptr)
     {
         return;
@@ -677,7 +616,7 @@ void BumpInstance(ObjectRigidBody* body, InstanceContext* other)
     Vector4 impulse = body->node->motion->startVelocity;
     Vector4 otherVelocity = {0.0f, 0.0f, 0.0f, 1.0f};
     Agent* otherAgent = otherNode->agent;
-    if (CallVirtual<u32>(otherAgent, otherAgent->vtable, AgentVelocitySlot, &otherVelocity) == 0)
+    if (CallVirtual<u32>(otherAgent, otherAgent->vtable, Agent::VelocitySlot, &otherVelocity) == 0)
     {
         CopyVelocity(otherNode, &otherVelocity);
     }
@@ -686,27 +625,28 @@ void BumpInstance(ObjectRigidBody* body, InstanceContext* other)
     impulse.y = (impulse.y - otherVelocity.y) * mass;
     impulse.z = (impulse.z - otherVelocity.z) * mass;
     ScaleImpulse(body, &impulse);
-    if (!(Rounded(0.001) < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z))
+    if (!(ToldImpulse < impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z))
     {
         return;
     }
 
     ObjectNode* node = body->node;
-    Vector4 point = node->unknown20;
+    Vector4 point = node->middle;
     point.w = 1.0f;
     otherAgent = otherNode->agent;
-    CallVirtual<u32>(otherAgent, otherAgent->vtable, AgentCollidedSlot, node->owner, &point, &impulse);
+    CallVirtual<u32>(otherAgent, otherAgent->vtable, Agent::CollidedSlot, node->owner, &point, &impulse);
     impulse.x = -impulse.x;
     impulse.y = -impulse.y;
     impulse.z = -impulse.z;
     Agent* agent = body->node->agent;
-    CallVirtual<u32>(agent, agent->vtable, AgentCollidedSlot, other, &point, &impulse);
+    CallVirtual<u32>(agent, agent->vtable, Agent::CollidedSlot, other, &point, &impulse);
 }
 
 // Each instance pushes the sphere toward its box's middle by the body's friction times the radius squared over how far apart
 // they are beyond the box's reach (squared, at least 0.01), at most the radius
-void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query, Vector4* push)
+void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceQuery* query, Vector4* push)
 {
+    constexpr f32 LeastApart = Rounded(0.01);
     *push = *sphere;
     f32 radius = sphere->w;
     f32 radiusSquared = radius * radius;
@@ -720,7 +660,7 @@ void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query, Ve
         away.z = (away.z + box->max.z) * 0.5f - sphere->z;
         f32 reach = GetBoxReach(box);
         f32 apart = away.x * away.x + away.y * away.y + away.z * away.z - reach * reach;
-        f32 strength = body->friction * radiusSquared * (1.0f / __builtin_fmaxf(apart, Rounded(0.01)));
+        f32 strength = body->friction * radiusSquared * (1.0f / __builtin_fmaxf(apart, LeastApart));
         if (radius < strength)
         {
             strength = radius;
@@ -737,7 +677,7 @@ void RepelFrom(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query, Ve
     push->z = push->z - sphere->z;
 }
 
-void RepelFromInstances(ObjectRigidBody* body, Vector4* sphere, InstanceRayHit* query)
+void RepelFromInstances(ObjectRigidBody* body, Vector4* sphere, InstanceQuery* query)
 {
     InstanceContext* instance = body->node->owner;
     Vector4 push;
@@ -752,12 +692,12 @@ u32 CollideWithHulls(ObjectRigidBody* body, const Vector4* center, const Box* bo
 {
     InstanceContext* instance = body->node->owner;
     u32 touched = 0;
-    if ((instance->flags & AttachedFlag) != 0 && HasParent(instance, other) != 0)
+    if (instance->flags.attached && HasParent(instance, other) != 0)
     {
         return 0;
     }
 
-    if ((other->flags & AttachedFlag) != 0 && HasParent(other, instance) != 0)
+    if (other->flags.attached && HasParent(other, instance) != 0)
     {
         return 0;
     }
@@ -790,9 +730,9 @@ u32 CollideWithHulls(ObjectRigidBody* body, const Vector4* center, const Box* bo
 
         Vector4 push;
         u32 hit;
-        if (MotionKind(body) == UprightKind)
+        if (MotionKind(body) == BodyKindUpright)
         {
-            f32 across = radius * body->unknownA0;
+            f32 across = radius * body->widthScale;
             Vector4 radii = {across, radius, across, offset.w};
             Vector4 normal;
             hit = EllipsoidTouchesHull(hull, &matrix, &radii, &hullMatrix, &push, &normal);
@@ -812,30 +752,30 @@ u32 CollideWithHulls(ObjectRigidBody* body, const Vector4* center, const Box* bo
         }
 
         touched = 1;
-        if ((body->bits88 & Immovable) != 0)
+        if (body->bits.immovable)
         {
             continue;
         }
 
         // The ellipsoid's push is the world's already
-        if (MotionKind(body) != UprightKind)
+        if (MotionKind(body) != BodyKindUpright)
         {
             VuRotateVector(&hullMatrix, &push, &push);
         }
 
-        push.x = push.x * Rounded(0.99);
-        push.y = push.y * Rounded(0.99);
-        push.z = push.z * Rounded(0.99);
+        push.x = push.x * PushShare;
+        push.y = push.y * PushShare;
+        push.z = push.z * PushShare;
         MoveInstance(instance, &push);
         // (Retail hands the push to IgnoreAttachedMove here while the instance is attached)
         MotionState* motion = body->node->motion;
         motion->startVelocity = motion->velocity;
         TouchHull(body, other, &push, velocity);
         CollisionSurface* surface = GetHullSurface(collision, index);
-        if (surface != nullptr && (surface->collisionMask & SendsContactMessage) != 0)
+        if (surface != nullptr && surface->flags.sendsContactMessageToObjects != 0)
         {
             Agent* agent = body->node->agent;
-            CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &surface->contact, other, 0u);
+            CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &surface->contact, other, 0u);
         }
     }
 
@@ -851,7 +791,7 @@ void RideMovement(ObjectRigidBody* body, MovementNode* movement)
     InstanceContext* ridden = movement->owner;
     if (ridden != body->object)
     {
-        body->node->flags |= ObjectNodeBase::FlagRiding;
+        body->node->flags.riding = 1;
         body->object = ridden;
         ObjectPlace* riddenPlace = ridden->place;
         RotateAndTranslate(riddenPlace);
@@ -885,7 +825,7 @@ void RideMovement(ObjectRigidBody* body, MovementNode* movement)
     {
         place = instance->place;
         place->SyncRotation();
-        place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+        place->MarkTurned();
         s32 angle = yaw;
         Vector4 rotation;
         RotationFromYaw(&rotation, &angle);
@@ -920,27 +860,27 @@ void RideMovement(ObjectRigidBody* body, MovementNode* movement)
 void CollideRigidBodyWithWorld(ObjectRigidBody* body)
 {
     InstanceContext* instance = body->node->owner;
-    if ((GetContextClock(instance)->flags & TimeClock::FlagRunning) == 0 || body->cache == nullptr)
+    if (GetContextClock(instance)->flags.running == 0 || body->cache == nullptr)
     {
         return;
     }
 
     RefreshCollisionCache(body->cache, &instance->collision.box);
-    if ((body->bits88 & NoWorldCollisions) != 0)
+    if (body->bits.noWorldCollisions != 0)
     {
         return;
     }
 
     ObjectNode* node = body->node;
-    Vector4 sphere = node->unknown20;
+    Vector4 sphere = node->middle;
     sphere.w = node->rollRadius;
     u32 touched;
     switch (CollisionKind(body))
     {
-    case UprightCollision:
+    case BodyKindUpright:
         touched = CollideUprightWithWorld(body, &sphere);
         break;
-    case SlidingCollision:
+    case BodyKindSlide:
         touched = SlideAgainstWorld(body, &sphere);
         break;
     default:
@@ -950,13 +890,15 @@ void CollideRigidBodyWithWorld(ObjectRigidBody* body)
 
     if (touched != 0)
     {
-        body->bits88 = body->bits88 | Touching | TouchingWorld;
+        body->bits.touching = 1;
+        body->bits.touchingWorld = 1;
     }
 }
 
 // Each triangle the sphere touches takes it its friction's share of the way out
 u32 SlideAgainstWorld(ObjectRigidBody* body, const Vector4* sphere)
 {
+    constexpr f32 SlideKnock = 25.0f;
     f32 radius = sphere->w;
     Vector4 start = *sphere;
     start.w = 1.0f;
@@ -995,7 +937,7 @@ u32 SlideAgainstWorld(ObjectRigidBody* body, const Vector4* sphere)
     // Retail bug: nothing changed the velocity since it was taken, so the knock is always 0
     f32 acrossX = before.x - velocity->x;
     f32 acrossZ = before.z - velocity->z;
-    KnockNode((acrossX * acrossX + acrossZ * acrossZ) * 25.0f, body->node);
+    KnockNode((acrossX * acrossX + acrossZ * acrossZ) * SlideKnock, body->node);
     return 1;
 }
 
@@ -1005,17 +947,17 @@ u32 CollideRigidBodies(ObjectRigidBody* body, const Vector4* sphere, const Vecto
 {
     InstanceContext* instance = body->node->owner;
     InstanceContext* otherInstance = other->node->owner;
-    if ((instance->flags & AttachedFlag) != 0 && HasParent(instance, otherInstance) != 0)
+    if (instance->flags.attached && HasParent(instance, otherInstance) != 0)
     {
         return 0;
     }
 
-    if ((otherInstance->flags & AttachedFlag) != 0 && HasParent(otherInstance, instance) != 0)
+    if (otherInstance->flags.attached && HasParent(otherInstance, instance) != 0)
     {
         return 0;
     }
 
-    if (MotionKind(body) == UprightKind || MotionKind(other) == UprightKind)
+    if (MotionKind(body) == BodyKindUpright || MotionKind(other) == BodyKindUpright)
     {
         return CollideUprightBodies(body, sphere, otherSphere, other);
     }
@@ -1044,7 +986,7 @@ u32 CollideRigidBodies(ObjectRigidBody* body, const Vector4* sphere, const Vecto
     push.z = push.z * half;
     // Retail bug: each case scales the halved push again (by the overlap over the distance, or half of it) where all of the
     // overlap or half of it was meant: the spheres come apart by a fraction of it a frame
-    if ((body->bits88 & Immovable) != 0)
+    if (body->bits.immovable)
     {
         f32 scale = -depth / distance;
         push.x = push.x * scale;
@@ -1053,7 +995,7 @@ u32 CollideRigidBodies(ObjectRigidBody* body, const Vector4* sphere, const Vecto
         ClampLength(otherRadius, body, &push);
         MoveInstance(otherInstance, &push);
     }
-    else if ((other->bits88 & Immovable) != 0)
+    else if (other->bits.immovable)
     {
         f32 scale = depth / distance;
         push.x = push.x * scale;
@@ -1091,13 +1033,13 @@ u32 CollideUprightBodies(ObjectRigidBody* body, const Vector4* sphere, const Vec
     f32 bottom = sphere->y - radius;
     InstanceContext* instance = body->node->owner;
     InstanceContext* otherInstance = other->node->owner;
-    f32 otherAcross = otherRadius * other->unknownA0;
+    f32 otherAcross = otherRadius * other->widthScale;
     if (otherTop < bottom)
     {
         return 0;
     }
 
-    f32 across = radius * body->unknownA0;
+    f32 across = radius * body->widthScale;
     if (top < otherBottom)
     {
         return 0;
@@ -1118,7 +1060,7 @@ u32 CollideUprightBodies(ObjectRigidBody* body, const Vector4* sphere, const Vec
     push.x = push.x * half;
     push.z = push.z * half;
     // Retail bug: as with spheres, the halved push is scaled again
-    if ((body->bits88 & Immovable) != 0)
+    if (body->bits.immovable)
     {
         f32 scale = -depth / distance;
         push.z = push.z * scale;
@@ -1126,7 +1068,7 @@ u32 CollideUprightBodies(ObjectRigidBody* body, const Vector4* sphere, const Vec
         ClampLength(otherRadius, body, &push);
         MoveInstance(otherInstance, &push);
     }
-    else if ((other->bits88 & Immovable) != 0)
+    else if (other->bits.immovable)
     {
         f32 scale = depth / distance;
         push.y = 0.0f;
@@ -1159,8 +1101,8 @@ u32 CollideSphereWithWorld(ObjectRigidBody* body, const Vector4* sphere)
     f32 radius = sphere->w;
     Vector4 start = *sphere;
     start.w = 1.0f;
-    f32 highest = -10000.0f;
-    u16 surfaceId = NoSurface;
+    f32 highest = NoRise;
+    u16 surfaceId = NoSurfaceId;
     u32 touched = 0;
     u32 inWater = 0;
     Vector4 center = *sphere;
@@ -1173,7 +1115,7 @@ u32 CollideSphereWithWorld(ObjectRigidBody* body, const Vector4* sphere)
         Vector4 normal;
         TriangleNormal(hit, &normal);
         Vector4 into = {normal.x, normal.y, normal.z, 1.0f};
-        if ((body->bits88 & SteersItself) == 0 && !(0.0f <= into.x * before.x + into.y * before.y + into.z * before.z))
+        if (!body->bits.steersItself && !(0.0f <= into.x * before.x + into.y * before.y + into.z * before.z))
         {
             continue;
         }
@@ -1185,7 +1127,7 @@ u32 CollideSphereWithWorld(ObjectRigidBody* body, const Vector4* sphere)
         }
 
         CollisionSurface* surface = GetTriangleSurface(hit);
-        if ((surface->collisionMask & SolidToObjects) == 0)
+        if (surface->flags.solidToObjects == 0)
         {
             body->node->TouchedWater(hit, &out);
             inWater = 1;
@@ -1201,7 +1143,7 @@ u32 CollideSphereWithWorld(ObjectRigidBody* body, const Vector4* sphere)
             highest = rise;
         }
 
-        if ((body->bits88 & Gripped) != 0)
+        if (body->bits.gripped)
         {
             RaiseGrip(body, body->friction * surface->friction);
         }
@@ -1210,17 +1152,17 @@ u32 CollideSphereWithWorld(ObjectRigidBody* body, const Vector4* sphere)
     return FinishWorldContacts(body, touched, inWater, surfaceId, &start, &center, velocity);
 }
 
-// The same as an upright ellipsoid as wide as its radius times the value at 0xA0
+// The same as an upright ellipsoid as wide as its radius times its width scale
 u32 CollideUprightWithWorld(ObjectRigidBody* body, const Vector4* sphere)
 {
     f32 radius = sphere->w;
     Vector4 start = *sphere;
     start.w = 1.0f;
-    f32 highest = -10000.0f;
-    u16 surfaceId = NoSurface;
+    f32 highest = NoRise;
+    u16 surfaceId = NoSurfaceId;
     u32 touched = 0;
     u32 inWater = 0;
-    f32 across = radius * body->unknownA0;
+    f32 across = radius * body->widthScale;
     Vector4* velocity = &body->node->motion->velocity;
     Vector4 center = *sphere;
     center.w = 1.0f;
@@ -1233,7 +1175,7 @@ u32 CollideUprightWithWorld(ObjectRigidBody* body, const Vector4* sphere)
         Vector4 normal;
         TriangleNormal(hit, &normal);
         Vector4 into = {normal.x, normal.y, normal.z, 1.0f};
-        if ((body->bits88 & SteersItself) == 0 && !(0.0f <= into.x * before.x + into.y * before.y + into.z * before.z))
+        if (!body->bits.steersItself && !(0.0f <= into.x * before.x + into.y * before.y + into.z * before.z))
         {
             continue;
         }
@@ -1245,7 +1187,7 @@ u32 CollideUprightWithWorld(ObjectRigidBody* body, const Vector4* sphere)
         }
 
         CollisionSurface* surface = GetTriangleSurface(hit);
-        if ((surface->collisionMask & SolidToObjects) == 0)
+        if (surface->flags.solidToObjects == 0)
         {
             body->node->TouchedWater(hit, &out);
             inWater = 1;
@@ -1262,7 +1204,7 @@ u32 CollideUprightWithWorld(ObjectRigidBody* body, const Vector4* sphere)
             highest = rise;
         }
 
-        if ((body->bits88 & Gripped) != 0)
+        if (body->bits.gripped)
         {
             RaiseGrip(body, body->friction * surface->friction);
         }
@@ -1275,49 +1217,51 @@ u32 CollideUprightWithWorld(ObjectRigidBody* body, const Vector4* sphere)
 // moving instance rides it, and a slope steeper than the least one it stands on stops its fall instead
 u32 TouchHull(ObjectRigidBody* body, InstanceContext* other, Vector4* push, Vector4* velocity)
 {
-    if ((body->bits88 & SteersItself) == 0 &&
+    if (!body->bits.steersItself &&
         !(velocity->x * push->x + velocity->y * push->y + velocity->z * push->z < 0.0f))
     {
         return 1;
     }
 
+    // The pushes that count toward the contact normal: those not against it
+    constexpr f32 AgainstNormal = Rounded(-0.1);
     Normalize(push);
-    if ((body->bits88 & Gripped) != 0 && body->unknownC8 == 0.0f)
+    if (body->bits.gripped && body->grip == 0.0f)
     {
-        RaiseGrip(body, Rounded(0.8));
+        RaiseGrip(body, TouchGrip);
     }
 
-    if (Rounded(0.7) < push->y)
+    if (GroundNormalY < push->y)
     {
-        body->bits90 = body->bits90 | OnGround;
-        if ((other->flags & CarriesFlag) != 0)
+        body->state.onGround = 1;
+        if (other->flags.carriesRiders)
         {
-            auto* movement = static_cast<MovementNode*>(GetGameNode(&other->nodes, MovementNodeKind));
+            auto* movement = static_cast<MovementNode*>(GetGameNode(&other->nodes, NodeMovement));
             if (movement != nullptr)
             {
                 body->rideMovement = movement;
             }
         }
     }
-    else if (__builtin_fabsf(push->y) < Rounded(0.3))
+    else if (__builtin_fabsf(push->y) < WallNormalY)
     {
-        body->bits90 = body->bits90 | AgainstWall;
+        body->state.againstWall = 1;
     }
 
-    u64 bits = body->bits88;
-    if ((bits & SlopeLimited) != 0 && push->y < body->size)
+    ObjectRigidBodyBits bits = body->bits;
+    if (bits.slopeLimited && push->y < body->size)
     {
         velocity->y = 0.0f;
         return 0;
     }
 
-    if ((bits & SteersItself) == 0 && (body->bits90 & Bit4) == 0)
+    if (!bits.steersItself && !body->state.followsSurface)
     {
         return 1;
     }
 
     const Vector4* normal = &body->contactNormal;
-    if (Rounded(-0.1) < push->x * normal->x + push->y * normal->y + push->z * normal->z)
+    if (AgainstNormal < push->x * normal->x + push->y * normal->y + push->z * normal->z)
     {
         body->contactSum.x = body->contactSum.x + push->x;
         body->contactSum.y = body->contactSum.y + push->y;
@@ -1325,7 +1269,7 @@ u32 TouchHull(ObjectRigidBody* body, InstanceContext* other, Vector4* push, Vect
         body->contactCount = body->contactCount + 1.0f;
     }
 
-    body->unknownC0 = 0.0f;
+    body->untouchedTime = 0.0f;
     return 1;
 }
 
@@ -1335,7 +1279,7 @@ u32 TouchHull(ObjectRigidBody* body, InstanceContext* other, Vector4* push, Vect
 u32 SlideAlong(f32 elapsed, ObjectRigidBody* body, Vector4* normal, Vector4* velocity)
 {
     f32 into = velocity->x * normal->x + velocity->y * normal->y + velocity->z * normal->z;
-    if ((body->bits88 & SteersItself) == 0 && !(into < 0.0f))
+    if (!body->bits.steersItself && !(into < 0.0f))
     {
         return 1;
     }
@@ -1343,31 +1287,31 @@ u32 SlideAlong(f32 elapsed, ObjectRigidBody* body, Vector4* normal, Vector4* vel
     Normalize(normal);
     RemoveComponentAlong(velocity, normal, 1);
     f32 along = normal->x * velocity->x + normal->y * velocity->y + normal->z * velocity->z;
-    f32 slope = (normal->x * normal->x + normal->z * normal->z) * Rounded(0.3);
+    f32 slope = (normal->x * normal->x + normal->z * normal->z) * SlopeKnock;
     KnockNode((1.0f - along) * slope, body->node);
-    if ((body->bits88 & Gripped) != 0 && body->unknownC8 == 0.0f)
+    if (body->bits.gripped && body->grip == 0.0f)
     {
-        RaiseGrip(body, Rounded(0.8));
+        RaiseGrip(body, TouchGrip);
     }
 
-    if (Rounded(0.7) < normal->y)
+    if (GroundNormalY < normal->y)
     {
-        body->bits90 = body->bits90 | OnGround;
+        body->state.onGround = 1;
     }
-    else if (__builtin_fabsf(normal->y) < Rounded(0.3))
+    else if (__builtin_fabsf(normal->y) < WallNormalY)
     {
-        body->bits90 = body->bits90 | AgainstWall;
+        body->state.againstWall = 1;
     }
 
-    if ((body->bits88 & SlopeLimited) != 0 && normal->y < body->size)
+    if (body->bits.slopeLimited && normal->y < body->size)
     {
         velocity->y = 0.0f;
     }
 
-    u64 bits = body->bits88;
-    if ((bits & SteersItself) != 0)
+    ObjectRigidBodyBits bits = body->bits;
+    if (bits.steersItself)
     {
-        f32 rate = (bits & OwnNormalRate) != 0 ? body->restitution : 6.0f;
+        f32 rate = bits.ownNormalRate ? body->restitution : SteeringNormalRate;
         f32 share = elapsed * rate;
         if (1.0f < share)
         {
@@ -1376,18 +1320,18 @@ u32 SlideAlong(f32 elapsed, ObjectRigidBody* body, Vector4* normal, Vector4* vel
 
         Ease(&body->contactNormal, normal, share);
         Normalize(&body->contactNormal);
-        if ((body->bits88 & SlopeLimited) != 0 && body->contactNormal.y < body->size)
+        if (body->bits.slopeLimited && body->contactNormal.y < body->size)
         {
             return 0;
         }
 
-        body->unknownC0 = 0.0f;
+        body->untouchedTime = 0.0f;
         return 1;
     }
 
-    if ((body->bits90 & Bit4) != 0)
+    if (body->state.followsSurface)
     {
-        Ease(&body->contactNormal, normal, elapsed * 5.0f);
+        Ease(&body->contactNormal, normal, elapsed * SurfaceNormalRate);
     }
     else
     {
@@ -1400,9 +1344,11 @@ u32 SlideAlong(f32 elapsed, ObjectRigidBody* body, Vector4* normal, Vector4* vel
 
 void RightRigidBody(f32 elapsed, ObjectRigidBody* body, Vector4* up)
 {
-    if ((body->bits88 & (TouchingInstance | TouchingWorld)) == 0 && Rounded(0.2) < body->unknownC0)
+    // How far it's pressed against what it stands on each frame
+    constexpr f32 Press = Rounded(-0.07);
+    if (!body->bits.touchingInstance && !body->bits.touchingWorld && UprightAfter < body->untouchedTime)
     {
-        f32 rate = (body->bits88 & OwnNormalRate) != 0 ? body->restitution * 1.5f : 21.0f;
+        f32 rate = body->bits.ownNormalRate ? body->restitution * UprightRateShare : UprightRate;
         Vector4 upright = {0.0f, 1.0f, 0.0f, 1.0f};
         Ease(&body->contactNormal, &upright, rate * elapsed);
         Normalize(&body->contactNormal);
@@ -1434,28 +1380,28 @@ void RightRigidBody(f32 elapsed, ObjectRigidBody* body, Vector4* up)
 
     // Pressed against what it stands on
     const Vector4* normal = &body->contactNormal;
-    Vector4 press = {normal->x * Rounded(-0.07), normal->y * Rounded(-0.07), normal->z * Rounded(-0.07), 1.0f};
+    Vector4 press = {normal->x * Press, normal->y * Press, normal->z * Press, 1.0f};
     MoveInstance(instance, &press);
 }
 
 void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
 {
-    body->node->flags |= ObjectNodeBase::FlagUnsettled;
+    body->node->flags.unused4 = 1;
     DynamicBody* physics = body->physicsBody;
-    if (physics != nullptr && (physics->bodyFlags & RigidBody::FlagLeftOut) == 0)
+    if (physics != nullptr && physics->bodyFlags.leftOut == 0)
     {
-        if ((clock->flags & TimeClock::FlagRunning) == 0)
+        if (clock->flags.running == 0)
         {
             return;
         }
 
         ObjectNode* node = body->node;
-        if (node != nullptr && node->motionBlock != nullptr && (node->motionBlock->bodyBits & BodyPushedByVolumes) != 0)
+        if (node != nullptr && node->motionBlock != nullptr && node->motionBlock->body.pushedByVolumes)
         {
             ApplyVolumeForces(body);
         }
 
-        if ((body->bits88 & Falls) == 0)
+        if (!body->bits.falls)
         {
             return;
         }
@@ -1469,30 +1415,30 @@ void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
         return;
     }
 
-    if ((body->bits88 & (LaunchMask | Moving)) == 0)
+    if (body->bits.launch == 0 && !body->bits.moving)
     {
         return;
     }
 
     MotionState* motion = body->node->motion;
-    u64 bits90 = body->bits90;
-    if ((bits90 & LaunchStepsMask) != LaunchStepsMask)
+    if (body->state.launchSteps != ObjectRigidBodyState::MostSteps)
     {
-        body->bits90 = (bits90 & ~LaunchStepsMask) | (((bits90 >> LaunchStepsShift) + 1) & KindMask) << LaunchStepsShift;
+        body->state.launchSteps++;
     }
 
     // Stopped once it touches something or nearly rests, 15 steps after its launch
-    u64 bits = body->bits88;
-    if ((bits & StopsAtRest) != 0)
+    ObjectRigidBodyBits bits = body->bits;
+    if (bits.stopsAtRest)
     {
-        bool resting = (bits & (TouchingInstance | TouchingWorld)) != 0;
+        bool resting = bits.touchingInstance || bits.touchingWorld;
         if (!resting)
         {
             const Vector4* velocity = &motion->velocity;
-            resting = velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z < Rounded(0.001);
+            resting = velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z <
+                      ObjectRigidBody::RestingSpeedSquared;
         }
 
-        if (resting && (body->bits90 & LaunchStepsMask) == LaunchStepsMask)
+        if (resting && body->state.launchSteps == ObjectRigidBodyState::MostSteps)
         {
             if (move != nullptr)
             {
@@ -1500,7 +1446,8 @@ void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
                 move->w = 1.0f;
             }
 
-            body->bits88 = body->bits88 & ~Moving & ~StopsAtRest;
+            body->bits.moving = 0;
+            body->bits.stopsAtRest = 0;
             return;
         }
     }
@@ -1516,14 +1463,14 @@ void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
     motion->startVelocity = motion->velocity;
     InstanceContext* instance = body->node->owner;
     // (Retail makes an empty String here and destroys it at the end, unused)
-    if ((body->bits88 & Falls) == 0)
+    if (!body->bits.falls)
     {
         return;
     }
 
     Vector4* velocity = &motion->velocity;
     velocity->y = velocity->y - body->gravity * seconds;
-    if ((body->bits88 & Dragged) != 0)
+    if (body->bits.dragged)
     {
         f32 kept = 1.0f - body->drag;
         velocity->x = velocity->x * kept;
@@ -1531,24 +1478,24 @@ void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
         velocity->z = velocity->z * kept;
     }
 
-    bits = body->bits88;
-    if ((bits & Gripped) != 0 && (bits & (TouchingInstance | TouchingWorld)) != 0 && 0.0f < body->unknownC8)
+    bits = body->bits;
+    if (bits.gripped && (bits.touchingInstance || bits.touchingWorld) && 0.0f < body->grip)
     {
-        if (1.0f < body->unknownC8)
+        if (1.0f < body->grip)
         {
-            body->unknownC8 = 1.0f;
+            body->grip = 1.0f;
         }
 
-        f32 kept = 1.0f - body->unknownC8;
+        f32 kept = 1.0f - body->grip;
         velocity->x = velocity->x * kept;
         velocity->y = velocity->y * kept;
         velocity->z = velocity->z * kept;
     }
 
-    body->unknownC8 = 0.0f;
-    bits = body->bits88;
+    body->grip = 0.0f;
+    bits = body->bits;
     Vector4 step = *velocity;
-    if ((bits & LaunchMask) == LaunchKind2 || (bits & Moving) != 0)
+    if (bits.launch == ObjectRigidBodyBits::Launched || bits.moving)
     {
         step.x = step.x * seconds;
         step.y = step.y * seconds;
@@ -1581,8 +1528,8 @@ void StepRigidBody(ObjectRigidBody* body, TimeClock* clock, Vector4* move)
             {
                 // (Retail takes x and z from the grip it cleared above: 0)
                 f32 scale = most / length;
-                step.z = body->unknownC8;
-                step.x = body->unknownC8;
+                step.z = body->grip;
+                step.x = body->grip;
                 step.y = step.y * scale;
             }
         }
@@ -1616,10 +1563,10 @@ void CutDownTo(Vector4* vector, f32 most)
 
 void PushInstanceNode(ObjectRigidBody* body, InstanceContext* other)
 {
-    auto* node = static_cast<GameNode*>(GetGameNode(&other->nodes, ObjectNodeKind));
+    auto* node = static_cast<GameNode*>(GetGameNode(&other->nodes, NodeObject));
     if (node != nullptr)
     {
-        CallVirtual<void>(node, node->vtable, PushSlot, 0.0f, body->node->owner);
+        CallVirtual<void>(node, node->vtable, ObjectNode::PushSlot, 0.0f, body->node->owner);
     }
 }
 
@@ -1627,7 +1574,7 @@ void StopRiding(ObjectRigidBody* body)
 {
     body->object = nullptr;
     body->rideMovement = nullptr;
-    body->node->flags &= ~ObjectNode::FlagRiding;
+    body->node->flags.riding = 0;
 }
 
 // The position taken into the space of the instance it rides (through the inverse of its movement node's matrix now)
@@ -1639,7 +1586,7 @@ void KeepRidePosition(ObjectRigidBody* body, const Vector4* position)
         return;
     }
 
-    auto* movement = static_cast<MovementNode*>(GetGameNode(&ridden->nodes, MovementNodeKind));
+    auto* movement = static_cast<MovementNode*>(GetGameNode(&ridden->nodes, NodeMovement));
     Matrix4x4 inverse = *movement->CurrentMatrix();
     VuInvertRigidInPlace(&inverse);
     body->ridePosition = *position;
@@ -1649,7 +1596,7 @@ void KeepRidePosition(ObjectRigidBody* body, const Vector4* position)
 u32 CollideWithRigidBody(ObjectRigidBody* body, const Vector4* sphere, ObjectRigidBody* other)
 {
     ObjectNode* node = other->node;
-    Vector4 otherSphere = node->unknown20;
+    Vector4 otherSphere = node->middle;
     otherSphere.w = node->rollRadius;
     return CollideRigidBodies(body, sphere, &otherSphere, other);
 }

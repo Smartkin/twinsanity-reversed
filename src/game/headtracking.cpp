@@ -18,12 +18,6 @@ extern "C"
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// 2π / 65536's inverse
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 PositionRow = 3;
-
 // The instance a reference is to (none without one)
 InstanceContext* TargetOf(const Reference* reference)
 {
@@ -33,13 +27,12 @@ InstanceContext* TargetOf(const Reference* reference)
 // A reference block counted once more (a handle copied)
 void CountReference(Reference* reference)
 {
-    u32 count = ((reference->value & ReferenceBits::CountMask) + 1) & ReferenceBits::CountMask;
-    reference->value = (reference->value & ~ReferenceBits::CountMask) | count;
+    reference->bits.count++;
 }
 
 bool SteersInstance(const HeadTracking* tracking)
 {
-    return (tracking->settings->bits & HeadTrackingSettings::SteersInstance) != 0;
+    return tracking->settings->bits.steering != 0;
 }
 
 f32 Dot(const Vector4* a, const Vector4* b)
@@ -50,12 +43,11 @@ f32 Dot(const Vector4* a, const Vector4* b)
 // Where a target is looked at: its agent's centre of its collision box (its vtable's slot 14), else the middle of its box
 void LookPosition(InstanceContext* target, Vector4* position)
 {
-    constexpr u32 CollisionCentreSlot = 14;
-    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&target->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&target->nodes, NodeObject));
     if (node != nullptr)
     {
         Agent* agent = node->agent;
-        CallVirtual<void>(agent, agent->vtable, CollisionCentreSlot, position);
+        CallVirtual<void>(agent, agent->vtable, Agent::CollisionCenterSlot, position);
         return;
     }
 
@@ -72,12 +64,14 @@ HeadTracking* HeadTracking::ConstructTurner(HeadTracking* tracking, ObjectNode* 
     tracking->vtable = g_HeadTrackingVTable;
     tracking->node = node;
     tracking->direction = {0.0f, 0.0f, -1.0f, 1.0f};
-    tracking->unknown90 = {0.0f, 0.0f, -1.0f, 1.0f};
-    tracking->exitPoint = NoJoint;
-    tracking->joint = NoJoint;
-    tracking->secondJoint = NoJoint;
+    tracking->unused90 = {0.0f, 0.0f, -1.0f, 1.0f};
+    tracking->bits.exitPoint = GameOGI::NoExitPoint;
+    tracking->bits.joint = GameOGI::NoJoint;
+    tracking->bits.secondJoint = GameOGI::NoJoint;
     tracking->damping = 1.0f;
-    tracking->bits &= ~u64{BitLimits | BitReturning | BitHooked};
+    tracking->bits.value &= ~HeadTrackingState::LimitsMask;
+    tracking->bits.returning = 0;
+    tracking->bits.hooked = 0;
     ResetHeadTurns(tracking);
     return tracking;
 }
@@ -87,7 +81,11 @@ HeadTracking* HeadTracking::Construct(HeadTracking* tracking, ObjectNode* node)
     ConstructTurner(tracking, node);
     tracking->target = nullptr;
     tracking->remembered = nullptr;
-    tracking->flags &= ~u64{Flag0 | FlagStops | FlagAgentTurns | FlagIgnoredByLook | FlagHasTarget};
+    tracking->flags.unused0 = 0;
+    tracking->flags.stops = 0;
+    tracking->flags.agentTurns = 0;
+    tracking->flags.ignoredByLook = 0;
+    tracking->flags.hasTarget = 0;
     tracking->last = nullptr;
     tracking->settings = nullptr;
     tracking->weight = 0.0f;
@@ -98,7 +96,7 @@ HeadTracking* HeadTracking::Construct(HeadTracking* tracking, ObjectNode* node)
 u32 HeadTracking::PoseJoint(JointAnimator* animator, Matrix4x4* jointMatrix)
 {
     InstanceContext* instance = node->owner;
-    if (exitPoint == NoJoint)
+    if (bits.exitPoint == GameOGI::NoExitPoint)
     {
         CreateJointTransform(animator, animator->animation->parent, 0, jointMatrix);
         ObjectPlace* place = instance->place;
@@ -107,9 +105,9 @@ u32 HeadTracking::PoseJoint(JointAnimator* animator, Matrix4x4* jointMatrix)
     }
     else
     {
-        OgiAnimator* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNode::NodeKind))->animator;
+        OgiAnimator* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel))->animator;
         SizedArray<ExitPointAnimation*>* exitPoints = model->exitPoints;
-        matrix = UpdateExitPointMatrix(exitPoints != nullptr ? exitPoints->data[exitPoint] : nullptr)->matrix;
+        matrix = UpdateExitPointMatrix(exitPoints != nullptr ? exitPoints->data[bits.exitPoint] : nullptr)->matrix;
     }
 
     s32 x = pitchAngle;
@@ -122,9 +120,9 @@ u32 HeadTracking::PoseJoint(JointAnimator* animator, Matrix4x4* jointMatrix)
 
 u32 TurnHead(HeadTracking* tracking, InstanceContext* instance, const Vector4* target)
 {
-    tracking->bits &= ~u64{HeadTracking::BitLimits};
+    tracking->bits.value &= ~HeadTrackingState::LimitsMask;
     f32 elapsed = static_cast<f32>(static_cast<s32>(GetContextClock(instance)->advance)) * g_SecondsPerClockUnit;
-    if ((tracking->bits & HeadTracking::BitReturning) != 0)
+    if (tracking->bits.returning)
     {
         // A spring pulling the turns back to rest
         constexpr f32 Pull = 1000.0f;
@@ -162,23 +160,27 @@ u32 TurnHead(HeadTracking* tracking, InstanceContext* instance, const Vector4* t
     if (tracking->pitch < tracking->minPitch)
     {
         tracking->pitch = tracking->minPitch;
-        tracking->bits |= HeadTracking::BitPitchBelow | HeadTracking::BitLimited;
+        tracking->bits.pitchBelow = 1;
+        tracking->bits.limited = 1;
     }
     else if (tracking->maxPitch < tracking->pitch)
     {
         tracking->pitch = tracking->maxPitch;
-        tracking->bits |= HeadTracking::BitPitchAbove | HeadTracking::BitLimited;
+        tracking->bits.pitchAbove = 1;
+        tracking->bits.limited = 1;
     }
 
     if (tracking->yaw < -tracking->maxYaw)
     {
         tracking->yaw = -tracking->maxYaw;
-        tracking->bits |= HeadTracking::BitYawBelow | HeadTracking::BitLimited;
+        tracking->bits.yawBelow = 1;
+        tracking->bits.limited = 1;
     }
     else if (tracking->maxYaw < tracking->yaw)
     {
         tracking->yaw = tracking->maxYaw;
-        tracking->bits |= HeadTracking::BitYawAbove | HeadTracking::BitLimited;
+        tracking->bits.yawAbove = 1;
+        tracking->bits.limited = 1;
     }
 
     tracking->rollAngle = 0;
@@ -189,52 +191,52 @@ u32 TurnHead(HeadTracking* tracking, InstanceContext* instance, const Vector4* t
 
 void SetUpHeadTracking(HeadTracking* tracking, const HeadTrackingSettings* settings, TimeClock* clock, ObjectNode* node)
 {
-    // The agent's vtable function that says whether it turns the head itself
-    constexpr u32 AgentTurnsHeadSlot = 12;
-    constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
     tracking->settings = settings;
-    tracking->unknownC4 = RandomFromFloat(2.0f, 8.0f);
-    if ((settings->bits & HeadTrackingSettings::SteersInstance) == 0)
+    tracking->unusedC4 = RandomFromFloat(2.0f, 8.0f);
+    if (settings->bits.steering == 0)
     {
-        tracking->joint = settings->bits & 0xFF;
-        tracking->secondJoint = settings->bits >> 8 & 0xFF;
+        tracking->bits.joint = settings->bits.joint;
+        tracking->bits.secondJoint = settings->bits.secondJoint;
         tracking->stiffness = settings->stiffness;
-        tracking->bits &= ~u64{HeadTracking::BitReturning};
+        tracking->bits.returning = 0;
         tracking->maxPitch = static_cast<f32>(settings->positivePitch) * AngleToRadians;
         tracking->maxYaw = static_cast<f32>(settings->yawLimit) * AngleToRadians;
         tracking->minPitch = -(static_cast<f32>(settings->negativePitch) * AngleToRadians);
         tracking->damping = settings->damping;
-        tracking->exitPoint = settings->bits >> 16 & 0xFF;
+        tracking->bits.exitPoint = settings->bits.exitPoint;
     }
 
     tracking->time = clock->time;
-    tracking->flags = (tracking->flags & ~u64{HeadTracking::FlagStops}) | HeadTracking::FlagHasTarget;
+    tracking->flags.stops = 0;
+    tracking->flags.hasTarget = 1;
+    // The playable characters turn their heads themselves (their look)
     Agent* agent = node->agent;
-    u32 agentTurns = CallVirtual<u32>(agent, agent->vtable, AgentTurnsHeadSlot);
-    tracking->flags = (tracking->flags & ~u64{HeadTracking::FlagAgentTurns}) | u64{agentTurns & 1} << 4;
+    u32 agentTurns = CallVirtual<u32>(agent, agent->vtable, Agent::IsCharacterSlot);
+    tracking->flags.agentTurns = agentTurns;
     StartHeadTracking(tracking, node);
 }
 
 void StartHeadTracking(HeadTracking* tracking, ObjectNode* node)
 {
-    if (!SteersInstance(tracking) && (tracking->bits & HeadTracking::BitHooked) == 0)
+    if (!SteersInstance(tracking) && !tracking->bits.hooked)
     {
-        if ((tracking->flags & HeadTracking::FlagAgentTurns) == 0)
+        if (!tracking->flags.agentTurns)
         {
-            OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNode::NodeKind))->animator;
-            AddJointCallback(animator, tracking->joint, tracking);
-            tracking->bits |= HeadTracking::BitHooked;
-            if (tracking->secondJoint != HeadTracking::NoJoint)
+            OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel))->animator;
+            AddJointCallback(animator, tracking->bits.joint, tracking);
+            tracking->bits.hooked = 1;
+            if (tracking->bits.secondJoint != GameOGI::NoJoint)
             {
-                AddJointCallback(animator, tracking->secondJoint, tracking);
+                AddJointCallback(animator, tracking->bits.secondJoint, tracking);
             }
         }
 
-        tracking->bits &= ~u64{HeadTracking::BitReturning};
+        tracking->bits.returning = 0;
     }
 
-    tracking->flags =
-        (tracking->flags | HeadTracking::FlagTracking) & ~u64{HeadTracking::FlagStops | HeadTracking::FlagIgnoredByLook};
+    tracking->flags.tracking = 1;
+    tracking->flags.stops = 0;
+    tracking->flags.ignoredByLook = 0;
 }
 
 void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node)
@@ -246,19 +248,18 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
     constexpr f32 WeightFade = Rounded(0.97);
     constexpr f32 LeastWeight = Rounded(0.05);
     constexpr f32 AtRest = Rounded(0.005);
-    constexpr f32 MostLean = 90.0f;
     InstanceContext* instance = node->owner;
     const HeadTrackingSettings* settings = tracking->settings;
-    u32 seen = instance->seen[0] | instance->seen[1] << 8 | instance->seen[2] << 16;
+    u32 seen = instance->seen;
     if (settings->unseenLimit < NoUnseenLimit && UnseenLimit - settings->unseenLimit < seen)
     {
         return;
     }
 
-    bool steers = (settings->bits & HeadTrackingSettings::SteersInstance) != 0;
-    bool agentTurns = (tracking->flags & HeadTracking::FlagAgentTurns) != 0;
-    bool hooked = (tracking->bits & HeadTracking::BitHooked) != 0;
-    if ((tracking->flags & HeadTracking::FlagTracking) == 0 || (!agentTurns && !steers && !hooked))
+    bool steers = settings->bits.steering != 0;
+    bool agentTurns = tracking->flags.agentTurns;
+    bool hooked = tracking->bits.hooked;
+    if (!tracking->flags.tracking || (!agentTurns && !steers && !hooked))
     {
         if (steers)
         {
@@ -266,7 +267,7 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
         }
 
         InstanceContext* last = TargetOf(tracking->last);
-        if (last != nullptr && (last->flags & ReferencedObject::FlagVisible) != 0)
+        if (last != nullptr && last->flags.visible)
         {
             HeadTrackingIdle(tracking, clock, instance);
         }
@@ -287,12 +288,12 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
     }
 
     Vector4 position;
-    if (!steers && !agentTurns && (tracking->bits & HeadTracking::BitReturning) != 0)
+    if (!steers && !agentTurns && tracking->bits.returning)
     {
         if (!(__builtin_fabsf(tracking->pitch) < AtRest && __builtin_fabsf(tracking->yaw) < AtRest))
         {
             // Still turning back (the target goes unread)
-            if ((tracking->bits & HeadTracking::BitHooked) != 0)
+            if (tracking->bits.hooked)
             {
                 TurnHead(tracking, instance, &position);
             }
@@ -303,21 +304,21 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
         // Back at rest: its joints unhooked, and it stops when it was told to
         tracking->weight = 0.0f;
         LetGoOfHeadTracking(tracking, node);
-        u64 flags = tracking->flags;
-        tracking->flags = flags & ~u64{HeadTracking::FlagHasTarget};
-        tracking->bits &= ~u64{HeadTracking::BitReturning};
-        if ((flags & HeadTracking::FlagStops) != 0)
+        tracking->flags.hasTarget = 0;
+        tracking->bits.returning = 0;
+        if (tracking->flags.stops)
         {
-            tracking->flags = flags & ~u64{HeadTracking::FlagHasTarget | HeadTracking::FlagTracking | HeadTracking::FlagStops};
+            tracking->flags.tracking = 0;
+            tracking->flags.stops = 0;
         }
 
         return;
     }
 
-    if (target != nullptr && !(tracking->weight < LeastWeight) && (target->flags & ReferencedObject::FlagVisible) != 0)
+    if (target != nullptr && !(tracking->weight < LeastWeight) && target->flags.visible)
     {
-        tracking->flags |= HeadTracking::FlagHasTarget;
-        if ((tracking->flags & HeadTracking::FlagAgentTurns) != 0)
+        tracking->flags.hasTarget = 1;
+        if (tracking->flags.agentTurns)
         {
             return;
         }
@@ -325,19 +326,19 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
         LookPosition(target, &position);
         if (steers)
         {
-            if ((settings->bits & HeadTrackingSettings::SteersFacing) != 0)
+            if ((settings->bits.steering & HeadTrackingSettings::SteersFacing) != 0)
             {
                 SteerBodyTowards(settings->stiffness, 0.0f, instance, &position, 1);
             }
             else
             {
-                SteerTowards(settings->stiffness, 0.0f, MostLean, instance, &position);
+                SteerTowards(settings->stiffness, 0.0f, SteerMostLean, instance, &position);
             }
 
             return;
         }
 
-        if ((tracking->bits & HeadTracking::BitHooked) != 0)
+        if (tracking->bits.hooked)
         {
             TurnHead(tracking, instance, &position);
         }
@@ -351,14 +352,14 @@ void StepHeadTracking(HeadTracking* tracking, TimeClock* clock, ObjectNode* node
         AssignReference(&tracking->last, remembered);
         tracking->weight = tracking->rememberedWeight;
         tracking->time = GetContextClock(remembered)->time;
-        tracking->flags |= HeadTracking::FlagHasTarget;
+        tracking->flags.hasTarget = 1;
         return;
     }
 
-    if ((tracking->flags & HeadTracking::FlagHasTarget) != 0)
+    if (tracking->flags.hasTarget)
     {
         LetGoOfHeadTarget(tracking, 0);
-        tracking->flags &= ~u64{HeadTracking::FlagHasTarget};
+        tracking->flags.hasTarget = 0;
         return;
     }
 
@@ -372,7 +373,7 @@ u32 HeadTrackingIdle(HeadTracking*, TimeClock*, InstanceContext*)
 
 void LetGoOfHeadTarget(HeadTracking* tracking, u32 stops)
 {
-    tracking->flags = (tracking->flags & ~u64{HeadTracking::FlagStops}) | u64{stops & 1} << 2;
+    tracking->flags.stops = stops;
     if (TargetOf(tracking->target) != nullptr)
     {
         RemoveReference(&tracking->target);
@@ -381,13 +382,14 @@ void LetGoOfHeadTarget(HeadTracking* tracking, u32 stops)
 
     if (!SteersInstance(tracking))
     {
-        tracking->bits = (tracking->bits | HeadTracking::BitReturning) & ~u64{HeadTracking::Bit31};
+        tracking->bits.returning = 1;
+        tracking->bits.unused31 = 0;
     }
 }
 
 void HearNoise(HeadTracking* tracking, const NoiseEvent* noise, ObjectNode* node)
 {
-    if ((tracking->settings->bits & HeadTrackingSettings::IgnoresNoises) != 0 || (tracking->flags & HeadTracking::FlagStops) != 0)
+    if (tracking->settings->bits.ignoresNoises || tracking->flags.stops)
     {
         return;
     }
@@ -423,12 +425,12 @@ void HearNoise(HeadTracking* tracking, const NoiseEvent* noise, ObjectNode* node
     tracking->time = GetContextClock(TargetOf(tracking->target))->time;
     if (!SteersInstance(tracking))
     {
-        tracking->bits &= ~u64{HeadTracking::BitReturning};
+        tracking->bits.returning = 0;
     }
 
-    u64 flags = (tracking->flags & ~u64{HeadTracking::FlagStops}) | HeadTracking::FlagHasTarget;
-    tracking->flags = flags;
-    if ((flags & HeadTracking::FlagTracking) == 0 || (tracking->bits & HeadTracking::BitHooked) == 0)
+    tracking->flags.stops = 0;
+    tracking->flags.hasTarget = 1;
+    if (!tracking->flags.tracking || !tracking->bits.hooked)
     {
         StartHeadTracking(tracking, node);
     }
@@ -438,10 +440,10 @@ EABI_EXPORT(FUN_00237db0, TrackHead);
 
 void TrackHead(f32 weight, HeadTracking* tracking, InstanceContext* target, ObjectNode* node, u32 remembered)
 {
-    tracking->flags &= ~u64{HeadTracking::FlagStops};
+    tracking->flags.stops = 0;
     if (!SteersInstance(tracking))
     {
-        tracking->bits &= ~u64{HeadTracking::BitReturning};
+        tracking->bits.returning = 0;
     }
 
     if (remembered != 0)
@@ -454,6 +456,6 @@ void TrackHead(f32 weight, HeadTracking* tracking, InstanceContext* target, Obje
     AssignReference(&tracking->last, target);
     tracking->weight = weight;
     tracking->time = GetContextClock(TargetOf(tracking->target))->time;
-    tracking->flags |= HeadTracking::FlagHasTarget;
+    tracking->flags.hasTarget = 1;
     StartHeadTracking(tracking, node);
 }

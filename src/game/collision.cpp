@@ -22,11 +22,21 @@ EABI_EXPORT(FUN_0027eb40, AccelerateOnSurface);
 
 namespace
 {
-constexpr f32 NoHit = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+// No CollisionHit for the instances' cast's face hit
+constexpr u32 NoHitFace = 0;
+// The most leaves a box query finds, and where their groups go: the scripts' state jump table's second half
 constexpr s32 MostLeaves = 0x100;
-// The leaves' groups go after the scripts' state jump table's first 256 entries
-u32* const CollisionLeaves = reinterpret_cast<u32*>(&g_StateJumpTable[256]);
+constexpr u32 JumpTableHalf = sizeof(g_StateJumpTable) / sizeof(g_StateJumpTable[0]) / 2;
+u32* const CollisionLeaves = reinterpret_cast<u32*>(&g_StateJumpTable[JumpTableHalf]);
+// A surface's volume scales of the kinds of contact (CollisionSurface::volumeScales)
+enum SurfaceVolumeScale : u32
+{
+    ImpactVolume = 0,
+    HardImpactVolume = 1,
+    ScrapeVolume = 2,
+    StepsVolume = 3,
+    LandVolume = 4,
+};
 
 void AddLeaf(s32 node)
 {
@@ -44,34 +54,29 @@ void CopyHit(CollisionHit* to, const CollisionHit* from)
     to->vertices[1] = from->vertices[1];
     to->vertices[2] = from->vertices[2];
     to->surface = from->surface;
-    to->unknown32 = from->unknown32;
-}
-
-u32 VertexIndex(u64 packed, u32 shift)
-{
-    return static_cast<s32>(static_cast<u32>(packed >> shift & CollisionTriangle::VertexMask));
+    to->unused32 = from->unused32;
 }
 }
 
-CollisionData* ConstructCollisionData(CollisionData* data)
+CollisionData* ConstructCollisionData(CollisionData* collision)
 {
     constexpr u32 Version = 3001;
-    data->version = Version;
-    data->verticesHandle = -1;
-    data->nodesHandle = -1;
-    data->groupsHandle = -1;
-    data->trianglesHandle = -1;
-    data->queued = 0;
-    data->nodeCount = 0;
-    data->groupCount = 0;
-    data->triangleCount = 0;
-    data->vertexCount = 0;
-    return data;
+    collision->version = Version;
+    collision->verticesHandle = -1;
+    collision->nodesHandle = -1;
+    collision->groupsHandle = -1;
+    collision->trianglesHandle = -1;
+    collision->queued = 0;
+    collision->nodeCount = 0;
+    collision->groupCount = 0;
+    collision->triangleCount = 0;
+    collision->vertexCount = 0;
+    return collision;
 }
 
-void DestroyCollisionData(CollisionData* data, u32 destroyFlags)
+void DestroyCollisionData(CollisionData* collision, u32 destroyFlags)
 {
-    s32* handles[] = {&data->nodesHandle, &data->groupsHandle, &data->trianglesHandle, &data->verticesHandle};
+    s32* handles[] = {&collision->nodesHandle, &collision->groupsHandle, &collision->trianglesHandle, &collision->verticesHandle};
     for (s32* handle : handles)
     {
         if (*handle >= 0)
@@ -80,21 +85,21 @@ void DestroyCollisionData(CollisionData* data, u32 destroyFlags)
         }
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
-        MemoryDeallocate2_(data);
+        MemoryDeallocate2_(collision);
     }
 }
 
-void ReadCollisionData(CollisionData* data, u32 flags, s32 offset, const u8* header)
+void ReadCollisionData(CollisionData* collision, u32 closesFile, s32 offset, const u8* header)
 {
-    constexpr u32 HeaderSize = 0x14;
-    constexpr u32 OnDisk = 1;
-    constexpr u32 VerticesFlags = 5;
-    GameReadersStorage* storage = g_ReadersStorages[0];
-    RetailLibc::MemoryCopy(data, header, HeaderSize);
-    u32 verticesFlags = flags == 0 ? OnDisk : VerticesFlags;
-    s32 at = offset + HeaderSize;
+    // The arrays' readers' flags, and the last one's closing the file once read
+    constexpr u32 ArrayFlags = SubItemsReaderOptions::Unused0;
+    constexpr u32 ClosingArrayFlags = SubItemsReaderOptions::Unused0 | SubItemsReaderOptions::ClosesFile;
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
+    RetailLibc::MemoryCopy(collision, header, CollisionHeaderSize);
+    u32 verticesFlags = closesFile == 0 ? ArrayFlags : ClosingArrayFlags;
+    s32 at = offset + CollisionHeaderSize;
     struct Array
     {
         s32* handle;
@@ -103,26 +108,26 @@ void ReadCollisionData(CollisionData* data, u32 flags, s32 offset, const u8* hea
     };
 
     const Array arrays[] = {
-        {&data->nodesHandle, OnDisk, data->nodeCount * static_cast<u32>(sizeof(CollisionNode))},
-        {&data->groupsHandle, OnDisk, data->groupCount * static_cast<u32>(sizeof(CollisionGroup))},
-        {&data->trianglesHandle, OnDisk, data->triangleCount * static_cast<u32>(sizeof(CollisionTriangle))},
-        {&data->verticesHandle, verticesFlags, data->vertexCount * static_cast<u32>(sizeof(Vector4))},
+        {&collision->nodesHandle, ArrayFlags, collision->nodeCount * static_cast<u32>(sizeof(CollisionNode))},
+        {&collision->groupsHandle, ArrayFlags, collision->groupCount * static_cast<u32>(sizeof(CollisionGroup))},
+        {&collision->trianglesHandle, ArrayFlags, collision->triangleCount * static_cast<u32>(sizeof(CollisionTriangle))},
+        {&collision->verticesHandle, verticesFlags, collision->vertexCount * static_cast<u32>(sizeof(Vector4))},
     };
     for (const Array& array : arrays)
     {
         auto* reader = static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader)));
         reader = SubItemsReader::ConstructOnDisk(reader, array.handle, array.flags, at, array.size);
         at += array.size;
-        AddItemReaderToReaderStorage(storage, reader, 0);
+        AddItemReaderToReaderStorage(storage, reader, QueueBack);
     }
 
-    data->queued = 1;
+    collision->queued = 1;
 }
 
 void CollisionSectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -130,27 +135,26 @@ void CollisionSectionReader::Destroy(u32 flags)
 
 void CollisionSectionReader::Read(u8* header, u32, ReaderStack*)
 {
-    ReadCollisionData(data, flags, offset, header);
+    ReadCollisionData(collision, closesFile, offset, header);
 }
 
 void QueueCollisionSection(CollisionData** holder, s32 offset)
 {
-    constexpr u32 OnDisk = 8;
-    constexpr u32 HeaderSize = 0x14;
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     auto* section = static_cast<CollisionSectionReader*>(MemoryAllocate(sizeof(CollisionSectionReader)));
     section->vtable = g_CollisionSectionReaderVTable;
-    section->data = *holder;
+    section->collision = *holder;
     section->offset = offset;
-    section->flags = 0;
+    section->closesFile = 0;
     auto* reader = static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader)));
-    reader = SubItemsReader::ConstructOpen(reader, section, OnDisk, offset, HeaderSize);
-    AddItemReaderToReaderStorage(storage, reader, 0);
+    // The header read into the disk manager, let go of once it's read
+    reader = SubItemsReader::ConstructOpen(reader, section, SubItemsReaderOptions::OnDisk, offset, CollisionHeaderSize);
+    AddItemReaderToReaderStorage(storage, reader, QueueBack);
 }
 
-CollisionData** ConstructCollisionHolder(CollisionData** holder, CollisionData* data)
+CollisionData** ConstructCollisionHolder(CollisionData** holder, CollisionData* collision)
 {
-    *holder = data;
+    *holder = collision;
     return holder;
 }
 
@@ -161,18 +165,18 @@ void* ConstructCollisionScratch(void* scratch)
 
 void DestroyCollisionScratch(void* scratch, u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(scratch);
     }
 }
 
-void QueryCollisionBox(CollisionData* data, const Box* box)
+void QueryCollisionBox(CollisionData* collision, const Box* box)
 {
     g_CollisionLeafCount = 0;
-    auto* nodes = reinterpret_cast<const CollisionNode*>(DiskLoadedMemory(GetDiskManager(), &data->nodesHandle));
-    s32 first = nodes[0].first;
-    s32 second = nodes[0].second;
+    auto* nodes = reinterpret_cast<const CollisionNode*>(DiskLoadedMemory(GetDiskManager(), &collision->nodesHandle));
+    s32 first = nodes[0].firstChild;
+    s32 second = nodes[0].secondChild;
     if (first < 0)
     {
         AddLeaf(first);
@@ -181,19 +185,19 @@ void QueryCollisionBox(CollisionData* data, const Box* box)
 
     if (BoxesOverlap(box, nodes[first].Bounds()) != 0)
     {
-        QueryCollisionNode(data, first, nodes, box);
+        QueryCollisionNode(collision, first, nodes, box);
     }
 
     if (BoxesOverlap(box, nodes[second].Bounds()) != 0)
     {
-        QueryCollisionNode(data, second, nodes, box);
+        QueryCollisionNode(collision, second, nodes, box);
     }
 }
 
-void QueryCollisionNode(CollisionData* data, s32 node, const CollisionNode* nodes, const Box* box)
+void QueryCollisionNode(CollisionData* collision, s32 node, const CollisionNode* nodes, const Box* box)
 {
-    s32 first = nodes[node].first;
-    s32 second = nodes[node].second;
+    s32 first = nodes[node].firstChild;
+    s32 second = nodes[node].secondChild;
     if (first < 0)
     {
         AddLeaf(first);
@@ -202,18 +206,18 @@ void QueryCollisionNode(CollisionData* data, s32 node, const CollisionNode* node
 
     if (BoxesOverlap(box, nodes[first].Bounds()) != 0)
     {
-        QueryCollisionNode(data, first, nodes, box);
+        QueryCollisionNode(collision, first, nodes, box);
     }
 
     if (BoxesOverlap(box, nodes[second].Bounds()) != 0)
     {
-        QueryCollisionNode(data, second, nodes, box);
+        QueryCollisionNode(collision, second, nodes, box);
     }
 }
 
 CollisionSurface* GetCollisionSurface(const CollisionTriangle* triangle)
 {
-    return &g_CollisionSurfaces.surfaces[triangle->packed >> CollisionTriangle::SurfaceShift];
+    return &g_CollisionSurfaces.surfaces[triangle->surface];
 }
 
 CollisionSurface* GetTriangleSurface(const CollisionHit* hit)
@@ -223,10 +227,10 @@ CollisionSurface* GetTriangleSurface(const CollisionHit* hit)
 
 void GetCollisionTriangleWithCoordinates(CollisionHit* hit, const CollisionTriangle* triangle, const Vector4* vertices)
 {
-    hit->vertices[0] = vertices[VertexIndex(triangle->packed, 0)];
-    hit->vertices[1] = vertices[VertexIndex(triangle->packed, CollisionTriangle::SecondShift)];
-    hit->vertices[2] = vertices[VertexIndex(triangle->packed, CollisionTriangle::ThirdShift)];
-    hit->surface = static_cast<u16>(triangle->packed >> CollisionTriangle::SurfaceShift);
+    hit->vertices[0] = vertices[triangle->firstVertex];
+    hit->vertices[1] = vertices[triangle->secondVertex];
+    hit->vertices[2] = vertices[triangle->thirdVertex];
+    hit->surface = triangle->surface;
 }
 
 void TransformCollisionHit(CollisionHit* hit, const Matrix4x4* matrix)
@@ -252,48 +256,48 @@ void TriangleNormal(const CollisionHit* hit, Vector4* normal)
 
 CollisionSurface* ConstructCollisionSurface(CollisionSurface* surface)
 {
+    // The header's bits 18-31 are kept
     constexpr u32 KeptHeader = 0xFFFC0000;
-    // Set on every surface, never read
+    // Set on every surface, never read (SurfaceFlags::unused12)
     constexpr u32 UnreadBits = 0xFF000;
-    constexpr u16 None = 0xFFFF;
+    constexpr f32 NoVolumeScale = -1.0f;
     surface->header &= KeptHeader;
     surface->id = -1;
-    surface->unknown18 = 1.0f;
-    surface->unknown1C = 1.0f;
-    surface->physics9 = 0.5f;
-    surface->physics5 = 0.5f;
+    surface->rollFriction = 1.0f;
+    surface->spinFriction = 1.0f;
+    surface->steepNormalY = 0.5f;
+    surface->acceleration = 0.5f;
     surface->friction = 0.5f;
-    surface->physics7 = 0.5f;
-    surface->physics8 = 0.5f;
+    surface->restitution = 0.5f;
+    surface->downhillPull = 0.5f;
     surface->flow.x = 0.0f;
     surface->flow.w = 1.0f;
     surface->flow.y = 0.0f;
     surface->flow.z = 0.0f;
     ContactMessage::Construct(&surface->contact);
-    surface->stepParticles = None;
+    surface->stepParticles = NoSurfaceEffect;
     for (f32& scale : surface->volumeScales)
     {
-        scale = -1.0f;
+        scale = NoVolumeScale;
     }
 
-    surface->impactSound = None;
-    surface->hardImpactSound = None;
-    surface->stepSound1 = None;
-    surface->stepSound2 = None;
-    surface->landSound = None;
-    surface->impactParticles = None;
-    surface->hardImpactParticles = None;
-    surface->contact.word = 0;
-    surface->contact.byte = 0;
+    surface->impactSound = NoSurfaceEffect;
+    surface->hardImpactSound = NoSurfaceEffect;
+    surface->stepSound1 = NoSurfaceEffect;
+    surface->stepSound2 = NoSurfaceEffect;
+    surface->landSound = NoSurfaceEffect;
+    surface->impactParticles = NoSurfaceEffect;
+    surface->hardImpactParticles = NoSurfaceEffect;
+    surface->contact.hitKinds = 0;
+    surface->contact.damage = 0;
     surface->contact.point = g_DefaultBox.min;
-    surface->collisionMask = UnreadBits;
+    surface->flags.value = UnreadBits;
     return surface;
 }
 
 void InitCollisionStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -309,74 +313,71 @@ void InitCollisionStatics(u32 initialise, u32 priority)
 
 void ConstructCollisionModule()
 {
-    InitCollisionStatics(1, 0xFFFF);
+    InitCollisionStatics(1, DefaultInitPriority);
 }
 
+// Only the kind's low byte counts
 u32 GetSurfaceParticle(const CollisionSurface* surface, u32 kind)
 {
-    constexpr u32 None = 0xFFFF;
-    switch (kind & 0xFF)
+    switch (static_cast<u8>(kind))
     {
-    case 0:
+    case ContactImpact:
         return surface->impactParticles;
-    case 1:
-    case 2:
+    case ContactStep1:
+    case ContactStep2:
         return surface->stepParticles;
-    case 4:
+    case ContactHardImpact:
         return surface->hardImpactParticles;
     default:
-        return None;
+        return NoSurfaceEffect;
     }
 }
 
 u32 GetSurfaceSoundId(const CollisionSurface* surface, u32 kind)
 {
-    constexpr u32 None = 0xFFFF;
-    switch (kind & 0xFF)
+    switch (static_cast<u8>(kind))
     {
-    case 0:
+    case ContactImpact:
         return surface->impactSound;
-    case 1:
+    case ContactStep1:
         return surface->stepSound1;
-    case 2:
+    case ContactStep2:
         return surface->stepSound2;
-    case 3:
+    case ContactLand:
         return surface->landSound;
-    case 4:
+    case ContactHardImpact:
         return surface->hardImpactSound;
-    case 5:
+    case ContactScrape:
         return surface->scrapeSound;
     default:
-        return None;
+        return NoSurfaceEffect;
     }
 }
 
 u32 GetSurfaceSound(const CollisionSurface* surface, u32 kind, f32* volume)
 {
-    // The volume scales: impact, hard impact, scrape, steps, land
-    constexpr u32 None = 0xFFFF;
-    switch (kind & 0xFF)
+    switch (static_cast<u8>(kind))
     {
-    case 0:
-        *volume = surface->volumeScales[0];
+    case ContactImpact:
+        *volume = surface->volumeScales[ImpactVolume];
         return surface->impactSound;
-    case 1:
-        *volume = surface->volumeScales[3];
+    case ContactStep1:
+        *volume = surface->volumeScales[StepsVolume];
         return surface->stepSound1;
-    case 2:
-        *volume = surface->volumeScales[3];
+    case ContactStep2:
+        *volume = surface->volumeScales[StepsVolume];
         return surface->stepSound2;
-    case 3:
-        *volume = surface->volumeScales[4];
+    case ContactLand:
+        *volume = surface->volumeScales[LandVolume];
         return surface->landSound;
-    case 4:
-        *volume = surface->volumeScales[1];
+    case ContactHardImpact:
+        *volume = surface->volumeScales[HardImpactVolume];
         return surface->hardImpactSound;
-    case 5:
-        *volume = surface->volumeScales[2];
+    case ContactScrape:
+        *volume = surface->volumeScales[ScrapeVolume];
         return surface->scrapeSound;
     default:
-        return None;
+        return NoSurfaceEffect;
     }
 }
 
@@ -444,19 +445,21 @@ u32 PlaneThroughEdge(Vector4* plane, const Vector4* from, const Vector4* to, con
 
 f32 CheckTriangleIntersection(const CollisionHit* triangle, const Vector4* start, const Vector4* end, Vector4* point)
 {
-    constexpr f32 Epsilon = Rounded(0.0001);
-    f32 values[6];
+    // How far a value is from 0 to be on one side, and the tests' values: the ray's ends' sides of each edge (two each)
+    constexpr f32 SideTolerance = Rounded(0.0001);
+    constexpr u32 EdgeTestValues = 6;
+    f32 values[EdgeTestValues];
     StartTriangleEdgeTests(start, end, triangle, values);
     // The ray's ends on the plane's two sides
-    bool hit = !(-Epsilon < values[0] * values[1]);
+    bool hit = !(-SideTolerance < values[0] * values[1]);
     if (hit)
     {
         FinishTriangleEdgeTests(values);
         // Both ends of the ray on the same side of an edge: outside the triangle
-        for (u32 edge = 0; edge < 6 && hit; edge += 2)
+        for (u32 edge = 0; edge < EdgeTestValues && hit; edge += 2)
         {
-            if ((Epsilon < values[edge] && Epsilon < values[edge + 1]) ||
-                (values[edge] < -Epsilon && values[edge + 1] < -Epsilon))
+            if ((SideTolerance < values[edge] && SideTolerance < values[edge + 1]) ||
+                (values[edge] < -SideTolerance && values[edge + 1] < -SideTolerance))
             {
                 hit = false;
             }
@@ -465,7 +468,7 @@ f32 CheckTriangleIntersection(const CollisionHit* triangle, const Vector4* start
 
     if (!hit)
     {
-        return NoHit;
+        return NoHitDistance;
     }
 
     Vector4 plane;
@@ -563,7 +566,7 @@ u32 CheckRayIsInsideVolume(const CollisionNode* node, const Vector4* start, cons
         return 0;
     }
 
-    *share = NoHit;
+    *share = NoHitDistance;
     Vector4 delta = RayDelta(start, end);
     for (u32 axis = 0; axis < 3; axis++)
     {
@@ -580,7 +583,7 @@ u32 CheckRayIsInsideVolume(const CollisionNode* node, const Vector4* start, cons
         }
     }
 
-    return *share < NoHit;
+    return *share < NoHitDistance;
 }
 
 u32 RayCrossesBox(const CollisionNode* node, const Vector4* start, const Vector4* end)
@@ -613,24 +616,24 @@ u32 RayCrossesBox(const CollisionNode* node, const Vector4* start, const Vector4
     return 0;
 }
 
-void CheckCollisionRayCast(CollisionData* data, s32 node, RayCast* cast, RayCastResult* result)
+void CheckCollisionRayCast(CollisionData* collision, s32 node, RayCast* cast, RayCastResult* result)
 {
     // The hit triangle's place, where the box test also leaves its entry point (the retail stack's)
     CollisionHit triangle;
     const CollisionNode* nodes = cast->nodes;
-    s32 first = nodes[node].first;
-    s32 second = nodes[node].second;
+    s32 first = nodes[node].firstChild;
+    s32 second = nodes[node].secondChild;
     if (first >= 0)
     {
         f32 share;
         if (CheckRayIsInsideVolume(&cast->nodes[first], cast->start, cast->end, &triangle.vertices[0], &share) != 0)
         {
-            CheckCollisionRayCast(data, first, cast, result);
+            CheckCollisionRayCast(collision, first, cast, result);
         }
 
         if (CheckRayIsInsideVolume(&cast->nodes[second], cast->start, cast->end, &triangle.vertices[0], &share) != 0)
         {
-            CheckCollisionRayCast(data, second, cast, result);
+            CheckCollisionRayCast(collision, second, cast, result);
         }
 
         return;
@@ -639,8 +642,8 @@ void CheckCollisionRayCast(CollisionData* data, s32 node, RayCast* cast, RayCast
     const CollisionGroup* group = &cast->groups[~first];
     for (s32 index = 0; index < group->count; index++)
     {
-        const CollisionTriangle* packed = &cast->triangles[group->first + index];
-        if ((GetCollisionSurface(packed)->collisionMask & cast->mask) == 0)
+        const CollisionTriangle* packed = &cast->triangles[group->firstTriangle + index];
+        if ((GetCollisionSurface(packed)->flags.value & cast->surfaceMask) == 0)
         {
             continue;
         }
@@ -648,7 +651,7 @@ void CheckCollisionRayCast(CollisionData* data, s32 node, RayCast* cast, RayCast
         GetCollisionTriangleWithCoordinates(&triangle, packed, cast->vertices);
         Vector4 point;
         f32 distance = CheckTriangleIntersection(&triangle, cast->start, cast->end, &point);
-        if (!(distance < NoHit) || !(distance < result->distance))
+        if (!(distance < NoHitDistance) || !(distance < result->distance))
         {
             continue;
         }
@@ -666,23 +669,23 @@ void CheckCollisionRayCast(CollisionData* data, s32 node, RayCast* cast, RayCast
     }
 }
 
-void CheckCollisionRayCastFast(CollisionData* data, s32 node, FastRayCast* cast)
+void CheckCollisionRayCastFast(CollisionData* collision, s32 node, FastRayCast* cast)
 {
     // The triangle being tested's vertexes (the retail stack's)
     CollisionHit triangle;
-    s32 first = cast->nodes[node].first;
-    s32 second = cast->nodes[node].second;
+    s32 first = cast->nodes[node].firstChild;
+    s32 second = cast->nodes[node].secondChild;
     if (first >= 0)
     {
         const CollisionNode* nodes = cast->nodes;
         if (RayCrossesBox(&nodes[first], &cast->start, &cast->end) != 0)
         {
-            CheckCollisionRayCastFast(data, first, cast);
+            CheckCollisionRayCastFast(collision, first, cast);
         }
 
         if (RayCrossesBox(&cast->nodes[second], &cast->start, &cast->end) != 0)
         {
-            CheckCollisionRayCastFast(data, second, cast);
+            CheckCollisionRayCastFast(collision, second, cast);
         }
 
         return;
@@ -696,10 +699,10 @@ void CheckCollisionRayCastFast(CollisionData* data, s32 node, FastRayCast* cast)
     {
         CollisionTriangle packed;
         ConstructCollisionScratch(&packed);
-        u32 at = group->first + index;
+        u32 at = group->firstTriangle + index;
         index--;
         packed = cast->triangles[at];
-        if ((GetCollisionSurface(&packed)->collisionMask & cast->mask) != 0)
+        if ((GetCollisionSurface(&packed)->flags.value & cast->surfaceMask) != 0)
         {
             GetCollisionTriangleWithCoordinates(&triangle, &packed, cast->vertices);
             started = true;
@@ -718,10 +721,10 @@ void CheckCollisionRayCastFast(CollisionData* data, s32 node, FastRayCast* cast)
     {
         CollisionTriangle packed;
         ConstructCollisionScratch(&packed);
-        u32 at = group->first + index;
+        u32 at = group->firstTriangle + index;
         index--;
         packed = cast->triangles[at];
-        if ((GetCollisionSurface(&packed)->collisionMask & cast->mask) != 0)
+        if ((GetCollisionSurface(&packed)->flags.value & cast->surfaceMask) != 0)
         {
             // The next triangle's vertexes made while the last one is tested
             GetCollisionTriangleWithCoordinates(&triangle, &packed, cast->vertices);
@@ -735,13 +738,13 @@ void CheckCollisionRayCastFast(CollisionData* data, s32 node, FastRayCast* cast)
     Platform::Math::FinishRayTriangle(&cast->nearest);
 }
 
-u32 CheckCollision(CollisionData* data, const Vector4* start, const Vector4* end, u32 mask, f32* distance, Vector4* position,
-                   CollisionHit* triangle)
+u32 CheckCollision(CollisionData* collision, const Vector4* start, const Vector4* end, u32 surfaceMask, f32* distance,
+                   Vector4* position, CollisionHit* triangle)
 {
-    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &data->verticesHandle));
-    auto* nodes = reinterpret_cast<const CollisionNode*>(DiskLoadedMemory(GetDiskManager(), &data->nodesHandle));
-    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &data->groupsHandle));
-    auto* triangles = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &data->trianglesHandle));
+    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &collision->verticesHandle));
+    auto* nodes = reinterpret_cast<const CollisionNode*>(DiskLoadedMemory(GetDiskManager(), &collision->nodesHandle));
+    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &collision->groupsHandle));
+    auto* triangles = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &collision->trianglesHandle));
     if (triangle != nullptr)
     {
         RayCast cast;
@@ -751,31 +754,31 @@ u32 CheckCollision(CollisionData* data, const Vector4* start, const Vector4* end
         cast.triangles = triangles;
         cast.start = start;
         cast.end = end;
-        cast.mask = mask;
+        cast.surfaceMask = surfaceMask;
         cast.result.position = position;
         cast.result.triangle = triangle;
-        cast.result.distance = NoHit;
-        CheckCollisionRayCast(data, 0, &cast, &cast.result);
+        cast.result.distance = NoHitDistance;
+        CheckCollisionRayCast(collision, 0, &cast, &cast.result);
         if (distance != nullptr)
         {
             *distance = cast.result.distance;
         }
 
-        return cast.result.distance < NoHit;
+        return cast.result.distance < NoHitDistance;
     }
 
     FastRayCast cast;
     cast.start = *start;
     cast.end = *end;
-    cast.nearest.w = NoHit;
+    cast.nearest.w = NoHitDistance;
     cast.vertices = vertices;
     cast.nodes = nodes;
     cast.groups = groups;
     cast.triangles = triangles;
-    cast.mask = mask;
+    cast.surfaceMask = surfaceMask;
     Platform::Math::SetRay(&cast.start, &cast.end);
-    CheckCollisionRayCastFast(data, 0, &cast);
-    if (!(cast.nearest.w < NoHit))
+    CheckCollisionRayCastFast(collision, 0, &cast);
+    if (!(cast.nearest.w < NoHitDistance))
     {
         return 0;
     }
@@ -794,15 +797,15 @@ u32 CheckCollision(CollisionData* data, const Vector4* start, const Vector4* end
     return 1;
 }
 
-u32 GetCollisionCheck(ChunkData* chunk, const Vector4* start, const Vector4* end, u32 mask, f32* distance, Vector4* position,
-                      CollisionHit* triangle)
+u32 GetCollisionCheck(ChunkData* chunk, const Vector4* start, const Vector4* end, u32 surfaceMask, f32* distance,
+                      Vector4* position, CollisionHit* triangle)
 {
     if (chunk == nullptr || chunk->collision == nullptr)
     {
         return 0;
     }
 
-    return CheckCollision(static_cast<CollisionData*>(chunk->collision), start, end, mask, distance, position, triangle);
+    return CheckCollision(chunk->collision, start, end, surfaceMask, distance, position, triangle);
 }
 
 void TriangleBox(Box* box, const Vector4* first, const Vector4* second, const Vector4* third)
@@ -812,12 +815,27 @@ void TriangleBox(Box* box, const Vector4* first, const Vector4* second, const Ve
 
 namespace
 {
-// A box's corner by three bits: the min's coordinate for a bit set, the max's otherwise (x bit 0, y bit 1, z bit 2)
-f32 PlaneAtCorner(const Box* box, const Vector4* plane, u32 corner)
+// One of a box's eight corners (0 to 7): the min's coordinate along an axis whose bit is set, the max's otherwise
+union BoxCorner
 {
-    f32 x = (corner & 1) != 0 ? box->min.x : box->max.x;
-    f32 y = (corner & 2) != 0 ? box->min.y : box->max.y;
-    f32 z = (corner & 4) != 0 ? box->min.z : box->max.z;
+    static constexpr u32 Count = 8;
+
+    u32 value;
+    struct
+    {
+        u32 minX : 1;
+        u32 minY : 1;
+        u32 minZ : 1;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(BoxCorner, 4);
+
+f32 PlaneAtCorner(const Box* box, const Vector4* plane, BoxCorner corner)
+{
+    f32 x = corner.minX ? box->min.x : box->max.x;
+    f32 y = corner.minY ? box->min.y : box->max.y;
+    f32 z = corner.minZ ? box->min.z : box->max.z;
     return plane->x * x + plane->y * y + plane->z * z + plane->w;
 }
 
@@ -857,7 +875,7 @@ u32 PlaneCrossesBox(const Box* box, const Vector4* plane)
 {
     u32 above = 0;
     u32 below = 0;
-    for (u32 corner = 0; corner < 8; corner++)
+    for (BoxCorner corner = {0}; corner.value < BoxCorner::Count; corner.value++)
     {
         if (0.0f < PlaneAtCorner(box, plane, corner))
         {
@@ -879,7 +897,7 @@ u32 PlaneCrossesBox(const Box* box, const Vector4* plane)
 
 u32 BoxInFrontOfPlane(const Box* box, const Vector4* plane)
 {
-    for (u32 corner = 0; corner < 8; corner++)
+    for (BoxCorner corner = {0}; corner.value < BoxCorner::Count; corner.value++)
     {
         if (PlaneAtCorner(box, plane, corner) < 0.0f)
         {
@@ -912,27 +930,27 @@ u32 TriangleTouchesBox(const Vector4* first, const Vector4* second, const Vector
     return 1;
 }
 
-s32 GatherBoxTriangles(CollisionData* data, const Box* box, u32 mask, CollisionHit* triangles, s32 most)
+s32 GatherBoxTriangles(CollisionData* collision, const Box* box, u32 surfaceMask, CollisionHit* triangles, s32 most)
 {
     s32 count = 0;
-    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &data->groupsHandle));
-    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &data->verticesHandle));
-    auto* packed = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &data->trianglesHandle));
-    QueryCollisionBox(data, box);
+    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &collision->groupsHandle));
+    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &collision->verticesHandle));
+    auto* packed = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &collision->trianglesHandle));
+    QueryCollisionBox(collision, box);
     for (s32 leaf = 0; leaf < g_CollisionLeafCount; leaf++)
     {
         const CollisionGroup* group = &groups[CollisionLeaves[leaf]];
         for (s32 index = 0; index < group->count; index++)
         {
-            const CollisionTriangle* triangle = &packed[group->first + index];
-            if ((GetCollisionSurface(triangle)->collisionMask & mask) == 0)
+            const CollisionTriangle* triangle = &packed[group->firstTriangle + index];
+            if ((GetCollisionSurface(triangle)->flags.value & surfaceMask) == 0)
             {
                 continue;
             }
 
-            const Vector4* first = &vertices[VertexIndex(triangle->packed, 0)];
-            const Vector4* second = &vertices[VertexIndex(triangle->packed, CollisionTriangle::SecondShift)];
-            const Vector4* third = &vertices[VertexIndex(triangle->packed, CollisionTriangle::ThirdShift)];
+            const Vector4* first = &vertices[triangle->firstVertex];
+            const Vector4* second = &vertices[triangle->secondVertex];
+            const Vector4* third = &vertices[triangle->thirdVertex];
             Box bounds;
             TriangleBox(&bounds, first, second, third);
             if (BoxesOverlap(&bounds, box) == 0 || TriangleTouchesBox(first, second, third, box) == 0)
@@ -952,17 +970,17 @@ s32 GatherBoxTriangles(CollisionData* data, const Box* box, u32 mask, CollisionH
     return count;
 }
 
-f32 ChunkInstancesRayCast(ChunkData* chunk, const Vector4* segment, u32 mask, InstanceRayHit* hit, u32 flags)
+f32 ChunkInstancesRayCast(ChunkData* chunk, const Vector4* segment, u32 kinds, InstanceQuery* hit, u32 hitFace)
 {
     if (chunk->instanceCells == nullptr)
     {
-        return NoHit;
+        return NoHitDistance;
     }
 
-    return InstanceCellsRayCast(chunk->instanceCells, segment, mask, hit, flags);
+    return InstanceCellsRayCast(chunk->instanceCells, segment, kinds, hit, hitFace);
 }
 
-u32 ChunkInstancesInSphere(ChunkData* chunk, const Vector4* sphere, u32 kinds, InstanceRayHit* query, u32 flag)
+u32 ChunkInstancesInSphere(ChunkData* chunk, const Vector4* sphere, u32 kinds, InstanceQuery* query, u32 boxTest)
 {
     if (chunk->instanceCells == nullptr)
     {
@@ -970,11 +988,11 @@ u32 ChunkInstancesInSphere(ChunkData* chunk, const Vector4* sphere, u32 kinds, I
     }
 
     u16 before = query->count;
-    InstanceCellsInSphere(chunk->instanceCells, sphere, kinds, query, flag);
+    InstanceCellsInSphere(chunk->instanceCells, sphere, kinds, query, boxTest);
     return static_cast<u16>(query->count - before);
 }
 
-u32 ChunkInstancesInCylinder(f32 height, ChunkData* chunk, const Vector4* base, u32 kinds, InstanceRayHit* query)
+u32 ChunkInstancesInCylinder(f32 height, ChunkData* chunk, const Vector4* base, u32 kinds, InstanceQuery* query)
 {
     if (chunk->instanceCells == nullptr)
     {
@@ -986,13 +1004,14 @@ u32 ChunkInstancesInCylinder(f32 height, ChunkData* chunk, const Vector4* base, 
     return static_cast<u16>(query->count - before);
 }
 
-u32 InstancesInDamageHull(InstanceContext* instance, u32 hull, u32 kinds, InstanceRayHit* query)
+u32 InstancesInDamageHull(InstanceContext* instance, u32 hull, u32 kinds, InstanceQuery* query)
 {
     ObjectPlace* place = instance->place;
     ChunkData* chunk = instance->chunk;
     RotateAndTranslate(place);
     return ChunkInstancesInHull(chunk, &g_DamageHulls[hull], &place->matrix, kinds, query, 0);
 }
+
 
 void MakeFlatBoxHull()
 {
@@ -1005,11 +1024,11 @@ void MakeFlatBoxHull()
 
 EABI_EXPORT(FUN_001f2080, ChunkInstancesInCylinder);
 
-u32 SegmentHitsInstances(ChunkData* chunk, const Vector4* start, const Vector4* end, InstanceRayHit* hit, u32 mask, f32* share,
-                         Vector4* point, u32 flags)
+u32 SegmentHitsInstances(ChunkData* chunk, const Vector4* start, const Vector4* end, InstanceQuery* hit, u32 kinds, f32* share,
+                         Vector4* point, u32 hitFace)
 {
     Vector4 segment[2] = {*start, *end};
-    f32 t = ChunkInstancesRayCast(chunk, segment, mask, hit, flags);
+    f32 t = ChunkInstancesRayCast(chunk, segment, kinds, hit, hitFace);
     if (!(0.0f <= t) || !(t <= 1.0f))
     {
         return 0;
@@ -1037,26 +1056,24 @@ namespace
 {
 bool NoWay(const Vector4* way)
 {
-    constexpr f32 Epsilon = Rounded(5e-05);
     return __builtin_fabsf(way->x) <= Epsilon && __builtin_fabsf(way->y) <= Epsilon && __builtin_fabsf(way->z) <= Epsilon;
 }
 
-void ClearWay(Vector4* way, InstanceRayHit* hit)
+void ClearWay(Vector4* way, InstanceQuery* hit)
 {
-    constexpr u32 Hit = 1;
     *way = g_DefaultBox.min;
     way->w = 1.0f;
     if (hit != nullptr)
     {
         hit->count = 0;
-        hit->distance = NoHit;
-        hit->bits &= ~Hit;
+        hit->distance = NoHitDistance;
+        hit->bits.unused0 = 0;
         hit->instance = nullptr;
     }
 }
 }
 
-u32 LineOfSight(ChunkData* chunk, const Vector4* from, Vector4* way, u32 mask, InstanceRayHit* hit, u32 instanceMask)
+u32 LineOfSight(ChunkData* chunk, const Vector4* from, Vector4* way, u32 surfaceMask, InstanceQuery* hit, u32 instanceMask)
 {
     if (NoWay(way))
     {
@@ -1069,7 +1086,7 @@ u32 LineOfSight(ChunkData* chunk, const Vector4* from, Vector4* way, u32 mask, I
     to.y = to.y + way->y;
     to.z = to.z + way->z;
     Vector4 stop;
-    u32 blocked = GetCollisionCheck(chunk, from, &to, mask, nullptr, &stop, nullptr);
+    u32 blocked = GetCollisionCheck(chunk, from, &to, surfaceMask, nullptr, &stop, nullptr);
     if (blocked != 0)
     {
         *way = stop;
@@ -1095,7 +1112,7 @@ u32 LineOfSight(ChunkData* chunk, const Vector4* from, Vector4* way, u32 mask, I
     segment[1].y = from->y + way->y;
     segment[1].z = from->z + way->z;
     segment[1].w = 1.0f;
-    f32 t = ChunkInstancesRayCast(chunk, segment, instanceMask, hit, 0);
+    f32 t = ChunkInstancesRayCast(chunk, segment, instanceMask, hit, NoHitFace);
     if (!(0.0f <= t) || !(t <= 1.0f))
     {
         return blocked;
@@ -1110,12 +1127,12 @@ u32 LineOfSight(ChunkData* chunk, const Vector4* from, Vector4* way, u32 mask, I
 namespace
 {
 // The instances along a segment the collision (or a list of triangles) stopped or didn't: SegmentHitsAnything's second half
-u32 FinishSegmentCast(ChunkData* chunk, const Vector4* start, const Vector4* end, bool blocked, f32 distance, InstanceRayHit* hit,
-                      u32 instanceMask, f32* share, Vector4* point, u32 flags)
+u32 FinishSegmentCast(ChunkData* chunk, const Vector4* start, const Vector4* end, bool blocked, f32 distance, InstanceQuery* hit,
+                      u32 instanceMask, f32* share, Vector4* point, u32 hitFace)
 {
     if (!blocked)
     {
-        return SegmentHitsInstances(chunk, start, end, hit, instanceMask, share, point, flags);
+        return SegmentHitsInstances(chunk, start, end, hit, instanceMask, share, point, hitFace);
     }
 
     if (!(0.0f < distance))
@@ -1135,7 +1152,7 @@ u32 FinishSegmentCast(ChunkData* chunk, const Vector4* start, const Vector4* end
     stop.z = start->z * distance + end->z * rest;
     stop.w = 1.0f;
     Vector4 segment[2] = {*start, stop};
-    f32 t = ChunkInstancesRayCast(chunk, segment, instanceMask, hit, flags);
+    f32 t = ChunkInstancesRayCast(chunk, segment, instanceMask, hit, hitFace);
     bool hitInstance = false;
     if (0.0f <= t && t <= 1.0f)
     {
@@ -1160,23 +1177,23 @@ u32 FinishSegmentCast(ChunkData* chunk, const Vector4* start, const Vector4* end
 }
 }
 
-u32 SegmentHitsAnything(ChunkData* chunk, const Vector4* start, const Vector4* end, u32 mask, InstanceRayHit* hit,
+u32 SegmentHitsAnything(ChunkData* chunk, const Vector4* start, const Vector4* end, u32 surfaceMask, InstanceQuery* hit,
                         u32 instanceMask, f32* share, Vector4* point, CollisionHit* triangle)
 {
     f32 distance;
     u32 blocked = 0;
     if (chunk != nullptr && chunk->collision != nullptr)
     {
-        blocked = CheckCollision(static_cast<CollisionData*>(chunk->collision), start, end, mask, &distance, point, triangle);
+        blocked = CheckCollision(chunk->collision, start, end, surfaceMask, &distance, point, triangle);
     }
 
-    // Only the result's low byte counts here. The retail code hands the triangle's pointer on as the instances' cast's flags
-    return FinishSegmentCast(chunk, start, end, (blocked & 0xFF) != 0, distance, hit, instanceMask, share, point,
+    // Only the result's low byte counts here. The instances' cast puts the face of a hull it hits into the triangle
+    return FinishSegmentCast(chunk, start, end, static_cast<u8>(blocked) != 0, distance, hit, instanceMask, share, point,
                              reinterpret_cast<u32>(triangle));
 }
 
 u32 SegmentHitsTrianglesOrInstances(ChunkData* chunk, CollisionCache* cache, const Vector4* start, const Vector4* end,
-                                    InstanceRayHit* hit, u32 instanceMask, f32* share, Vector4* point, CollisionHit* triangle)
+                                    InstanceQuery* hit, u32 instanceMask, f32* share, Vector4* point, CollisionHit* triangle)
 {
     f32 distance;
     u32 blocked = TriangleListRayCast(cache, start, end, &distance, point, triangle);
@@ -1192,13 +1209,12 @@ CollisionHit* FirstCollisionHit(CollisionCache* cache)
     }
 
     cache->index = 0;
-    cache->block = cache->first;
-    return &cache->first->hits[0];
+    cache->currentBlock = cache->firstBlock;
+    return &cache->firstBlock->hits[0];
 }
 
 CollisionHit* NextCollisionHit(CollisionCache* cache)
 {
-    constexpr u32 PerBlock = 8;
     u16 index = cache->index + 1;
     cache->index = index;
     if (static_cast<s16>(index) == cache->count)
@@ -1206,26 +1222,26 @@ CollisionHit* NextCollisionHit(CollisionCache* cache)
         return nullptr;
     }
 
-    u32 slot = index & (PerBlock - 1);
+    u32 slot = index & (CollisionHitBlock::Capacity - 1);
     if (slot == 0)
     {
-        cache->block = cache->block->next;
+        cache->currentBlock = cache->currentBlock->next;
     }
 
-    return &cache->block->hits[slot];
+    return &cache->currentBlock->hits[slot];
 }
 
 u32 TriangleListRayCast(CollisionCache* cache, const Vector4* start, const Vector4* end, f32* distance, Vector4* point,
                         CollisionHit* triangle)
 {
-    f32 nearest = NoHit;
+    f32 nearest = NoHitDistance;
     CollisionHit* hit = FirstCollisionHit(cache);
     while (hit != nullptr)
     {
         CollisionHit* next = NextCollisionHit(cache);
         Vector4 at;
         f32 d = CheckTriangleIntersection(hit, start, end, &at);
-        if (d < NoHit && d < nearest)
+        if (d < NoHitDistance && d < nearest)
         {
             nearest = d;
             if (point != nullptr)
@@ -1247,30 +1263,31 @@ u32 TriangleListRayCast(CollisionCache* cache, const Vector4* start, const Vecto
         *distance = nearest;
     }
 
-    return nearest < NoHit;
+    return nearest < NoHitDistance;
 }
 
-s32 GatherBoxTrianglePointers(CollisionData* data, const Box* box, u32 mask, const CollisionTriangle** triangles, s32 most)
+s32 GatherBoxTrianglePointers(CollisionData* collision, const Box* box, u32 surfaceMask, const CollisionTriangle** triangles,
+                              s32 most)
 {
     s32 count = 0;
-    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &data->groupsHandle));
-    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &data->verticesHandle));
-    auto* packed = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &data->trianglesHandle));
-    QueryCollisionBox(data, box);
+    auto* groups = reinterpret_cast<const CollisionGroup*>(DiskLoadedMemory(GetDiskManager(), &collision->groupsHandle));
+    auto* vertices = reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &collision->verticesHandle));
+    auto* packed = reinterpret_cast<const CollisionTriangle*>(DiskLoadedMemory(GetDiskManager(), &collision->trianglesHandle));
+    QueryCollisionBox(collision, box);
     for (s32 leaf = 0; leaf < g_CollisionLeafCount; leaf++)
     {
         const CollisionGroup* group = &groups[CollisionLeaves[leaf]];
         for (s32 index = 0; index < group->count; index++)
         {
-            const CollisionTriangle* triangle = &packed[group->first + index];
-            if ((GetCollisionSurface(triangle)->collisionMask & mask) == 0)
+            const CollisionTriangle* triangle = &packed[group->firstTriangle + index];
+            if ((GetCollisionSurface(triangle)->flags.value & surfaceMask) == 0)
             {
                 continue;
             }
 
-            const Vector4* first = &vertices[VertexIndex(triangle->packed, 0)];
-            const Vector4* second = &vertices[VertexIndex(triangle->packed, CollisionTriangle::SecondShift)];
-            const Vector4* third = &vertices[VertexIndex(triangle->packed, CollisionTriangle::ThirdShift)];
+            const Vector4* first = &vertices[triangle->firstVertex];
+            const Vector4* second = &vertices[triangle->secondVertex];
+            const Vector4* third = &vertices[triangle->thirdVertex];
             Box bounds;
             TriangleBox(&bounds, first, second, third);
             if (BoxesOverlap(&bounds, box) == 0 || TriangleTouchesBox(first, second, third, box) == 0)
@@ -1290,24 +1307,24 @@ s32 GatherBoxTrianglePointers(CollisionData* data, const Box* box, u32 mask, con
     return count;
 }
 
-s32 ChunkBoxTriangles(ChunkData* chunk, const Box* box, u32 mask, CollisionHit* triangles, s32 most)
+s32 ChunkBoxTriangles(ChunkData* chunk, const Box* box, u32 surfaceMask, CollisionHit* triangles, s32 most)
 {
     if (chunk == nullptr || chunk->collision == nullptr)
     {
         return 0;
     }
 
-    return GatherBoxTriangles(static_cast<CollisionData*>(chunk->collision), box, mask, triangles, most);
+    return GatherBoxTriangles(chunk->collision, box, surfaceMask, triangles, most);
 }
 
-s32 ChunkBoxTrianglePointers(ChunkData* chunk, const Box* box, u32 mask, const CollisionTriangle** triangles, s32 most)
+s32 ChunkBoxTrianglePointers(ChunkData* chunk, const Box* box, u32 surfaceMask, const CollisionTriangle** triangles, s32 most)
 {
     if (chunk == nullptr || chunk->collision == nullptr)
     {
         return 0;
     }
 
-    return GatherBoxTrianglePointers(static_cast<CollisionData*>(chunk->collision), box, mask, triangles, most);
+    return GatherBoxTrianglePointers(chunk->collision, box, surfaceMask, triangles, most);
 }
 
 const Vector4* ChunkCollisionVertices(ChunkData* chunk)
@@ -1317,8 +1334,7 @@ const Vector4* ChunkCollisionVertices(ChunkData* chunk)
         return nullptr;
     }
 
-    return reinterpret_cast<const Vector4*>(
-        DiskLoadedMemory(GetDiskManager(), &static_cast<CollisionData*>(chunk->collision)->verticesHandle));
+    return reinterpret_cast<const Vector4*>(DiskLoadedMemory(GetDiskManager(), &chunk->collision->verticesHandle));
 }
 
 u32 BoxInsideBox(const Box* box, const Box* outer)
@@ -1390,27 +1406,26 @@ void MergeBox(Box* into, const Box* box)
 
 void ResetBox(Box* box)
 {
-    box->min.z = NoHit;
-    box->max.x = -NoHit;
-    box->min.x = NoHit;
-    box->min.y = NoHit;
+    box->min.z = Infinite;
+    box->max.x = -Infinite;
+    box->min.x = Infinite;
+    box->min.y = Infinite;
     box->min.w = 1.0f;
     box->max.w = 1.0f;
-    box->max.z = -NoHit;
-    box->max.y = -NoHit;
+    box->max.z = -Infinite;
+    box->max.y = -Infinite;
 }
 
 void TransformBox(Box* box, const Matrix4x4* matrix)
 {
     Box old = *box;
     ResetBox(box);
-    for (u32 corner = 0; corner < 8; corner++)
+    for (BoxCorner corner = {0}; corner.value < BoxCorner::Count; corner.value++)
     {
-        // The min's coordinate for a bit set, the max's otherwise
         Vector4 point;
-        point.x = (corner & 1) != 0 ? old.min.x : old.max.x;
-        point.y = (corner & 2) != 0 ? old.min.y : old.max.y;
-        point.z = (corner & 4) != 0 ? old.min.z : old.max.z;
+        point.x = corner.minX ? old.min.x : old.max.x;
+        point.y = corner.minY ? old.min.y : old.max.y;
+        point.z = corner.minZ ? old.min.z : old.max.z;
         point.w = 1.0f;
         VuTransformPoint(matrix, &point, &point);
         if (point.x < box->min.x)
@@ -1445,6 +1460,21 @@ void TransformBox(Box* box, const Matrix4x4* matrix)
     }
 }
 
+namespace
+{
+// A box's faces: the min's and the max's of each axis
+enum BoxFace : s32
+{
+    FaceMinX,
+    FaceMaxX,
+    FaceMinY,
+    FaceMaxY,
+    FaceMinZ,
+    FaceMaxZ,
+    BoxFaces,
+};
+}
+
 u32 SphereBoxPush(f32 radius, const Box* box, const Vector4* centre, Vector4* push)
 {
     if (centre->x < box->min.x - radius || box->max.x + radius < centre->x || centre->y < box->min.y - radius ||
@@ -1453,30 +1483,29 @@ u32 SphereBoxPush(f32 radius, const Box* box, const Vector4* centre, Vector4* pu
         return 0;
     }
 
-    // How far outside each face the centre is (min x, max x, min y, max y, min z, max z): those it's outside of, the nearest of
-    // the others
-    bool outside[6];
+    // How far outside each face the centre is: those it's outside of, the nearest of the others
+    bool outside[BoxFaces];
     s32 outsideCount = 0;
     s32 nearest = -1;
-    f32 nearestDistance = -Rounded(1e30);
-    for (s32 face = 0; face < 6; face++)
+    f32 nearestDistance = -Infinite;
+    for (s32 face = FaceMinX; face < BoxFaces; face++)
     {
         f32 distance;
         switch (face)
         {
-        case 0:
+        case FaceMinX:
             distance = box->min.x - centre->x;
             break;
-        case 1:
+        case FaceMaxX:
             distance = centre->x - box->max.x;
             break;
-        case 2:
+        case FaceMinY:
             distance = box->min.y - centre->y;
             break;
-        case 3:
+        case FaceMaxY:
             distance = centre->y - box->max.y;
             break;
-        case 4:
+        case FaceMinZ:
             distance = box->min.z - centre->z;
             break;
         default:
@@ -1502,15 +1531,16 @@ u32 SphereBoxPush(f32 radius, const Box* box, const Vector4* centre, Vector4* pu
 
     if (outsideCount == 0)
     {
-        if (nearest < 0 || nearest > 5)
+        if (nearest < FaceMinX || nearest >= BoxFaces)
         {
             return 1;
         }
 
+        // Out through the nearest face: down its axis through a min face (the even ones), up it through a max face
         f32 out = (nearest & 1) == 0 ? nearestDistance - radius : radius - nearestDistance;
-        push->x = nearest < 2 ? out : 0.0f;
-        push->y = nearest >= 2 && nearest < 4 ? out : 0.0f;
-        push->z = nearest >= 4 ? out : 0.0f;
+        push->x = nearest < FaceMinY ? out : 0.0f;
+        push->y = nearest >= FaceMinY && nearest < FaceMinZ ? out : 0.0f;
+        push->z = nearest >= FaceMinZ ? out : 0.0f;
         push->w = 1.0f;
         return 1;
     }
@@ -1521,27 +1551,27 @@ u32 SphereBoxPush(f32 radius, const Box* box, const Vector4* centre, Vector4* pu
         push->y = 0.0f;
         push->z = 0.0f;
         push->w = 1.0f;
-        if (outside[0])
+        if (outside[FaceMinX])
         {
             push->x = (box->min.x - radius) - centre->x;
         }
-        else if (outside[1])
+        else if (outside[FaceMaxX])
         {
             push->x = (box->max.x + radius) - centre->x;
         }
-        else if (outside[2])
+        else if (outside[FaceMinY])
         {
             push->y = (box->min.y - radius) - centre->y;
         }
-        else if (outside[3])
+        else if (outside[FaceMaxY])
         {
             push->y = (box->max.y + radius) - centre->y;
         }
-        else if (outside[4])
+        else if (outside[FaceMinZ])
         {
             push->z = (box->min.z - radius) - centre->z;
         }
-        else if (outside[5])
+        else if (outside[FaceMaxZ])
         {
             push->z = (box->max.z + radius) - centre->z;
         }
@@ -1551,20 +1581,20 @@ u32 SphereBoxPush(f32 radius, const Box* box, const Vector4* centre, Vector4* pu
 
     f32 squaredRadius = radius * radius;
     Vector4 corner;
-    corner.x = outside[0] ? box->min.x : box->max.x;
-    corner.y = outside[2] ? box->min.y : box->max.y;
-    corner.z = outside[4] ? box->min.z : box->max.z;
+    corner.x = outside[FaceMinX] ? box->min.x : box->max.x;
+    corner.y = outside[FaceMinY] ? box->min.y : box->max.y;
+    corner.z = outside[FaceMinZ] ? box->min.z : box->max.z;
     corner.w = 1.0f;
     if (outsideCount == 2)
     {
         // Beside an edge: along the axis the centre is within
         Vector4 along;
-        if (!outside[0] && !outside[1])
+        if (!outside[FaceMinX] && !outside[FaceMaxX])
         {
             corner.x = box->min.x;
             along = {1.0f, 0.0f, 0.0f, 1.0f};
         }
-        else if (!outside[2] && !outside[3])
+        else if (!outside[FaceMinY] && !outside[FaceMaxY])
         {
             corner.y = box->min.y;
             along = {0.0f, 1.0f, 0.0f, 1.0f};
@@ -1658,7 +1688,7 @@ u32 BoxContainsRegion(const Box* box, const Vector4* min, const Vector4* max)
 
 void FreeCollisionCacheBlocks(CollisionCache* cache)
 {
-    CollisionHitBlock* block = cache->first;
+    CollisionHitBlock* block = cache->firstBlock;
     while (block != nullptr)
     {
         CollisionHitBlock* next = block->next;
@@ -1666,7 +1696,7 @@ void FreeCollisionCacheBlocks(CollisionCache* cache)
         block = next;
     }
 
-    cache->first = nullptr;
+    cache->firstBlock = nullptr;
 }
 
 void MakeCollisionCacheBlocks(CollisionCache* cache, s32 count)
@@ -1678,7 +1708,7 @@ void MakeCollisionCacheBlocks(CollisionCache* cache, s32 count)
     }
 
     auto* block = static_cast<CollisionHitBlock*>(MemoryAllocate(sizeof(CollisionHitBlock)));
-    cache->first = block;
+    cache->firstBlock = block;
     block->next = nullptr;
     for (s32 made = 1; made < count; made++)
     {
@@ -1689,15 +1719,15 @@ void MakeCollisionCacheBlocks(CollisionCache* cache, s32 count)
     }
 }
 
-CollisionCache* ConstructCollisionCache(CollisionCache* cache, ReferencedObject* owner, u32 mask)
+CollisionCache* ConstructCollisionCache(CollisionCache* cache, ReferencedObject* owner, u32 surfaceMask)
 {
-    cache->index = 0xFFFF;
+    cache->index = CollisionCache::NotIterated;
     cache->owner = owner;
     cache->margin = 1.0f;
-    cache->mask = mask;
+    cache->surfaceMask = surfaceMask;
     cache->count = 0;
-    cache->block = nullptr;
-    cache->first = nullptr;
+    cache->currentBlock = nullptr;
+    cache->firstBlock = nullptr;
     cache->box.min = g_DefaultBox.min;
     cache->box.max = g_DefaultBox.min;
     return cache;
@@ -1706,7 +1736,7 @@ CollisionCache* ConstructCollisionCache(CollisionCache* cache, ReferencedObject*
 void DestroyCollisionCache(CollisionCache* cache, u32 destroyFlags)
 {
     FreeCollisionCacheBlocks(cache);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(cache);
     }
@@ -1724,10 +1754,12 @@ u32 RefreshCollisionCache(CollisionCache* cache, const Box* box)
     GrowBox(cache->margin, &cache->box);
     ChunkData* chunk = cache->owner->chunk;
     const CollisionTriangle* triangles[MostTriangles];
-    s32 count = ChunkBoxTrianglePointers(chunk, &cache->box, cache->mask, triangles, MostTriangles);
+    s32 count = ChunkBoxTrianglePointers(chunk, &cache->box, cache->surfaceMask, triangles, MostTriangles);
     const Vector4* vertices = ChunkCollisionVertices(chunk);
     cache->count = count;
-    MakeCollisionCacheBlocks(cache, (static_cast<s16>(count) + 7) >> 3);
+    // A block for every 8 hits, the last one partly filled
+    s32 blocks = (static_cast<s16>(count) + CollisionHitBlock::Capacity - 1) >> CollisionHitBlock::CapacityShift;
+    MakeCollisionCacheBlocks(cache, blocks);
     const CollisionTriangle** next = triangles;
     for (CollisionHit* hit = FirstCollisionHit(cache); hit != nullptr; hit = NextCollisionHit(cache))
     {
@@ -1882,7 +1914,7 @@ u32 SphereTouchesTriangle(f32 radius, const CollisionHit* triangle, const Vector
 
     // The nearest vertex (none when no distance is below 1e30: the one before the first, as retail)
     s32 vertexIndex = -1;
-    f32 best = NoHit;
+    f32 best = Infinite;
     for (s32 index = 0; index < 3; index++)
     {
         f32 x = vertices[index].x - centre->x;
@@ -1952,11 +1984,10 @@ u32 EllipsoidTouchesTriangle(f32 radiusX, f32 radiusY, f32 radiusZ, const Collis
 
 namespace
 {
-// The way out of the contacts' spaces looked for once a point is in them, the inverse lengths' epsilon, and the motion the
-// contacts are gathered for a hull standing still with
+// The way out of the contacts' spaces looked for once a point is in them, and the motion the contacts are gathered for a hull
+// standing still with
 constexpr f32 NoMargin = 0.0f;
-constexpr f32 InverseEpsilon = 0x1.5798ecp-29f;
-constexpr f32 StillMotion = Rounded(5e-5);
+constexpr f32 StillMotion = Epsilon;
 }
 
 void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* velocity, const Vector4* wanted, const Vector4* normal)
@@ -1964,13 +1995,13 @@ void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* veloci
     Vector4 target = *wanted;
     Vector4 pull = g_DefaultBox.min;
     pull.w = 1.0f;
-    if (0.0f < surface->physics8)
+    if (0.0f < surface->downhillPull)
     {
         Vector4 downhill = *normal;
-        if (normal->y < surface->physics9)
+        if (normal->y < surface->steepNormalY)
         {
             downhill.y = 0.0f;
-            f32 inverse = InverseLength(&downhill, InverseEpsilon);
+            f32 inverse = InverseLength(&downhill, LengthEpsilon);
             f32 across = __builtin_sqrtf(normal->x * normal->x + normal->z * normal->z);
             downhill.x = downhill.x * inverse;
             downhill.y = downhill.y * inverse;
@@ -1982,7 +2013,7 @@ void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* veloci
                 share = 1.0f;
             }
 
-            f32 strength = surface->physics8;
+            f32 strength = surface->downhillPull;
             pull.x = downhill.x * strength * share;
             pull.y = downhill.y * strength * share;
             pull.z = downhill.z * strength * share;
@@ -1997,11 +2028,11 @@ void AccelerateOnSurface(CollisionSurface* surface, f32 seconds, Vector4* veloci
     way.y = 0.0f;
     way.z = (target.z - velocity->z) + surface->flow.z;
     way.w = 1.0f;
-    f32 most = surface->physics5 * seconds;
+    f32 most = surface->acceleration * seconds;
     f32 length = __builtin_sqrtf(way.x * way.x + way.z * way.z);
     if (length != 0.0f)
     {
-        f32 inverse = InverseLength(&way, InverseEpsilon);
+        f32 inverse = InverseLength(&way, LengthEpsilon);
         f32 step = most < length ? most : length;
         velocity->x = velocity->x + way.x * inverse * step;
         velocity->z = velocity->z + way.z * inverse * step;
@@ -2039,7 +2070,7 @@ u32 HullOverlaps(ChunkData* chunk, const CollisionHull* hull, const Vector4* pos
     for (s32 index = 0; index < contacts->solid.count; index++)
     {
         Contact* contact = &contacts->solid.contacts[index];
-        if ((contact->kind & Contact::SphereBit) != 0)
+        if (contact->kind.sphere != 0)
         {
             continue;
         }
@@ -2060,7 +2091,7 @@ u32 HullOverlaps(ChunkData* chunk, const CollisionHull* hull, const Vector4* pos
         }
 
         overlaps++;
-        if ((contact->kind & Contact::KindHull) == 0 || touched == nullptr)
+        if (contact->kind.hull == 0 || touched == nullptr)
         {
             continue;
         }
@@ -2078,7 +2109,7 @@ u32 HullOverlaps(ChunkData* chunk, const CollisionHull* hull, const Vector4* pos
     EndContacts();
     if (away != nullptr)
     {
-        f32 inverse = InverseLength(away, InverseEpsilon);
+        f32 inverse = InverseLength(away, LengthEpsilon);
         away->x = away->x * inverse;
         away->y = away->y * inverse;
         away->z = away->z * inverse;
@@ -2112,7 +2143,7 @@ u32 CastHullDown(f32 distance, ChunkData* chunk, const CollisionHull* hull, cons
         GatherTriangleContacts(contacts, chunk, &position, &motion, hull);
         GatherInstanceContacts(contacts, chunk, &position, &motion, &instanceMask, const_cast<InstanceContext**>(leftOut),
                                leftOutCount, hull);
-        if (PointInsideSolidContact(NoMargin, contacts, &position, Contact::SphereBit) == 0)
+        if (PointInsideSolidContact(NoMargin, contacts, &position, ContactKind::SphereBit) == 0)
         {
             at = position;
             if (distance < from->y - at.y)

@@ -3,22 +3,36 @@
 #include "common.h"
 #include "gcc2.h"
 #include "game/archive.h"
+#include "game/resources.h"
 #include "game/string.h"
 
 struct GameController;
+struct GamePad;
 
 // The engine's application class: Main starts it up and runs its frames, which call the game's side through the virtual
 // functions (GameContext's are at the start of .text, the engine's around Main)
 class GameContextPrototype
 {
 public:
-    u8 unknown00;
-    f32 unknown04;
+    enum Slot : u32
+    {
+        LanguageChangedSlot = 1,
+        StartGameSlot = 2,
+        GameBeginFrameSlot = 3,
+        GameUpdateSlot = 4,
+        GameEndFrameSlot = 5,
+        GameRenderSlot = 6,
+        UpdateSlot = 7,
+    };
+
+    u8 unused00;
+    f32 unused04;
     // What the screen is cleared to
     u32 clearColor;
-    char* unknown0C;
-    u32 unknown10;
-    void* unknown14;
+    // The folder the chunks' loading counts the chunks under (none: nothing sets it)
+    char* chunksPath;
+    u32 unused10;
+    void* unused14;
     const GccVTableEntry* vtable;
 
     static GameContextPrototype* Construct(GameContextPrototype* context) RETAIL(FUN_001816f8);
@@ -39,54 +53,69 @@ public:
 
     void LanguageChanged(u32 language)
     {
-        CallVirtual<void>(this, vtable, 1, language);
+        CallVirtual<void>(this, vtable, LanguageChangedSlot, language);
     }
 
     void Update(bool playingMovie)
     {
-        CallVirtual<void>(this, vtable, 7, playingMovie);
+        CallVirtual<void>(this, vtable, UpdateSlot, playingMovie);
     }
 
     // The game's side
     void StartGame()
     {
-        CallVirtual<void>(this, vtable, 2);
+        CallVirtual<void>(this, vtable, StartGameSlot);
     }
 
     void GameBeginFrame(bool playingMovie)
     {
-        CallVirtual<void>(this, vtable, 3, playingMovie);
+        CallVirtual<void>(this, vtable, GameBeginFrameSlot, playingMovie);
     }
 
     void GameUpdate(bool playingMovie)
     {
-        CallVirtual<void>(this, vtable, 4, playingMovie);
+        CallVirtual<void>(this, vtable, GameUpdateSlot, playingMovie);
     }
 
     void GameEndFrame(bool playingMovie)
     {
-        CallVirtual<void>(this, vtable, 5, playingMovie);
+        CallVirtual<void>(this, vtable, GameEndFrameSlot, playingMovie);
     }
 
     void GameRender(bool playingMovie)
     {
-        CallVirtual<void>(this, vtable, 6, playingMovie);
+        CallVirtual<void>(this, vtable, GameRenderSlot, playingMovie);
     }
 };
 CHECK_SIZE(GameContextPrototype, 0x1C);
 CHECK_OFFSET(GameContextPrototype, vtable, 0x18);
 
+// The game context's flags: the colour filter on (set when it's made: the platform's g_ColourFilterEffect), "RB" given (the files
+// queued for reading: the default chunk's RM2 and the front end's sounds, the chunks' links waited for), the default chunk's
+// objects' resources not taken (also OLEG's start-up skipped and the chunks loaded all at once; nothing sets it), and the chunks'
+// loading mode given (else LoadingStreamed; nothing sets it)
+union GameContextFlags
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 3;
+        u32 colourFilter : 1;
+        u32 unused4 : 2;
+        u32 queuesFiles : 1;
+        u32 takesNoObjects : 1;
+        u32 givesLoadingMode : 1;
+        // ChunkLoadingMode
+        u32 loadingMode : 4;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(GameContextFlags, 4);
+
 // Made from the launch arguments: "RB" and "BATCH=<archive>" (the .BD/.BH pair the files are read from)
 class GameContext : public GameContextPrototype
 {
 public:
-    enum Flags : u32
-    {
-        // Set when it's made
-        Flag3 = 0x8,
-        // "RB" was given
-        FlagRb = 0x40,
-    };
 
     // The object builder's item builders (a vtable alone each), by the kinds of items they make
     enum Builder : u32
@@ -109,30 +138,31 @@ public:
         MoreBuilders,
     };
 
-    // Bit 3 ..., 6 "RB", 7 ..., 8 the chunks' loading starts in the state of bits 9-12
-    u32 flags;
+    GameContextFlags flags;
     // The chunk the game controller starts in (nothing sets it)
     String startChunk;
     // Chunks the start-up loads one at a time before the game starts, from the last (nothing adds any)
     StringList preloadChunks;
-    // Made 10, nothing reads it
-    u32 unknown3C;
+    // Made 10 (the preloaded chunks' list's room), nothing reads it
+    u32 unused3C;
     String archivePath;
-    // The game's resources (GameResources), the item builders the object builder asks (but the factory's three), the instance
-    // factory (InstanceFactory) and the other three
-    u8 resources[0x90 - 0x4C];
+    // The game's resources, the item builders the object builder asks (but the factory's three), the instance factory
+    // (InstanceFactory, retail's GameResourceManager, whose last three words are the other three builders)
+    GameResources resources;
     const GccVTableEntry* builders[Builders];
-    u8 resourceManager[0xD4 - 0xAC];
+    u8 instanceFactory[0xD4 - 0xAC];
     const GccVTableEntry* moreBuilders[MoreBuilders];
     // When the game's first frame began (clock units)
     s32 firstFrameStamp;
-    void* mainPad;
-    u32 unknownE8;
+    // The game's pad (the pad controller's first) and the second player's (nothing sets it)
+    GamePad* mainPad;
+    GamePad* secondPad;
     void* chunkManager;
     GameController* gameController;
-    // The start-up makes the two update rates of them (g_ObjectUpdateRate and g_ModelUpdateRate)
-    u32 unknownF4;
-    u32 unknownF8;
+    // The start-up makes the update rates of the object nodes and the model nodes of them (g_ObjectUpdateRate and
+    // g_ModelUpdateRate): the cutoff's square root, a quarter of it the grace's
+    u32 objectUpdateCutoffRoot;
+    u32 modelUpdateCutoffRoot;
 
     // Made empty: the game's resources, the instance factory and the item builders (the object builder made the first time and
     // given them), the update rates' bytes 100, the module statics set (the AgentLab's, the projectiles' hull, the particles'
@@ -161,7 +191,9 @@ public:
 CHECK_SIZE(GameContext, 0xFC);
 CHECK_OFFSET(GameContext, startChunk, 0x20);
 CHECK_OFFSET(GameContext, preloadChunks, 0x2C);
+CHECK_OFFSET(GameContext, resources, 0x4C);
 CHECK_OFFSET(GameContext, builders, 0x90);
+CHECK_OFFSET(GameContext, instanceFactory, 0xAC);
 CHECK_OFFSET(GameContext, moreBuilders, 0xD4);
 CHECK_OFFSET(GameContext, archivePath, 0x40);
 CHECK_OFFSET(GameContext, firstFrameStamp, 0xE0);
@@ -202,6 +234,12 @@ extern "C"
 // slope with the stamps past the grace, and not at all from the cutoff on
 struct UpdateRate
 {
+    // A cutoff of none: updated however long unseen
+    static constexpr u16 NoCutoff = 0xFFFF;
+    // The rarest updates' mask (every 65536 frames), for a count of stamps unseen of none
+    static constexpr u32 RarestMask = 0xFFFF;
+    static constexpr u32 NoCount = 0xFFFFFFFF;
+
     u16 grace;
     u16 cutoff;
     f32 slope;

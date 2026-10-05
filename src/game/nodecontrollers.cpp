@@ -11,10 +11,12 @@
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/objectnode.h"
+#include "game/particles.h"
 #include "game/place.h"
 #include "game/player.h"
 #include "game/properties.h"
 #include "game/reference.h"
+#include "game/sound.h"
 #include "game/string.h"
 #include "game/vehicles.h"
 
@@ -41,19 +43,42 @@ extern "C"
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 CharacterNodeKind = 0xC;
-// The object nodes' vtable functions: a particle trail added, the trails destroyed, the node's sound stopped
-constexpr u32 AddParticleTrailSlot = 23;
-constexpr u32 DestroyParticleTrailsSlot = 24;
-constexpr u32 StopSoundSlot = 44;
-// The referenced objects' release
-constexpr u32 ReleaseSlot = 4;
-constexpr u8 NoJoint = 0xFF;
-constexpr u8 NoSound = 0xFF;
+// The character's exit point the mask hangs on while it's invincible
 constexpr u32 MaskExitPoint = 1;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+// The player's hit points: one mask (it comes and follows) from 2, two (it shines) from 3, and it doesn't come for more than 4
+constexpr u32 MaskHitPoints = 2;
+constexpr u32 BoostedMaskHitPoints = 3;
+constexpr u32 MostMaskHitPoints = 4;
+// The mask's object's animation slots (on the character, shining, flying away or onto the character) and sound slots
+enum MaskAnimation : u32
+{
+    AnimationMask = 0,
+    AnimationBoosted = 1,
+    AnimationFlying = 2,
+};
+enum MaskSound : u32
+{
+    SoundArrived = 0,
+    SoundLeaving = 1,
+    SoundBoosted = 2,
+    SoundUnboosted = 3,
+    SoundInvincible = 4,
+    SoundInvincibilityOver = 6,
+};
+// It comes from 20 above and 3 behind the character in a quarter of a second (and leaves to there in a second), and flies onto
+// it in an eighth
+constexpr f32 AwayHeight = 20.0f;
+constexpr f32 AwayBehind = 3.0f;
+constexpr f32 ArrivingSpeed = 4.0f;
+constexpr f32 FlyingOnSpeed = 8.0f;
+// Where it follows the character: 0.7 to its side and 2 above it
+constexpr Vector4 FollowOffset = {0.7f, 2.0f, 0.0f, 1.0f};
+// How far along the exit point's z axis (and how far below) it flies to and hangs while invincible, and how much the character's
+// joints are squashed then
+constexpr f32 FlyToAlong = Rounded(0.15);
+constexpr f32 HangAlong = Rounded(0.1);
+constexpr f32 HangBelow = Rounded(0.2);
+constexpr f32 InvincibleSquash = 0.5f;
 
 InstanceContext* PlayerInstance()
 {
@@ -67,23 +92,23 @@ CharacterAgent* PlayerAgent()
 
 const CharacterPart* PlayerPart()
 {
-    return static_cast<const CharacterPart*>(g_PlayerCharacterData2);
+    return g_PlayerPart2;
 }
 
 u32 PlayerHitPoints()
 {
-    return PlayerPart()->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+    return PlayerPart()->flags.hitPoints;
 }
 
 bool PlayerInvincible()
 {
-    return (PlayerPart()->bits & CharacterPart::Invincible) != 0;
+    return PlayerPart()->bits.invulnerable != 0;
 }
 
 // The game's title or watching state, which the controllers sit out
 bool GameWatched()
 {
-    u32 state = G_GameController_0030988C->State();
+    u32 state = g_ConditionsGameController->State();
     return state == GameController::StateWatching || state == GameController::StateTitle;
 }
 
@@ -94,10 +119,10 @@ ObjectPlace* PlaceOf(const ReferencedObject* object)
     return *reinterpret_cast<ObjectPlace* const*>(address);
 }
 
-u32 FlagsOf(const ReferencedObject* object)
+ReferencedObjectFlags FlagsOf(const ReferencedObject* object)
 {
     std::uintptr_t address = reinterpret_cast<std::uintptr_t>(object) + offsetof(ReferencedObject, flags);
-    return *reinterpret_cast<const u32*>(address);
+    return *reinterpret_cast<const ReferencedObjectFlags*>(address);
 }
 
 NodeList* NodesOf(InstanceContext* instance)
@@ -118,13 +143,13 @@ f32 Ease(f32 s)
 
 void DestroyParticleTrails(ObjectNode* node)
 {
-    CallVirtual<void>(node, node->vtable, DestroyParticleTrailsSlot);
+    CallVirtual<void>(node, node->vtable, ObjectNode::DestroyParticleTrailsSlot);
 }
 
 // The matrix of the character's exit point 1 in the world (the character's place's without it)
 const Matrix4x4* CharacterExitPoint(InstanceContext* character)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(NodesOf(character), ModelNode::NodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(NodesOf(character), NodeModel));
     SizedArray<ExitPointAnimation*>* exitPoints = model->animator->exitPoints;
     ExitPointAnimation* exitPoint = exitPoints != nullptr ? exitPoints->data[MaskExitPoint] : nullptr;
     return &UpdateExitPointMatrix(exitPoint)->matrix;
@@ -135,7 +160,7 @@ Vector4 UnitRotationOf(const Matrix4x4* matrix)
 {
     Vector4 rotation;
     GetRotationVec(&rotation, matrix);
-    f32 inverse = InverseLength4(0.0f, Rounded(1e-10), &rotation);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, &rotation);
     rotation.x = rotation.x * inverse;
     rotation.y = rotation.y * inverse;
     rotation.z = rotation.z * inverse;
@@ -149,8 +174,10 @@ Vector4 UnitRotationOf(const Matrix4x4* matrix)
 // then scaled. The place isn't read
 void PoseAimedJoint(AimedJoint* aimed, Matrix4x4* matrix, const Matrix4x4* facing, const Matrix4x4* local, ObjectPlace*)
 {
-    constexpr u8 RootJoint = 0;
+    constexpr u8 RootJointId = 0;
     constexpr f32 TurnsPerSecond = 20.0f;
+    // How close to its pose a returning joint has to be to rest
+    constexpr f32 RestingTolerance = 0.01f;
     if (aimed->resting != 0)
     {
         return;
@@ -189,7 +216,7 @@ void PoseAimedJoint(AimedJoint* aimed, Matrix4x4* matrix, const Matrix4x4* facin
     if (aimed->returning != 0)
     {
         to = UnitRotationOf(matrix);
-        if (SameRotation(&to, &from, 0.01f) != 0)
+        if (SameRotation(&to, &from, RestingTolerance) != 0)
         {
             aimed->returning = 0;
             aimed->resting = 1;
@@ -204,7 +231,7 @@ void PoseAimedJoint(AimedJoint* aimed, Matrix4x4* matrix, const Matrix4x4* facin
     SlerpRotations(aimed->rate * TurnsPerSecond * seconds, &from, &from, &to);
     MatrixFromRotation(&aimed->matrix, &from);
     *matrix = aimed->matrix;
-    if (aimed->id == RootJoint)
+    if (aimed->id == RootJointId)
     {
         PreMultiply(matrix, &relative);
     }
@@ -219,7 +246,7 @@ void PoseAimedJoint(AimedJoint* aimed, Matrix4x4* matrix, const Matrix4x4* facin
 void JointAimer::Destroy(u32 destroyFlags)
 {
     vtable = g_JointHookVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -253,7 +280,7 @@ void JointAimer::DetachFromModel()
         return;
     }
 
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNode::NodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     DetachVirtual(model->animator);
 }
 
@@ -321,6 +348,8 @@ u32 JointAimer::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
 
 JointAimController* JointAimController::Construct(JointAimController* controller, ObjectNode* node, u32 kind)
 {
+    // The share of the way the joints turn (times 20 a second)
+    constexpr f32 TurnRate = Rounded(0.1);
     controller->kind = static_cast<u8>(kind);
     controller->node = node;
     controller->vtable = g_JointAimControllerVTable;
@@ -328,13 +357,13 @@ JointAimController* JointAimController::Construct(JointAimController* controller
     controller->aimer.node = nullptr;
     for (AimedJoint& aimed : controller->aimer.joints)
     {
-        aimed.id = NoJoint;
+        aimed.id = GameOGI::NoJoint;
         aimed.returning = 0;
         aimed.resting = 1;
         aimed.retakesMatrix = 0;
         aimed.retakesInverse = 1;
         aimed.scale = 1.0f;
-        aimed.rate = Rounded(0.1);
+        aimed.rate = TurnRate;
     }
 
     return controller;
@@ -344,7 +373,7 @@ void JointAimController::Destroy(u32 destroyFlags)
 {
     aimer.vtable = g_JointHookVTable;
     vtable = g_NodeControllerVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -371,7 +400,6 @@ void JointAimController::Stop()
 
 MaskController* MaskController::Construct(MaskController* mask, ObjectNode* node, u32 kind)
 {
-    constexpr u16 NoId = 0xFFFF;
     mask->kind = static_cast<u8>(kind);
     mask->node = node;
     mask->vtable = g_MaskControllerVTable;
@@ -385,10 +413,12 @@ MaskController* MaskController::Construct(MaskController* mask, ObjectNode* node
     mask->state = StateInactive;
     for (u16& id : mask->ids)
     {
-        id = NoId;
+        id = NoParticleSystem;
     }
 
-    mask->flags &= ~(IdCountMask << IdCountShift) & ~FlagHidden & ~FlagCharacterVisible;
+    mask->flags.idCount = 0;
+    mask->flags.hidden = 0;
+    mask->flags.unused7 = 0;
     for (s32& slot : mask->trailSlots)
     {
         slot = -1;
@@ -407,7 +437,7 @@ void MaskController::Destroy(u32 destroyFlags)
     DestroyTrailArguments(&unusedTrail, DestroyOnly);
     DestroyTrailArguments(&boostTrail, DestroyOnly);
     vtable = g_NodeControllerVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -424,22 +454,22 @@ void MaskController::Frame(TimeClock*)
 {
     if (GameWatched())
     {
-        if ((flags & FlagHidden) == 0)
+        if (!flags.hidden)
         {
-            bool visible = (FlagsOf(character) & ReferencedObject::FlagVisible) != 0;
-            flags = (flags & ~FlagCharacterVisible) | (visible ? FlagCharacterVisible : 0);
+            flags.unused7 = FlagsOf(character).visible;
             Hide();
-            flags |= FlagHidden;
+            flags.hidden = 1;
         }
     }
-    else if ((flags & FlagHidden) != 0)
+    else if (flags.hidden)
     {
         if (state != StateInactive)
         {
-            node->owner->flags |= ReferencedObject::FlagVisible;
+            node->owner->flags.visible = 1;
         }
 
-        flags &= ~FlagHidden & ~FlagCharacterVisible;
+        flags.hidden = 0;
+        flags.unused7 = 0;
     }
 
     switch (state)
@@ -475,19 +505,19 @@ void MaskController::Restart(u32)
 void MaskController::Stop()
 {
     InstanceContext* mask = node->owner;
-    if ((mask->flags & ReferencedObject::FlagReleased) != 0)
+    if (mask->flags.released)
     {
         return;
     }
 
-    void* attachments = GetGameNode(NodesOf(character), AttachmentsKind);
+    void* attachments = GetGameNode(NodesOf(character), NodeAttachments);
     if (attachments != nullptr)
     {
         UnlinkInstance(attachments, mask, 0, 1, 0);
     }
 
     mask = node->owner;
-    CallVirtual<u32>(mask, mask->vtable, ReleaseSlot);
+    CallVirtual<u32>(mask, mask->vtable, InstanceContext::ReleaseSlot);
 }
 
 void MaskController::Describe(String* text)
@@ -530,19 +560,19 @@ void MaskController::FindCharacter()
 {
     s32 id = node->owner->id;
     std::uintptr_t entry = id != -1 ? reinterpret_cast<std::uintptr_t>(&g_InstanceIds->entries[id]) : 0;
-    character = *reinterpret_cast<InstanceContext* const*>(entry + offsetof(InstanceIds::Entry, unknown04));
-    auto* characterNode = static_cast<AgentNode*>(GetGameNode(NodesOf(character), CharacterNodeKind));
-    switch (characterNode->agent->properties->GetInt(0))
+    character = *reinterpret_cast<InstanceContext* const*>(entry + offsetof(InstanceIds::Entry, spawner));
+    auto* characterNode = static_cast<AgentNode*>(GetGameNode(NodesOf(character), NodeCharacter));
+    switch (characterNode->agent->properties->GetInt(CharacterKindProperty))
     {
-    case 1:
-    case 3:
-    case 5:
-        flags |= FlagCharacterProperty;
+    case CharacterCortex:
+    case CharacterNina:
+    case CharacterMecha:
+        flags.unused0 = 1;
         break;
-    case 4:
+    case CharacterNone:
         break;
     default:
-        flags &= ~FlagCharacterProperty;
+        flags.unused0 = 0;
         break;
     }
 }
@@ -550,19 +580,20 @@ void MaskController::FindCharacter()
 void MaskController::Hide()
 {
     DestroyParticleTrails(node);
-    node->owner->flags &= ~ReferencedObject::FlagTriggerSignals & ~ReferencedObject::FlagVisible;
+    node->owner->flags.receivesTriggerSignals = 0;
+    node->owner->flags.visible = 0;
 }
 
 void MaskController::StepInactive()
 {
     if (character != PlayerInstance())
     {
-        node->owner->flags &= ~ReferencedObject::FlagVisible;
+        node->owner->flags.visible = 0;
         return;
     }
 
     u32 hitPoints = PlayerHitPoints();
-    if (hitPoints >= 2 && hitPoints <= 4)
+    if (hitPoints >= MaskHitPoints && hitPoints <= MostMaskHitPoints)
     {
         Arrive();
     }
@@ -585,7 +616,7 @@ void MaskController::StepArriving()
     ObjectPlace* place = mask->place;
     place->SyncPosition();
     Vector4 position = place->position;
-    progress = progress + SecondsOf(mask) * 4.0f;
+    progress = progress + SecondsOf(mask) * ArrivingSpeed;
     if (1.0f <= progress)
     {
         Arrived();
@@ -679,11 +710,11 @@ void MaskController::StepGotMask()
     }
 
     u32 hitPoints = PlayerHitPoints();
-    if (hitPoints < 2)
+    if (hitPoints < MaskHitPoints)
     {
         Leave();
     }
-    else if (hitPoints < 3)
+    else if (hitPoints < BoostedMaskHitPoints)
     {
         Follow();
     }
@@ -702,7 +733,7 @@ void MaskController::StepGotBoostedMask()
         return;
     }
 
-    if (PlayerHitPoints() < 3)
+    if (PlayerHitPoints() < BoostedMaskHitPoints)
     {
         Unboost();
     }
@@ -727,7 +758,7 @@ void MaskController::StepInvincible()
         return;
     }
 
-    if (PlayerHitPoints() < 2)
+    if (PlayerHitPoints() < MaskHitPoints)
     {
         Leave();
         return;
@@ -741,9 +772,9 @@ void MaskController::StepInvincible()
 
     exitPoint = *CharacterExitPoint(character);
     Vector4 shift = *RowOf(&exitPoint, 2);
-    shift.x = shift.x * Rounded(0.1);
-    shift.y = shift.y * Rounded(0.1) - Rounded(0.2);
-    shift.z = shift.z * Rounded(0.1);
+    shift.x = shift.x * HangAlong;
+    shift.y = shift.y * HangAlong - HangBelow;
+    shift.z = shift.z * HangAlong;
     Vector4* at = RowOf(&exitPoint, 3);
     at->x = at->x + shift.x;
     at->y = at->y + shift.y;
@@ -752,33 +783,33 @@ void MaskController::StepInvincible()
     ObjectPlace* place = mask->place;
     place->SyncPosition();
     Vector4 position = place->position;
-    auto* characterNode = static_cast<ObjectNode*>(GetGameNode(NodesOf(character), ObjectNodeKind));
-    for (u32 index = 0; index < 3; index++)
+    auto* characterNode = static_cast<ObjectNode*>(GetGameNode(NodesOf(character), NodeObject));
+    for (u32 index = 0; index < InvincibilityTrails; index++)
     {
         trailSlots[index] = UpdateTrail(&trails[index], characterNode, trailSlots[index]);
     }
 
-    if ((FlagsOf(character) & ReferencedObject::FlagVisible) != 0)
+    if (FlagsOf(character).visible)
     {
-        mask->flags |= ReferencedObject::FlagVisible;
+        mask->flags.visible = 1;
     }
     else
     {
-        mask->flags &= ~ReferencedObject::FlagVisible;
+        mask->flags.visible = 0;
     }
 
-    if ((flags & FlagOnCharacter) != 0)
+    if (flags.onCharacter)
     {
         ProceduralJoints* joints = PlayerAgent()->proceduralJoints;
         if (joints != nullptr)
         {
-            joints->SetSquash(0.5f);
+            joints->SetSquash(InvincibleSquash);
         }
 
         return;
     }
 
-    progress = progress + SecondsOf(mask) * 8.0f;
+    progress = progress + SecondsOf(mask) * FlyingOnSpeed;
     f32 along = distance * Ease(progress * 0.5f + 0.5f);
     Vector4 way = position;
     way.x = way.x - at->x;
@@ -813,8 +844,8 @@ void MaskController::StepInvincible()
             QueueObject(mask);
         }
 
-        flags |= FlagOnCharacter;
-        void* attachments = GetGameNode(NodesOf(character), AttachmentsKind);
+        flags.onCharacter = 1;
+        void* attachments = GetGameNode(NodesOf(character), NodeAttachments);
         HangOnExitPoint(attachments, character, mask, MaskExitPoint, 0, 0, 1);
     }
 }
@@ -822,14 +853,14 @@ void MaskController::StepInvincible()
 // It starts 20 above and 3 behind the character, 0.7 to its side and 2 above it when it gets there
 void MaskController::Arrive()
 {
-    offset = {0.7f, 2.0f, 0.0f, 1.0f};
+    offset = FollowOffset;
     progress = 0.0f;
     ObjectPlace* characterPlace = PlaceOf(character);
     characterPlace->SyncPosition();
     Vector4 at = characterPlace->position;
     Vector4 from = at;
-    from.y = from.y + 20.0f;
-    from.z = from.z + 3.0f;
+    from.y = from.y + AwayHeight;
+    from.z = from.z + AwayBehind;
     InstanceContext* mask = node->owner;
     ObjectPlace* place = mask->place;
     place->SyncPosition();
@@ -842,15 +873,15 @@ void MaskController::Arrive()
     f32 y = from.y - at.y;
     f32 z = from.z - at.z;
     distance = __builtin_sqrtf(x * x + y * y + z * z);
-    node->owner->flags |= ReferencedObject::FlagVisible;
+    node->owner->flags.visible = 1;
     state = StateArriving;
 }
 
 void MaskController::Arrived()
 {
     state = StateGotMask;
-    PlaySlotAnimation(0.0f, node, 0, 1);
-    PlaySlotSound(node, 0, 0);
+    PlaySlotAnimation(0.0f, node, AnimationMask, 1);
+    PlaySlotSound(node, SoundArrived, 0);
 }
 
 // Back up to 20 above and 3 behind where the character is
@@ -861,32 +892,32 @@ void MaskController::Leave()
     characterPlace->SyncPosition();
     Vector4 at = characterPlace->position;
     leavePoint = at;
-    leavePoint.y = leavePoint.y + 20.0f;
-    leavePoint.z = leavePoint.z + 3.0f;
+    leavePoint.y = leavePoint.y + AwayHeight;
+    leavePoint.z = leavePoint.z + AwayBehind;
     state = StateLeaving;
     f32 x = at.x - leavePoint.x;
     f32 y = at.y - leavePoint.y;
     f32 z = at.z - leavePoint.z;
     distance = __builtin_sqrtf(x * x + y * y + z * z);
-    PlaySlotAnimation(0.0f, node, 2, 0);
-    PlaySlotSound(node, 1, 0);
+    PlaySlotAnimation(0.0f, node, AnimationFlying, 0);
+    PlaySlotSound(node, SoundLeaving, 0);
     DestroyParticleTrails(node);
 }
 
 void MaskController::Boost()
 {
     state = StateGotBoostedMask;
-    PlaySlotAnimation(0.0f, node, 1, 1);
-    PlaySlotSound(node, 2, 0);
+    PlaySlotAnimation(0.0f, node, AnimationBoosted, 1);
+    PlaySlotSound(node, SoundBoosted, 0);
     DestroyParticleTrails(node);
-    CallVirtual<u32>(node, node->vtable, AddParticleTrailSlot, &boostTrail);
+    CallVirtual<u32>(node, node->vtable, ObjectNode::AddParticleTrailSlot, &boostTrail);
 }
 
 void MaskController::Unboost()
 {
     state = StateGotMask;
-    PlaySlotAnimation(0.0f, node, 0, 1);
-    PlaySlotSound(node, 3, 0);
+    PlaySlotAnimation(0.0f, node, AnimationMask, 1);
+    PlaySlotSound(node, SoundUnboosted, 0);
     DestroyParticleTrails(node);
 }
 
@@ -895,15 +926,15 @@ void MaskController::BecomeInvincible()
 {
     state = StateInvincible;
     DestroyParticleTrails(node);
-    PlaySlotSound(node, 4, 0);
-    PlaySlotAnimation(0.0f, node, 2, 1);
-    flags &= ~FlagOnCharacter;
+    PlaySlotSound(node, SoundInvincible, 0);
+    PlaySlotAnimation(0.0f, node, AnimationFlying, 1);
+    flags.onCharacter = 0;
     progress = 0.0f;
     exitPoint = *CharacterExitPoint(character);
     Vector4 shift = *RowOf(&exitPoint, 2);
-    shift.x = shift.x * Rounded(0.15);
-    shift.y = shift.y * Rounded(0.15);
-    shift.z = shift.z * Rounded(0.15);
+    shift.x = shift.x * FlyToAlong;
+    shift.y = shift.y * FlyToAlong;
+    shift.z = shift.z * FlyToAlong;
     Vector4* at = RowOf(&exitPoint, 3);
     at->x = at->x + shift.x;
     at->y = at->y + shift.y;
@@ -921,18 +952,18 @@ void MaskController::BecomeInvincible()
 void MaskController::EndInvincibility()
 {
     state = StateGotBoostedMask;
-    node->owner->flags |= ReferencedObject::FlagVisible;
-    for (u32 index = 0; index < 3; index++)
+    node->owner->flags.visible = 1;
+    for (u32 index = 0; index < InvincibilityTrails; index++)
     {
         trailSlots[index] = StopTrail(&trails[index], trailSlots[index]);
     }
 
-    DetachExitPoint(GetGameNode(NodesOf(character), AttachmentsKind), MaskExitPoint, 0, 1);
-    PlaySlotSound(node, 6, 0);
-    PlaySlotAnimation(0.0f, node, 1, 1);
+    DetachExitPoint(GetGameNode(NodesOf(character), NodeAttachments), MaskExitPoint, 0, 1);
+    PlaySlotSound(node, SoundInvincibilityOver, 0);
+    PlaySlotAnimation(0.0f, node, AnimationBoosted, 1);
     if (character != nullptr)
     {
-        auto* characterNode = static_cast<ObjectNode*>(GetGameNode(&character->nodes, ObjectNodeKind));
+        auto* characterNode = static_cast<ObjectNode*>(GetGameNode(&character->nodes, NodeObject));
         if (characterNode != nullptr)
         {
             DestroyParticleTrails(characterNode);
@@ -940,7 +971,7 @@ void MaskController::EndInvincibility()
     }
 
     DestroyParticleTrails(node);
-    CallVirtual<u32>(node, node->vtable, AddParticleTrailSlot, &boostTrail);
+    CallVirtual<u32>(node, node->vtable, ObjectNode::AddParticleTrailSlot, &boostTrail);
 }
 
 // Riding a vehicle, the character has it steered toward the middle of its box (offset) and moved four times the way there a
@@ -948,7 +979,6 @@ void MaskController::EndInvincibility()
 void MaskController::Follow()
 {
     constexpr f32 SteerShare = 8.0f;
-    constexpr f32 MostLean = 90.0f;
     constexpr f32 MoveShare = 4.0f;
     InstanceContext* mask = node->owner;
     f32 seconds = SecondsOf(mask);
@@ -963,7 +993,7 @@ void MaskController::Follow()
         target.x = (target.x - box->min.x) * 0.5f + box->min.x + offset.x;
         target.y = (target.y - box->min.y) * 0.5f + box->min.y + offset.y;
         target.z = (target.z - box->min.z) * 0.5f + box->min.z + offset.z;
-        SteerTowards(seconds * SteerShare, 0.0f, MostLean, mask, &target);
+        SteerTowards(seconds * SteerShare, 0.0f, SteerMostLean, mask, &target);
     }
     else
     {
@@ -1009,7 +1039,7 @@ SplineController* SplineController::Construct(SplineController* spline, ObjectNo
 void SplineController::Destroy(u32 destroyFlags)
 {
     vtable = g_NodeControllerVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1025,10 +1055,8 @@ void SplineController::Start()
 void SplineController::Frame(TimeClock*)
 {
     constexpr f32 AheadDistance = 6.0f;
-    // The rigid body's bit 24 (of the 64 bits at 0x90): its whole velocity is set, and it's steered at the full rate
-    constexpr u64 BodyFlies = 0x1000000;
-    // Its motion's kinds (bits 32-39 of the 64 bits at 0x88): something holds its moves
-    constexpr u64 MotionKinds = 0xFF00000000;
+    // Not touching anything it turns at this share of its turn rate
+    constexpr f32 UntouchedTurnShare = Rounded(0.3);
     Waypoints* waypoints = node->waypoints;
     MotionState* motion = node->motion;
     ObjectRigidBody* body = node->rigidBody;
@@ -1058,7 +1086,9 @@ void SplineController::Frame(TimeClock*)
     waypoints->pathDirection = direction;
     Vector4 heading = direction;
     heading.y = heading.y - drop;
-    bool flies = (body->bits90 & BodyFlies) != 0;
+    // Touching something (as of its last frame): the full turn and the whole velocity, else a third of the turn and the
+    // velocity across
+    bool touching = body->state.touched;
     f32 inverse = InverseLength(&heading, LengthEpsilon);
     heading.x = heading.x * inverse;
     heading.y = heading.y * inverse;
@@ -1066,13 +1096,13 @@ void SplineController::Frame(TimeClock*)
     Vector4 ahead = {nearest.x + heading.x * AheadDistance, nearest.y + heading.y * AheadDistance,
                      nearest.z + heading.z * AheadDistance, 1.0f};
     // (Retail passes 90 as a third float, which SteerBodyTowards doesn't take)
-    if (flies)
+    if (touching)
     {
         SteerBodyTowards(turnRate * seconds, 0.0f, instance, &ahead, 1);
     }
     else
     {
-        SteerBodyTowards(turnRate * (seconds * Rounded(0.3)), 0.0f, instance, &ahead, 1);
+        SteerBodyTowards(turnRate * (seconds * UntouchedTurnShare), 0.0f, instance, &ahead, 1);
     }
 
     place = instance->place;
@@ -1091,7 +1121,7 @@ void SplineController::Frame(TimeClock*)
     velocity.y = velocity.y * speed;
     velocity.z = velocity.z * speed;
     motion->startVelocity = motion->velocity;
-    if (flies)
+    if (touching)
     {
         motion->velocity = velocity;
     }
@@ -1105,7 +1135,8 @@ void SplineController::Frame(TimeClock*)
     move.x = velocity.x * seconds;
     move.y = velocity.y * seconds;
     move.z = velocity.z * seconds;
-    if ((body->bits88 & MotionKinds) != 0)
+    // Something holds its moves (it has a kind of motion or of collisions)
+    if ((body->bits.value & ObjectRigidBodyBits::KindsMask) != 0)
     {
         HoldRigidBodyMove(body, &move);
     }
@@ -1115,7 +1146,7 @@ void SplineController::Frame(TimeClock*)
         QueueObject(instance);
     }
 
-    node->flags |= ObjectNodeBase::FlagUnsettled;
+    node->flags.unused4 = 1;
 }
 
 void SplineController::Restart(u32)
@@ -1128,7 +1159,6 @@ void SplineController::Stop()
 
 SkateController* SkateController::Construct(SkateController* skate, ObjectNode* node, u32 kind)
 {
-    constexpr u16 NoId = 0xFFFF;
     skate->kind = static_cast<u8>(kind);
     skate->node = node;
     skate->vtable = g_SkateControllerVTable;
@@ -1139,17 +1169,17 @@ SkateController* SkateController::Construct(SkateController* skate, ObjectNode* 
 
     for (u32 index = 0; index < TrailCount; index++)
     {
-        skate->ids[index] = NoId;
+        skate->ids[index] = NoParticleSystem;
         skate->trailSlots[index] = -1;
     }
 
     for (u16& sound : skate->sounds)
     {
-        sound = NoId;
+        sound = NoSoundId;
     }
 
-    skate->counts = 0;
-    skate->flags &= ~FlagPaused;
+    skate->counts.value = 0;
+    skate->flags.paused = 0;
     return skate;
 }
 
@@ -1161,7 +1191,7 @@ void SkateController::Destroy(u32 destroyFlags)
     }
 
     vtable = g_NodeControllerVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1169,49 +1199,51 @@ void SkateController::Destroy(u32 destroyFlags)
 
 void SkateController::Start()
 {
-    unknown3E4 = 0;
-    flags &= ~FlagGrinding & ~FlagWasGrinding;
+    unused3E4 = 0;
+    flags.grinding = 0;
+    flags.wasGrinding = 0;
 }
 
-// Whether the player's Humiliskate grinds kept (and last frame's), unless the game is watched. While the word at 0x3E0 is 0 the
-// node's sound is stopped and there's no grinding
+// Whether the player's Humiliskate grinds kept (and last frame's), unless the game is watched. Without a surface the node's sound
+// is stopped and there's no grinding
 void SkateController::Frame(TimeClock*)
 {
     if (GameWatched())
     {
-        if ((flags & FlagPaused) == 0)
+        if (!flags.paused)
         {
-            flags |= FlagPaused;
+            flags.paused = 1;
         }
     }
-    else if ((flags & FlagPaused) != 0)
+    else if (flags.paused)
     {
-        flags &= ~FlagPaused;
+        flags.paused = 0;
     }
 
-    flags = (flags & ~FlagWasGrinding) | ((flags & FlagGrinding) != 0 ? FlagWasGrinding : 0);
-    if ((flags & FlagPaused) == 0)
+    flags.wasGrinding = flags.grinding;
+    if (!flags.paused)
     {
         Vehicle* vehicle = PlayerAgent()->vehicle;
         if (vehicle != nullptr && vehicle->Kind() == Vehicle::KindHumiliskate)
         {
-            bool grinding = unknown3E0 != 0 && static_cast<HumiliskateVehicle*>(vehicle)->grinding != 0;
-            flags = (flags & ~FlagGrinding) | (grinding ? FlagGrinding : 0);
+            bool grinding = surface != nullptr && static_cast<HumiliskateVehicle*>(vehicle)->grinding != 0;
+            flags.grinding = grinding;
         }
     }
 
-    if (unknown3E0 != 0)
+    if (surface != nullptr)
     {
         return;
     }
 
-    if (node->unknown155[0x158 - 0x155] == NoSound)
+    if (node->playingSound == NoInstanceSound)
     {
         return;
     }
 
-    CallVirtual<void>(node, node->vtable, StopSoundSlot);
-    flags &= ~FlagGrinding & ~FlagWasGrinding;
+    CallVirtual<void>(node, node->vtable, ObjectNode::StopSoundSlot);
+    flags.grinding = 0;
+    flags.wasGrinding = 0;
 }
 
 void SkateController::Restart(u32)

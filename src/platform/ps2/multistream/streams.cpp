@@ -2,19 +2,29 @@
 
 #include "retail/libc.h"
 
+#include <kernel.h>
+
 // Playing streams and sounds, and the status the IOP reports on them
 using namespace MultiStream;
 
 namespace
 {
-// Every frame's end acknowledges no stream's event (0xFFFF)
-constexpr s32 CommandAcknowledge = 9;
-constexpr s32 CommandProgressAddress = 0x49;
+// The highest loop count a sound takes
+constexpr u32 MaxLoops = 0xFFFF;
+// A stream's time is in frames of 1/60 s; the hours given are its low byte
+constexpr u32 FramesPerSecond = 60;
+constexpr u32 FramesPerMinute = 60 * FramesPerSecond;
+constexpr u32 FramesPerHour = 60 * FramesPerMinute;
+constexpr u32 HoursMask = 0xFF;
 
-u32 ReadProgress()
+u32 ReadIopUpdates()
 {
-    // The IOP writes the word behind the cache's back
-    return *reinterpret_cast<volatile u32*>(reinterpret_cast<u32>(&g_MsProgress) | 0x20000000);
+    return *static_cast<volatile u32*>(UNCACHED_SEG(&g_MsIopUpdates));
+}
+
+bool IsFree(s32 stream)
+{
+    return g_MsStreamStates[stream] == StreamOff || g_MsStreamStates[stream] == StreamStopRequested;
 }
 }
 
@@ -24,7 +34,7 @@ extern "C"
     {
         for (s32 stream = 0; stream < g_MsStreamCount; stream++)
         {
-            if (g_MsStreamStates[stream] == 0 || g_MsStreamStates[stream] == 3)
+            if (IsFree(stream))
             {
                 return stream;
             }
@@ -42,7 +52,7 @@ extern "C"
 
         for (s32 stream = first; stream <= last; stream++)
         {
-            if (g_MsStreamStates[stream] == 0 || g_MsStreamStates[stream] == 3)
+            if (IsFree(stream))
             {
                 return stream;
             }
@@ -51,28 +61,28 @@ extern "C"
         return -1;
     }
 
-    s32 MsTransfer(u32 mode, u8 stream, u32 file, u32 destination)
+    s32 MsLoadFile(u32 mode, u8 stream, u32 file, u32 address)
     {
         MsLock();
-        if (mode != MsTransferToEe && mode != MsTransfer7B && mode != MsTransfer7D && mode != MsTransferToSound)
+        if (mode != LoadToEe && mode != LoadToEeLooping && mode != LoadToIop && mode != LoadToSpu)
         {
             MsUnlock();
             return -2;
         }
 
-        if (destination != 0)
+        if (address != 0)
         {
-            if (mode == MsTransferToEe)
+            if (mode == LoadToEe)
             {
-                MsSetEeDestination(destination);
+                MsSetEeWriteAddress(address);
             }
-            else if (mode == MsTransferToSound)
+            else if (mode == LoadToSpu)
             {
-                MsSetSoundDestination(destination);
+                MsSetSpuWriteAddress(address);
             }
-            else if (mode == MsTransfer7D)
+            else if (mode == LoadToIop)
             {
-                MsSetStatus57(destination);
+                MsSetIopWriteAddress(address);
             }
         }
 
@@ -81,27 +91,27 @@ extern "C"
         return result;
     }
 
-    s32 MsPlayStream(u32 file, s32 stream, u32 channelAndGroup, s32 left, s32 right, u16 word, u32 mode, u32 lowByte,
-                     u32 highByte)
+    s32 MsPlayStream(u32 file, s32 stream, u32 channelAndGroup, s32 left, s32 right, u16 pitch, u32 mode, u32 attack,
+                     u32 release)
     {
         MsLock();
         if (stream == MsAnyStream)
         {
             stream = MsFirstFreeStream();
         }
-        else if (stream == MsAnyEeStream || stream == MsAnyIopStream)
+        else if (stream == MsAnyDataStream || stream == MsAnyAudioStream)
         {
-            u8 wanted = stream == MsAnyEeStream ? 1 : 0;
+            u8 wanted = stream == MsAnyDataStream ? 1 : 0;
             s32 first = 0;
             do
             {
                 stream = MsFreeStreamIn(first, g_MsStreamCount - 1);
-                if (stream != -1 && g_MsStreamBufferInEe[stream] == wanted)
+                if (stream != -1 && g_MsStreamIsData[stream] == wanted)
                 {
                     break;
                 }
 
-                // The last stream is taken when it's free, whatever its memory
+                // The last stream is taken when it's free, whatever its kind
                 first = stream + 1;
             } while (first != g_MsStreamCount);
         }
@@ -112,92 +122,94 @@ extern "C"
             return -1;
         }
 
-        s32 group = static_cast<s32>(channelAndGroup & 0xFFFF0000);
-        g_MsStreamStates[stream] = 2;
-        g_MsStreamWord7High[stream] = 0x8080;
-        g_MsStreamWord3Top[stream] = 0;
-        u32 channel = channelAndGroup & 0xFFFF;
-        if (channel >= Streams)
+        s32 group = static_cast<s32>(channelAndGroup & GroupMask);
+        g_MsStreamStates[stream] = StreamPlayRequested;
+        g_MsStreamPriorities[stream] = InitialPriority | PriorityKept;
+        g_MsStreamActive[stream] = 0;
+        u32 channel = channelAndGroup & ChannelMask;
+        if (channel >= Channels)
         {
             MsUnlock();
             return -1;
         }
 
-        if (mode < 2)
+        // Music (ADPCM audio) marks its channel taken and scales its volumes by its group
+        if (mode <= StreamOnce)
         {
-            g_MsChannelStates[channel] = 3;
+            g_MsChannelStates[channel] = ChannelRequested;
             MsSetChannelGroup(static_cast<s32>(channel), group);
             MsStoreChannelVolumes(static_cast<s32>(channel), static_cast<s16>(left), static_cast<s16>(right));
             left = g_MsLeftVolume;
             right = g_MsRightVolume;
         }
 
-        g_MsSlotStreams[channel] = static_cast<u8>(stream);
-        if (mode == 0x7E)
+        g_MsChannelStreams[channel] = static_cast<u8>(stream);
+        if (mode == LoadToEe)
         {
-            g_MsStreamWord6[stream] = 0;
+            g_MsStreamEeDataSizes[stream] = 0;
         }
 
-        Begin(1);
+        // The channel with the stream in the high byte, the envelope's rates with the release in the high byte
+        Begin(OpPlayStream);
         Push32(file);
         Push(static_cast<u16>(channel + (stream << 8)));
         Push(static_cast<u16>(left));
         Push(static_cast<u16>(right));
-        Push(word);
+        Push(pitch);
         Push(static_cast<u16>(mode));
-        Push(static_cast<u16>(lowByte + (highByte << 8)));
+        Push(static_cast<u16>(attack + (release << 8)));
         MsCommit();
         MsUnlock();
         return stream;
     }
 
-    s32 MsPlaySound(u32 sound, u32 channelAndGroup, s32 left, s32 right, u16 word, u32 lowByte, u32 highByte, u32 last)
+    s32 MsPlaySound(u32 sound, u32 channelAndGroup, s32 left, s32 right, u16 pitch, u32 attack, u32 release, u32 loops)
     {
         MsLock();
-        s32 group = static_cast<s32>(channelAndGroup & 0xFFFF0000);
-        u32 channel = channelAndGroup & 0xFFFF;
-        if (channel >= Streams)
+        s32 group = static_cast<s32>(channelAndGroup & GroupMask);
+        u32 channel = channelAndGroup & ChannelMask;
+        if (channel >= Channels)
         {
             MsUnlock();
             return -1;
         }
 
-        if (last > 0xFFFF)
+        if (loops > MaxLoops)
         {
             MsUnlock();
             return -2;
         }
 
-        g_MsChannelStates[channel] = 3;
+        g_MsChannelStates[channel] = ChannelRequested;
         g_MsChannelSounds[channel] = sound;
         MsSetChannelGroup(static_cast<s32>(channel), group);
         MsStoreChannelVolumes(static_cast<s32>(channel), static_cast<s16>(left), static_cast<s16>(right));
-        Begin(0x39);
+        Begin(OpPlaySoundLoop);
         Push32(sound);
         Push(static_cast<u16>(channel));
         Push(static_cast<u16>(g_MsLeftVolume));
         Push(static_cast<u16>(g_MsRightVolume));
-        Push(word);
-        Push(static_cast<u16>(lowByte + (highByte << 8)));
-        Push(static_cast<u16>(last));
+        Push(pitch);
+        Push(static_cast<u16>(attack + (release << 8)));
+        Push(static_cast<u16>(loops));
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    s32 MsOpenFile(s32 request, const char* path, u32 value)
+    s32 MsOpenFile(s32 file, const char* path, u32 offset)
     {
         MsLock();
-        if (request == -1)
+        if (file == -1)
         {
-            request = MsNextRequest();
+            file = MsNextFileId();
         }
 
-        Begin(0x1F);
+        Begin(OpCreateFileInfo);
         if (g_MsBatchFailed != 1)
         {
-            Push32(static_cast<u32>(request));
-            Push32(value);
+            Push32(static_cast<u32>(file));
+            Push32(offset);
             // The path follows as it is, its terminator in the last word
             char* text = reinterpret_cast<char*>(&g_MsCommandWords[g_MsCommandLength]);
             RetailLibc::StringCopy(text, path);
@@ -208,56 +220,57 @@ extern "C"
 
         MsCommit();
         MsUnlock();
-        return request;
+        return file;
     }
 
-    void MsAddStreamChannel(s32 stream, u32 slot, u32 channelAndGroup, u16 word, s32 left, s32 right, u32 value)
+    void MsAddStreamChannel(s32 stream, u32 parent, u32 channelAndGroup, u16 track, s32 left, s32 right, u32 spuAddress)
     {
-        s32 group = static_cast<s32>(channelAndGroup & 0xFFFF0000);
-        u32 channel = channelAndGroup & 0xFFFF;
-        if (stream >= g_MsStreamCount || slot >= Streams || channel >= Streams)
+        s32 group = static_cast<s32>(channelAndGroup & GroupMask);
+        u32 channel = channelAndGroup & ChannelMask;
+        if (stream >= g_MsStreamCount || parent >= Streams || channel >= Channels)
         {
             return;
         }
 
         MsLock();
-        g_MsStreamStates[stream] = 2;
-        g_MsChannelStates[channel] = 3;
+        g_MsStreamStates[stream] = StreamPlayRequested;
+        g_MsChannelStates[channel] = ChannelRequested;
         MsSetChannelGroup(static_cast<s32>(channel), group);
         MsStoreChannelVolumes(static_cast<s32>(channel), static_cast<s16>(left), static_cast<s16>(right));
-        Begin(0x2C);
-        Push(static_cast<u16>((stream << 8) | slot));
+        // The stream in the high byte, its parent in the low
+        Begin(OpSetStreamChild);
+        Push(static_cast<u16>((stream << 8) | parent));
         Push(static_cast<u16>(channel));
-        Push(word);
+        Push(track);
         Push(static_cast<u16>(g_MsLeftVolume));
         Push(static_cast<u16>(g_MsRightVolume));
-        Push32(value);
+        Push32(spuAddress);
         MsCommit();
         MsUnlock();
     }
 
     s32 MsGetStreamStatus(s32 stream, StreamStatus* status)
     {
-        status->status50 = g_MsStatus50;
-        status->lastEventStream = static_cast<u8>(g_MsLastEventStream);
-        status->lastEvent = static_cast<u8>(g_MsLastEvent);
-        status->status3 = static_cast<u8>(g_MsStatus3);
-        status->flag0 = g_MsFlag0;
+        status->maxIopMemory = g_MsMaxIopMemory;
+        status->discAccessStream = static_cast<u8>(g_MsDiscAccessStream);
+        status->discAccess = static_cast<u8>(g_MsDiscAccess);
+        status->discBusy = static_cast<u8>(g_MsDiscBusy);
         status->discError = g_MsDiscError;
-        status->flag1 = g_MsFlag1;
-        status->status61 = g_MsStatus61;
-        status->status62 = g_MsStatus62;
-        status->statusAfterValues = g_MsStatusAfterValues;
+        status->discNotReady = g_MsDiscNotReady;
+        status->discInternalError = g_MsDiscInternalError;
+        status->eeTransferSize = g_MsEeTransferSize;
+        status->eeTransferCount = g_MsEeTransferCount;
+        status->userTransferStatus = g_MsUserTransferStatus;
         if (stream >= g_MsStreamCount)
         {
             return -1;
         }
 
         s8 state = g_MsStreamStates[stream];
-        if (state == 0 || state == 3 || state == 2 || state == 5)
+        if (state == StreamOff || state == StreamStopRequested || state == StreamPlayRequested || state == StreamPlaySent)
         {
-            status->state = state == 0 || state == 3 ? 0 : 6;
-            status->word7Low = 0;
+            status->state = state == StreamOff || state == StreamStopRequested ? StreamOff : StreamWaitingToPlay;
+            status->pitch = 0;
             status->frames = 0;
             status->seconds = 0;
             status->minutes = 0;
@@ -265,73 +278,75 @@ extern "C"
         }
         else
         {
-            status->state = 1;
-            status->word7Low = g_MsStreamWord7Low[stream];
+            status->state = StreamOn;
+            status->pitch = g_MsStreamPitches[stream];
             u32 time = g_MsStreamTime[stream];
-            status->frames = static_cast<u8>(time % 60);
-            status->hours = time / 216000 & 0xFF;
-            status->minutes = static_cast<u8>(time / 3600 % 60);
-            status->seconds = static_cast<u8>(time / 60 % 60);
+            status->frames = static_cast<u8>(time % FramesPerSecond);
+            status->hours = time / FramesPerHour & HoursMask;
+            status->minutes = static_cast<u8>(time / FramesPerMinute % 60);
+            status->seconds = static_cast<u8>(time / FramesPerSecond % 60);
         }
 
-        status->word7High = g_MsStreamWord7High[stream] & 0x7FFF;
-        status->value = g_MsStreamValues[stream];
-        status->word4 = g_MsStreamWord4[stream];
-        status->word3Low = g_MsStreamWord3Low[stream];
-        status->word3Top = g_MsStreamWord3Top[stream];
-        status->slot = g_MsStreamSlots[stream];
-        status->word2 = g_MsStreamWord2[stream];
-        status->word1 = g_MsStreamWord1[stream];
-        status->word1Again = g_MsStreamWord1[stream];
-        status->recordBits = g_MsStreamRecordBits[stream];
-        status->recordHigh = g_MsStreamRecordHigh[stream];
-        status->word5 = g_MsStreamWord5[stream];
-        status->word6 = g_MsStreamWord6[stream];
+        status->priority = g_MsStreamPriorities[stream] & ~PriorityKept;
+        status->iopBuffer = g_MsStreamIopBuffers[stream];
+        status->writeAddress = g_MsStreamWriteAddresses[stream];
+        status->type = g_MsStreamTypes[stream];
+        status->active = g_MsStreamActive[stream];
+        status->channel = g_MsStreamChannels[stream];
+        status->file = g_MsStreamFiles[stream];
+        status->spuAddress = g_MsStreamSpuAddresses[stream];
+        status->destinationAddress = g_MsStreamSpuAddresses[stream];
+        status->playHalf = g_MsStreamPlayHalves[stream];
+        status->envelope = g_MsStreamEnvelopes[stream];
+        status->playOffset = g_MsStreamPlayOffsets[stream];
+        status->eeDataSize = g_MsStreamEeDataSizes[stream];
         return 0;
     }
 
-    s32 MsCheckDisc()
+    s32 MsHandleDiscErrors()
     {
-        if (g_MsFlag0 == 1)
+        if (g_MsDiscError == 1)
         {
             MsLock();
-            g_MsCheckedFlag0 = g_MsFlag0;
-            MsHoldReading();
-            while (MsSend(0) < 0)
+            g_MsLastDiscError = g_MsDiscError;
+            MsCheckDiscError();
+            while (MsSend(SendWait) < 0)
             {
             }
 
-            if (g_MsDiscError == 0)
+            if (g_MsDiscNotReady == 0)
             {
-                MsRestartReading();
-                MsSend(0);
+                MsRestartFromDiscError();
+                MsSend(SendWait);
             }
 
             MsUnlock();
         }
         else
         {
-            g_MsCheckedFlag0 = 0;
+            g_MsLastDiscError = 0;
         }
 
-        g_MsCheckedFlag1 = g_MsFlag1;
-        if (g_MsFlag0 == 1)
+        g_MsLastDiscInternalError = g_MsDiscInternalError;
+        if (g_MsDiscError == 1)
         {
             return -1;
         }
 
-        if (g_MsFlag1 == 1)
+        if (g_MsDiscInternalError == 1)
         {
             return -2;
         }
 
-        return static_cast<s32>(g_MsStatusG);
+        return static_cast<s32>(g_MsDiscErrorCode);
     }
 
-    s32 MsWaitForStream(u32 streamAndMatch, s32 keepProgress)
+    s32 MsWaitForStream(u32 waitStream, s32 kind)
     {
-        s32 stream = static_cast<s32>(streamAndMatch & 0xFF);
-        bool onlyTheStream = (streamAndMatch & 0xFF00) != 0;
+        WaitStream wait;
+        wait.value = waitStream;
+        s32 stream = static_cast<s32>(wait.stream);
+        bool onlyTheStream = wait.onlyThisStream != 0;
         if (stream >= g_MsStreamCount)
         {
             return -1;
@@ -342,115 +357,117 @@ extern "C"
         {
         }
 
-        if (keepProgress == 0)
+        if (kind == WaitCold)
         {
             MsLock();
-            Begin(CommandProgressAddress);
-            Push32(reinterpret_cast<u32>(&g_MsProgress));
+            Begin(OpInitWait);
+            Push32(reinterpret_cast<u32>(&g_MsIopUpdates));
             MsCommit();
             MsUnlock();
         }
 
         MsLock();
-        Begin(CommandAcknowledge);
-        Push(0xFFFF);
+        Begin(OpGetStatus);
+        Push(NoStreamAllowed);
         Push(0);
         MsCommit();
-        g_MsFlushing = 1;
+        g_MsStatusRequested = 1;
         MsUnlock();
-        MsSend(0);
-        g_MsLastProgress = ReadProgress();
+        MsSend(SendWait);
+        g_MsLastIopUpdate = ReadIopUpdates();
         StreamStatus status;
         MsGetStreamStatus(stream, &status);
-        while (status.state != 0)
+        while (status.state != StreamOff)
         {
-            if (ReadProgress() != g_MsLastProgress)
+            // A call only once the IOP's thread has run again, not to keep it from working
+            if (ReadIopUpdates() != g_MsLastIopUpdate)
             {
-                g_MsLastProgress = ReadProgress();
-                s32 event = MsGetEventStream();
-                if (event != -1 && (!onlyTheStream || event == stream))
+                g_MsLastIopUpdate = ReadIopUpdates();
+                s32 request = MsGetLoadRequest();
+                if (request != -1 && (!onlyTheStream || request == stream))
                 {
-                    if (static_cast<u8>(g_MsStatus59) != '|')
+                    // Another loading than MultiStream's own is the caller's
+                    if (static_cast<u8>(g_MsIopLoadType) != LoadByModule)
                     {
-                        if (keepProgress == 0)
+                        if (kind == WaitCold)
                         {
-                            MsStopProgress();
-                            MsSend(0);
+                            MsCloseWaitUpdate();
+                            MsSend(SendWait);
                         }
 
                         MsUnlock();
-                        return event + 1;
+                        return request + 1;
                     }
 
-                    // A '|' asks for the event to be acknowledged
+                    // The stream that wants more data may load it
                     MsLock();
-                    g_MsStatus3 = 1;
-                    g_MsStatus2 = static_cast<u32>(-1);
-                    Begin(CommandAcknowledge);
-                    Push(static_cast<u16>(event));
+                    g_MsDiscBusy = 1;
+                    g_MsLoadRequest = -1;
+                    Begin(OpGetStatus);
+                    Push(static_cast<u16>(request));
                     Push(0);
                     MsCommit();
-                    g_MsFlushing = 1;
+                    g_MsStatusRequested = 1;
                     MsUnlock();
                 }
 
-                MsSend(0);
-                MsCheckDisc();
+                MsSend(SendWait);
+                MsHandleDiscErrors();
             }
 
             MsGetStreamStatus(stream, &status);
         }
 
-        if (keepProgress == 0)
+        if (kind == WaitCold)
         {
-            MsStopProgress();
-            MsSend(0);
+            MsCloseWaitUpdate();
+            MsSend(SendWait);
         }
 
         MsUnlock();
         return 0;
     }
 
-    u32 MsGetFileInfo(u32 info[6])
+    u32 MsGetFileInfo(FileInfo* info)
     {
-        info[0] = g_MsFileInfo53;
-        info[3] = g_MsFileInfo51High;
-        info[1] = g_MsFileInfo52;
-        info[2] = g_MsFileInfo51Low;
-        info[4] = g_MsFileInfoLast1;
-        info[5] = g_MsFileInfoLast2;
-        return static_cast<u8>(g_MsFileInfo51High);
+        info->sector = g_MsFileSector;
+        info->counter = g_MsFileCounter;
+        info->size = g_MsFileSize;
+        info->source = g_MsFileSource;
+        info->atWinMonOpen = g_MsAtWinMonOpen;
+        info->atWinMonFile = g_MsAtWinMonFile;
+        return static_cast<u8>(g_MsFileCounter);
     }
 
-    s32 MsGetEventStream()
+    s32 MsGetLoadRequest()
     {
-        return static_cast<s32>(g_MsStatus2);
+        return g_MsLoadRequest;
     }
 
     s32 MsIsChannelFree(u32 channel)
     {
-        if (channel >= Streams)
+        if (channel >= Channels)
         {
             return -1;
         }
 
-        return g_MsChannelStates[channel] == 0;
+        return g_MsChannelStates[channel] == ChannelOff;
     }
 
-    s32 MsFindBank(u32 value, u32 key)
+    s32 MsCheckSoundId(u32 sound, u32 address)
     {
-        if (g_MsEntryTable == nullptr)
+        if (g_MsMemoryBlocks == nullptr)
         {
             return -2;
         }
 
-        for (s32 i = 0; i < g_MsEntryTableCount; i++)
+        for (s32 i = 0; i < g_MsMemoryBlockCount; i++)
         {
-            MsEntry& entry = g_MsEntryTable[i];
-            if (entry.key == key)
+            MsMemoryBlock& block = g_MsMemoryBlocks[i];
+            if (block.address == address)
             {
-                entry.value = value;
-                entry.set = 1;
+                block.sound = sound;
+                block.hasSound = 1;
                 return 0;
             }
         }
@@ -458,8 +475,8 @@ extern "C"
         return -1;
     }
 
-    s32 MsBufferSize(s32 first, s32 second)
+    s32 MsInterleavedBufferSize(s32 trackSize, s32 files)
     {
-        return first * second * 2;
+        return trackSize * files * 2;
     }
 }

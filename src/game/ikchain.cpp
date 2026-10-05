@@ -13,11 +13,8 @@ EABI_EXPORT(FUN_0018be70, RunIkSolver);
 
 namespace
 {
-// A direction this short has none
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// How far off a unit pair a turned angle's cosine and sine may get before they're made one again
-constexpr f32 TurnTolerance = 0x1.0624dep-11f;
-constexpr f32 LimitTolerance = 0x1.a36e2ep-15f;
+// How far off its limits a turned link's angle may be (sines)
+constexpr f32 LimitTolerance = Epsilon;
 // The terms the scaling of a turn takes
 constexpr s32 TurnScaleTerms = 2;
 
@@ -38,7 +35,7 @@ void PlanePointInWorld(const IkChain* chain, f32 x, f32 y, Vector4* out)
 void DestroyIkLink(IkLink* link, u32 destroyFlags)
 {
     link->vtable = g_IkLinkVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(link);
     }
@@ -72,7 +69,7 @@ void SetIkEnds(void* chain, const Vector4* start, const Vector4* end)
 void DestroyIkChain(void* chain, u32 destroyFlags)
 {
     DestroyIkSolver(&static_cast<IkChain*>(chain)->solver, DestroyOnly);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(chain);
     }
@@ -115,7 +112,7 @@ void UpdateIkLink(IkLink* link)
     }
 
     // Its angle in the plane is the one before's plus its own, and it starts where the one before ends
-    TurnPair(&link->planeSine, &link->planeCosine, previous->planeSine, previous->planeCosine, TurnTolerance);
+    TurnPair(&link->planeSine, &link->planeCosine, previous->planeSine, previous->planeCosine, IkTurnTolerance);
     link->x = previous->length * previous->planeCosine + previous->x;
     link->y = previous->length * previous->planeSine + previous->y;
 }
@@ -129,7 +126,7 @@ void TurnIkLink(IkLink* link, f32* sine, f32* cosine, f32 turnSine, f32 turnCosi
         ScaleIkTurn(link->turnShare, &scaled[0], &scaled[1], TurnScaleTerms);
     }
 
-    TurnPair(sine, cosine, turnSine, turnCosine, TurnTolerance);
+    TurnPair(sine, cosine, turnSine, turnCosine, IkTurnTolerance);
     KeepIkLinkWithinLimits(link, sine, cosine, LimitTolerance);
 }
 
@@ -175,12 +172,12 @@ void DestroyIkSolver(IkSolver* solver, u32 destroyFlags)
     while (link != nullptr)
     {
         IkLink* next = link->next;
-        CallVirtual<void>(link, link->vtable, 1, DestroyAndFree);
+        CallVirtual<void>(link, link->vtable, IkLink::DestroySlot, DestroyAndFree);
         link = next;
     }
 
     solver->root.vtable = g_IkLinkVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(solver);
     }

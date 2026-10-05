@@ -21,19 +21,15 @@ struct TimeClock;
 // (game/vehicles.h), its look and its body's sizes. One translation unit in retail (0x141D08-0x162358, its start-up
 // FUN_0015da18), the character agent's own code before it
 
-// The gun (Gun below) as StartedWithin reads it: its agent first, the last shot's time (the agent's clock's) at 0x14
-struct CharacterController
-{
-    CharacterAgent* agent;
-    u8 unknown04[0x10];
-    u32 startTime;
-};
-CHECK_OFFSET(CharacterController, startTime, 0x14);
-
-// The playable characters' behaviour slots these controllers run (ExecuteEvent's index; the names are the slots of Crash's and
-// Cortex's objects)
+// The playable characters' behaviour slots their code runs (ExecuteEvent's index; the names are the slots of Crash's and Cortex's
+// objects): among them a long drop with no fall started, a fall that went far, the landings (still, moving, after a far fall
+// (also when a chunk link turns it back) and after a body slam), tied and untied, dead, thrown by the other character from a
+// spin and from a jump (both run it), the gun drawn, put away and shot (with ammo), a vehicle taken and left, the knock-backs'
+// by the angle from its facing to the push (within 45 degrees, past 135, below -45 and above 45) and the gun charged and shot
+// without ammo
 enum CharacterEvent : u32
 {
+    EventLongDrop = 11,
     EventIdle = 12,
     EventShuffleFeet = 13,
     EventWalk = 14,
@@ -53,7 +49,11 @@ enum CharacterEvent : u32
     EventRadialBlastHang = 31,
     EventRadialBlast = 32,
     EventShortFall = 33,
+    EventFellFar = 34,
     EventFlyingKickFall = 37,
+    EventLand = 39,
+    EventLandMoving = 40,
+    EventLandFromFar = 41,
     EventKneeDropLand = 42,
     EventStandToCrouch = 46,
     EventCrouchToCrawl = 47,
@@ -63,12 +63,116 @@ enum CharacterEvent : u32
     EventRunToKneeSlide = 51,
     EventKneeSlideToCrouch = 53,
     EventKneeSlideToStand = 54,
+    EventLinked = 65,
+    EventUnlinked = 66,
+    EventDied = 67,
     EventBodySlam = 68,
+    EventThrownFromSpin = 69,
+    EventThrownFromJump = 70,
+    EventGunDrawn = 71,
+    EventGunPutAway = 72,
+    EventGunShot = 73,
+    EventVehicleTaken = 74,
+    EventVehicleLeft = 75,
+    EventKnockedForward = 80,
+    EventKnockedBack = 81,
+    EventKnockedNegative = 82,
+    EventKnockedPositive = 83,
     EventLinkedStandingJump = 100,
     EventLinkedRunningJump = 101,
+    EventGunCharged = 106,
+    EventGunNoAmmo = 107,
     EventFailedRadialBlast = 108,
     // Past every character's slots: no event
     EventNone = 0x6F,
+};
+
+// The playable characters (their agent's first int property): Crash, Cortex, a Crash 2 units high without probes, Nina, none and
+// the Mecha-Bandicoot
+constexpr u32 CharacterKindProperty = 0;
+enum PlayableCharacter : s32
+{
+    CharacterCrash = 0,
+    CharacterCortex = 1,
+    CharacterTallCrash = 2,
+    CharacterNina = 3,
+    CharacterNone = 4,
+    CharacterMecha = 5,
+};
+
+// The next state a controller's frame works out when it stays in its state
+constexpr s32 NoNextState = -1;
+
+// The attack kinds a playable character's moves give its part (the part's low byte; agentparts.h's CharacterPart): walking into
+// something, landing on it and hitting it from below, spinning, body slamming, sliding, tied to the other character (the second,
+// and the leader's slam), the variant kinds of the spin, the slam and the slide (nothing gives them: the controllers' bits that
+// would are never set), thrown by the other character from a spin and from a jump, and landing on or hitting from below while
+// spinning (both a spin and the kind without it)
+enum CharacterAttack : u32
+{
+    AttackWalkInto = 3,
+    AttackLandOn = 4,
+    AttackFromBelow = 5,
+    AttackSpin = 6,
+    AttackSlam = 7,
+    AttackSlide = 8,
+    AttackTied = 9,
+    AttackSpinVariant = 10,
+    AttackSlamVariant = 11,
+    AttackSlideVariant = 12,
+    AttackThrownFromSpin = 13,
+    AttackThrownFromJump = 14,
+    AttackLandOnSpinning = 15,
+    AttackFromBelowSpinning = 16,
+};
+
+// The part's move bits (bits 32-63 of its 64 bits from 0x18) the controllers' frames give that agentparts.h doesn't name: the
+// double jump (and the knee drop), the slide jump, the jump of the unused kind 8, the flying kick, the crawl and the strafe held
+enum CharacterMoveBit : u32
+{
+    MoveDoubleJump = 0x4,
+    MoveSlideJump = 0x8,
+    MoveUnusedJump = 0x80,
+    MoveFlyingKick = 0x100,
+    MoveCrawling = 0x200,
+    MoveStrafing = 0x1000,
+};
+
+// CharacterAgent::FitsAt's kinds: standing (the instances in the way told when there's a normal), crouching, crawling, taking off
+// from a slide and the knee drop (the crouch's hull for crouching, crawling and the knee drop)
+enum CharacterFit : u32
+{
+    FitStanding = 0,
+    FitCrouching = 3,
+    FitCrawling = 4,
+    FitSlideJump = 6,
+    FitKneeDrop = 7,
+};
+
+// Exit points of the playable characters' models: the hand the second of the tied characters slams with, the head, and the feet
+// (footprints are left at them)
+enum CharacterModelExitPoint : u32
+{
+    ExitPointHand = 0,
+    ExitPointHead = 1,
+    ExitPointRightFoot = 6,
+    ExitPointLeftFoot = 7,
+};
+
+// The sphere a character splashes into water with (its vehicle's own while it rides one): its radius, 1 above its position
+constexpr f32 CharacterSplashRadius = Rounded(0.9);
+constexpr f32 CharacterSplashRaise = 1.0f;
+
+// Where LiftOntoGround puts a character after a set back and the frame after its state is applied: the ground found up to the
+// reach below its position, cast from the height above it
+constexpr f32 CharacterLiftHeight = 2.0f;
+constexpr f32 CharacterLiftReach = 20.0f;
+
+// CharacterAgent's height states: on the ground and in a jump (from every take-off)
+enum CharacterHeightState : s32
+{
+    HeightOnGround = 0,
+    HeightJumping = 1,
 };
 
 // The objects that pose a model's joints through its animator's joint callbacks (retail vtable D_002F0380 at 0: 1 destructor,
@@ -80,34 +184,42 @@ enum CharacterEvent : u32
 class JointHook
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        AttachSlot = 2,
+        DetachSlot = 3,
+        PoseJointSlot = 4,
+    };
+
     const GccVTableEntry* vtable;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00122f40);
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void AttachVirtual(OgiAnimator* animator)
     {
-        CallVirtual<void>(this, vtable, 2, animator);
+        CallVirtual<void>(this, vtable, AttachSlot, animator);
     }
 
     void DetachVirtual(OgiAnimator* animator)
     {
-        CallVirtual<void>(this, vtable, 3, animator);
+        CallVirtual<void>(this, vtable, DetachSlot, animator);
     }
 
     u32 PoseJointVirtual(JointAnimator* animator, Matrix4x4* matrix)
     {
-        return CallVirtual<u32>(this, vtable, 4, animator, matrix);
+        return CallVirtual<u32>(this, vtable, PoseJointSlot, animator, matrix);
     }
 };
 CHECK_SIZE(JointHook, 4);
 
 // The crouch, the crawl and the knee slide (circle on the ground; the agent's 0x98, 0x40 bytes, plain struct). The crouch's frame
-// gives the part bit 32 (not standing), 41 (crawling) and attack kind 8 while sliding
+// gives the part bit 32 (not standing), 41 (crawling) and AttackSlide while sliding
 struct CrouchController
 {
     enum State : u8
@@ -121,15 +233,21 @@ struct CrouchController
         StateSlideEnd = 6,
     };
 
-    enum Bits : u32
+    union Bits
     {
-        StateMask = 0xFF,
-        // Turns the slide's attack kind 8 into 12 (nothing sets it)
-        BitSlideKind12 = 0x200,
-        // The jump may start (clear for the slide's first property 0x2D seconds)
-        BitMayJump = 0x400,
-        // Float property 0x29 (the crouch's time) isn't 0
-        BitCanCrouch = 0x800,
+        u32 value;
+        struct
+        {
+            u32 state : 8;
+            u32 unused8 : 1;
+            // The slide's attack kind is AttackSlideVariant rather than AttackSlide (nothing sets it)
+            u32 slideVariantKind : 1;
+            // The jump may start (clear for the slide's first property 0x2D seconds)
+            u32 mayJump : 1;
+            // Float property 0x29 (the crouch's time) isn't 0
+            u32 canCrouch : 1;
+            u32 unused12 : 20;
+        };
     };
 
     // Float properties (and the tagged ones' turn rates)
@@ -150,20 +268,20 @@ struct CrouchController
     };
 
     // Retail reads and writes the bits as the u64 at 0 (the cooldown its high half, written back as it was)
-    u32 bits;
+    Bits bits;
     f32 cooldown;
     s32 stateStart;
     s32 stateTicks;
     f32 slideSpeed;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     Vector4 slideDirection;
     f32 slideFade;
     CharacterAgent* agent;
-    u8 unknown38[8];
+    u8 unused38[8];
 
     static CrouchController* Construct(CrouchController* crouch, CharacterAgent* agent) RETAIL(FUN_0015ea38);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0015ea68);
-    // Standing, may jump, CanCrouch by property 0x29, fade 1 (the cooldown kept)
+    // Standing, may jump, canCrouch by property 0x29, fade 1 (the cooldown kept)
     void Reset() RETAIL(FUN_0015ea90);
     // State 0: a knee slide or the crouch's start (circle pressed this frame or not), the next state written when there's one
     void Stand(u32 circle, s32* next) RETAIL(FUN_00143828);
@@ -177,12 +295,12 @@ CHECK_OFFSET(CrouchController, stateTicks, 0xC);
 CHECK_OFFSET(CrouchController, slideDirection, 0x20);
 CHECK_OFFSET(CrouchController, slideFade, 0x30);
 CHECK_OFFSET(CrouchController, agent, 0x34);
+CHECK_SIZE(CrouchController::Bits, 4);
 CHECK_SIZE(CrouchController, 0x40);
 
 // The jumps (cross) and the air attacks (circle in the air): the jump, the tied jump, the double jump, the slide jump, launches
 // (PushBack's), the knee drop (body slam), Crash's flying kick and Cortex's radial blast (the agent's 0xA0, 0x30 bytes, plain
-// struct; player.h's PlayerCharacter::attack). The jump's frame gives the part attack kind 7 in the knee drop and bits 33-35,
-// 39 and 40
+// struct). The jump's frame gives the part AttackSlam in the knee drop and bits 33-35, 39 and 40
 struct JumpController
 {
     enum State : u32
@@ -195,8 +313,9 @@ struct JumpController
         StateRisingLaunched = 5,
         StateKneeDropHang = 6,
         StateKneeDrop = 7,
-        StateRisingKind8 = 8,
-        StateFallingKind8 = 9,
+        // The unused kind's (nothing starts it)
+        StateRisingUnused = 8,
+        StateFallingUnused = 9,
         StateFlyingKick = 10,
         StateFallingKick = 11,
         StateBlastHang = 12,
@@ -211,7 +330,7 @@ struct JumpController
         StateNone = 20,
     };
 
-    // The kinds of jumps (FUN_00148940's and the others' kind)
+    // The kinds of jumps (Start's and the others' kind)
     enum Kind : u32
     {
         KindJump = 2,
@@ -220,30 +339,35 @@ struct JumpController
         KindSlide = 5,
         KindLaunch = 6,
         KindKneeDrop = 7,
-        KindUnused8 = 8,
+        // Nothing starts it (it falls with the slide jump's gravity)
+        KindUnused = 8,
         KindFlyingKick = 9,
         KindRadialBlast = 10,
     };
 
-    enum Bits : u32
+    union Bits
     {
-        StateMask = 0x1F,
-        NextShift = 5,
-        CrossHeld = 0x400,
-        CircleHeld = 0x800,
-        MayDoubleJump = 0x1000,
-        MayAttack = 0x2000,
-        LaunchQueued = 0x4000,
-        LaunchEventShift = 15,
-        LaunchEventMask = 0xFF,
-        // A take-off's push off what it stands on still to be given (StandOnBody clears it)
-        Jumped = 0x800000,
-        // Turns kind 7 into 11 (nothing sets it)
-        AttackKind11 = 0x1000000,
-        // The knee drop waits for room (cleared the next frame before it's read)
-        KneeDropWaits = 0x2000000,
-        // The reset's: falling (16), no next state
-        ResetBits = 0x290,
+        u32 value;
+        struct
+        {
+            u32 state : 5;
+            // StateNone: none
+            u32 next : 5;
+            u32 crossHeld : 1;
+            u32 circleHeld : 1;
+            u32 mayDoubleJump : 1;
+            u32 mayAttack : 1;
+            // A launch queued for the next frame, and its event (EventNone none)
+            u32 launchQueued : 1;
+            u32 launchEvent : 8;
+            // A take-off's push off what it stands on still to be given (StandOnBody clears it)
+            u32 jumped : 1;
+            // The knee drop's attack kind is AttackSlamVariant rather than AttackSlam (nothing sets it)
+            u32 slamVariantKind : 1;
+            // The knee drop waits for room (cleared the next frame before it's read)
+            u32 kneeDropWaits : 1;
+            u32 unused26 : 6;
+        };
     };
 
     enum Property : u32
@@ -279,7 +403,7 @@ struct JumpController
         TaggedSlideTurn = 8,
     };
 
-    u32 bits;
+    Bits bits;
     f32 gravity;
     f32 upSpeed;
     f32 airSpeed;
@@ -315,16 +439,17 @@ struct JumpController
     void Rise(TimeClock* clock, u32 kind, s32* next) RETAIL(FUN_001491e0);
     void Hang(TimeClock* clock, u32 kind, u32 unused, s32* next) RETAIL(FUN_001493d8);
     void FallFrame(TimeClock* clock, u32 kind, s32* next) RETAIL(FUN_001495b0);
-    // The frame (JumpFrame's): cross's and circle's press, whether it may jump (the crouch's BitMayJump, 1 without a crouch)
+    // The frame (JumpFrame's): cross's and circle's press, whether it may jump (the crouch's mayJump, 1 without a crouch)
     void Frame(f32 cross, f32 circle, TimeClock* clock, u32 mayJump) RETAIL_N32(FUN_00149818);
 };
 CHECK_OFFSET(JumpController, airTurn, 0x10);
 CHECK_OFFSET(JumpController, stateStart, 0x20);
 CHECK_OFFSET(JumpController, agent, 0x2C);
+CHECK_SIZE(JumpController::Bits, 4);
 CHECK_SIZE(JumpController, 0x30);
 
 // The spin (square; circle for the characters with a gun), alone or tied (the agent's 0xA8, 0x14 bytes, plain struct). The spin's
-// frame gives the part attack kind 6 in states 1 and 2
+// frame gives the part AttackSpin in states 1 and 2
 struct SpinController
 {
     enum State : u32
@@ -337,11 +462,16 @@ struct SpinController
         StateNoNext = 4,
     };
 
-    enum Bits : u32
+    union Bits
     {
-        StateMask = 0xF,
-        NextShift = 4,
-        ButtonHeld = 0x100,
+        u32 value;
+        struct
+        {
+            u32 state : 4;
+            u32 next : 4;
+            u32 buttonHeld : 1;
+            u32 unused9 : 23;
+        };
     };
 
     enum Property : u32
@@ -352,7 +482,7 @@ struct SpinController
         TaggedSpinTurn = 3,
     };
 
-    u32 bits;
+    Bits bits;
     s32 stateStart;
     s32 stateTicks;
     // 65536ths of a turn, 0x21D1 more a frame
@@ -371,6 +501,7 @@ struct SpinController
     void Frame(f32 button, f32 unused, f32 stick, TimeClock* clock) RETAIL_N32(FUN_0014ebe0);
 };
 CHECK_OFFSET(SpinController, sweepAngle, 0xC);
+CHECK_SIZE(SpinController::Bits, 4);
 CHECK_SIZE(SpinController, 0x14);
 
 // The stick's ground movement (idle, shuffling, walking, running, strafing with L1/R1), the air's steering and pushes (the agent's
@@ -390,14 +521,20 @@ struct WalkController
         StatePushed = 9,
     };
 
-    enum Bits : u32
+    union Bits
     {
-        StateMask = 0xF,
-        NextShift = 4,
-        StrafeHeld = 0x100,
-        // The push is a velocity (else a speed), and it eases over pushTicks
-        PushVelocity = 0x200,
-        PushEases = 0x400,
+        u32 value;
+        struct
+        {
+            u32 state : 4;
+            // 0: none
+            u32 next : 4;
+            u32 strafeHeld : 1;
+            // The push is a velocity (else a speed), and it eases over pushTicks
+            u32 pushVelocity : 1;
+            u32 pushEases : 1;
+            u32 unused11 : 21;
+        };
     };
 
     enum Property : u32
@@ -411,12 +548,12 @@ struct WalkController
     };
 
     // Retail reads and writes the bits as the u64 at 0 (the strafe its high half, reloaded before each write)
-    u32 bits;
+    Bits bits;
     f32 strafe;
     s32 pushTicks;
     s32 stateStart;
     s32 stoodTime;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     Vector4 pushFrom;
     Vector4 pushTo;
     Vector4 pushVelocity;
@@ -425,13 +562,13 @@ struct WalkController
     f32 pushSpeedTo;
     f32 airSpeed;
     s32 airTurn;
-    u8 unknown64[0xC];
+    u8 unused64[0xC];
     Vector4 moveDirection;
     Vector4 faceDirection;
     f32 speed;
     // 65536ths of a turn a second
     s32 turn;
-    u8 unknown98[8];
+    u8 unused98[8];
 
     static WalkController* Construct(WalkController* walk, CharacterAgent* agent) RETAIL(FUN_001602b8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001602e8);
@@ -442,7 +579,7 @@ struct WalkController
     f32 TopSpeed() RETAIL(FUN_00160250);
     // Float property 8 isn't 0
     u32 Strafes() RETAIL(FUN_00160640);
-    // Idle at once and the part's attack kind 3 (LinkFrame's)
+    // Idle at once and the part's attack kind AttackWalkInto (LinkFrame's)
     void BeIdle() RETAIL(FUN_001603e0);
     // Pushed (next state 9) at a speed or a velocity eased from one to the other over the ticks (0: the end's at once)
     void PushAtSpeed(f32 from, f32 to, s32 ticks) RETAIL_N32(FUN_00160420);
@@ -467,62 +604,87 @@ CHECK_OFFSET(WalkController, agent, 0x50);
 CHECK_OFFSET(WalkController, airTurn, 0x60);
 CHECK_OFFSET(WalkController, moveDirection, 0x70);
 CHECK_OFFSET(WalkController, turn, 0x94);
+CHECK_SIZE(WalkController::Bits, 4);
 CHECK_SIZE(WalkController, 0xA0);
 
 // Two characters tied together holding hands (Crash and Cortex; the agent's 0xB0, 0x220 bytes, vtable D_002F3610). Each has
 // one: the leader's (LinkCharacters' first, part bit 53) references the second (part bit 54), the second's the leader. Circle
-// slams them (attack kind 9 for the leader)
+// slams them (AttackTied for the leader)
 class CharacterLink : public JointHook
 {
 public:
-    // The bits 32-45 of the u64 at 0 retail reads and writes (the vtable its low half)
-    enum Bits : u32
+    enum State : u32
     {
-        StateMask = 0xF,
         StateDetached = 0,
         StateTied = 1,
         StateSlamming = 2,
-        GaitShift = 4,
-        GaitMask = 0xF,
-        HoldShift = 8,
-        HoldMask = 0xF,
-        HoldSeen = 1,
-        HoldHands = 2,
-        BitLeader = 0x1000,
-        BitSecondWasProjectile = 0x2000,
     };
 
-    u32 bits;
+    // The second's gaits as its swing goes
+    enum Gait : u32
+    {
+        GaitNone = 0,
+        GaitIdle = 1,
+        GaitWalking = 2,
+        GaitRunning = 3,
+        GaitShuffling = 4,
+    };
+
+    // How the arms hold: the shoulder not posed yet, its place seen, holding hands
+    enum Hold : u32
+    {
+        HoldNone = 0,
+        HoldSeen = 1,
+        HoldHands = 2,
+    };
+
+    // The bits 32-45 of the u64 at 0 retail reads and writes (the vtable its low half)
+    union Bits
+    {
+        u32 value;
+        struct
+        {
+            u32 state : 4;
+            u32 gait : 4;
+            u32 hold : 4;
+            u32 leader : 1;
+            // The second's instance was a projectile when they were tied (the leader's link puts that back when it's destroyed)
+            u32 secondWasProjectile : 1;
+            u32 unused14 : 18;
+        };
+    };
+
+    Bits bits;
     CharacterAgent* character;
     // The second's instance on the leader's link, the leader's on the second's
     Reference* second;
     Reference* leader;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     Vector4 upperArm;
     Vector4 forearm;
     f32 stretch;
-    u8 unknown44[0xC];
+    u8 unused44[0xC];
     Vector4 shoulder;
     Vector4 shoulderNow;
     Vector4 shoulderShift;
     Vector4 handPoint;
     Vector4 chain[5];
     f32 reach;
-    u8 unknownE4[0xC];
+    u8 unusedE4[0xC];
     Vector4 elbow;
     Vector4 hand;
     void* ikChain;
-    u8 unknown114[0x8C];
+    u8 unused114[0x8C];
     s32 slamStart;
     f32 slamSeconds;
     f32 slamCooldown;
-    u8 unknown1AC[4];
+    u8 unused1AC[4];
     Matrix4x4 secondMatrix;
     Vector4 swingPosition;
     Vector4 swingVelocity;
     f32 swingLength;
     f32 blendIn;
-    u8 unknown218[8];
+    u8 unused218[8];
 
     // Made for a character tied to another (the leader's link when asked)
     static CharacterLink* Construct(CharacterLink* link, CharacterAgent* character, CharacterAgent* other, u32 leader)
@@ -568,6 +730,7 @@ CHECK_OFFSET(CharacterLink, secondMatrix, 0x1B0);
 CHECK_OFFSET(CharacterLink, swingPosition, 0x1F0);
 CHECK_OFFSET(CharacterLink, swingLength, 0x210);
 CHECK_OFFSET(CharacterLink, blendIn, 0x214);
+CHECK_SIZE(CharacterLink::Bits, 4);
 CHECK_SIZE(CharacterLink, 0x220);
 
 // The character's size (the agent's 0xC0, 0x130 bytes, plain struct): standing and crouched heights and radii, their box hulls,
@@ -583,13 +746,13 @@ struct CharacterBody
     CollisionHull standingHull;
     CollisionHull crouchHull;
     s32 probeExitPoints[7];
-    u8 unknown70[0x10];
+    u8 unused70[0x10];
     Vector4 probeOffsets[7];
-    u8 unknownF0[0x10];
+    u8 unusedF0[0x10];
     f32 probeWeights[7];
-    u8 unknown11C[4];
+    u8 unused11C[4];
     s32 probeCount;
-    u8 unknown124[0xC];
+    u8 unused124[0xC];
 
     static CharacterBody* Construct(CharacterBody* body, CharacterAgent* agent) RETAIL(FUN_0013fee0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013ff48);
@@ -609,17 +772,23 @@ CHECK_SIZE(CharacterBody, 0x130);
 // A hull ahead of a character picking the instance it aims at, and the marker shown on it (0x110 bytes, no vtable)
 struct TargetLock
 {
-    enum Bits : u32
+    union Bits
     {
-        KindCountShift = 8,
-        KindCountMask = 0xF,
-        TakesUntargettable = 0x1000,
+        u32 value;
+        struct
+        {
+            u32 unused0 : 8;
+            u32 kindCount : 4;
+            // It takes instances that aren't targettable
+            u32 takesUntargettable : 1;
+            u32 unused13 : 19;
+        };
     };
 
     // In retail the 64 bits from 0 (blockingKinds the high half, written back as it was)
-    u32 bits;
+    Bits bits;
     u32 blockingKinds;
-    u8 unknown08[8];
+    u8 unused08[8];
     Vector4 offset;
     f32 length;
     f32 nearHalf;
@@ -629,14 +798,14 @@ struct TargetLock
     s32 seenTime;
     Reference* target;
     Reference* marker;
-    u8 unknown68[8];
+    u8 unused68[8];
     // The target's place's matrix, its translation the middle of the target's collision box
     Matrix4x4 targetMatrix;
     Matrix4x4 hullMatrix;
     CollisionHull hull;
 
     static TargetLock* Construct(TargetLock* lock) RETAIL(FUN_0015d098);
-    // Its node kinds' count and bit 12 kept; no time, target or marker
+    // Its node kinds' count and takesUntargettable kept; no time, target or marker
     void Reset() RETAIL(FUN_0015d0e8);
     // Its hull made from its length and half sizes, its bottom flat (at the near half size) when asked
     void MakeHull(u32 flat) RETAIL(FUN_0015cd88);
@@ -662,6 +831,7 @@ CHECK_OFFSET(TargetLock, kinds, 0x2C);
 CHECK_OFFSET(TargetLock, seenTime, 0x5C);
 CHECK_OFFSET(TargetLock, targetMatrix, 0x70);
 CHECK_OFFSET(TargetLock, hull, 0xF0);
+CHECK_SIZE(TargetLock::Bits, 4);
 CHECK_SIZE(TargetLock, 0x110);
 
 // The instances a search ranks (the targets table): a reference and its score (the kind's priority << 24, then how far off
@@ -673,18 +843,29 @@ struct TargetEntry
 };
 CHECK_SIZE(TargetEntry, 8);
 
-// Nina's claw (0x170 bytes, no vtable): the graple instance her springs tie her to is its claw
+// Nina's claw (0x170 bytes, no vtable): its claw is the graple instance hanging on her (held by one of her attachments, an
+// instance's, kind 0)
 struct ClawController
 {
-    enum Bits : u32
+    enum State : u32
     {
-        StateMask = 0xF,
-        NextShift = 4,
-        NoNext = 0xE,
-        GrabShift = 8,
-        GrabMask = 0x7,
-        CircleHeld = 0x1000,
-        CrossHeld = 0x2000,
+        StateReady = 0,
+        StateReaching = 1,
+        StateFlying = 2,
+        // The claw coming back to her hand: nothing enters it
+        StateReturning = 3,
+        StatePulled = 4,
+        StateHanging = 5,
+        StateLettingGo = 6,
+        StateDropped = 7,
+        StateJumpedOff = 8,
+        StateLeaping = 9,
+        StateWindingUp = 10,
+        StateSwipingOut = 11,
+        StateSwipingBack = 12,
+        StateAfterSwipe = 13,
+        // In the next state's bits: none
+        StateNoNext = 14,
     };
 
     enum Grab : u32
@@ -695,8 +876,23 @@ struct ClawController
         GrabSwipe = 3,
     };
 
+    union Bits
+    {
+        u32 value;
+        struct
+        {
+            u32 state : 4;
+            u32 next : 4;
+            u32 grab : 3;
+            u32 unused11 : 1;
+            u32 circleHeld : 1;
+            u32 crossHeld : 1;
+            u32 unused14 : 18;
+        };
+    };
+
     // In retail the 64 bits from 0 (stateStart the high half)
-    u32 bits;
+    Bits bits;
     s32 stateStart;
     s32 duration;
     s32 circleTime;
@@ -737,23 +933,12 @@ CHECK_OFFSET(ClawController, agent, 0x10);
 CHECK_OFFSET(ClawController, hand, 0x20);
 CHECK_OFFSET(ClawController, to, 0x50);
 CHECK_OFFSET(ClawController, lock, 0x60);
+CHECK_SIZE(ClawController::Bits, 4);
 CHECK_SIZE(ClawController, 0x170);
 
-// Cortex's and the Mecha-Bandicoot's gun (0x460 bytes, no vtable): characters.h's CharacterController (agent at 0, its time at
-// 0x14 the last shot's) and player.h's CharacterCounter (the 64 bits at 8: the ammo in bits 13-19)
+// Cortex's and the Mecha-Bandicoot's gun (0x460 bytes, no vtable; the HUD's counter at the bottom right shows its ammo)
 struct Gun
 {
-    enum Bits : u32
-    {
-        StateMask = 0xF,
-        NextShift = 4,
-        NoNext = 0x7,
-        SquareHeld = 0x100,
-        Value9Shift = 9,
-        AmmoShift = 13,
-        AmmoMask = 0x7F,
-    };
-
     enum State : u32
     {
         StatePutAway = 0,
@@ -763,6 +948,24 @@ struct Gun
         StateCharging = 4,
         StateCharged = 5,
         StateShot = 6,
+        // In the next state's bits: none
+        StateNoNext = 7,
+    };
+
+    union Bits
+    {
+        u32 value;
+        struct
+        {
+            u32 state : 4;
+            u32 next : 4;
+            u32 squareHeld : 1;
+            // A count nothing but its reset and an unused command class changes (5 after a reset, at most 9; the scripts'
+            // condition 633 reads it)
+            u32 secondCount : 4;
+            u32 ammo : 7;
+            u32 unused20 : 12;
+        };
     };
 
     // Its locks: on foot, in a vehicle, the Mecha-Bandicoot's, Cortex's in area 24
@@ -777,13 +980,13 @@ struct Gun
     CharacterAgent* agent;
     Reference* gunInstance;
     // In retail the 64 bits from 8 (duration the high half)
-    u32 bits;
+    Bits bits;
     s32 duration;
     s32 stateStart;
     s32 shotTime;
     // 1 charged, 0 normal, -1 none since the reset
     f32 shotCharge;
-    u8 unknown1C[4];
+    u8 unused1C[4];
     TargetLock locks[4];
 
     static Gun* Construct(Gun* gun, CharacterAgent* agent) RETAIL(FUN_00149f28);
@@ -794,18 +997,19 @@ struct Gun
     u32 Shoot(f32 charge, TimeClock* clock) RETAIL_N32(FUN_00149d78);
     InstanceContext* Target() RETAIL(FUN_0014a730);
     u32 AimPoint(Vector4* point) RETAIL(FUN_0014a7d0);
-    // Ammo taken (without enough: emptied, no) and added (below 100, else made 99: no). AddAmmo is commandsgame.cpp's
-    // AddToCharacterCounter
+    // Ammo taken (without enough: emptied, no) and added (below 100, else made 99: no)
     u32 TakeAmmo(u32 count) RETAIL(FUN_0015ef58);
     u32 AddAmmo(s32 amount) RETAIL(FUN_0015f010);
-    // Bits 9-12 (5 after a reset, the scripts' condition 633 reads them) given an amount: whether they stay below 10, else made 9
-    // (an amount taking them below 0 too)
-    u32 AddValue9(s32 amount) RETAIL(FUN_0015efb8);
+    // The second count given an amount: whether it stays below 10, else made 9 (an amount taking it below 0 too)
+    u32 AddSecondCount(s32 amount) RETAIL(FUN_0015efb8);
+    // Whether it shot no more than so many ticks ago
+    u32 ShotWithin(s32 ticks) RETAIL(FUN_0015f078);
 };
 CHECK_OFFSET(Gun, bits, 0x8);
 CHECK_OFFSET(Gun, shotTime, 0x14);
 CHECK_OFFSET(Gun, shotCharge, 0x18);
 CHECK_OFFSET(Gun, locks, 0x20);
+CHECK_SIZE(Gun::Bits, 4);
 CHECK_SIZE(Gun, 0x460);
 
 // One of the procedural joints (0x90 bytes, no vtable)
@@ -824,7 +1028,7 @@ struct ProceduralJoint
     Vector4 motion;
     Vector4 slowMotion;
     s32 angles[3];
-    u32 unknown3C;
+    u32 unused3C;
     Vector4 normal;
     s32 kind;
     f32 normalSpeed;
@@ -843,7 +1047,7 @@ struct ProceduralJoint
     s32 slot;
     s32 secondSlot;
     u8 started;
-    u8 unknown8D[3];
+    u8 unused8D[3];
 
     static ProceduralJoint* Construct(ProceduralJoint* joint) RETAIL(FUN_0015f528);
     void Reset() RETAIL(FUN_0015f550);
@@ -878,14 +1082,16 @@ public:
     // new[]'s array (its count 0x10 bytes before)
     ProceduralJoint* elements;
     u8 attached;
-    u8 unknown11[3];
+    u8 unused11[3];
+    // The stretch and the foot's tilt of the leg on the character's -x side (A: joints 6 to 8) and of the one on its +x side (B:
+    // joints 9 to 11)
     f32 legStretchA;
     f32 legStretchB;
     f32 footTiltA;
     f32 footTiltB;
     u8 placesFeet;
     u8 squashes;
-    u8 unknown26[2];
+    u8 unused26[2];
     f32 squash;
     f32 squashSpeed;
 
@@ -920,15 +1126,15 @@ class LookController : public JointHook
 public:
     CharacterAgent* agent;
     u8 attached;
-    u8 unknown09[3];
+    u8 unused09[3];
     f32 carrySide;
     f32 carryForward;
     f32 carrySize;
     u8 carrying;
-    u8 unknown19[7];
+    u8 unused19[7];
     Vector4 lookPoint;
     u8 looksAtPoint;
-    u8 unknown31[3];
+    u8 unused31[3];
     f32 freeLookX;
     f32 freeLookY;
     f32 pitchMin;
@@ -942,11 +1148,11 @@ public:
     f32 yawSpeed;
     // Not set by the constructor
     f32 restSeconds;
-    u8 unknown64[0xC];
+    u8 unused64[0xC];
     Vector4 aim;
     Vector4 aimPoint;
     u8 hasAimPoint;
-    u8 unknown91[3];
+    u8 unused91[3];
     s32 angles[5][3];
 
     static LookController* Construct(LookController* look, CharacterAgent* agent) RETAIL(FUN_00147310);
@@ -978,19 +1184,6 @@ CHECK_SIZE(LookController, 0xD0);
 class SpringSkeleton : public JointHook
 {
 public:
-    enum Flags : u32
-    {
-        // Attached to its instance's model animator
-        FlagAttached = 0x1,
-        // The axis is turned into the instance's space every step, and it was
-        FlagTurnsAxis = 0x2,
-        FlagAxisTurned = 0x4,
-        // Its blend (bits 3-6) and the one asked for (bits 7-10; BlendNone: none), which the next step starts
-        BlendShift = 3,
-        RequestShift = 7,
-        BlendMask = 0xF,
-    };
-
     enum Blend : u32
     {
         BlendedOut = 0,
@@ -1000,14 +1193,31 @@ public:
         BlendNone = 4,
     };
 
-    u32 flags;
+    union Flags
+    {
+        u32 value;
+        struct
+        {
+            // Attached to its instance's model animator
+            u32 attached : 1;
+            // The axis is turned into the instance's space every step, and it was
+            u32 turnsAxis : 1;
+            u32 axisTurned : 1;
+            // Its blend and the one asked for (BlendNone: none), which the next step starts
+            u32 blend : 4;
+            u32 requestedBlend : 4;
+            u32 unused11 : 21;
+        };
+    };
+
+    Flags flags;
     f32 blend;
     s32 blendStart;
     s32 blendTicks;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     SpringBody body;
     Reference* instance;
-    u8 unknown64[0xC];
+    u8 unused64[0xC];
     Matrix4x4 instanceMatrix;
     Matrix4x4 toInstance;
     Vector4 axis;
@@ -1027,22 +1237,12 @@ public:
     // once it's attached
     void StepBlend(TimeClock* clock) RETAIL(FUN_00190738);
     void BlendIn(s32 ticks) RETAIL(FUN_00191a38);
-
-    u32 BlendState() const
-    {
-        return flags >> BlendShift & BlendMask;
-    }
-
-    // A blend asked for
-    void RequestBlend(u32 state)
-    {
-        flags = (flags & ~(BlendMask << RequestShift)) | state << RequestShift;
-    }
 };
 CHECK_OFFSET(SpringSkeleton, body, 0x20);
 CHECK_OFFSET(SpringSkeleton, instance, 0x60);
 CHECK_OFFSET(SpringSkeleton, instanceMatrix, 0x70);
 CHECK_OFFSET(SpringSkeleton, axis, 0xF0);
+CHECK_SIZE(SpringSkeleton::Flags, 4);
 CHECK_SIZE(SpringSkeleton, 0x110);
 
 // The graple's rope (GrapleAgent's, 0x120 bytes, retail vtable D_002F35B0): one spring between two points posing
@@ -1051,7 +1251,7 @@ class GrapleRope : public SpringSkeleton
 {
 public:
     SpringChain* chain;
-    u8 unknown114[0xC];
+    u8 unused114[0xC];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00162148);
     void Attach(OgiAnimator* animator) RETAIL(FUN_00162210);
@@ -1076,8 +1276,6 @@ public:
 
 extern "C"
 {
-    // Whether the controller started no more than so many ticks ago
-    u32 StartedWithin(CharacterController* controller, s32 ticks) RETAIL(FUN_0015f078);
     // The instance a character operates (the character code sets it; the Frogensteins' scripts look along its aim)
     extern struct Reference* g_OperatedInstance RETAIL(D_0030A930);
     // Three rows of a rotation (their indexes; retail passes 0, 1, 2) along a direction, the second as near a world axis (its

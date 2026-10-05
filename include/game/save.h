@@ -12,8 +12,11 @@ struct SaveDate
     u8 hour;
     u8 minute;
     u8 second;
-    // Bits 0 and 1 set: it's taken from the clock (again when it's refreshed)
+    // Both of Valid's bits set: it holds a date (the clock's, taken when a save is made and again when it's refreshed, or a card
+    // file's), which a save slot's summary does while the slot holds a save
     u8 bits;
+
+    static constexpr u8 Valid = 3;
 };
 CHECK_SIZE(SaveDate, 8);
 

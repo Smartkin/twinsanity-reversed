@@ -23,26 +23,23 @@
 #include "game/progress.h"
 #include "game/rigidbody.h"
 #include "game/scenery.h"
+#include "game/vehicles.h"
 #include "game/view.h"
 
 #include <cstdint>
 
-// The conditions' checks converted so far: a score (1 or 0 for the yes or no ones) for the agent's node, the level and the
-// clock's time
+// The conditions' checks: a score (1 or 0 for the yes or no ones) for the agent's node, the level and the clock's time
 
 extern "C"
 {
-    // The counter of an index (the chunk manager's counters)
-    extern void* G_ChunkManager_0030A0C8;
-    // A value of an instance's vehicle, and whether an instance weighs on the character
-    f32 VehicleValue(InstanceContext* instance) RETAIL(FUN_00128c58);
-    u32 HasActorWeight(PlayerCharacter* character, InstanceContext* instance) RETAIL(FUN_0013f748);
-    extern s32 g_InstancesWithValue174 RETAIL(D_0030A0FC);
-    extern s32 g_VarPercept629 RETAIL(D_003098E8);
-    extern u8 g_GlobalByte30A0E9 RETAIL(D_0030A0E9);
-    // The object of a node's instance (the node it takes its object from)
-    // The chunk manager's chunk of an index, and a persistent flag of a store
-    // The AI position of a chunk's navigation nearest a point (with its index when wanted)
+    // The conditions' copy of the chunk manager (the game context sets it with the others): its counters and its chunks
+    extern void* g_ConditionsChunkManager RETAIL(G_ChunkManager_0030A0C8);
+    // Whether an instance's character rides a Rollerbrawl, as its driver or a passenger (1 or 0)
+    f32 RidesRollerbrawl(InstanceContext* instance) RETAIL(FUN_00128c58);
+    // Set by the scripts' SetScriptGlobalFlag (command 624)
+    extern s32 g_ScriptGlobalFlag RETAIL(D_003098E8);
+    // The rank the scripts give every instance at once (0xFF none), which the nodes' own ranks are compared with
+    extern u8 g_TriggerRank RETAIL(D_0030A0E9);
 }
 
 static_assert(offsetof(InstanceContext, id) == 0x154);
@@ -50,25 +47,13 @@ static_assert(offsetof(InstanceContext, parent) == 0xD0);
 
 namespace
 {
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 CharacterNodeKind = 0xC;
-constexpr u32 CrateNodeKind = 0xD;
-constexpr u32 CreatureNodeKind = 0xF;
-constexpr u32 PayGateNodeKind = 0x12;
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u8 NoKey = 0xFF;
-constexpr u8 NoByte = 0xFF;
-constexpr u32 AllJoints = 0xFF;
-// The instance flags the conditions test: its sphere contact (collidable), triggers' signals... (bit 8, busy), attached to an
-// agent (6), an attached object (7), visible (10)
-constexpr u32 AttachedToAgentFlag = 0x40;
-constexpr u32 AttachedObjectFlag = 0x80;
-constexpr u32 BusyFlag = 0x100;
-// The loader's bits: every linked chunk loaded, every linked chunk queued or loaded
-constexpr u32 LinksLoadedBit = 0x400;
-constexpr u32 LinksQueuedBit = 0x800;
-constexpr u32 SlammingState = 9;
+// The axes of a place's matrix (its rows): x the side, y up and z forward
+enum Axis : u32
+{
+    XAxis = 0,
+    YAxis = 1,
+    ZAxis = 2,
+};
 
 f32 YesNo(bool yes)
 {
@@ -80,32 +65,31 @@ ObjectNode* Node(GameNode* node)
     return static_cast<ObjectNode*>(node);
 }
 
-u32 InstanceFlags(GameNode* node)
+ReferencedObjectFlags InstanceFlags(GameNode* node)
 {
     return node->owner->flags;
 }
 
 bool TakesPackets(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0;
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0;
 }
 
-// The player character's part (the second copy the conditions read)
+// The player's character's part (the copy the conditions read, game/player.h)
 CharacterPart* PlayerPart()
 {
-    return static_cast<CharacterPart*>(g_PlayerCharacterData2);
+    return g_PlayerPart2;
 }
 
-// The part's 64 bits from 0x18
-u64 PartBits(const CharacterPart* part)
+CharacterMoveBits MoveBits(const CharacterPart* part)
 {
-    return part->Bits();
+    return part->moveBits;
 }
 
-// The agent's contact message's word (what the last contact that told it something was)
-u32 ContactWord(GameNode* node)
+// The kinds of hit of the agent's contact message (the last contact that told it something)
+u32 HitKindsOf(GameNode* node)
 {
-    return Node(node)->agent->contact.word;
+    return Node(node)->agent->contact.hitKinds;
 }
 
 InstanceContext* PlayerInstance()
@@ -115,12 +99,12 @@ InstanceContext* PlayerInstance()
 
 GameProgress* Progress()
 {
-    return &G_GameController_0030988C->progress;
+    return &g_ConditionsGameController->progress;
 }
 
 bool Asleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // The agent references, forgotten once their instances are asleep (the second kept while the node's flag says so)
@@ -136,7 +120,7 @@ InstanceContext* AwakeAgentRef1(ObjectNode* node)
 
 InstanceContext* AwakeAgentRef2(ObjectNode* node)
 {
-    if (node->agentRef2 != nullptr && Asleep(node->agentRef2) && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (node->agentRef2 != nullptr && Asleep(node->agentRef2) && !node->flags.keepsAgentRef2)
     {
         node->agentRef2 = nullptr;
     }
@@ -157,30 +141,25 @@ PlayerCharacter* CharacterOf(AgentNode* node)
 
 bool HasVehicleOfKind(PlayerCharacter* character, u32 kind)
 {
-    CharacterControl* control = character->control;
-    return control != nullptr && control->Kind() == kind;
+    Vehicle* vehicle = character->vehicle;
+    return vehicle != nullptr && vehicle->Kind() == kind;
 }
 
-// The attachments node's word: the linked objects' count (bits 0-4), bit 5 set when it lost them all, the current one (bits
-// 7-11)
-constexpr u32 LinkedCountMask = 0x1F;
-constexpr u32 LostAllBit = 0x20;
-constexpr u32 LinkedIndexShift = 7;
-constexpr u32 LinkedIndexMask = 0x1F;
-
-u32* AttachmentsWord(void* attachments)
+// The instance's attachments node (none without one)
+AttachmentsNode* AttachmentsNodeOf(GameNode* node)
 {
-    return reinterpret_cast<u32*>(static_cast<u8*>(attachments) + 0x18);
+    return static_cast<AttachmentsNode*>(GetGameNode(&node->owner->nodes, NodeAttachments));
 }
 
-// The AI position of the route's step the node is at, and of the step before (the first step's own; no route: none)
+// The AI positions at the ends of the route's edge: the route's step the node is at, and the next step toward the route's end
+// (the steps go down to the end, step 0; at the end, the end's own). No route: none
 AiPosition* StepPosition(const Waypoints* waypoints)
 {
     Route* route = waypoints->route;
     return route != nullptr ? route->PositionAt(waypoints->routeIndex) : nullptr;
 }
 
-AiPosition* PreviousStepPosition(const Waypoints* waypoints)
+AiPosition* NextStepPosition(const Waypoints* waypoints)
 {
     Route* route = waypoints->route;
     if (route == nullptr)
@@ -188,25 +167,25 @@ AiPosition* PreviousStepPosition(const Waypoints* waypoints)
         return nullptr;
     }
 
-    u8 step = waypoints->routeIndex - 1;
-    return route->PositionAt(step != NoKey ? step : 0);
+    u8 next = waypoints->routeIndex - 1;
+    return route->PositionAt(next != Waypoints::NoRouteStep ? next : 0);
 }
 
 f32 PositionFlag(const AiPosition* position, u32 flag)
 {
-    return YesNo(position != nullptr && (position->flags & flag) != 0);
+    return YesNo(position != nullptr && (position->flags.value & flag) != 0);
 }
 
-// A flag of the path that led to the route's step, while the keys haven't gone round
+// A flag of the route's edge (the path from its step to the next), while the route hasn't gone past its end
 f32 RoutePathFlag(GameNode* node, u32 flag)
 {
     Waypoints* waypoints = Node(node)->waypoints;
-    if (waypoints->route == nullptr || (waypoints->flags & Waypoints::FlagWrapped) != 0 || waypoints->routePath == nullptr)
+    if (waypoints->route == nullptr || waypoints->flags.wrapped || waypoints->routePath == nullptr)
     {
         return 0.0f;
     }
 
-    return YesNo((waypoints->routePath->flags & flag) != 0);
+    return YesNo((waypoints->routePath->flags.value & flag) != 0);
 }
 
 // The instance's position (made up to date first)
@@ -217,10 +196,10 @@ const Vector4& PositionOf(GameNode* node)
     return place->position;
 }
 
-// The trajectory controller's cycle about an axis in turns
+// The trajectory controller's cycle about an axis in turns (its 65536ths of a turn made degrees, then turns)
 f32 CycleTurns(GameNode* node, u32 axis)
 {
-    constexpr f32 DegreesPerUnit = 360.0f / 65536.0f;
+    constexpr f32 DegreesPerAngleUnit = 360.0f / FullTurnAngle;
     constexpr f32 TurnsPerDegree = Rounded(1.0 / 360.0);
     if (!TakesPackets(node))
     {
@@ -233,57 +212,44 @@ f32 CycleTurns(GameNode* node, u32 axis)
         return 0.0f;
     }
 
-    return static_cast<f32>(trajectory->cycles[axis]) * DegreesPerUnit * TurnsPerDegree;
+    return static_cast<f32>(trajectory->cycles[axis]) * DegreesPerAngleUnit * TurnsPerDegree;
 }
 
-f32 RigidBodyBit88(GameNode* node, u32 bit)
+// The node's rigid body and head tracking (none while the node takes no packets)
+ObjectRigidBody* RigidBodyOf(GameNode* node)
 {
     if (!TakesPackets(node))
     {
-        return 0.0f;
+        return nullptr;
     }
 
-    ObjectRigidBody* body = Node(node)->rigidBody;
-    return YesNo(body != nullptr && (body->bits88 >> bit & 1) != 0);
+    return Node(node)->rigidBody;
 }
 
-f32 RigidBodyBit90(GameNode* node, u32 bit)
+HeadTracking* HeadTrackingOf(GameNode* node)
 {
     if (!TakesPackets(node))
     {
-        return 0.0f;
+        return nullptr;
     }
 
-    ObjectRigidBody* body = Node(node)->rigidBody;
-    return YesNo(body != nullptr && (body->bits90 >> bit & 1) != 0);
+    return Node(node)->headTracking;
 }
 
-// The head tracking's bits having all of a mask's
-f32 HeadTrackingBits(GameNode* node, u64 mask)
+// The level of the perception's sense of a kind (PerceptionSense::Kind; none: 0)
+f32 SenseLevel(GameNode* node, u32 kind)
 {
-    if (!TakesPackets(node))
-    {
-        return 0.0f;
-    }
-
-    HeadTracking* tracking = Node(node)->headTracking;
-    return YesNo(tracking != nullptr && (tracking->bits & mask) == mask);
-}
-
-// What the perception has in a slot (none: 0)
-f32 PerceptionOf(GameNode* node, u32 slot)
-{
-    f32 value = 0.0f;
+    f32 level = 0.0f;
     if (TakesPackets(node))
     {
         void* perception = Node(node)->perception;
         if (perception != nullptr)
         {
-            PerceptionValue(perception, slot, &value);
+            PerceptionValue(perception, kind, &level);
         }
     }
 
-    return value;
+    return level;
 }
 
 // The part of the instance's agent node
@@ -291,10 +257,6 @@ AgentPart* AgentPartOf(GameNode* node)
 {
     return AgentNodeOf(node->owner)->agent->part;
 }
-
-// A creature part's hit points (bits 6-13 of its flags)
-constexpr u32 HitPointsShift = 6;
-constexpr u32 HitPointsMask = 0xFF;
 
 // An instance's nodes (no instance: read at 0xD4, retail's)
 NodeList* NodesOf(InstanceContext* instance)
@@ -305,27 +267,25 @@ NodeList* NodesOf(InstanceContext* instance)
 // The instance of the character played
 InstanceContext* PlayedInstance()
 {
-    return Progress()->Instance(Progress()->Field(GameProgress::CharacterShift));
+    return Progress()->Instance(Progress()->play.character);
 }
 
-// Bit 14 of a character agent's bits at 0x70
-bool CharacterBit14(AgentNode* character)
+bool CharacterDead(AgentNode* character)
 {
-    return (static_cast<CharacterAgent*>(character->agent)->StateBits() >> 14 & 1) != 0;
+    return static_cast<CharacterAgent*>(character->agent)->state.dead != 0;
 }
 
-// The object ID of the agent of an instance's object node (whether there's an instance isn't checked; no node: 0xFFFF)
+// The object ID of the agent of an instance's object node (whether there's an instance isn't checked; no node: none)
 u16 ObjectIdOf(InstanceContext* instance)
 {
-    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, 1));
-    return objectNode != nullptr ? objectNode->agent->objectId : 0xFFFF;
+    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
+    return objectNode != nullptr ? objectNode->agent->objectId : NoObjectId;
 }
 
-// An object ID (but none) the parameter, the ID's top bit left out
+// An object ID (but none) the parameter, by its index in the objects' table (the ID's top bit left out)
 f32 ObjectIdIs(u16 id, u32 parameter)
 {
-    constexpr u16 NoObject = 0xFFFF;
-    return YesNo(id != NoObject && (id & 0x7FFFu) == parameter);
+    return YesNo(id != NoObjectId && (id & ResourceIndexMask) == parameter);
 }
 
 // The last attack of either kind within the window
@@ -344,24 +304,32 @@ f32 AttackedByEither(GameNode* node, const u32* time, f32 seconds, u32 kind, u32
 f32 FocusFlag(GameNode* node, u32 flag)
 {
     InstanceContext* focus = Node(node)->AwakeFocus();
-    return YesNo(focus != nullptr && (focus->flags & flag) != 0);
+    return YesNo(focus != nullptr && (focus->flags.value & flag) != 0);
 }
 
-// The pad of a player (1 the first, 2 the second, else none)
+// The pad of a player (else none): the first's, and the second's
 GamePad* PadOf(u32 player)
 {
-    GameController* controller = G_GameController_0030988C;
-    if (player == 1)
+    constexpr u32 PlayerOne = 1;
+    constexpr u32 PlayerTwo = 2;
+    GameController* controller = g_ConditionsGameController;
+    if (player == PlayerOne)
     {
         return controller->pad;
     }
 
-    if (player == 2)
+    if (player == PlayerTwo)
     {
-        return reinterpret_cast<GamePad*>(controller->unknown40);
+        return controller->secondPad;
     }
 
     return nullptr;
+}
+
+// The exit point's slot the parameter gives (its low byte)
+u32 ExitSlot(const ScriptCondition* condition)
+{
+    return static_cast<u8>(condition->Parameter());
 }
 }
 
@@ -372,13 +340,13 @@ f32 NextCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 
 f32 IsCollidableCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((InstanceFlags(node) & ReferencedObject::FlagSphereContact) != 0);
+    return YesNo(InstanceFlags(node).collisionActive);
 }
 
 // The body being checked is what runs when nothing else does
 f32 ElseCondition::Check(GameNode*, BehaviourLevel* level, const u32*)
 {
-    level->pendingBody = g_CheckedBody;
+    level->elseBody = g_CheckedBody;
     return 0.0f;
 }
 
@@ -389,7 +357,7 @@ f32 RandomCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 
 f32 IsVisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((InstanceFlags(node) & ReferencedObject::FlagVisible) != 0);
+    return YesNo(InstanceFlags(node).visible);
 }
 
 // Seconds since the level's last body
@@ -398,17 +366,17 @@ f32 TimeInUnitCondition::Check(GameNode*, BehaviourLevel* level, const u32* time
     return static_cast<f32>(static_cast<s32>(*time - level->time)) * g_SecondsPerClockUnit;
 }
 
-// Every chunk the focus chunk links loaded (TT Lab's name is the tools')
-f32 IsInExternalScriptCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// Every chunk the focus chunk links loaded
+f32 LinkedChunksLoadedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((G_ChunkLoadingManager_->focusLoader->bits & LinksLoadedBit) != 0);
+    return YesNo(G_ChunkLoadingManager_->focusLoader->bits.linkedLoaded != 0);
 }
 
 // From 1 (none 0)
 f32 CurrentKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     u8 key = Node(node)->waypoints->key;
-    if (key == NoKey)
+    if (key == Waypoints::NoKey)
     {
         return 0.0f;
     }
@@ -418,46 +386,47 @@ f32 CurrentKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
 f32 AttachedToAnAgentCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((InstanceFlags(node) & AttachedToAgentFlag) != 0);
+    return YesNo(InstanceFlags(node).attached);
 }
 
 f32 GotAttachedObjectCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((InstanceFlags(node) & AttachedObjectFlag) != 0);
+    return YesNo(InstanceFlags(node).hasAttachment);
 }
 
+// Counted from 1 (none 0)
 f32 CurrentKeyEqualsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    u32 key = (Node(node)->waypoints->key + 1) & 0xFF;
+    u32 key = static_cast<u8>(Node(node)->waypoints->key + 1);
     return YesNo(key == Parameter());
 }
 
 f32 GotFocusObjectCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(static_cast<s32>(Node(node)->flags & ObjectNodeBase::FlagFocusInstance));
+    return static_cast<f32>(static_cast<s32>(Node(node)->flags.focusInstance));
 }
 
 f32 GotFocusPositionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(static_cast<s32>(Node(node)->flags >> 1 & 1));
+    return static_cast<f32>(static_cast<s32>(Node(node)->flags.focusPosition));
 }
 
 // Of the model's animator (whether the instance has a model isn't checked)
 f32 GotAnimationTimeRemainingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
         return 0.0f;
     }
 
-    return GetAnimationProgress(animator, AllJoints);
+    return GetAnimationProgress(animator, OgiAnimator::RootJoint);
 }
 
 f32 CounterValueCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(GameCounter(G_ChunkManager_0030A0C8, Parameter()));
+    return static_cast<f32>(GameCounter(g_ConditionsChunkManager, Parameter()));
 }
 
 f32 SqrMoveSpeedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
@@ -468,62 +437,61 @@ f32 SqrMoveSpeedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
 f32 IsBusyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((InstanceFlags(node) & BusyFlag) != 0);
+    return YesNo(InstanceFlags(node).busy);
 }
 
 // A bit of the instance's state (bits 0-31; TT Lab's CheckInstanceFlagSet)
 f32 SoftFlagSetCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((Node(node)->properties->state & 1u << (Parameter() & 31)) != 0);
+    return YesNo((Node(node)->properties->state.value & 1u << (Parameter() & 31)) != 0);
 }
 
 f32 GotLinkedObjectCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(GetGameNode(&node->owner->nodes, AttachmentsKind) != nullptr);
+    return YesNo(GetGameNode(&node->owner->nodes, NodeAttachments) != nullptr);
 }
 
-f32 HasInstancePositionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HasStoredPlaceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return YesNo(Node(node)->storedPlace != nullptr);
 }
 
-f32 HasFocusPositionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HasStoredPositionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((Node(node)->flags & ObjectNodeBase::FlagStoredPosition) != 0);
+    return YesNo(Node(node)->flags.storedPosition);
 }
 
-// A byte of the agent's from 0x18
-f32 ObjectInstanceByteAtCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The agent's counter of the parameter
+f32 InstanceCounterValueCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    const u8* bytes = Node(node)->agent->unknown18;
-    return static_cast<f32>(bytes[Parameter()]);
+    const u8* counters = Node(node)->agent->counters;
+    return static_cast<f32>(counters[Parameter()]);
 }
 
-// The rigid body's word at 0x8C (bits 0-3) and its contacts (bits 36-39 of its 64 bits at 0x88)
-f32 PhysicsCount8cCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body has a kind of motion, and a kind of collisions
+f32 RigidBodyHasMotionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* body = reinterpret_cast<u8*>(Node(node)->rigidBody);
-    bool yes = body != nullptr && (*reinterpret_cast<s32*>(body + 0x8C) & 0xF) != 0;
+    ObjectRigidBody* body = Node(node)->rigidBody;
+    bool yes = body != nullptr && body->bits.motionKind != 0;
     return YesNo(yes);
 }
 
-f32 PhysicsHasContactsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 RigidBodyCollidesCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* body = reinterpret_cast<u8*>(Node(node)->rigidBody);
-    bool yes = body != nullptr && (*reinterpret_cast<u64*>(body + 0x88) >> 36 & 0xF) != 0;
+    ObjectRigidBody* body = Node(node)->rigidBody;
+    bool yes = body != nullptr && body->bits.collisionKind != 0;
     return YesNo(yes);
 }
 
-// Whether there's a rigid body isn't checked
-f32 PhysicsHasGroundCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body rides an instance (whether there's a rigid body isn't checked)
+f32 RigidBodyRidesInstanceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* body = reinterpret_cast<u8*>(Node(node)->rigidBody);
-    return YesNo(*reinterpret_cast<void**>(body + 0x80) != nullptr);
+    return YesNo(Node(node)->rigidBody->object != nullptr);
 }
 
-f32 CharacterAnalogCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 PresenceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return *reinterpret_cast<const f32*>(&Node(node)->agent->part->unknown08);
+    return Node(node)->agent->part->presence;
 }
 
 f32 AlwaysZeroCondition::Check(GameNode*, BehaviourLevel*, const u32*)
@@ -531,16 +499,15 @@ f32 AlwaysZeroCondition::Check(GameNode*, BehaviourLevel*, const u32*)
     return 0.0f;
 }
 
-// The value the level above gave this one: taken once
-f32 GotUserMessageOnceEqualsCondition::Check(GameNode*, BehaviourLevel* level, const u32*)
+// The message the level above gave this one: taken once
+f32 GotChildMessageOnceEqualsCondition::Check(GameNode*, BehaviourLevel* level, const u32*)
 {
-    u16* value = &reinterpret_cast<u16*>(&level->bits)[1];
-    if (*value != Parameter())
+    if (level->bits.message != Parameter())
     {
         return 0.0f;
     }
 
-    *value = 0xFFFF;
+    level->bits.message = NoMessage;
     return 1.0f;
 }
 
@@ -550,7 +517,7 @@ f32 IsAttachedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 }
 
 // The instance has an ID
-f32 ContextValue154SetCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HasInstanceIdCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return YesNo(node->owner->id != -1);
 }
@@ -566,7 +533,7 @@ f32 KeyPathProgressCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return waypoints->pathParameter;
 }
 
-f32 KeyPathByte42Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 KeyPathNumPathsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     Waypoints* waypoints = Node(node)->waypoints;
     if (waypoints == nullptr)
@@ -586,7 +553,7 @@ f32 KeyPathNumKeysCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 f32 CurrentKeyIsEvenCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     u8 key = Node(node)->waypoints->key;
-    if (key == NoKey)
+    if (key == Waypoints::NoKey)
     {
         return 0.0f;
     }
@@ -594,57 +561,57 @@ f32 CurrentKeyIsEvenCondition::Check(GameNode* node, BehaviourLevel*, const u32*
     return YesNo(((key + 1) & 1) == 0);
 }
 
-f32 VideoStateIs5Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 CutsceneFinishedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u32 State5 = 5;
-    return YesNo(*reinterpret_cast<const u32*>(reinterpret_cast<const u8*>(G_VideoController) + 8) == State5);
+    return YesNo(G_VideoController->state == VideoController::StateFinished);
 }
 
-// The y of the instance's matrix's second row (made up to date first)
-f32 UpVectorXCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The y of the instance's up axis (its matrix made up to date first)
+f32 UpAxisYCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     ObjectPlace* place = node->owner->place;
     RotateAndTranslate(place);
-    return place->matrix.m[1][1];
+    return place->matrix.m[YAxis][1];
 }
 
 // Bit 0 of the first integer property clear
-f32 IntProp0Bit0Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 IntProperty0Bit0ClearCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return YesNo((Node(node)->properties->GetInt(0) & 1) == 0);
 }
 
-f32 VideoReadyCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 CutsceneMusicReadyCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return YesNo(VideoReady(G_VideoController) != 0);
 }
 
-f32 PhysicsHasCollisionNodeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body has a physics body
+f32 HasPhysicsBodyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* body = reinterpret_cast<u8*>(Node(node)->rigidBody);
-    return YesNo(body != nullptr && *reinterpret_cast<void**>(body + 0xD4) != nullptr);
+    ObjectRigidBody* body = Node(node)->rigidBody;
+    return YesNo(body != nullptr && body->physicsBody != nullptr);
 }
 
-f32 NodeValue174CountCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 CountedInstancesCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(g_InstancesWithValue174);
+    return static_cast<f32>(g_CountedInstances);
 }
 
-f32 IsFullInstanceNodeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 CountedValueCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
         return 0.0f;
     }
 
-    return *reinterpret_cast<const f32*>(reinterpret_cast<const u8*>(node) + 0x174);
+    return Node(node)->countedValue;
 }
 
-f32 NodeByte8cMinusGlobalCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 RankAboveGlobalRankCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    u8 own = Node(node)->unknown8C;
-    u8 global = g_GlobalByte30A0E9;
-    if (own == NoByte || global == NoByte)
+    u8 own = Node(node)->rank;
+    u8 global = g_TriggerRank;
+    if (own == ObjectNodeBase::NoRank || global == ObjectNodeBase::NoRank)
     {
         return 0.0f;
     }
@@ -652,7 +619,7 @@ f32 NodeByte8cMinusGlobalCondition::Check(GameNode* node, BehaviourLevel*, const
     return static_cast<f32>(own - global);
 }
 
-f32 AlwaysZero173Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 NoOp173Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return 0.0f;
 }
@@ -667,14 +634,14 @@ f32 NeverCondition::Check(GameNode*, BehaviourLevel*, const u32*)
     return 0.0f;
 }
 
-f32 ChunksLoadedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 LinkedChunksQueuedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((G_ChunkLoadingManager_->focusLoader->bits & LinksQueuedBit) != 0);
+    return YesNo(G_ChunkLoadingManager_->focusLoader->bits.linkedQueued != 0);
 }
 
 f32 PlayerIsCrouchingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PlayerPart()->moveBits & CharacterPart::Crouching) != 0);
+    return YesNo(PlayerPart()->moveBits.crouching != 0);
 }
 
 f32 PlayerIsGroundedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
@@ -685,68 +652,68 @@ f32 PlayerIsGroundedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    return YesNo((part->flags >> 2 & 1) != 0);
+    return YesNo(part->flags.onGround != 0);
 }
 
 // The wumpa fruit
-f32 CanJumpForwardsCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 WumpaFruitCountCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(static_cast<s32>(Progress()->counts & GameProgress::WumpaMask));
+    return static_cast<f32>(static_cast<s32>(Progress()->counts.wumpa));
 }
 
-f32 WillHitLowWallCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 NoOpWillHitLowWallCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return 0.0f;
 }
 
-// The second character's counter's value at 0x18 (none -1)
-f32 NodeTrafficCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// The player's gun's last shot's charge (none -1)
+f32 PlayerGunShotChargeCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    CharacterCounter* counter = g_PlayerCharacter2->counter;
-    if (counter == nullptr)
+    Gun* gun = g_PlayerCharacter2->gun;
+    if (gun == nullptr)
     {
         return -1.0f;
     }
 
-    return *reinterpret_cast<const f32*>(reinterpret_cast<const u8*>(counter) + 0x18);
+    return gun->shotCharge;
 }
 
-// Bit 5 of the route's path's halfword at 4 (no route: no)
+// Crossing the route's edge takes flying (no edge: no; whether there's a route or it went past its end isn't asked)
 f32 EdgeNeedsFlyingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* path = reinterpret_cast<const u8*>(Node(node)->waypoints->routePath);
+    const AiPath* path = Node(node)->waypoints->routePath;
     if (path == nullptr)
     {
         return 0.0f;
     }
 
-    return YesNo((*reinterpret_cast<const u16*>(path + 4) >> 5 & 1) != 0);
+    return YesNo(path->flags.needsFlight != 0);
 }
 
 f32 PlayerIsMovingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PlayerPart()->flags >> 4 & 1) != 0);
+    return YesNo(PlayerPart()->flags.moving != 0);
 }
 
 f32 PlayerIsWalkingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PartBits(PlayerPart()) >> 42 & 1) != 0);
+    return YesNo(MoveBits(PlayerPart()).walking != 0);
 }
 
 f32 PlayerIsRunningCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PartBits(PlayerPart()) >> 43 & 1) != 0);
+    return YesNo(MoveBits(PlayerPart()).running != 0);
 }
 
 // The walking bit (retail's)
-f32 PlayerIsCrawlingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerIsWalkingDuplicateCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PartBits(PlayerPart()) >> 42 & 1) != 0);
+    return YesNo(MoveBits(PlayerPart()).walking != 0);
 }
 
 f32 PlayerIsFallingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PlayerPart()->flags >> 5 & 1) != 0);
+    return YesNo(PlayerPart()->flags.falling != 0);
 }
 
 f32 PlayerHoldingMultiToolCondition::Check(GameNode*, BehaviourLevel*, const u32*)
@@ -757,11 +724,11 @@ f32 PlayerHoldingMultiToolCondition::Check(GameNode*, BehaviourLevel*, const u32
         return 0.0f;
     }
 
-    return YesNo((PartBits(part) >> 37 & 1) != 0);
+    return YesNo(MoveBits(part).shooting != 0);
 }
 
-// The part's low byte (its state)
-f32 PlayerIsSlammingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// The attack the player's moves give its part: tied to the other character (the second, and the leader's slam)
+f32 PlayerIsSlammingTiedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     CharacterPart* part = PlayerPart();
     if (part == nullptr)
@@ -769,10 +736,10 @@ f32 PlayerIsSlammingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    return YesNo((part->bits & BasicAgentPart::LowByteMask) == SlammingState);
+    return YesNo(part->bits.attackKind == AttackTied);
 }
 
-f32 HeadCanSeePlayerUnblockedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerIsAirborneCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     CharacterPart* part = PlayerPart();
     if (part == nullptr)
@@ -780,37 +747,36 @@ f32 HeadCanSeePlayerUnblockedCondition::Check(GameNode*, BehaviourLevel*, const 
         return 0.0f;
     }
 
-    return YesNo((PartBits(part) >> 33 & 1) != 0);
+    return YesNo(MoveBits(part).jumping != 0);
 }
 
 // The agent's part may damage the character
-f32 AttachedContextFlag8Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 CanDamageCharacterCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     auto* part = static_cast<BasicAgentPart*>(AgentNodeOf(node->owner)->agent->part);
-    return YesNo((part->bits & BasicAgentPart::CanDamageCharacter) != 0);
+    return YesNo(part->bits.canDamageCharacter != 0);
 }
 
-f32 DUMMY_570Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 NoOp570Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return 0.0f;
 }
 
-f32 DUMMY_571Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 NoOp571Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return 0.0f;
 }
 
-f32 CutsceneSkippedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 NoOpCutsceneSkippedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return 0.0f;
 }
 
-// The character agent's control (whether the instance has one isn't checked)
-f32 CharacterVehiclePointerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The character agent's vehicle (whether the instance has a character node isn't checked)
+f32 RidesVehicleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* character = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, CharacterNodeKind));
-    auto* agent = reinterpret_cast<const u8*>(character->agent);
-    return YesNo(*reinterpret_cast<void* const*>(agent + 0xB8) != nullptr);
+    auto* character = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, NodeCharacter));
+    return YesNo(static_cast<CharacterAgent*>(character->agent)->vehicle != nullptr);
 }
 
 f32 IsPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
@@ -819,174 +785,174 @@ f32 IsPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return YesNo(node->owner == player);
 }
 
-f32 ObjectContextFlag17Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByKickCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x20000) != 0);
+    return YesNo((HitKindsOf(node) & HitKick) != 0);
 }
 
-f32 HitByPunchCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitBySpinCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x10000) != 0);
+    return YesNo((HitKindsOf(node) & HitSpin) != 0);
 }
 
-f32 HitByBodySlam2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByKind18Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x40000) != 0);
+    return YesNo((HitKindsOf(node) & HitKind18) != 0);
 }
 
-f32 HitBySpinHitboxCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByProjectileCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x20) != 0);
+    return YesNo((HitKindsOf(node) & HitProjectile) != 0);
 }
 
-f32 HitByBodySlamHitboxCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByKneeDropCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x1000000) != 0);
+    return YesNo((HitKindsOf(node) & HitKneeDrop) != 0);
 }
 
 f32 IsVehicleRollerbrawlCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return VehicleValue(node->owner);
+    return RidesRollerbrawl(node->owner);
 }
 
-f32 HitByCortexBoltCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByElectricCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x80) != 0);
+    return YesNo((HitKindsOf(node) & HitElectric) != 0);
 }
 
-f32 ObjectContextFlag1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByExplosionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x2) != 0);
+    return YesNo((HitKindsOf(node) & HitExplosion) != 0);
 }
 
-f32 PlayerFlag57ClearCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerScriptFlagClearCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((PartBits(PlayerPart()) >> 57 & 1) == 0);
+    return YesNo(MoveBits(PlayerPart()).scriptFlag == 0);
 }
 
+// The player stands on the instance (on its hull, or riding it)
 f32 HasActorWeightCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(HasActorWeight(g_PlayerCharacter2, node->owner) != 0);
+    return YesNo(g_PlayerCharacter2->StandsOn(node->owner) != 0);
 }
 
-f32 ObjectContextFlag25Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByWaterCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x2000000) != 0);
+    return YesNo((HitKindsOf(node) & HitWater) != 0);
 }
 
-f32 ObjectContextFlag2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByFallThroughCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x4) != 0);
+    return YesNo((HitKindsOf(node) & HitFallingThrough) != 0);
 }
 
-f32 PlayerVehicle1ValueCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerRidesRollerbrawlCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return VehicleValue(PlayerInstance());
+    return RidesRollerbrawl(PlayerInstance());
 }
 
-f32 GlobalInt3098e8Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 ScriptGlobalFlagCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(g_VarPercept629);
+    return static_cast<f32>(g_ScriptGlobalFlag);
 }
 
-// The node's word at 0x134 isn't -1
-f32 NodeValue134SetCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The node is in water (it has the surface of the water it's in)
+f32 InWaterCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(Node(node)->unknown134 != -1);
+    return YesNo(Node(node)->waterSurface != ObjectNode::NoSurface);
 }
 
 // The timed play's count
-f32 GameControllerField500HighCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 TimedPlayCountCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(static_cast<s32>(Progress()->counts >> GameProgress::CountShift));
+    return static_cast<f32>(static_cast<s32>(Progress()->counts.count));
 }
 
 // The timed play's time left (seconds)
-f32 GameTimer57cCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 TimedPlayTimeLeftCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     return static_cast<f32>(Progress()->timeLeft) * g_SecondsPerClockUnit;
 }
 
-f32 SecondCharacterGunStateCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerGunSecondCountCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    CharacterCounter* counter = g_PlayerCharacter2->counter;
-    if (counter == nullptr)
+    Gun* gun = g_PlayerCharacter2->gun;
+    if (gun == nullptr)
     {
         return 0.0f;
     }
 
-    return static_cast<f32>(static_cast<s32>(counter->bits >> 9) & 0xF);
+    return static_cast<f32>(static_cast<s32>(gun->bits.secondCount));
 }
 
-f32 HasAmmoCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerAmmoCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    CharacterCounter* counter = g_PlayerCharacter2->counter;
-    if (counter == nullptr)
+    Gun* gun = g_PlayerCharacter2->gun;
+    if (gun == nullptr)
     {
         return 0.0f;
     }
 
-    return static_cast<f32>(static_cast<s32>(counter->bits >> 13) & 0x7F);
+    return static_cast<f32>(static_cast<s32>(gun->bits.ammo));
 }
 
-f32 ObjectContextFlag19Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByHeavyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x80000) != 0);
+    return YesNo((HitKindsOf(node) & HitHeavy) != 0);
 }
 
-// The pairing 5
-f32 GameModeIs5Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+// Pairing 5 of the second character with the first (the progress's, which the scripts' SetPlayerMode sets)
+f32 PairingIs5Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u32 Pairing5 = 5;
-    return YesNo(Progress()->Field(GameProgress::PairingShift) == Pairing5);
+    return YesNo(Progress()->play.pairing == Pairing5);
 }
 
-f32 ObjectContextFlags3or22Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HitByBurningCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo((ContactWord(node) & 0x400008) != 0);
+    return YesNo((HitKindsOf(node) & (HitBurning | HitKind22)) != 0);
 }
 
 // The area the story has got to
-f32 GlobalProgressionCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 StoryAreaCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(static_cast<s32>(Progress()->bits >> GameProgress::StoryShift & GameProgress::AreaMask));
+    return static_cast<f32>(static_cast<s32>(Progress()->play.story));
 }
 
-// The second character's control's value at 0xD0 (none 0)
-f32 SecondCharacterVehicleValueCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// The height of the player's vehicle above the ground (the Humiliskate's; no vehicle: 0)
+f32 PlayerVehicleHeightCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    auto* control = reinterpret_cast<const u8*>(g_PlayerCharacter2->control);
-    if (control == nullptr)
+    const Vehicle* vehicle = g_PlayerCharacter2->vehicle;
+    if (vehicle == nullptr)
     {
         return 0.0f;
     }
 
-    return *reinterpret_cast<const f32*>(control + 0xD0);
+    return vehicle->height;
 }
 
 // The area play is in
-f32 GameStateIsCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayAreaIsCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo((Progress()->bits >> GameProgress::AreaShift & GameProgress::AreaMask) == Parameter());
+    return YesNo(Progress()->play.area == Parameter());
 }
 
 // Of the model's animator (whether the instance has a model isn't checked): no animator, or nothing left of its animation
 f32 AnimationFinishedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
         return 1.0f;
     }
 
-    return GetAnimationProgress(animator, AllJoints) > 0.0f ? 0.0f : 1.0f;
+    return GetAnimationProgress(animator, OgiAnimator::RootJoint) > 0.0f ? 0.0f : 1.0f;
 }
 
-// The keys went round
+// The keys went round (or the route went past its end)
 f32 IsPathCompleteCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(TakesPackets(node) && (Node(node)->waypoints->flags & Waypoints::FlagWrapped) != 0);
+    return YesNo(TakesPackets(node) && Node(node)->waypoints->flags.wrapped);
 }
 
 f32 GetRouteCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
@@ -999,17 +965,17 @@ f32 GotKeysCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return YesNo(TakesPackets(node) && Node(node)->waypoints->keyCount != 0);
 }
 
-// The instance within the AI position of the route's step
+// The instance within the AI position of the route's step it's at (its edge's start)
 f32 InsideEdgeStartNodeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     AiPosition* position = StepPosition(Node(node)->waypoints);
     return YesNo(position != nullptr && IsWithinAiPosition(position, node) != 0);
 }
 
-// Of the step before
+// Of the next step (the edge's end)
 f32 InsideEdgeEndNodeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AiPosition* position = PreviousStepPosition(Node(node)->waypoints);
+    AiPosition* position = NextStepPosition(Node(node)->waypoints);
     return YesNo(position != nullptr && IsWithinAiPosition(position, node) != 0);
 }
 
@@ -1028,7 +994,7 @@ f32 GotAnyUserMessageCondition::Check(GameNode* node, BehaviourLevel*, const u32
         return 0.0f;
     }
 
-    return static_cast<f32>(object->MessageWithin(time, values[0]));
+    return static_cast<f32>(object->MessageWithin(time, window));
 }
 
 f32 GotUserMessageEqualsCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
@@ -1039,53 +1005,54 @@ f32 GotUserMessageEqualsCondition::Check(GameNode* node, BehaviourLevel*, const 
         return 0.0f;
     }
 
-    return static_cast<f32>(object->MessageWithin(Parameter(), time, values[0]));
+    return static_cast<f32>(object->MessageWithin(Parameter(), time, window));
 }
 
+// The rigid body touches an instance (whether the node takes packets is asked first)
 f32 TouchingAnyAgentCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RigidBodyBit88(node, 51);
+    ObjectRigidBody* body = RigidBodyOf(node);
+    return YesNo(body != nullptr && body->bits.touchingInstance);
 }
 
 // The threshold doubled when the counter has its value (so it passes), else none
 f32 CounterValueEqualsThresholdCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    f32 value = static_cast<f32>(GameCounter(G_ChunkManager_0030A0C8, Parameter()));
-    return value == values[1] ? values[1] + values[1] : 0.0f;
+    f32 count = static_cast<f32>(GameCounter(g_ConditionsChunkManager, Parameter()));
+    return count == threshold ? threshold + threshold : 0.0f;
 }
 
-// Taken once
+// The attachments' path was freed with the last attachment taken off: taken once
 f32 LostAllAttachmentsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node);
     if (attachments == nullptr)
     {
         return 0.0f;
     }
 
-    u32* word = AttachmentsWord(attachments);
-    if ((*word & LostAllBit) == 0)
+    if (attachments->bits.noPath == 0)
     {
         return 0.0f;
     }
 
-    *word &= ~LostAllBit;
+    attachments->bits.noPath = 0;
     return 1.0f;
 }
 
 f32 XCycleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return CycleTurns(node, 0);
+    return CycleTurns(node, XAxis);
 }
 
 f32 YCycleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return CycleTurns(node, 1);
+    return CycleTurns(node, YAxis);
 }
 
 f32 ZCycleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return CycleTurns(node, 2);
+    return CycleTurns(node, ZAxis);
 }
 
 // An agent reference whose instance is awake (one asleep forgotten: the second's even with the node's flag)
@@ -1125,72 +1092,81 @@ f32 GotAgentRef2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return 1.0f;
 }
 
-f32 NodeFlag16Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FoundCoverCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(TakesPackets(node) && (Node(node)->flags & 0x10000) != 0);
+    return YesNo(TakesPackets(node) && Node(node)->flags.foundCover);
 }
 
-f32 NodeFlag17Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FoundNoCoverCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(TakesPackets(node) && (Node(node)->flags & 0x20000) != 0);
+    return YesNo(TakesPackets(node) && Node(node)->flags.noCover);
 }
 
-f32 NodeFlag15Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 CoverSearchEndedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return YesNo(TakesPackets(node) && (Node(node)->flags & 0x8000) != 0);
+    return YesNo(TakesPackets(node) && Node(node)->flags.searchEnded);
 }
 
-// The node's countdown out of 255
-f32 NodeByte154FractionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The node's knock countdown, a share of its most (255)
+f32 KnockCountdownCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
+    constexpr f32 PerCount = Rounded(1.0 / 255.0);
     if (!TakesPackets(node))
     {
         return 0.0f;
     }
 
-    return static_cast<f32>(Node(node)->unknown154) * Rounded(1.0 / 255.0);
+    return static_cast<f32>(Node(node)->reactions.knockCountdown) * PerCount;
 }
 
-f32 PhysicsBodyFlag1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body on the ground this frame (whether the node takes packets is asked first)
+f32 RigidBodyOnGroundCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RigidBodyBit90(node, 1);
+    ObjectRigidBody* body = RigidBodyOf(node);
+    return YesNo(body != nullptr && body->state.onGround);
 }
 
-// The threshold doubled when the agent's byte has it (so it passes), else none
-f32 InstanceSubtypeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The threshold doubled when the agent's counter of the parameter has it (so it passes), else none
+f32 InstanceCounterEqualsThresholdCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    const u8* bytes = Node(node)->agent->unknown18;
-    return static_cast<f32>(bytes[Parameter()]) == values[1] ? values[1] + values[1] : 0.0f;
+    const u8* counters = Node(node)->agent->counters;
+    return static_cast<f32>(counters[Parameter()]) == threshold ? threshold + threshold : 0.0f;
 }
 
-// Bit 30 of the head tracking's bits with bit 24 (25, 26, 27 and 28 the next ones)
-f32 HeadTrackingFlag24Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The head tracking's joints hooked with a limit hit this frame: any, the turn about y below or above its limit, the turn about x
+// below or above its limit
+f32 HeadAtLimitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return HeadTrackingBits(node, 0x41000000);
+    HeadTracking* tracking = HeadTrackingOf(node);
+    return YesNo(tracking != nullptr && tracking->bits.hooked && tracking->bits.limited);
 }
 
-f32 HeadTrackingFlag25Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadYawBelowLimitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return HeadTrackingBits(node, 0x42000000);
+    HeadTracking* tracking = HeadTrackingOf(node);
+    return YesNo(tracking != nullptr && tracking->bits.hooked && tracking->bits.yawBelow);
 }
 
-f32 HeadTrackingFlag26Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadYawAboveLimitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return HeadTrackingBits(node, 0x44000000);
+    HeadTracking* tracking = HeadTrackingOf(node);
+    return YesNo(tracking != nullptr && tracking->bits.hooked && tracking->bits.yawAbove);
 }
 
-f32 HeadTrackingFlag27Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadPitchBelowLimitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return HeadTrackingBits(node, 0x48000000);
+    HeadTracking* tracking = HeadTrackingOf(node);
+    return YesNo(tracking != nullptr && tracking->bits.hooked && tracking->bits.pitchBelow);
 }
 
-f32 HeadTrackingFlag28Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadPitchAboveLimitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return HeadTrackingBits(node, 0x50000000);
+    HeadTracking* tracking = HeadTrackingOf(node);
+    return YesNo(tracking != nullptr && tracking->bits.hooked && tracking->bits.pitchAbove);
 }
 
 // The route's step (whether there's a route isn't checked)
-f32 SubPathKeyRawCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 RouteStepUncheckedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
@@ -1200,7 +1176,7 @@ f32 SubPathKeyRawCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return static_cast<f32>(Node(node)->waypoints->routeIndex);
 }
 
-f32 SubPathKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 RouteStepCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
@@ -1216,17 +1192,17 @@ f32 SubPathKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     return static_cast<f32>(waypoints->routeIndex);
 }
 
-// The current linked object the last
-f32 CurrentLinkIndexCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The current linked instance the last
+f32 OnLastLinkedObjectCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node);
     if (attachments == nullptr)
     {
         return 0.0f;
     }
 
-    u32 word = *AttachmentsWord(attachments);
-    return YesNo((word >> LinkedIndexShift & LinkedIndexMask) == (word & LinkedCountMask) - 1);
+    AttachmentsNodeBits bits = attachments->bits;
+    return YesNo(bits.currentLinked == bits.linkedCount - 1);
 }
 
 // Above where the instance's placement put it
@@ -1235,36 +1211,39 @@ f32 HeightAboveStartCondition::Check(GameNode* node, BehaviourLevel*, const u32*
     return PositionOf(node).y - Node(node)->informationPointer->position.y;
 }
 
-f32 HasPerception0Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The levels of the perception's senses: of the instances around, of its node's speed and the rising one
+f32 Sense0LevelCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PerceptionOf(node, 0);
+    return SenseLevel(node, PerceptionSense::KindInstances);
 }
 
-f32 HasPerception2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 Sense2LevelCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PerceptionOf(node, 2);
+    return SenseLevel(node, PerceptionSense::KindSpeed);
 }
 
-f32 HasPerception1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 Sense1LevelCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PerceptionOf(node, 1);
+    return SenseLevel(node, PerceptionSense::KindRising);
 }
 
-f32 PhysicsBodyFlag5Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body against a wall this frame (whether the node takes packets is asked first)
+f32 RigidBodyAgainstWallCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RigidBodyBit90(node, 5);
+    ObjectRigidBody* body = RigidBodyOf(node);
+    return YesNo(body != nullptr && body->state.againstWall);
 }
 
-// The linked objects' count
+// The linked instances' count
 f32 HasXLinksCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node);
     if (attachments == nullptr)
     {
         return 0.0f;
     }
 
-    return static_cast<f32>(*AttachmentsWord(attachments) & LinkedCountMask);
+    return static_cast<f32>(attachments->LinkedCount());
 }
 
 f32 PositionXCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
@@ -1283,7 +1262,7 @@ f32 PositionZCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 }
 
 // The first agent reference's instance busy (none: yes)
-f32 AgentRef1SpawnFlagCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 AgentRef1IsBusyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     ObjectNode* object = Node(node);
     InstanceContext* reference = AwakeAgentRef1(object);
@@ -1298,20 +1277,19 @@ f32 AgentRef1SpawnFlagCondition::Check(GameNode* node, BehaviourLevel*, const u3
         return 0.0f;
     }
 
-    return YesNo((reference->flags & BusyFlag) != 0);
+    return YesNo(reference->flags.busy);
 }
 
-// Bit 20 of the rigid body's bits at 0x90, taken once (whether the node takes packets isn't asked)
-f32 PhysicsImpactCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The rigid body touched a surface whose contact message it was told, taken once (whether the node takes packets isn't asked)
+f32 TouchedMessageSurfaceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u64 ImpactBit = u64{1} << 20;
     ObjectRigidBody* body = Node(node)->rigidBody;
-    if (body == nullptr || (body->bits90 & ImpactBit) == 0)
+    if (body == nullptr || !body->state.touchedMessageSurface)
     {
         return 0.0f;
     }
 
-    body->bits90 &= ~ImpactBit;
+    body->state.touchedMessageSurface = 0;
     return 1.0f;
 }
 
@@ -1320,7 +1298,7 @@ f32 KeyPathOnLastKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*
 {
     GameNode* source = Node(node)->sourceNode;
     Waypoints* waypoints = Node(source != nullptr ? source : node)->waypoints;
-    if (waypoints->key == NoKey)
+    if (waypoints->key == Waypoints::NoKey)
     {
         return 0.0f;
     }
@@ -1339,12 +1317,11 @@ f32 IsInPlayerChunkCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 // A behaviour in the object's slot (the object of the node it takes its object from when there's one)
 f32 HasScriptInSlotCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u16 NoBehaviour = 0xFFFF;
     ObjectNode* object = Node(node);
     GameObject* gameObject = object->sourceNode != nullptr ? SourceObject(object->sourceNode) : object->object;
     u16 id;
     GetObjectBehaviourId(&id, gameObject, Parameter());
-    return YesNo(id != NoBehaviour);
+    return YesNo(id != NoScriptId);
 }
 
 // Seconds since the running runner's mark, never below none (no mark: none)
@@ -1362,11 +1339,11 @@ f32 TimeSinceMarkCondition::Check(GameNode*, BehaviourLevel*, const u32* time)
 
 f32 PlayerHitPointsCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return static_cast<f32>(PlayerPart()->flags >> HitPointsShift & HitPointsMask);
+    return static_cast<f32>(PlayerPart()->flags.hitPoints);
 }
 
 // The agent's state's shadow flag
-f32 AgentIsOnGroundCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 ShadowActiveCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     AgentNode* agentNode = AgentNodeOf(node->owner);
     if (agentNode == nullptr)
@@ -1374,116 +1351,113 @@ f32 AgentIsOnGroundCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    return YesNo((agentNode->agent->properties->state & Agent::StateShadowActive) != 0);
+    return YesNo(agentNode->agent->properties->state.shadowActive != 0);
 }
 
-// Bits 2-9 of the crate part's value
-f32 CrateHasRedWumpaCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The crate holds wumpa fruit (no crate node: no)
+f32 CrateHasWumpaCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* crate = AgentNodeOfKind(node, CrateNodeKind);
+    AgentNode* crate = AgentNodeOfKind(node, NodeCrate);
     if (crate == nullptr)
     {
         return 0.0f;
     }
 
     auto* part = static_cast<CratePart*>(crate->agent->part);
-    return YesNo((part->value >> 2 & 0xFF) != 0);
+    return YesNo(part->crate.wumpaFruit != 0);
 }
 
 // Any attack within the window
 f32 AgentWasTouchedCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    return YesNo(AgentPartOf(node)->AttackedWithin(time, values[0]) != 0);
+    return YesNo(AgentPartOf(node)->AttackedWithin(time, window) != 0);
 }
 
 // Whether there's a creature node isn't checked
 f32 AgentHitPointsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* part = static_cast<CreaturePart*>(AgentNodeOfKind(node, CreatureNodeKind)->agent->part);
-    return static_cast<f32>(part->flags >> HitPointsShift & HitPointsMask);
+    auto* part = static_cast<CreaturePart*>(AgentNodeOfKind(node, NodeCreature)->agent->part);
+    return static_cast<f32>(part->flags.hitPoints);
 }
 
-// The last attack, of kind 9, within the window
-f32 WillHitWallCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
+// The last attack within the window by the tied characters
+f32 AgentWasHitByTiedPairCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    constexpr u32 WallKind = 9;
     AgentPart* part = AgentPartOf(node);
-    return YesNo(part->AttackedWithin(time, values[0]) != 0 && part->lastAttack == WallKind);
+    return YesNo(part->AttackedWithin(time, window) != 0 && part->lastAttack == AttackTied);
 }
 
-// Of kinds 13 and 14
-f32 WillRunOffCliffCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
+// By a character the other threw, from a spin or a jump
+f32 AgentWasHitByThrownCharacterCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    constexpr u32 FirstCliffKind = 13;
     AgentPart* part = AgentPartOf(node);
-    return YesNo(part->AttackedWithin(time, values[0]) != 0 && static_cast<u32>(part->lastAttack - FirstCliffKind) < 2);
+    return YesNo(part->AttackedWithin(time, window) != 0 &&
+                 (part->lastAttack == AttackThrownFromSpin || part->lastAttack == AttackThrownFromJump));
 }
 
 f32 AgentWasAttackedCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    return YesNo(AgentPartOf(node)->HitWithin(time, values[0]) != 0);
+    return YesNo(AgentPartOf(node)->HitWithin(time, window) != 0);
 }
 
+// An attack of a kind within the window: landed on, walked into, hit from below
 f32 AgentWasJumpedOnCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    constexpr u32 JumpedOn = 4;
-    return YesNo(AgentPartOf(node)->AttackedWithin(JumpedOn, time, values[0]) != 0);
+    return YesNo(AgentPartOf(node)->AttackedWithin(AttackLandOn, time, window) != 0);
 }
 
 f32 AgentWasWalkedIntoCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    constexpr u32 WalkedInto = 3;
-    return YesNo(AgentPartOf(node)->AttackedWithin(WalkedInto, time, values[0]) != 0);
+    return YesNo(AgentPartOf(node)->AttackedWithin(AttackWalkInto, time, window) != 0);
 }
 
 f32 AgentWasHeadbuttedCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    constexpr u32 Headbutted = 5;
-    return YesNo(AgentPartOf(node)->AttackedWithin(Headbutted, time, values[0]) != 0);
+    return YesNo(AgentPartOf(node)->AttackedWithin(AttackFromBelow, time, window) != 0);
 }
 
-// The gate's number (its part's value's low 12 bits)
-f32 WumpaNeededForPayGateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The gate's number
+f32 PayGateNumberCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u32 NumberMask = 0xFFF;
-    AgentNode* gate = AgentNodeOfKind(node, PayGateNodeKind);
+    AgentNode* gate = AgentNodeOfKind(node, NodePayGate);
     if (gate == nullptr)
     {
         return 0.0f;
     }
 
     auto* part = static_cast<PayGatePart*>(gate->agent->part);
-    return static_cast<f32>(part->value & NumberMask);
+    return static_cast<f32>(part->payGate.number);
 }
 
-// Flag 1 of the AI position of the route's step
+// The AI position of the route's step it's at airborne
 f32 NodeIsAirborneCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 1);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::Airborne);
 }
 
+// Crossing the route's edge takes a jump, a long jump, a high jump
 f32 EdgeNeedsJumpCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RoutePathFlag(node, 1u << 2);
+    return RoutePathFlag(node, AiPathFlags::NeedsJump);
 }
 
 f32 EdgeNeedsLongJumpCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RoutePathFlag(node, 1u << 3);
+    return RoutePathFlag(node, AiPathFlags::NeedsLongJump);
 }
 
 f32 EdgeNeedsHighJumpCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RoutePathFlag(node, 1u << 4);
+    return RoutePathFlag(node, AiPathFlags::NeedsHighJump);
 }
 
 f32 PlayerIsCoOpLinkedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    u64 bits = PartBits(PlayerPart());
-    return YesNo((bits >> 53 & 1) != 0 || (bits >> 54 & 1) != 0);
+    CharacterMoveBits bits = MoveBits(PlayerPart());
+    return YesNo(bits.linkedFirst != 0 || bits.linkedSecond != 0);
 }
 
-// The part's state 6 or 10
+// The attack the player's moves give its part a spin (or its variant), a slide
 f32 PlayerIsSpinningCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     CharacterPart* part = PlayerPart();
@@ -1492,12 +1466,11 @@ f32 PlayerIsSpinningCondition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    u32 state = part->bits & BasicAgentPart::LowByteMask;
-    return YesNo(state == 6 || state == 10);
+    u32 attack = part->bits.attackKind;
+    return YesNo(attack == AttackSpin || attack == AttackSpinVariant);
 }
 
-// 8 or 12
-f32 PlayerIsJumpingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerIsSlidingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     CharacterPart* part = PlayerPart();
     if (part == nullptr)
@@ -1505,8 +1478,8 @@ f32 PlayerIsJumpingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    u32 state = part->bits & BasicAgentPart::LowByteMask;
-    return YesNo(state == 8 || state == 12);
+    u32 attack = part->bits.attackKind;
+    return YesNo(attack == AttackSlide || attack == AttackSlideVariant);
 }
 
 // On the pad of the player the parameter gives
@@ -1530,201 +1503,205 @@ f32 IsR1PressedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
     return GetButtonPressure(PadOf(Parameter()), PadR1);
 }
 
-// Bit 55 of the character part's bits (whether there's a character node isn't checked; 54 the next)
-f32 CharacterFlag23Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The character part's move bits (whether there's a character node isn't checked)
+f32 NoGroundAheadCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* part = static_cast<CharacterPart*>(AgentNodeOfKind(node, CharacterNodeKind)->agent->part);
-    return YesNo((PartBits(part) >> 55 & 1) != 0);
+    auto* part = static_cast<CharacterPart*>(AgentNodeOfKind(node, NodeCharacter)->agent->part);
+    return YesNo(MoveBits(part).noGroundAhead != 0);
 }
 
-// The second character's counter's low 4 bits 6
-f32 IsChargedShotCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// The player's gun just shot (a normal or a charged shot)
+f32 PlayerJustShotCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u64 ChargedShot = 6;
-    CharacterCounter* counter = g_PlayerCharacter2->counter;
-    return YesNo(counter != nullptr && (counter->bits & 0xF) == ChargedShot);
+    Gun* gun = g_PlayerCharacter2->gun;
+    return YesNo(gun != nullptr && gun->bits.state == Gun::StateShot);
 }
 
-// The second character's attack's state 12 to 14
+// The player's jump in Cortex's radial blast (its hang, rise or fall)
 f32 IsDownBlastCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u32 FirstDownBlast = 12;
-    const u32* attack = g_PlayerCharacter2->attack;
-    return YesNo(attack != nullptr && (*attack & 0x1F) - FirstDownBlast < 3);
+    const JumpController* jump = g_PlayerCharacter2->jump;
+    if (jump == nullptr)
+    {
+        return 0.0f;
+    }
+
+    u32 state = jump->bits.state;
+    return YesNo(state >= JumpController::StateBlastHang && state <= JumpController::StateBlastFalling);
 }
 
-// Flags of the AI position of the route's step (the b ones the same), and of the step before
-f32 SubPathPointFlag0Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// Flags of the AI positions of the route's edge: of its start (the route's step it's at; the duplicates the same) and of its end
+// (the next step)
+f32 EdgeStartNodeBlockedCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 0);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::Blocked);
 }
 
-f32 CharacterFlag22Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 IsTiedSecondCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    auto* part = static_cast<CharacterPart*>(AgentNodeOfKind(node, CharacterNodeKind)->agent->part);
-    return YesNo((PartBits(part) >> 54 & 1) != 0);
+    auto* part = static_cast<CharacterPart*>(AgentNodeOfKind(node, NodeCharacter)->agent->part);
+    return YesNo(MoveBits(part).linkedSecond != 0);
 }
 
 f32 CharacterHasVehicleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* character = AgentNodeOfKind(node, CharacterNodeKind);
-    return YesNo(character != nullptr && CharacterOf(character)->control != nullptr);
+    AgentNode* character = AgentNodeOfKind(node, NodeCharacter);
+    return YesNo(character != nullptr && CharacterOf(character)->vehicle != nullptr);
 }
 
-// A vehicle of kind 2 (TT Lab's name says the opposite; 3, 4 and 5 the next ones, 5 the second character's without a character
-// node)
-f32 VehicleTypeNot2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The character's vehicle of a kind: 2 and 4 (no vehicle has either), the Humiliskate, the hoverboard (the player's without a
+// character node)
+f32 IsVehicleKind2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* character = AgentNodeOfKind(node, CharacterNodeKind);
-    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), 2));
+    AgentNode* character = AgentNodeOfKind(node, NodeCharacter);
+    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), Vehicle::KindUnused2));
 }
 
 f32 IsVehicleHumiliskateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* character = AgentNodeOfKind(node, CharacterNodeKind);
-    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), 3));
+    AgentNode* character = AgentNodeOfKind(node, NodeCharacter);
+    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), Vehicle::KindHumiliskate));
 }
 
-f32 VehicleTypeNot4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 IsVehicleKind4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* character = AgentNodeOfKind(node, CharacterNodeKind);
-    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), 4));
+    AgentNode* character = AgentNodeOfKind(node, NodeCharacter);
+    return YesNo(character != nullptr && HasVehicleOfKind(CharacterOf(character), Vehicle::KindUnused4));
 }
 
-f32 IsVehicle3Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 IsVehicleHoverboardCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    AgentNode* character = AgentNodeOfKind(node, CharacterNodeKind);
-    return YesNo(HasVehicleOfKind(character != nullptr ? CharacterOf(character) : g_PlayerCharacter2, 5));
+    AgentNode* character = AgentNodeOfKind(node, NodeCharacter);
+    return YesNo(HasVehicleOfKind(character != nullptr ? CharacterOf(character) : g_PlayerCharacter2, Vehicle::KindHoverboard));
 }
 
-f32 SubPathPointFlag5Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag5Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 5);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::Attached);
 }
 
-f32 SubPathPointFlag4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 4);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::NeverTaken);
 }
 
-f32 SubPathPointFlag6Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag6Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 6);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::ScriptFlag6);
 }
 
-// Flag 8 of the path that led to the route's step
-f32 PathSegmentFlag0Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// Flag 8 of the route's edge
+f32 EdgeFlag8Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return RoutePathFlag(node, 1u << 8);
+    return RoutePathFlag(node, AiPathFlags::ScriptFlag8);
 }
 
-f32 SubPathPreviousPointFlag5Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeEndNodeFlag5Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(PreviousStepPosition(Node(node)->waypoints), 1u << 5);
+    return PositionFlag(NextStepPosition(Node(node)->waypoints), AiPositionFlags::Attached);
 }
 
-f32 SubPathPreviousPointFlag4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeEndNodeFlag4Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(PreviousStepPosition(Node(node)->waypoints), 1u << 4);
+    return PositionFlag(NextStepPosition(Node(node)->waypoints), AiPositionFlags::NeverTaken);
 }
 
-f32 SubPathPreviousPointFlag6Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeEndNodeFlag6Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(PreviousStepPosition(Node(node)->waypoints), 1u << 6);
+    return PositionFlag(NextStepPosition(Node(node)->waypoints), AiPositionFlags::ScriptFlag6);
 }
 
-f32 SubPathPointFlag5bCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag5DuplicateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 5);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::Attached);
 }
 
-f32 SubPathPointFlag4bCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag4DuplicateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 4);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::NeverTaken);
 }
 
-f32 SubPathPointFlag6bCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag6DuplicateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 6);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::ScriptFlag6);
 }
 
-f32 SubPathPointFlag2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 2);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::AlwaysTaken);
 }
 
-f32 SubPathPreviousPointFlag2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeEndNodeFlag2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(PreviousStepPosition(Node(node)->waypoints), 1u << 2);
+    return PositionFlag(NextStepPosition(Node(node)->waypoints), AiPositionFlags::AlwaysTaken);
 }
 
-f32 SubPathPointFlag2bCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 EdgeStartNodeFlag2DuplicateCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return PositionFlag(StepPosition(Node(node)->waypoints), 1u << 2);
+    return PositionFlag(StepPosition(Node(node)->waypoints), AiPositionFlags::AlwaysTaken);
 }
 
-// None of flags 1, 2, 4 and 6 (no position: no)
-f32 SubPathPointFlags56Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// None of the airborne flag and flags 2, 4 and 6 (no position: no)
+f32 EdgeStartNodeFlagsClearCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u32 Flags = 0x56;
+    constexpr u32 Flags =
+        AiPositionFlags::Airborne | AiPositionFlags::AlwaysTaken | AiPositionFlags::NeverTaken | AiPositionFlags::ScriptFlag6;
     AiPosition* position = StepPosition(Node(node)->waypoints);
-    return YesNo(position != nullptr && (position->flags & Flags) == 0);
+    return YesNo(position != nullptr && (position->flags.value & Flags) == 0);
 }
 
-// The played character's agent holds something (its handle at 0x290; no character played: the nodes read at 0xD4, retail's)
+// The played character pushes a body (no character played: the nodes read at 0xD4, retail's)
 f32 IsPushingObjectCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     GameProgress* progress = Progress();
-    InstanceContext* instance = progress->Instance(progress->Field(GameProgress::CharacterShift));
-    auto* nodes = reinterpret_cast<NodeList*>(reinterpret_cast<std::uintptr_t>(instance) + offsetof(InstanceContext, nodes));
-    auto* character = static_cast<AgentNode*>(GetGameNode(nodes, CharacterNodeKind));
-    Reference* handle = static_cast<CharacterAgent*>(character->agent)->pushedBody;
-    return YesNo(handle != nullptr && handle->object != nullptr);
+    InstanceContext* instance = progress->Instance(progress->play.character);
+    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(instance), NodeCharacter));
+    Reference* pushed = static_cast<CharacterAgent*>(character->agent)->pushedBody;
+    return YesNo(pushed != nullptr && pushed->object != nullptr);
 }
 
-f32 GameFlags44Is12Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 GameIsPlayingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo(G_GameController_0030988C->State() == GameController::StatePlaying);
+    return YesNo(g_ConditionsGameController->State() == GameController::StatePlaying);
 }
 
 f32 IsMoviePlayingCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return YesNo(G_GameController_0030988C->State() == GameController::StateMovie);
+    return YesNo(g_ConditionsGameController->State() == GameController::StateMovie);
 }
 
-// An instance at the attachments path's entry of the slot
+// An instance hanging on the exit point of the parameter's slot
 f32 GotAttachmentOnExitCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    void* attachments = GetGameNode(&node->owner->nodes, AttachmentsKind);
+    AttachmentsNode* attachments = AttachmentsNodeOf(node);
     if (attachments == nullptr)
     {
         return 0.0f;
     }
 
-    void* path = *reinterpret_cast<void**>(static_cast<u8*>(attachments) + 0x70);
+    AttachmentsPath* path = attachments->path;
     if (path == nullptr)
     {
         return 0.0f;
     }
 
-    return YesNo(SlottedAttachment(path, Parameter() & 0xFF) != nullptr);
+    return YesNo(SlottedAttachment(path, ExitSlot(this)) != nullptr);
 }
 
-// The played character's agent's chunk at 0x90 not the one its instance is in (whether there's a character played or a
-// character node isn't checked)
-f32 CharacterHasHomeChunkCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// The played character's home chunk not the one its instance is in (whether there's a character played or a character node
+// isn't checked)
+f32 PlayerOutsideHomeChunkCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     InstanceContext* played = PlayedInstance();
-    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(played), CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(played), NodeCharacter));
     auto* agent = static_cast<CharacterAgent*>(character->agent);
     ChunkData* home = agent->homeChunk;
     return YesNo(home != played->chunk);
 }
 
-// The first runner's starter's originator a character that isn't the player, while the characters are paired 1
+// The first runner's starter's originator a character that isn't the player, while play is alone (PairingAlone)
 f32 TriggeredByOtherCharacterCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u32 Pairing1 = 1;
     BehaviourRunner* runner = Node(node)->runners[0];
     if (runner == nullptr || runner->receivers == nullptr)
     {
@@ -1732,16 +1709,16 @@ f32 TriggeredByOtherCharacterCondition::Check(GameNode* node, BehaviourLevel*, c
     }
 
     auto* originator = static_cast<InstanceContext*>(runner->receivers->originator);
-    if (originator == PlayerInstance() || GetGameNode(&originator->nodes, CharacterNodeKind) == nullptr)
+    if (originator == PlayerInstance() || GetGameNode(&originator->nodes, NodeCharacter) == nullptr)
     {
         return 0.0f;
     }
 
-    return YesNo(Progress()->Field(GameProgress::PairingShift) == Pairing1);
+    return YesNo(Progress()->play.pairing == PairingAlone);
 }
 
-// The physics body touched its chunk's triangles this frame (without one, bit 52 of the rigid body's bits at 0x88)
-f32 PhysicsTouchingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The physics body touched its chunk's triangles this frame (without one, the rigid body touches the world)
+f32 TouchingWorldCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
@@ -1756,10 +1733,10 @@ f32 PhysicsTouchingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
     if (body->physicsBody != nullptr)
     {
-        return YesNo((body->physicsBody->bodyFlags & RigidBody::FlagTouched) != 0);
+        return YesNo(body->physicsBody->bodyFlags.touchedWorld != 0);
     }
 
-    return YesNo((body->bits88 >> 52 & 1) != 0);
+    return YesNo(body->bits.touchingWorld);
 }
 
 // The agent's persistent flag (in its chunk's own store or the other one; none: no)
@@ -1767,14 +1744,14 @@ f32 IsLoadZoneStateSetCondition::Check(GameNode* node, BehaviourLevel*, const u3
 {
     Agent* agent = Node(node)->agent;
     PropertyHolder* properties = agent->properties;
-    if ((properties->state & PropertyHolder::StatePersistentFlag) == 0)
+    if (properties->state.persistentFlag == 0)
     {
         return 0.0f;
     }
 
-    ChunkEntry* chunk = ChunkOfIndex(G_ChunkManager_0030A0C8, agent->chunkIndex);
+    ChunkEntry* chunk = ChunkOfIndex(g_ConditionsChunkManager, agent->chunkIndex);
     u16 id = agent->id;
-    PersistentFlags* flags = (properties->state & PropertyHolder::StateFlagInChunkStore) != 0 ? chunk->flags : chunk->otherFlags;
+    PersistentFlags* flags = properties->state.flagInChunkStore != 0 ? chunk->savedFlags : chunk->unsavedFlags;
     if (flags == nullptr)
     {
         return 0.0f;
@@ -1789,42 +1766,41 @@ f32 FocusInSameChunkCondition::Check(GameNode* node, BehaviourLevel*, const u32*
     return YesNo(focus != nullptr && focus->chunk == node->owner->chunk);
 }
 
-// Attacks of kinds 6 and 10 (7 and 11 knee drops, 8 and 12 slides)
+// A spin, a knee drop (the slam), a slide, or their variants
 f32 AgentWasSpunCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    return AttackedByEither(node, time, values[0], 6, 10);
+    return AttackedByEither(node, time, window, AttackSpin, AttackSpinVariant);
 }
 
 f32 AgentWasKneeDroppedCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    return AttackedByEither(node, time, values[0], 7, 11);
+    return AttackedByEither(node, time, window, AttackSlam, AttackSlamVariant);
 }
 
 f32 AgentWasSlidCondition::Check(GameNode* node, BehaviourLevel*, const u32* time)
 {
-    return AttackedByEither(node, time, values[0], 8, 12);
+    return AttackedByEither(node, time, window, AttackSlide, AttackSlideVariant);
 }
 
-// The player's vehicle's byte at 0x19C while it's the Humiliskate (kind 3; no player: its nodes read at 0xD4)
-f32 PlayerSplineVehicleValueCondition::Check(GameNode*, BehaviourLevel*, const u32*)
+// Whether the player's Humiliskate is crouched (no player: its nodes read at 0xD4)
+f32 PlayerHumiliskateCrouchedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u32 Humiliskate = 3;
-    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayerInstance()), CharacterNodeKind));
+    auto* character = static_cast<AgentNode*>(GetGameNode(NodesOf(PlayerInstance()), NodeCharacter));
     if (character == nullptr)
     {
         return 0.0f;
     }
 
-    CharacterControl* control = reinterpret_cast<PlayerCharacter*>(character->agent)->control;
-    if (control == nullptr || control->Kind() != Humiliskate)
+    Vehicle* vehicle = reinterpret_cast<PlayerCharacter*>(character->agent)->vehicle;
+    if (vehicle == nullptr || vehicle->Kind() != Vehicle::KindHumiliskate)
     {
         return 0.0f;
     }
 
-    return static_cast<f32>(reinterpret_cast<const u8*>(control)[0x19C]);
+    return static_cast<f32>(static_cast<HumiliskateVehicle*>(vehicle)->crouched);
 }
 
-f32 PlayerFlag14Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+f32 PlayerIsDeadCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
     InstanceContext* played = PlayedInstance();
     if (played == nullptr)
@@ -1832,8 +1808,8 @@ f32 PlayerFlag14Condition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    auto* character = static_cast<AgentNode*>(GetGameNode(&played->nodes, CharacterNodeKind));
-    return YesNo(character != nullptr && CharacterBit14(character));
+    auto* character = static_cast<AgentNode*>(GetGameNode(&played->nodes, NodeCharacter));
+    return YesNo(character != nullptr && CharacterDead(character));
 }
 
 // The object of the agent reference's instance (its object node's agent's; the parameter an ID)
@@ -1882,15 +1858,15 @@ f32 FocusIsAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, const u32*
     return YesNo(focus == AwakeAgentRef1(Node(node)));
 }
 
-// The focus instance visible (10), busy (8) and with an attached object (7)
-f32 FocusFlag10Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The awake focus instance visible, busy, holding an attached object
+f32 FocusIsVisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return FocusFlag(node, ReferencedObject::FlagVisible);
+    return FocusFlag(node, ReferencedObjectFlags::Visible);
 }
 
-// The threshold doubled when the focus's agent's byte (at the index the condition keeps) has it (so it passes), else none
+// The threshold doubled when the focus's agent's counter (the one the condition keeps) has it (so it passes), else none
 // (whether the focus has an object node isn't checked)
-f32 FocusObjectByte0EqualsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FocusInstanceCounterEqualsThresholdCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* focus = Node(node)->AwakeFocus();
     if (focus == nullptr)
@@ -1898,19 +1874,19 @@ f32 FocusObjectByte0EqualsCondition::Check(GameNode* node, BehaviourLevel*, cons
         return 0.0f;
     }
 
-    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&focus->nodes, 1));
-    const u8* bytes = objectNode->agent->unknown18;
-    return static_cast<f32>(bytes[unknown14]) == values[1] ? values[1] + values[1] : 0.0f;
+    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&focus->nodes, NodeObject));
+    const u8* counters = objectNode->agent->counters;
+    return static_cast<f32>(counters[counter]) == threshold ? threshold + threshold : 0.0f;
 }
 
 f32 FocusIsBusyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return FocusFlag(node, BusyFlag);
+    return FocusFlag(node, ReferencedObjectFlags::Busy);
 }
 
-// The physics body touched another body or its chunk's triangles this frame; without one, while the parameter is none, bit 52
-// or 51 of the rigid body's bits at 0x88
-f32 TouchingTerrainCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The physics body touched another body or its chunk's triangles this frame; without one, while the parameter is none, the rigid
+// body touches the world or an instance
+f32 TouchingAnythingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
@@ -1925,7 +1901,7 @@ f32 TouchingTerrainCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
     if (body->physicsBody != nullptr)
     {
-        return YesNo((body->physicsBody->bodyFlags & (RigidBody::FlagTouchedBody | RigidBody::FlagTouched)) != 0);
+        return YesNo(body->physicsBody->bodyFlags.touchedBody != 0 || body->physicsBody->bodyFlags.touchedWorld != 0);
     }
 
     if (Parameter() != 0)
@@ -1933,21 +1909,21 @@ f32 TouchingTerrainCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    return YesNo((body->bits88 >> 52 & 1) != 0 || (body->bits88 >> 51 & 1) != 0);
+    return YesNo(body->bits.touchingWorld || body->bits.touchingInstance);
 }
 
 f32 FocusHasAttachmentCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    return FocusFlag(node, AttachedObjectFlag);
+    return FocusFlag(node, ReferencedObjectFlags::HasAttachment);
 }
 
-// From the node's stored position (none: 1e30)
-f32 FocusPositionDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// From the node's stored position (none: far)
+f32 MeToStoredPositionSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     ObjectNode* object = Node(node);
-    if ((object->flags & ObjectNodeBase::FlagStoredPosition) == 0)
+    if (!object->flags.storedPosition)
     {
-        return Rounded(1e30);
+        return Infinite;
     }
 
     Vector4 stored = object->storedPosition;
@@ -1969,20 +1945,19 @@ f32 FocusActorEqualsCondition::Check(GameNode* node, BehaviourLevel*, const u32*
     return ObjectIdIs(ObjectIdOf(focus), Parameter());
 }
 
-// Character 1's agent has bit 14 and the played character's hasn't (TT Lab's name says both)
-f32 BothCharactersFlag14Condition::Check(GameNode*, BehaviourLevel*, const u32*)
+// Cortex's character dead and the played one alive
+f32 CortexDeadPlayerAliveCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    constexpr u32 Character1 = 1;
-    InstanceContext* first = Progress()->characters[Character1] != nullptr
-                                 ? static_cast<InstanceContext*>(Progress()->characters[Character1]->object)
-                                 : nullptr;
-    if (first == nullptr)
+    InstanceContext* cortex = Progress()->characters[CharacterCortex] != nullptr
+                                  ? static_cast<InstanceContext*>(Progress()->characters[CharacterCortex]->object)
+                                  : nullptr;
+    if (cortex == nullptr)
     {
         return 0.0f;
     }
 
-    auto* firstCharacter = static_cast<AgentNode*>(GetGameNode(&first->nodes, CharacterNodeKind));
-    if (firstCharacter == nullptr || !CharacterBit14(firstCharacter))
+    auto* cortexCharacter = static_cast<AgentNode*>(GetGameNode(&cortex->nodes, NodeCharacter));
+    if (cortexCharacter == nullptr || !CharacterDead(cortexCharacter))
     {
         return 0.0f;
     }
@@ -1993,17 +1968,17 @@ f32 BothCharactersFlag14Condition::Check(GameNode*, BehaviourLevel*, const u32*)
         return 0.0f;
     }
 
-    auto* playedCharacter = static_cast<AgentNode*>(GetGameNode(&played->nodes, CharacterNodeKind));
+    auto* playedCharacter = static_cast<AgentNode*>(GetGameNode(&played->nodes, NodeCharacter));
     if (playedCharacter == nullptr)
     {
         return 0.0f;
     }
 
-    return YesNo(!CharacterBit14(playedCharacter));
+    return YesNo(!CharacterDead(playedCharacter));
 }
 
 // How far above the first agent reference's instance the instance is (none: none)
-f32 AgentRef1HeightDifferenceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeightAboveAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* reference = AwakeAgentRef1(Node(node));
     if (reference == nullptr)
@@ -2026,18 +2001,17 @@ f32 GotAnyFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
         return 1.0f;
     }
 
-    return YesNo((object->flags & ObjectNodeBase::FlagFocusPosition) != 0 || (object->flags & ObjectNodeBase::FlagFocusInstance) != 0);
+    return YesNo(object->flags.focusPosition || object->flags.focusInstance);
 }
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 Far = 1e30f;
 // How far above an instance's feet the checks look from and at
 constexpr f32 EyeHeight = 0.5f;
-// The collision surfaces sight and walking test
-constexpr u32 SightSurfaces = 0x80;
-constexpr u32 WalkSurfaces = 0x40;
+// How many instances the queries of the lines of sight, of the ground probes and of the overlaps find at most
+constexpr u32 SightResults = 0x80;
+constexpr u32 ProbeResults = 0x40;
+constexpr u32 OverlapResults = 0x10;
 
 // An instance's place's position (made up to date first)
 Vector4 PlacePosition(InstanceContext* instance)
@@ -2089,15 +2063,15 @@ Vector4 BoxMiddle(InstanceContext* instance)
 }
 
 // The query of the instances in a line of sight, the instance itself and its attachment left out
-void MakeSightQuery(InstanceRayHit* query, void** results, InstanceContext* instance)
+void MakeSightQuery(InstanceQuery* query, void** results, InstanceContext* instance)
 {
     query->results = results;
     query->count = 0;
-    query->most = 0x80;
-    query->distance = Far;
-    query->wantedFlags = 0x10;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->most = SightResults;
+    query->distance = Infinite;
+    query->wantedFlags = ReferencedObjectFlags::CollisionActive;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->skipped[0] = nullptr;
     query->instance = nullptr;
     query->skipped[1] = nullptr;
@@ -2107,21 +2081,23 @@ void MakeSightQuery(InstanceRayHit* query, void** results, InstanceContext* inst
 // The character agent of an instance's character node
 CharacterAgent* CharacterAgentOfInstance(InstanceContext* instance)
 {
-    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind))->agent);
+    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter))->agent);
 }
 
-// A character's eye height: the second of the floats its sizes have, the fourth while it's ducking (bit 32 of its part's bits)
+// A character's eye height: its body's height, its crouching height while it crouches
 f32 CharacterEyeHeight(CharacterAgent* agent)
 {
-    const f32* sizes = reinterpret_cast<const f32*>(agent->body);
+    const CharacterBody* body = agent->body;
     auto* part = static_cast<CharacterPart*>(agent->Part());
-    return (PartBits(part) >> 32 & 1) == 1 ? sizes[3] : sizes[1];
+    return part->moveBits.crouching == 1 ? body->crouchHeight : body->height;
 }
 
-// Whether a line of sight from a point along a way to an instance is clear: nothing stopped it, or the instance did
-bool SightReaches(InstanceContext* instance, ChunkData* chunk, const Vector4* from, Vector4* way, InstanceRayHit* query, u32 mask)
+// Whether a line of sight from a point along a way to an instance is clear: nothing stopped it, or the instance did (the
+// instances of the node kinds given stop it, a bit per kind)
+bool SightReaches(InstanceContext* instance, ChunkData* chunk, const Vector4* from, Vector4* way, InstanceQuery* query,
+                  u32 nodeKinds)
 {
-    u32 blocked = LineOfSight(chunk, from, way, SightSurfaces, query, mask);
+    u32 blocked = LineOfSight(chunk, from, way, SurfaceFlags::BlocksLineOfSight, query, nodeKinds);
     if (blocked != 0 && query->instance == instance)
     {
         blocked = 0;
@@ -2145,13 +2121,13 @@ bool WayAlongAxesBlocked(GameNode* node, const Vector4& offset)
     end.y = end.y + (matrix.m[0][1] * offset.x + matrix.m[1][1] * offset.y + matrix.m[2][1] * offset.z);
     end.z = end.z + (matrix.m[0][2] * offset.x + matrix.m[1][2] * offset.y + matrix.m[2][2] * offset.z);
     Vector4 hit;
-    return GetCollisionCheck(instance->chunk, &start, &end, WalkSurfaces, nullptr, &hit, nullptr) != 0;
+    return GetCollisionCheck(instance->chunk, &start, &end, SurfaceFlags::SolidToObjects, nullptr, &hit, nullptr) != 0;
 }
 
 // The position of the node's focus (an awake focus instance's, else the focus position): whether it has one
 bool FocusPositionOf(ObjectNode* object, Vector4* position)
 {
-    if ((object->flags & ObjectNodeBase::FlagFocusInstance) != 0)
+    if (object->flags.focusInstance)
     {
         InstanceContext* focus = object->focusInstance;
         if (focus == nullptr || Asleep(focus))
@@ -2159,7 +2135,7 @@ bool FocusPositionOf(ObjectNode* object, Vector4* position)
             if (focus != nullptr)
             {
                 object->focusInstance = nullptr;
-                object->flags &= ~ObjectNodeBase::FlagFocusPosition & ~ObjectNodeBase::FlagFocusInstance;
+                object->flags.value &= ~ObjectNodeFlags::FocusMask;
             }
 
             return false;
@@ -2169,7 +2145,7 @@ bool FocusPositionOf(ObjectNode* object, Vector4* position)
         return true;
     }
 
-    if ((object->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+    if (object->flags.focusPosition)
     {
         *position = object->focusPosition;
         return true;
@@ -2189,7 +2165,7 @@ f32 MeFacingPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     return AxisAlongWay(forward, position, PlacePosition(played));
 }
 
@@ -2202,7 +2178,7 @@ f32 PlayerFacingMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(played);
-    Vector4 forward = PlaceAxis(played, 2);
+    Vector4 forward = PlaceAxis(played, ZAxis);
     return AxisAlongWay(forward, position, PlacePosition(node->owner));
 }
 
@@ -2216,11 +2192,11 @@ f32 PlayerSideOffsetCondition::Check(GameNode* node, BehaviourLevel*, const u32*
     }
 
     Vector4 position = PlacePosition(played);
-    Vector4 side = PlaceAxis(played, 0);
+    Vector4 side = PlaceAxis(played, XAxis);
     return AxisAlongWay(side, position, PlacePosition(node->owner));
 }
 
-// The collision (of the sight's surfaces) between the eyes of the instance and of the played character
+// 1 when nothing (of the sight's surfaces) is between the eyes of the instance and of the played character
 f32 ClearLineOfSightToPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* played = PlayedInstance();
@@ -2234,7 +2210,9 @@ f32 ClearLineOfSightToPlayerCondition::Check(GameNode* node, BehaviourLevel*, co
     to.y = to.y + EyeHeight;
     from.y = from.y + EyeHeight;
     Vector4 hit;
-    return GetCollisionCheck(node->owner->chunk, &from, &to, SightSurfaces, nullptr, &hit, nullptr) != 0 ? 1.0f : 0.0f;
+    return GetCollisionCheck(node->owner->chunk, &from, &to, SurfaceFlags::BlocksLineOfSight, nullptr, &hit, nullptr) != 0
+               ? 0.0f
+               : 1.0f;
 }
 
 // Twice the threshold when the instance faces the played character more than it and the collision doesn't block the view
@@ -2247,7 +2225,7 @@ f32 CanSeePlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 from = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     Vector4 way = PlacePosition(played);
     from.y = from.y + EyeHeight;
     way.y = way.y + EyeHeight;
@@ -2255,17 +2233,17 @@ f32 CanSeePlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     way.x = way.x - from.x;
     way.z = way.z - from.z;
     way.y = way.y - from.y;
-    if (!(values[1] < AxisAlongUnit(forward, &way)))
+    if (!(threshold < AxisAlongUnit(forward, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(node->owner->chunk, &from, &to, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(node->owner->chunk, &from, &to, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
 // Twice the threshold when the line of sight between the middles of their boxes reaches the played character (whether there's
@@ -2284,22 +2262,22 @@ f32 PlayerVisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     way.x = way.x - from.x;
     way.y = way.y - from.y;
     way.z = way.z - from.z;
-    void* results[0x80];
-    InstanceRayHit query;
+    void* results[SightResults];
+    InstanceQuery query;
     MakeSightQuery(&query, results, node->owner);
     if (!SightReaches(played, node->owner->chunk, &from, &way, &query, g_SolidKinds))
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
-// The operated instance has been operated for 0.2 seconds at most, faces the instance and the instance is nearer to its aim (a
+// The operated instance's gun shot no more than 0.2 seconds ago, it faces the instance and the instance is nearer to its aim (a
 // line 1000 units long, on the ground) than its box reaches
-f32 GlobalInstanceOp581Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 ShotAtMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr f32 OperateSeconds = Rounded(0.2);
+    constexpr f32 ShotSeconds = Rounded(0.2);
     constexpr f32 AimLength = 1000.0f;
     InstanceContext* operated = g_OperatedInstance != nullptr ? static_cast<InstanceContext*>(g_OperatedInstance->object) : nullptr;
     if (operated == nullptr)
@@ -2307,14 +2285,14 @@ f32 GlobalInstanceOp581Condition::Check(GameNode* node, BehaviourLevel*, const u
         return 0.0f;
     }
 
-    auto* controller = reinterpret_cast<CharacterController*>(CharacterAgentOfInstance(operated)->gun);
-    if (controller == nullptr || StartedWithin(controller, static_cast<s32>(g_ClockUnitsPerSecond * OperateSeconds)) == 0)
+    Gun* gun = CharacterAgentOfInstance(operated)->gun;
+    if (gun == nullptr || gun->ShotWithin(static_cast<s32>(g_ClockUnitsPerSecond * ShotSeconds)) == 0)
     {
         return 0.0f;
     }
 
     Vector4 aimStart = PlacePosition(operated);
-    Vector4 aim = PlaceAxis(operated, 2);
+    Vector4 aim = PlaceAxis(operated, ZAxis);
     InstanceContext* instance = node->owner;
     Vector4 position = PlacePosition(instance);
     Vector4 way = position;
@@ -2350,7 +2328,7 @@ f32 SightFromBeside(GameNode* node, bool right)
     constexpr f32 BlockedShare = Rounded(1.8);
     InstanceContext* played = PlayedInstance();
     InstanceContext* instance = node->owner;
-    if ((instance->flags & ReferencedObject::FlagInDrawnCell) == 0)
+    if (!instance->flags.inDrawnCell)
     {
         return 0.0f;
     }
@@ -2380,13 +2358,13 @@ f32 SightFromBeside(GameNode* node, bool right)
     side.y = (up.z * direction.x - up.x * direction.z) * reach;
     side.z = (up.x * direction.y - up.y * direction.x) * reach;
     side.x = (up.y * direction.z - up.z * direction.y) * reach;
-    void* results[0x80];
-    InstanceRayHit query;
+    void* results[SightResults];
+    InstanceQuery query;
     MakeSightQuery(&query, results, instance);
     way.x = way.x - from.x;
     way.y = way.y - from.y;
     way.z = way.z - from.z;
-    if (LineOfSight(instance->chunk, &from, &way, SightSurfaces, &query, g_CoverKinds) == 0)
+    if (LineOfSight(instance->chunk, &from, &way, SurfaceFlags::BlocksLineOfSight, &query, g_CoverKinds) == 0)
     {
         return 0.0f;
     }
@@ -2413,20 +2391,20 @@ f32 SightFromBeside(GameNode* node, bool right)
     way.x = way.x - from.x;
     way.y = way.y - from.y;
     way.z = way.z - from.z;
-    query.bits &= ~InstanceRayHit::BitFull;
+    query.bits.unused0 = 0;
     query.count = 0;
     query.instance = nullptr;
-    query.distance = Far;
+    query.distance = Infinite;
     return SightReaches(played, instance->chunk, &from, &way, &query, g_CoverKinds) ? 1.0f : 0.0f;
 }
 }
 
-f32 PlayerVisible2Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 PlayerVisibleFromLeftCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return SightFromBeside(node, false);
 }
 
-f32 PlayerVisible3Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 PlayerVisibleFromRightCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return SightFromBeside(node, true);
 }
@@ -2450,7 +2428,7 @@ f32 HeadLookingAtPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u
     InstanceContext* played = PlayedInstance();
     Vector4 head;
     Vector4 direction;
-    if (played == nullptr || ExitPointPlace(node->owner, Parameter() & 0xFF, &head, &direction) == 0)
+    if (played == nullptr || ExitPointPlace(node->owner, ExitSlot(this), &head, &direction) == 0)
     {
         return 0.0f;
     }
@@ -2458,47 +2436,47 @@ f32 HeadLookingAtPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u
     return AxisAlongWay(direction, head, PlacePosition(played));
 }
 
-// Twice the threshold when the exit point of the parameter's slot points at the played character's eyes (its eye height above
+// Twice the threshold when the exit point of the parameter's slot points at the played character's eyes (its body's height above
 // its feet) more than it and the collision doesn't block the view
 f32 HeadCanSeePlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* played = PlayedInstance();
     Vector4 head;
     Vector4 direction;
-    if (played == nullptr || ExitPointPlace(node->owner, Parameter() & 0xFF, &head, &direction) == 0)
+    if (played == nullptr || ExitPointPlace(node->owner, ExitSlot(this), &head, &direction) == 0)
     {
         return 0.0f;
     }
 
     Vector4 way = PlacePosition(played);
-    const f32* sizes = reinterpret_cast<const f32*>(CharacterAgentOfInstance(played)->body);
+    const CharacterBody* body = CharacterAgentOfInstance(played)->body;
     Vector4 eyes = way;
-    eyes.y = way.y + sizes[1];
+    eyes.y = way.y + body->height;
     way.y = eyes.y - head.y;
     way.x = way.x - head.x;
     way.z = way.z - head.z;
-    if (!(values[1] < AxisAlongUnit(direction, &way)))
+    if (!(threshold < AxisAlongUnit(direction, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(node->owner->chunk, &head, &eyes, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(node->owner->chunk, &head, &eyes, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
 // The exit point of the parameter's slot within 40 units of the played character, pointing at its eyes more than the threshold,
 // and its line of sight reaching it: twice the threshold
-f32 AmIHarmfulCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadCanSeeNearPlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     constexpr f32 NearSquared = 1600.0f;
     InstanceContext* played = PlayedInstance();
     Vector4 head;
     Vector4 direction;
-    if (played == nullptr || ExitPointPlace(node->owner, Parameter() & 0xFF, &head, &direction) == 0)
+    if (played == nullptr || ExitPointPlace(node->owner, ExitSlot(this), &head, &direction) == 0)
     {
         return 0.0f;
     }
@@ -2517,21 +2495,20 @@ f32 AmIHarmfulCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     way.y = (way.y + eyeHeight) - head.y;
     way.z = way.z - head.z;
     Vector4 unit = way;
-    if (!(values[1] < AxisAlongUnit(direction, &unit)))
+    if (!(threshold < AxisAlongUnit(direction, &unit)))
     {
         return 0.0f;
     }
 
-    void* results[0x80];
-    InstanceRayHit query;
+    void* results[SightResults];
+    InstanceQuery query;
     MakeSightQuery(&query, results, node->owner);
-    constexpr u32 HarmMask = 0x15B010;
-    if (!SightReaches(played, node->owner->chunk, &head, &way, &query, HarmMask))
+    if (!SightReaches(played, node->owner->chunk, &head, &way, &query, SolidOrProjectileNodeKinds))
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
 // How far the played character's exit point of the parameter's slot points at the instance's eyes
@@ -2540,7 +2517,7 @@ f32 PlayerHeadLookingAtMeCondition::Check(GameNode* node, BehaviourLevel*, const
     InstanceContext* played = PlayedInstance();
     Vector4 head;
     Vector4 direction;
-    if (played == nullptr || ExitPointPlace(played, Parameter() & 0xFF, &head, &direction) == 0)
+    if (played == nullptr || ExitPointPlace(played, ExitSlot(this), &head, &direction) == 0)
     {
         return 0.0f;
     }
@@ -2555,7 +2532,7 @@ f32 PlayerHeadCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u3
     InstanceContext* played = PlayedInstance();
     Vector4 head;
     Vector4 direction;
-    if (played == nullptr || ExitPointPlace(played, Parameter() & 0xFF, &head, &direction) == 0)
+    if (played == nullptr || ExitPointPlace(played, ExitSlot(this), &head, &direction) == 0)
     {
         return 0.0f;
     }
@@ -2567,67 +2544,66 @@ f32 PlayerHeadCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u3
     way.y = eyes.y - head.y;
     way.x = way.x - head.x;
     way.z = way.z - head.z;
-    if (!(values[1] < AxisAlongUnit(direction, &way)))
+    if (!(threshold < AxisAlongUnit(direction, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(node->owner->chunk, &head, &eyes, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(node->owner->chunk, &head, &eyes, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
-// Nothing (of the walking surfaces) below the instance from 2 units above its feet down to the threshold below them: a bit more
-// than twice the threshold
+// Nothing (of the surfaces solid to objects) below the instance from 2 units above its feet down to the threshold below them: a
+// bit more than twice the threshold
 f32 CanFallCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     constexpr f32 Above = 2.0f;
     constexpr f32 Margin = Rounded(0.1);
     Vector4 start = PlacePosition(node->owner);
     start.y = start.y + Above;
-    Vector4 drop = {0.0f, -(values[1] + Above), 0.0f, 1.0f};
+    Vector4 drop = {0.0f, -(threshold + Above), 0.0f, 1.0f};
     Vector4 end;
     end.x = start.x + drop.x;
     end.y = start.y + drop.y;
     end.z = start.z + drop.z;
     end.w = 1.0f;
     Vector4 hit;
-    if (GetCollisionCheck(node->owner->chunk, &start, &end, WalkSurfaces, nullptr, &hit, nullptr) != 0)
+    if (GetCollisionCheck(node->owner->chunk, &start, &end, SurfaceFlags::SolidToObjects, nullptr, &hit, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return values[1] + values[1] + Margin;
+    return threshold + threshold + Margin;
 }
 
-// The way the threshold ahead of the instance's eyes free of the walking surfaces: twice the threshold
+// The way the threshold ahead of the instance's eyes free of the surfaces solid to objects: twice the threshold
 f32 CanMoveForwardsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    Vector4 offset = {0.0f, 0.0f, values[1], 1.0f};
-    return WayAlongAxesBlocked(node, offset) ? 0.0f : values[1] + values[1];
+    Vector4 offset = {0.0f, 0.0f, threshold, 1.0f};
+    return WayAlongAxesBlocked(node, offset) ? 0.0f : threshold + threshold;
 }
 
-// The way the threshold behind (left of, right of) the instance's eyes blocked: twice the threshold (retail's, the names say
-// otherwise)
-f32 CanMoveBackwardsCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The way the threshold behind (left of, right of) the instance's eyes blocked: twice the threshold
+f32 BlockedBehindCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    Vector4 offset = {0.0f, 0.0f, -values[1], 1.0f};
-    return WayAlongAxesBlocked(node, offset) ? values[1] + values[1] : 0.0f;
+    Vector4 offset = {0.0f, 0.0f, -threshold, 1.0f};
+    return WayAlongAxesBlocked(node, offset) ? threshold + threshold : 0.0f;
 }
 
-f32 CanStrafeLeftCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 BlockedLeftCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    Vector4 offset = {-values[1], 0.0f, 0.0f, 1.0f};
-    return WayAlongAxesBlocked(node, offset) ? values[1] + values[1] : 0.0f;
+    Vector4 offset = {-threshold, 0.0f, 0.0f, 1.0f};
+    return WayAlongAxesBlocked(node, offset) ? threshold + threshold : 0.0f;
 }
 
-f32 CanStrafeRightCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 BlockedRightCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    Vector4 offset = {values[1], 0.0f, 0.0f, 1.0f};
-    return WayAlongAxesBlocked(node, offset) ? values[1] + values[1] : 0.0f;
+    Vector4 offset = {threshold, 0.0f, 0.0f, 1.0f};
+    return WayAlongAxesBlocked(node, offset) ? threshold + threshold : 0.0f;
 }
 
 // The squared distance from the instance to the player in its chunk (else far)
@@ -2636,7 +2612,7 @@ f32 MeToPlayerSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32
     InstanceContext* player = PlayerInstance();
     if (player == nullptr || node->owner->chunk != PlayerInstance()->chunk)
     {
-        return Far;
+        return Infinite;
     }
 
     Vector4 position = PlacePosition(node->owner);
@@ -2653,14 +2629,14 @@ f32 PlayerToMyFocusSqrDistCondition::Check(GameNode* node, BehaviourLevel*, cons
     InstanceContext* player = PlayerInstance();
     if (player == nullptr)
     {
-        return Far;
+        return Infinite;
     }
 
     Vector4 position = PlacePosition(player);
     Vector4 focus;
     if (!FocusPositionOf(Node(node), &focus))
     {
-        return Far;
+        return Infinite;
     }
 
     f32 dx = focus.x - position.x;
@@ -2675,14 +2651,14 @@ f32 FocusPositionToPlayerDistanceSquaredCondition::Check(GameNode* node, Behavio
     InstanceContext* player = PlayerInstance();
     if (player == nullptr)
     {
-        return Far;
+        return Infinite;
     }
 
     Vector4 position = PlacePosition(player);
     ObjectNode* object = Node(node);
-    if ((object->flags & ObjectNodeBase::FlagFocusPosition) == 0)
+    if (!object->flags.focusPosition)
     {
-        return Far;
+        return Infinite;
     }
 
     f32 dx = object->focusPosition.x - position.x;
@@ -2691,10 +2667,9 @@ f32 FocusPositionToPlayerDistanceSquaredCondition::Check(GameNode* node, Behavio
     return dx * dx + dy * dy + dz * dz;
 }
 
-// The node's speed less the played character's vehicle's (its vehicle's own velocity, without one the agent's at 0x60)
-f32 PlayerVectorLengthDifferenceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The node's speed less the played character's (its vehicle's velocity when it rides one, else its own)
+f32 SpeedAbovePlayerCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
-    constexpr u32 VehicleVelocitySlot = 9;
     InstanceContext* played = PlayedInstance();
     if (played == nullptr)
     {
@@ -2702,26 +2677,26 @@ f32 PlayerVectorLengthDifferenceCondition::Check(GameNode* node, BehaviourLevel*
     }
 
     CharacterAgent* agent = CharacterAgentOfInstance(played);
-    Vector4 vehicle;
-    auto* control = reinterpret_cast<InstanceContext*>(agent->vehicle);
-    if (control != nullptr)
+    Vector4 playerVelocity;
+    Vehicle* vehicle = agent->vehicle;
+    if (vehicle != nullptr)
     {
-        CallVirtual<void>(control, *reinterpret_cast<const GccVTableEntry* const*>(reinterpret_cast<u8*>(control) + 0xD4),
-                          VehicleVelocitySlot, &vehicle);
+        vehicle->VelocityVirtual(&playerVelocity);
     }
     else
     {
-        vehicle = agent->velocity;
+        playerVelocity = agent->velocity;
     }
 
     Vector4 velocity;
     CopyVelocity(Node(node), &velocity);
     return __builtin_sqrtf(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z) -
-           __builtin_sqrtf(vehicle.x * vehicle.x + vehicle.y * vehicle.y + vehicle.z * vehicle.z);
+           __builtin_sqrtf(playerVelocity.x * playerVelocity.x + playerVelocity.y * playerVelocity.y +
+                           playerVelocity.z * playerVelocity.z);
 }
 
 // 1 when the played character is nearer to another key than to the current one
-f32 PlayerNearCurrentKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 PlayerNearerAnotherKeyCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* played = PlayedInstance();
     if (played == nullptr)
@@ -2762,7 +2737,7 @@ f32 DistanceSquaredToStep(GameNode* node, AiPosition* step)
 {
     if (step == nullptr)
     {
-        return Far;
+        return Infinite;
     }
 
     Vector4 position = PlacePosition(node->owner);
@@ -2773,25 +2748,25 @@ f32 DistanceSquaredToStep(GameNode* node, AiPosition* step)
 }
 }
 
-// The squared distance to the route's step the node is at, and to the step before
-f32 SubPathKeyDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// The squared distance to the route's step the node is at (its edge's start), and to the next step (the edge's end)
+f32 MeToEdgeStartNodeSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
-        return Far;
+        return Infinite;
     }
 
     return DistanceSquaredToStep(node, StepPosition(Node(node)->waypoints));
 }
 
-f32 SubPathPreviousKeyDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 MeToEdgeEndNodeSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     if (!TakesPackets(node))
     {
-        return Far;
+        return Infinite;
     }
 
-    return DistanceSquaredToStep(node, PreviousStepPosition(Node(node)->waypoints));
+    return DistanceSquaredToStep(node, NextStepPosition(Node(node)->waypoints));
 }
 
 // How far along the current path the first agent reference is from the node (where it's nearest the path, within the path, the
@@ -2821,20 +2796,22 @@ f32 SplineDistanceToAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, c
     Vector4 position = PlacePosition(object->agentRef1);
     Vector4 nearest;
     f32 parameter = ClampFloat(NearestPointOnPath(path, &position, &nearest), 0.0f, 1.0f);
-    return __builtin_fabsf((parameter - along) * path->lengths[path->count - 4]);
+    // The path's length: the arc length to the end of its last segment (a path of n points has n - 3)
+    s32 segments = path->count - 3;
+    return __builtin_fabsf((parameter - along) * path->lengths[segments - 1]);
 }
 
 // How far the instance is outside the radius of the AI position of its chunk nearest it, squared (none: far)
 f32 NearestPointEdgeDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* instance = node->owner;
-    ChunkEntry* chunk = ChunkOfInstance(G_ChunkManager_0030A0C8, instance);
+    ChunkEntry* chunk = ChunkOfInstance(g_ConditionsChunkManager, instance);
     Vector4 position = PlacePosition(instance);
     u16 index;
     AiPosition* nearest = NearestAiPosition(chunk, &position, &index);
     if (nearest == nullptr)
     {
-        return Far;
+        return Infinite;
     }
 
     f32 dx = nearest->position.x - position.x;
@@ -2859,7 +2836,7 @@ bool FocusOf(ObjectNode* object, Vector4* position, InstanceContext** instance)
         return false;
     }
 
-    if ((object->flags & ObjectNodeBase::FlagFocusInstance) != 0)
+    if (object->flags.focusInstance)
     {
         *instance = object->focusInstance;
     }
@@ -2878,15 +2855,15 @@ f32 SeenFrom(ScriptCondition* condition, GameNode* node, const Vector4& from, In
     way.x = middle.x - start.x;
     way.y = middle.y - start.y;
     way.z = middle.z - start.z;
-    void* results[0x80];
-    InstanceRayHit query;
+    void* results[SightResults];
+    InstanceQuery query;
     MakeSightQuery(&query, results, instance);
     if (!SightReaches(seer, instance->chunk, &start, &way, &query, g_SolidKinds))
     {
         return 0.0f;
     }
 
-    return condition->values[1] + condition->values[1];
+    return condition->threshold + condition->threshold;
 }
 
 // Twice the threshold when an axis points from a point at another (both at the eyes) more than it and the collision doesn't
@@ -2899,24 +2876,24 @@ f32 SeesAlongAxis(ScriptCondition* condition, ChunkData* chunk, const Vector4& a
     way.x = to.x - from.x;
     way.z = to.z - from.z;
     way.y = to.y - from.y;
-    if (!(condition->values[1] < AxisAlongUnit(axis, &way)))
+    if (!(condition->threshold < AxisAlongUnit(axis, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(chunk, &from, &to, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(chunk, &from, &to, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return condition->values[1] + condition->values[1];
+    return condition->threshold + condition->threshold;
 }
 
 // 1 when nothing (of the sight's surfaces) is between two points
 f32 ClearBetween(ChunkData* chunk, Vector4 from, Vector4 to)
 {
     Vector4 hit;
-    return GetCollisionCheck(chunk, &from, &to, SightSurfaces, nullptr, &hit, nullptr) != 0 ? 0.0f : 1.0f;
+    return GetCollisionCheck(chunk, &from, &to, SurfaceFlags::BlocksLineOfSight, nullptr, &hit, nullptr) != 0 ? 0.0f : 1.0f;
 }
 
 }
@@ -2932,12 +2909,12 @@ f32 MeFacingFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     return AxisAlongWay(forward, position, focus, FocusEyeHeight);
 }
 
 // How far the instance's forward axis points at the first agent reference's eyes
-f32 AgentRef1SideOffsetCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 MeFacingAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* reference = AwakeAgentRef1(Node(node));
     if (reference == nullptr)
@@ -2947,7 +2924,7 @@ f32 AgentRef1SideOffsetCondition::Check(GameNode* node, BehaviourLevel*, const u
 
     Vector4 target = PlacePosition(reference);
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     return AxisAlongWay(forward, position, target, FocusEyeHeight);
 }
 
@@ -2962,7 +2939,7 @@ f32 FocusForwardDotCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     way.x = way.x - position.x;
     way.y = way.y - position.y;
     way.z = way.z - position.z;
@@ -2983,7 +2960,7 @@ f32 FocusFacingMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(instance);
-    Vector4 forward = PlaceAxis(instance, 2);
+    Vector4 forward = PlaceAxis(instance, ZAxis);
     return AxisAlongWay(forward, position, PlacePosition(node->owner), FocusEyeHeight);
 }
 
@@ -3004,7 +2981,7 @@ f32 ClearLineOfSightToFocusCondition::Check(GameNode* node, BehaviourLevel*, con
 }
 
 // Twice the threshold when the line of sight from the focus to the middle of the instance's box reaches it
-f32 FocusVisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 VisibleFromFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     Vector4 focus;
     InstanceContext* instance;
@@ -3017,7 +2994,7 @@ f32 FocusVisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 }
 
 // The same from the first agent reference
-f32 AgentRef1VisibleCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 VisibleFromAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* reference = AwakeAgentRef1(Node(node));
     if (reference == nullptr)
@@ -3039,7 +3016,7 @@ f32 CanSeeFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     return SeesAlongAxis(this, node->owner->chunk, forward, position, focus);
 }
 
@@ -3054,7 +3031,7 @@ f32 FocusAgentCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u3
     }
 
     Vector4 from = PlacePosition(instance);
-    Vector4 forward = PlaceAxis(instance, 2);
+    Vector4 forward = PlaceAxis(instance, ZAxis);
     return SeesAlongAxis(this, node->owner->chunk, forward, from, PlacePosition(node->owner));
 }
 
@@ -3083,7 +3060,7 @@ f32 MeFacingRouteNodeCondition::Check(GameNode* node, BehaviourLevel*, const u32
     Vector4 target = step->position;
     target.w = 1.0f;
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     return AxisAlongWay(forward, position, target, FocusEyeHeight);
 }
 
@@ -3115,7 +3092,7 @@ f32 MeFacingCameraCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
     Vector4 way = PlacePosition(camera);
     Vector4 position = PlacePosition(node->owner);
-    Vector4 forward = PlaceAxis(node->owner, 2);
+    Vector4 forward = PlaceAxis(node->owner, ZAxis);
     way.x = way.x - position.x;
     way.y = way.y - position.y;
     way.z = way.z - position.z;
@@ -3132,7 +3109,7 @@ f32 CameraFacingMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 position = PlacePosition(camera);
-    Vector4 forward = PlaceAxis(camera, 2);
+    Vector4 forward = PlaceAxis(camera, ZAxis);
     return AxisAlongWay(forward, position, PlacePosition(node->owner), FocusEyeHeight);
 }
 
@@ -3149,8 +3126,8 @@ bool MiddleInView(InstanceContext* instance, Vector4* middle)
     middle->y = (box.max.y - box.min.y) * 0.5f + box.min.y;
     middle->z = (box.max.z - box.min.z) * 0.5f + box.min.z;
     test.TestPoint(middle);
-    bool inView = test.visibility == 1;
-    test.Destroy(2);
+    bool inView = test.visibility == ChunkView::InView;
+    test.Destroy(DestroyOnly);
     return inView;
 }
 }
@@ -3202,12 +3179,6 @@ f32 CameraCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 
 namespace
 {
-// The parameter's slot of an exit point
-u32 ExitSlot(const ScriptCondition* condition)
-{
-    return condition->Parameter() & 0xFF;
-}
-
 // How far a direction points along the way from a point to another (the way made a unit long first)
 f32 DirectionAlongWay(const Vector4& direction, const Vector4& from, Vector4 to)
 {
@@ -3225,17 +3196,17 @@ f32 HeadSees(ScriptCondition* condition, ChunkData* chunk, Vector4 head, const V
     way.x = target.x - head.x;
     way.y = target.y - head.y;
     way.z = target.z - head.z;
-    if (!(condition->values[1] < AxisAlongUnit(direction, &way)))
+    if (!(condition->threshold < AxisAlongUnit(direction, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(chunk, &head, &target, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(chunk, &head, &target, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return condition->values[1] + condition->values[1];
+    return condition->threshold + condition->threshold;
 }
 }
 
@@ -3283,7 +3254,7 @@ f32 HeadCanSeeFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 }
 
 // The same with the first agent reference
-f32 AgentRef1InViewConeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 HeadCanSeeAgentRef1Condition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* reference = AwakeAgentRef1(Node(node));
     if (reference == nullptr)
@@ -3326,7 +3297,7 @@ f32 HeadLookingAtRouteNodeCondition::Check(GameNode* node, BehaviourLevel*, cons
 }
 
 // The squared distance from the joint of the parameter's index (in the world) to the focus
-f32 FocusFromExitPointCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 ExitPointToFocusSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     Vector4 focus;
     InstanceContext* instance;
@@ -3381,20 +3352,20 @@ f32 FocusHeadCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u32
     return HeadSees(this, node->owner->chunk, head, direction, target);
 }
 
-// How far the instance's x axis points at the focus (unknown14 0) or the first agent reference (1): only on its right side
-// (unknown18 1), only on its left (0), its size
-f32 AngleToFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+// How far the instance's x axis points at the target (the focus or the first agent reference): its size while the target is on
+// the condition's side
+f32 TargetToSideCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* owner = node->owner;
     Vector4 target;
-    if (unknown14 == 0)
+    if (targetKind == TargetFocus)
     {
         if (!FocusPositionOf(Node(node), &target))
         {
             return 0.0f;
         }
     }
-    else if (unknown14 == 1)
+    else if (targetKind == TargetAgentRef1)
     {
         InstanceContext* reference = AwakeAgentRef1(Node(node));
         if (reference == nullptr)
@@ -3416,14 +3387,14 @@ f32 AngleToFocusCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     way.y = target.y - position.y;
     way.z = target.z - position.z;
     way.w = 1.0f;
-    Vector4 side = PlaceAxis(owner, 0);
+    Vector4 side = PlaceAxis(owner, XAxis);
     f32 along = AxisAlongUnit(side, &way);
-    if (unknown18 == 1 && along < 0.0f)
+    if (targetSide == SideRight && along < 0.0f)
     {
         return __builtin_fabsf(0.0f);
     }
 
-    if (unknown18 == 0 && 0.0f < along)
+    if (targetSide == SideLeft && 0.0f < along)
     {
         return __builtin_fabsf(0.0f);
     }
@@ -3462,15 +3433,15 @@ f32 IsRestingCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 namespace
 {
 // The query of a ground probe (64 instances at most, none left out)
-void MakeProbeQuery(InstanceRayHit* query, void** results)
+void MakeProbeQuery(InstanceQuery* query, void** results)
 {
     query->results = results;
     query->count = 0;
-    query->most = 0x40;
-    query->distance = Far;
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->most = ProbeResults;
+    query->distance = Infinite;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = 0;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->instance = nullptr;
     query->skipped[1] = nullptr;
@@ -3486,7 +3457,7 @@ constexpr f32 NoGround = 10000.0f;
 f32 GroundBelowFocusPositionCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     ObjectNode* object = Node(node);
-    if ((object->flags & ObjectNodeBase::FlagFocusPosition) == 0)
+    if (!object->flags.focusPosition)
     {
         return NoGround;
     }
@@ -3495,10 +3466,10 @@ f32 GroundBelowFocusPositionCondition::Check(GameNode* node, BehaviourLevel*, co
     Vector4 position = PlacePosition(node->owner);
     start.y = start.y + ProbeAbove;
     Vector4 way = {0.0f, ProbeDown, 0.0f, 1.0f};
-    void* results[0x40];
-    InstanceRayHit query;
+    void* results[ProbeResults];
+    InstanceQuery query;
     MakeProbeQuery(&query, results);
-    if (LineOfSight(node->owner->chunk, &start, &way, WalkSurfaces, &query, g_CoverKinds) == 0)
+    if (LineOfSight(node->owner->chunk, &start, &way, SurfaceFlags::SolidToObjects, &query, g_CoverKinds) == 0)
     {
         return NoGround;
     }
@@ -3508,22 +3479,23 @@ f32 GroundBelowFocusPositionCondition::Check(GameNode* node, BehaviourLevel*, co
 
 // Probing 16 units down from 8 above the point 5 units ahead (behind with the parameter 1): how far below the start it stopped
 // less 8 (none: 10000)
-f32 ObstacleAheadCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 GroundBelowPointAheadCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     constexpr f32 Ahead = 5.0f;
+    constexpr u32 Behind = 1;
     InstanceContext* owner = node->owner;
     Vector4 position = PlacePosition(owner);
-    Vector4 forward = PlaceAxis(owner, 2);
-    f32 distance = Parameter() == 1 ? -Ahead : Ahead;
+    Vector4 forward = PlaceAxis(owner, ZAxis);
+    f32 distance = Parameter() == Behind ? -Ahead : Ahead;
     Vector4 start = position;
     start.x = position.x + forward.x * distance;
     start.z = position.z + forward.z * distance;
     start.y = position.y + forward.y * distance + ProbeAbove;
     Vector4 way = {0.0f, ProbeDown, 0.0f, 1.0f};
-    void* results[0x40];
-    InstanceRayHit query;
+    void* results[ProbeResults];
+    InstanceQuery query;
     MakeProbeQuery(&query, results);
-    if (LineOfSight(owner->chunk, &start, &way, WalkSurfaces, &query, g_CoverKinds) == 0)
+    if (LineOfSight(owner->chunk, &start, &way, SurfaceFlags::SolidToObjects, &query, g_CoverKinds) == 0)
     {
         return NoGround;
     }
@@ -3532,12 +3504,12 @@ f32 ObstacleAheadCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 }
 
 // The squared distance to the first agent reference (none: far)
-f32 DistanceToTargetCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 MeToAgentRef1SqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* reference = AwakeAgentRef1(Node(node));
     if (reference == nullptr)
     {
-        return Far;
+        return Infinite;
     }
 
     Vector4 position = PlacePosition(node->owner);
@@ -3557,8 +3529,8 @@ f32 FocusObjectProp0EqualsCondition::Check(GameNode* node, BehaviourLevel*, cons
         return 0.0f;
     }
 
-    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&focus->nodes, 1));
-    if (objectNode == nullptr || objectNode->agent->objectId == 0xFFFF)
+    auto* objectNode = static_cast<ObjectNode*>(GetGameNode(&focus->nodes, NodeObject));
+    if (objectNode == nullptr || objectNode->agent->objectId == NoObjectId)
     {
         return 0.0f;
     }
@@ -3568,16 +3540,16 @@ f32 FocusObjectProp0EqualsCondition::Check(GameNode* node, BehaviourLevel*, cons
 
 namespace
 {
-// The key of the parameter: the current one (no parameter or 0xFF), else the parameter's (counted from 1) while there's such a
-// key, or the next one (going round to the first after the last)
+// The key of the parameter: without one (0 or 0xFF) the current one, or the next one when asked (going round to the first after
+// the last); else the parameter's (counted from 1) while there's such a key
 LayoutPosition* KeyOfParameter(const Waypoints* waypoints, u32 parameter, bool next)
 {
-    if (parameter == 0 || parameter == 0xFF)
+    if (parameter == 0 || parameter == Waypoints::NoKey)
     {
         u32 key = waypoints->key;
         if (next)
         {
-            key = (key + 1) & 0xFF;
+            key = static_cast<u8>(key + 1);
             if (waypoints->lastKey < key)
             {
                 key = waypoints->firstKey;
@@ -3688,21 +3660,21 @@ f32 BoxAboveIsOverlappedCondition::Check(GameNode* node, BehaviourLevel*, const 
     matrix.m[3][0] = matrix.m[3][0] + raise.x;
     matrix.m[3][2] = matrix.m[3][2] + raise.z;
     matrix.m[3][1] = matrix.m[3][1] + raise.y;
-    void* results[0x10];
-    InstanceRayHit query;
+    void* results[OverlapResults];
+    InstanceQuery query;
     query.results = results;
-    query.most = 0x10;
+    query.most = OverlapResults;
     query.count = 0;
-    query.distance = Far;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.distance = Infinite;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.wantedFlags = 0;
     query.skipped[0] = nullptr;
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.instance = nullptr;
     query.skipped[1] = nullptr;
     SkipInQuery(&query, owner);
     f32 result = ChunkInstancesInHull(owner->chunk, &hull, &matrix, g_SolidKinds, &query, 0) != 0 ? 1.0f : 0.0f;
-    HullDestroy(&hull, 2);
+    HullDestroy(&hull, DestroyOnly);
     return result;
 }
 
@@ -3794,32 +3766,32 @@ f32 FocusDistanceFromStartSquaredCondition::Check(GameNode* node, BehaviourLevel
     return FocusDistanceSquaredFrom(Node(node), Node(node)->informationPointer->position, true);
 }
 
-f32 FocusOffXAxisDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FocusAlongXAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return FocusAlongAxis(node, 0);
 }
 
-f32 FocusHorizontalDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FocusAlongYAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return FocusAlongAxis(node, 1);
 }
 
-f32 FocusOffForwardAxisDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 FocusAlongZAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return FocusAlongAxis(node, 2);
 }
 
-f32 AgentRef1OffXAxisDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 AgentRef1AlongXAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return AgentRef1AlongAxis(node, 0);
 }
 
-f32 AgentRef1HorizontalDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 AgentRef1AlongYAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return AgentRef1AlongAxis(node, 1);
 }
 
-f32 AgentRef1OffAxisDistanceSquaredCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
+f32 AgentRef1AlongZAxisSqrDistCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     return AgentRef1AlongAxis(node, 2);
 }
@@ -3851,7 +3823,7 @@ f32 PlayerCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     }
 
     Vector4 from = PlacePosition(played);
-    Vector4 forward = PlaceAxis(played, 2);
+    Vector4 forward = PlaceAxis(played, ZAxis);
     Vector4 to = PlacePosition(node->owner);
     from.y = from.y + EyeHeight;
     to.y = to.y + EyeHeight;
@@ -3859,35 +3831,35 @@ f32 PlayerCanSeeMeCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
     way.x = to.x - from.x;
     way.z = to.z - from.z;
     way.y = to.y - from.y;
-    if (!(values[1] < AxisAlongUnit(forward, &way)))
+    if (!(threshold < AxisAlongUnit(forward, &way)))
     {
         return 0.0f;
     }
 
-    if (GetCollisionCheck(node->owner->chunk, &from, &to, SightSurfaces, nullptr, &way, nullptr) != 0)
+    if (GetCollisionCheck(node->owner->chunk, &from, &to, SurfaceFlags::BlocksLineOfSight, nullptr, &way, nullptr) != 0)
     {
         return 0.0f;
     }
 
-    return values[1] + values[1];
+    return threshold + threshold;
 }
 
 // How far ahead of the instance the camera is along its forward axis (none, or the instance in a drawn cell: none)
 f32 CameraForwardDistanceCondition::Check(GameNode* node, BehaviourLevel*, const u32*)
 {
     InstanceContext* camera = CameraInstance();
-    if (camera == nullptr || (node->owner->flags & ReferencedObject::FlagInDrawnCell) != 0)
+    if (camera == nullptr || node->owner->flags.inDrawnCell)
     {
         return 0.0f;
     }
 
     Vector4 position = PlacePosition(camera);
-    Vector4 forward = PlaceAxis(camera, 2);
+    Vector4 forward = PlaceAxis(camera, ZAxis);
     Vector4 own = PlacePosition(node->owner);
     return (position.x - own.x) * forward.x + (position.y - own.y) * forward.y + (position.z - own.z) * forward.z;
 }
 
 void ConstructConditionChecksModule()
 {
-    InitConditionChecksModule(1, 0xFFFF);
+    InitConditionChecksModule(1, DefaultInitPriority);
 }

@@ -10,37 +10,35 @@
 // newlib as it was (malloc.cpp has its heap, libm.cpp its expf), memmove, and what PS2SDK's libraries call that neither has
 namespace
 {
-// atexit's block of functions: the first is in the reentrancy block, more get allocated
-struct AtExitBlock
-{
-    AtExitBlock* next;
-    s32 count;
-    void (*functions[32])();
-};
-CHECK_SIZE(AtExitBlock, 0x88);
+using RetailLibc::AtExitBlock;
+using RetailLibc::AtExitBlockSize;
+using RetailLibc::CasingLowerCase;
+using RetailLibc::CasingUpperCase;
 
-// Old newlib's struct _reent, the part the game's code uses
-struct Reent
-{
-    s32 errorNumber;
-    u8 unknown04[0x54];
-    u32 randomNext;
-    u8 unknown5C[0xEC];
-    AtExitBlock* atExit;
-    AtExitBlock atExit0;
-};
-CHECK_OFFSET(Reent, randomNext, 0x58);
-CHECK_OFFSET(Reent, atExit, 0x148);
-CHECK_OFFSET(Reent, atExit0, 0x14C);
+// How far a lower case letter is from its capital
+constexpr s32 CaseDistance = 'a' - 'A';
 
-constexpr u8 CtypeUpper = 0x1;
-constexpr u8 CtypeLower = 0x2;
+// rand's linear congruential generator, and its results' bits (RAND_MAX)
+constexpr u32 RandomMultiplier = 1103515245;
+constexpr u32 RandomIncrement = 12345;
+constexpr u32 RandomMax = 0x7FFFFFFF;
+
+// qsort sorts fewer elements than this by insertion, takes its pivot from three elements when there are more, and from three
+// medians of three past the other
+constexpr u32 InsertionSortBelow = 7;
+constexpr u32 MedianOfThreeAbove = 7;
+constexpr u32 NintherAbove = 40;
+
+// The TTY's line: a line longer than it goes out in parts, each with its character and the terminator
+constexpr s32 TtyLineSize = 0x80;
+constexpr s32 TtyLineFull = TtyLineSize - 2;
+
+// What printf prints of a call, its terminator included
+constexpr u32 PrintfSize = 0x100;
 }
 
 extern "C"
 {
-    // _impure_ptr: the C library's reentrancy block
-    extern Reent* g_Impure RETAIL(D_002EA3CC);
     // _ctype_ + 1: the casing of every character, indexed by the character (EOF at -1)
     extern const u8 g_CasingTable[] RETAIL(CasingTable);
 
@@ -84,14 +82,14 @@ void SwapRange(u8* first, u8* second, s32 size, s32 kind)
 {
     if (kind <= SwapLongs)
     {
-        u64* a = reinterpret_cast<u64*>(first);
-        u64* b = reinterpret_cast<u64*>(second);
+        u64* firstLong = reinterpret_cast<u64*>(first);
+        u64* secondLong = reinterpret_cast<u64*>(second);
         s64 count = static_cast<u32>(size) / sizeof(u64);
         do
         {
-            u64 kept = *a;
-            *a++ = *b;
-            *b++ = kept;
+            u64 kept = *firstLong;
+            *firstLong++ = *secondLong;
+            *secondLong++ = kept;
         } while (--count > 0);
     }
     else
@@ -138,12 +136,12 @@ void InsertionSort(u8* items, u32 count, u32 size, Compare compare, s32 kind)
 }
 
 // The TTY's line, sent to the debugger's console (deci2's kputs) at a line's end or when it's full
-char g_TtyLine[0x80];
+char g_TtyLine[TtyLineSize];
 s32 g_TtyLength;
 
 void TtyPutCharacter(char character)
 {
-    if (g_TtyLength >= 0x7E)
+    if (g_TtyLength >= TtyLineFull)
     {
         g_TtyLine[g_TtyLength] = '\0';
         g_TtyLength = 0;
@@ -181,12 +179,12 @@ s32* ErrorNumber()
 
 s32 RetailLibc::ToUpper(s32 character)
 {
-    return (Casing(character) & CtypeLower) != 0 ? character - 0x20 : character;
+    return (Casing(character) & CasingLowerCase) != 0 ? character - CaseDistance : character;
 }
 
 s32 RetailLibc::ToLower(s32 character)
 {
-    return (Casing(character) & CtypeUpper) != 0 ? character + 0x20 : character;
+    return (Casing(character) & CasingUpperCase) != 0 ? character + CaseDistance : character;
 }
 
 // strncasecmp: the loop lowers the characters as signed chars, the result as unsigned ones
@@ -214,9 +212,9 @@ s32 CompareStrings(const char* first, const char* second, u32 count)
 // rand: old newlib's 32 bit generator, its state in the reentrancy block
 s32 GetRand()
 {
-    u32 next = g_Impure->randomNext * 1103515245 + 12345;
+    u32 next = g_Impure->randomNext * RandomMultiplier + RandomIncrement;
     g_Impure->randomNext = next;
-    return static_cast<s32>(next & 0x7FFFFFFF);
+    return static_cast<s32>(next & RandomMax);
 }
 
 void Abort()
@@ -238,7 +236,7 @@ int RetailLibc::AtExit(void (*function)())
         g_Impure->atExit = block;
     }
 
-    if (block->count >= 32)
+    if (block->count >= AtExitBlockSize)
     {
         block = static_cast<AtExitBlock*>(Malloc(sizeof(AtExitBlock)));
         if (block == nullptr)
@@ -253,7 +251,7 @@ int RetailLibc::AtExit(void (*function)())
 
     // The function goes in before the count (a count of -1 puts it over the count)
     s32 index = block->count;
-    *reinterpret_cast<void (**)()>(reinterpret_cast<u32>(block->functions) + 4 * index) = function;
+    *reinterpret_cast<void (**)()>(reinterpret_cast<u32>(block->functions) + sizeof(block->functions[0]) * index) = function;
     block->count = index + 1;
     return 0;
 }
@@ -262,25 +260,25 @@ int RetailLibc::AtExit(void (*function)())
 // iterating on the right one
 void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
 {
-    u8* a = static_cast<u8*>(items);
+    u8* base = static_cast<u8*>(items);
     for (;;)
     {
-        s32 kind = (reinterpret_cast<u32>(a) % sizeof(u64) != 0 || size % sizeof(u64) != 0) ? SwapBytes
-                   : size == sizeof(u64)                                                 ? SwapLong
-                                                                                         : SwapLongs;
+        s32 kind = (reinterpret_cast<u32>(base) % sizeof(u64) != 0 || size % sizeof(u64) != 0) ? SwapBytes
+                   : size == sizeof(u64)                                                       ? SwapLong
+                                                                                               : SwapLongs;
         bool swapped = false;
-        if (count < 7)
+        if (count < InsertionSortBelow)
         {
-            InsertionSort(a, count, size, compare, kind);
+            InsertionSort(base, count, size, compare, kind);
             return;
         }
 
-        u8* middle = a + (count / 2) * size;
-        if (count > 7)
+        u8* middle = base + (count / 2) * size;
+        if (count > MedianOfThreeAbove)
         {
-            u8* low = a;
-            u8* high = a + (count - 1) * size;
-            if (count > 40)
+            u8* low = base;
+            u8* high = base + (count - 1) * size;
+            if (count > NintherAbove)
             {
                 s32 step = static_cast<s32>((count / 8) * size);
                 low = MedianOfThree(low, low + step, low + 2 * step, compare);
@@ -291,15 +289,15 @@ void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
             middle = MedianOfThree(low, middle, high, compare);
         }
 
-        Swap(a, middle, size, kind);
-        u8* lessEnd = a + size;
+        Swap(base, middle, size, kind);
+        u8* lessEnd = base + size;
         u8* left = lessEnd;
-        u8* right = a + (count - 1) * size;
+        u8* right = base + (count - 1) * size;
         u8* greaterStart = right;
         for (;;)
         {
             s32 order;
-            while (left <= right && (order = compare(left, a)) <= 0)
+            while (left <= right && (order = compare(left, base)) <= 0)
             {
                 if (order == 0)
                 {
@@ -311,7 +309,7 @@ void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
                 left += size;
             }
 
-            while (left <= right && (order = compare(right, a)) >= 0)
+            while (left <= right && (order = compare(right, base)) >= 0)
             {
                 if (order == 0)
                 {
@@ -336,16 +334,16 @@ void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
 
         if (!swapped)
         {
-            InsertionSort(a, count, size, compare, kind);
+            InsertionSort(base, count, size, compare, kind);
             return;
         }
 
         // The equal elements at both ends go to the middle: min() of an int and of a size_t's difference compares unsigned
-        u8* end = a + count * size;
-        s32 moved = lessEnd - a < left - lessEnd ? lessEnd - a : left - lessEnd;
+        u8* end = base + count * size;
+        s32 moved = lessEnd - base < left - lessEnd ? lessEnd - base : left - lessEnd;
         if (moved > 0)
         {
-            SwapRange(a, left - moved, moved, kind);
+            SwapRange(base, left - moved, moved, kind);
         }
 
         u32 equalHigh = greaterStart - right;
@@ -359,7 +357,7 @@ void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
         s32 part = left - lessEnd;
         if (static_cast<u32>(part) > size)
         {
-            QuickSort(a, static_cast<u32>(part) / size, size, compare);
+            QuickSort(base, static_cast<u32>(part) / size, size, compare);
         }
 
         part = greaterStart - right;
@@ -368,7 +366,7 @@ void RetailLibc::QuickSort(void* items, u32 count, u32 size, Compare compare)
             return;
         }
 
-        a = end - part;
+        base = end - part;
         count = static_cast<u32>(part) / size;
     }
 }
@@ -402,7 +400,7 @@ extern "C"
     // 255 characters is cut (PS2SDK's messages and libmpeg's are a line)
     int printf(const char* format, ...)
     {
-        char text[0x100];
+        char text[PrintfSize];
         va_list arguments;
         va_start(arguments, format);
         int length = vsnprintf(text, sizeof(text), format, arguments);

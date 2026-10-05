@@ -16,18 +16,26 @@ extern "C"
     extern const char g_MpegErrorFormat[] RETAIL(D_003075F0);
 }
 
+namespace
+{
+// sceMpegCreate's check of the state's alignment, which Sony's buffers in it need
+constexpr u32 StateAlignment = 0x40;
+}
+
 namespace Libmpeg
 {
 void SetBuffers(MpegSystem* sys)
 {
-    *IpuControl = (*IpuControl & ~IpuControlMpeg1) | IpuControlMpeg1;
+    IpuControlRegister control = {*IpuControl};
+    control.mpeg1 = 1;
+    *IpuControl = control.value;
     if (sys->bufferType == MpegBuffersScratchpad)
     {
-        sys->prediction = reinterpret_cast<u8*>(Scratchpad + 0x3600);
+        sys->prediction = reinterpret_cast<u8*>(Scratchpad + 2 * ScratchpadBufferBytes);
         sys->buffers[0].references = reinterpret_cast<u8*>(Scratchpad);
-        sys->buffers[0].macroblocks = reinterpret_cast<u8*>(Scratchpad + 0x1800);
-        sys->buffers[1].references = reinterpret_cast<u8*>(Scratchpad + 0x1B00);
-        sys->buffers[1].macroblocks = reinterpret_cast<u8*>(Scratchpad + 0x3300);
+        sys->buffers[0].macroblocks = reinterpret_cast<u8*>(Scratchpad + ScratchpadReferencesBytes);
+        sys->buffers[1].references = reinterpret_cast<u8*>(Scratchpad + ScratchpadBufferBytes);
+        sys->buffers[1].macroblocks = reinterpret_cast<u8*>(Scratchpad + ScratchpadBufferBytes + ScratchpadReferencesBytes);
         sys->bufferIndex = 0;
         return;
     }
@@ -67,10 +75,10 @@ void StopDecoding(MpegSystem* sys)
     *R_EE_D4_QWC = 0;
     *R_EE_D9_QWC = 0;
     *IpuControl = IpuControlReset;
-    sceIpuSync(0, 0);
+    sceIpuSync(IpuSyncWait, 0);
 }
 
-s32 DispatchCallback(Mpeg* mpeg, MpegCallbackData* data)
+s32 DispatchCallback(Mpeg* mpeg, MpegCallbackData* callbackData)
 {
     if (mpeg == nullptr)
     {
@@ -83,18 +91,18 @@ s32 DispatchCallback(Mpeg* mpeg, MpegCallbackData* data)
         return 0;
     }
 
-    MpegCallbackEntry* entry = &sys->callbacks[data->type];
+    MpegCallbackEntry* entry = &sys->callbacks[callbackData->type];
     if (entry->function == nullptr)
     {
         return 0;
     }
 
-    return CallWithGlobalPointer(entry->globalPointer, entry->function, mpeg, data, entry->user);
+    return CallWithGlobalPointer(entry->globalPointer, entry->function, mpeg, callbackData, entry->user);
 }
 
 s32 DispatchNoData(Mpeg* mpeg)
 {
-    MpegCallbackData data = {MpegCallbackNoData};
+    MpegCallbackData noData = {MpegCallbackNoData};
     if (mpeg == nullptr)
     {
         return 1;
@@ -109,7 +117,7 @@ s32 DispatchNoData(Mpeg* mpeg)
     MpegCallbackEntry* entry = &sys->callbacks[MpegCallbackNoData];
     if (entry->function != nullptr)
     {
-        CallWithGlobalPointer(entry->globalPointer, entry->function, mpeg, &data, entry->user);
+        CallWithGlobalPointer(entry->globalPointer, entry->function, mpeg, &noData, entry->user);
     }
 
     return 1;
@@ -184,11 +192,11 @@ void StopIpuDma(MpegSystem*)
 void BlockDecodeError(MpegSystem* sys)
 {
     Error(sys, g_MpegBlockDecodeError);
-    MpegCallbackData data = {MpegCallbackStopDma};
-    DispatchCallback(sys->mpeg, &data);
+    MpegCallbackData dma = {MpegCallbackStopDma};
+    DispatchCallback(sys->mpeg, &dma);
     *IpuControl = IpuControlReset;
-    data.type = MpegCallbackRestartDma;
-    DispatchCallback(sys->mpeg, &data);
+    dma.type = MpegCallbackRestartDma;
+    DispatchCallback(sys->mpeg, &dma);
     s32 interrupts = DIntr();
     *R_EE_D_ENABLEW = *R_EE_D_ENABLER | DmaSuspend;
     *R_EE_D3_CHCR = 0;
@@ -207,8 +215,8 @@ s32 Error(MpegSystem* sys, const char* message)
     Mpeg* mpeg = sys->mpeg;
     if (mpeg != nullptr && sys != nullptr && sys->callbacks[MpegCallbackError].function != nullptr)
     {
-        MpegErrorData data = {MpegCallbackError, message};
-        return DispatchCallback(mpeg, reinterpret_cast<MpegCallbackData*>(&data));
+        MpegErrorData error = {MpegCallbackError, message};
+        return DispatchCallback(mpeg, reinterpret_cast<MpegCallbackData*>(&error));
     }
 
     return PrintError(message);
@@ -259,8 +267,8 @@ s32 sceMpegCreate(Mpeg* mpeg, u8* work, s32 size)
     sys->outputWidth = 0;
     sys->outputHeight = 0;
     sys->outputMacroblocks = 0;
-    sys->unknownFC = 0;
-    sys->pendingPtsState = 0;
+    sys->forcedBrokenLink = 0;
+    sys->pendingPtsState = MpegNoPendingPts;
     sys->callbacks[MpegCallbackError].function = nullptr;
     sys->callbacks[MpegCallbackNoData].function = nullptr;
     sys->callbacks[MpegCallbackBackground].function = nullptr;
@@ -281,30 +289,30 @@ s32 sceMpegCreate(Mpeg* mpeg, u8* work, s32 size)
     sys->fields = 0;
     sys->ptsRounding = 0;
     sys->firstOutputPicture = 0;
-    sys->decodeLimits[0] = -1;
-    sys->decodeLimits[1] = -1;
-    sys->decodeLimits[2] = -1;
+    sys->decodeLimits[MpegIPictures] = -1;
+    sys->decodeLimits[MpegPPictures] = -1;
+    sys->decodeLimits[MpegBPictures] = -1;
     sys->mpeg = mpeg;
     sys->outputRgb32 = 1;
     SetBuffers(sys);
     sceMpegReset(mpeg);
     sceMpegClearRefBuff(mpeg);
-    sys->frames[0] = &sys->images[0];
-    sys->frames[1] = &sys->images[1];
-    sys->frames[3] = &sys->images[2];
-    sys->topFields[0] = &sys->images[3];
-    sys->topFields[1] = &sys->images[4];
-    sys->topFields[3] = &sys->images[5];
-    sys->bottomFields[0] = &sys->images[6];
-    sys->bottomFields[1] = &sys->images[7];
-    sys->bottomFields[3] = &sys->images[8];
+    sys->frames[MpegPast] = &sys->images[0];
+    sys->frames[MpegFuture] = &sys->images[1];
+    sys->frames[MpegBImage] = &sys->images[2];
+    sys->topFields[MpegPast] = &sys->images[3];
+    sys->topFields[MpegFuture] = &sys->images[4];
+    sys->topFields[MpegBImage] = &sys->images[5];
+    sys->bottomFields[MpegPast] = &sys->images[6];
+    sys->bottomFields[MpegFuture] = &sys->images[7];
+    sys->bottomFields[MpegBImage] = &sys->images[8];
     ArenaMark(&sys->arena);
     sys->temporalReferenceLast = -1;
     sys->temporalReferenceBase = 0;
     sys->gopStarted = 0;
     // Sony's check of its 64 byte aligned buffers, _bstag's and then _idct's (the same bits of the state's address: the second
     // message never comes)
-    u32 misalignment = reinterpret_cast<u32>(sys) & 0x3F;
+    u32 misalignment = reinterpret_cast<u32>(sys) & (StateAlignment - 1);
     if (misalignment != 0)
     {
         ErrorValue(sys, g_MpegAlignmentError, misalignment);
@@ -370,14 +378,16 @@ s32 sceMpegReset(Mpeg* mpeg)
     sys->aborted = 0;
     sys->ended = 0;
     sys->pictureWaiting = 0;
-    sys->outputState = 0;
+    sys->outputState = MpegNothingDecoded;
     mpeg->frameCount = 0;
     sys->firstOutputPicture = 0;
     sys->lastPts = -1;
     StopDecoding(sys);
     sys->mpeg2 = 0;
     sys->pictureNumber = 0;
-    *IpuControl = (*IpuControl & ~IpuControlMpeg1) | IpuControlMpeg1;
+    IpuControlRegister control = {*IpuControl};
+    control.mpeg1 = 1;
+    *IpuControl = control.value;
     return 1;
 }
 
@@ -399,34 +409,34 @@ void* sceMpegAddCallback(Mpeg* mpeg, s32 type, MpegCallback callback, void* user
 s32 sceMpegClearRefBuff(Mpeg* mpeg)
 {
     MpegSystem* sys = mpeg->sys;
-    if (sys->frames[0] != nullptr)
+    if (sys->frames[MpegPast] != nullptr)
     {
-        sys->frames[0]->holdsPicture = 0;
+        sys->frames[MpegPast]->holdsPicture = 0;
     }
 
-    if (sys->topFields[0] != nullptr)
+    if (sys->topFields[MpegPast] != nullptr)
     {
-        sys->topFields[0]->holdsPicture = 0;
+        sys->topFields[MpegPast]->holdsPicture = 0;
     }
 
-    if (sys->bottomFields[0] != nullptr)
+    if (sys->bottomFields[MpegPast] != nullptr)
     {
-        sys->bottomFields[0]->holdsPicture = 0;
+        sys->bottomFields[MpegPast]->holdsPicture = 0;
     }
 
-    if (sys->frames[1] != nullptr)
+    if (sys->frames[MpegFuture] != nullptr)
     {
-        sys->frames[1]->holdsPicture = 0;
+        sys->frames[MpegFuture]->holdsPicture = 0;
     }
 
-    if (sys->topFields[1] != nullptr)
+    if (sys->topFields[MpegFuture] != nullptr)
     {
-        sys->topFields[1]->holdsPicture = 0;
+        sys->topFields[MpegFuture]->holdsPicture = 0;
     }
 
-    if (sys->bottomFields[1] != nullptr)
+    if (sys->bottomFields[MpegFuture] != nullptr)
     {
-        sys->bottomFields[1]->holdsPicture = 0;
+        sys->bottomFields[MpegFuture]->holdsPicture = 0;
     }
 
     return 1;

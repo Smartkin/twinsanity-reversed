@@ -13,7 +13,7 @@ extern "C"
     void GetSaveDate(SaveDate* date)
     {
         Platform::System::DateTime now = Platform::System::LocalTime();
-        date->bits |= 3;
+        date->bits |= SaveDate::Valid;
         date->day = now.day;
         date->second = now.second;
         date->month = now.month;

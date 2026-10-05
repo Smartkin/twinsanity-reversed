@@ -23,7 +23,7 @@ struct CameraShake
     Reference* centre;
     Matrix4x4 toCentre;
     f32 limit;
-    f32 unknown84;
+    f32 unused84;
     f32 damping;
 };
 CHECK_OFFSET(CameraShake, centre, 0x30);
@@ -49,23 +49,51 @@ extern "C"
     void VibrateForShake(f32 strength) RETAIL(FUN_0027bd48);
 }
 
+// The curves the lens's blends and the scripted target's and positioner's moves take their share by: a smooth step (eased in and
+// out) or, for any other value, even
+enum CameraCurve : u32
+{
+    CurveEven = 0,
+    CurveSmooth = 2,
+};
+
+// How a rig's point follower moves (its CameraPointFollower::Ways)
+union CameraFollowerBits
+{
+    u32 value;
+    struct
+    {
+        // Its way, and its own way (the one it goes back to)
+        u32 way : 4;
+        u32 ownWay : 4;
+        // It keeps its rate while it's told others (counting it up to 100 every step instead)
+        u32 keepsRate : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(CameraFollowerBits, 4);
+
 // What smooths one of a rig's points (0x30 bytes, retail's vtable 0 bytes in: 1 the destructor, 2 taken as it is, 3 back to its own
 // way, 4 a step toward a point (the point set to where it got), 5 the way a camera's subtype asks for, 6 a rate (below 0: straight
-// there), 7 whether it keeps its rate while it's told others (counting it up to 100 every step instead), 8 whether it lets its
-// instance change chunks (its point moved through the link when the linked chunk is loaded)): the way it moves (0 straight there,
-// 1 the share of the way its rate makes of the step's time, 2 that squared, 3 its square root, any other not at all) and its own
-// way, its point, its rate and its own rate
+// there), 7 whether it keeps its rate while it's told others, 8 whether it lets its instance change chunks (its point moved through
+// the link when the linked chunk is loaded)): its bits, its point, its rate and its own rate
 class CameraPointFollower
 {
 public:
-    enum Bits : u32
+    enum Slot : u32
     {
-        WayMask = 0xF,
-        OwnWayShift = 4,
-        OwnWayMask = 0xF << OwnWayShift,
-        BitKeepsRate = 0x100,
+        DestroySlot = 1,
+        TakeSlot = 2,
+        ResetSlot = 3,
+        StepSlot = 4,
+        FollowSubtypeSlot = 5,
+        SetRateSlot = 6,
+        SetKeepsRateSlot = 7,
+        CanChangeChunkSlot = 8,
     };
 
+    // The share of the way to the point a step moves: all of it, the share its rate makes of the step's time, that squared, its
+    // square root (any other way: none)
     enum Ways : u32
     {
         WayAtOnce = 0,
@@ -75,12 +103,12 @@ public:
     };
 
     const GccVTableEntry* vtable;
-    u32 bits;
-    u8 unknown08[8];
+    CameraFollowerBits bits;
+    u8 unused08[8];
     Vector4 point;
     f32 rate;
     f32 ownRate;
-    u8 unknown28[8];
+    u8 unused28[8];
 
     static CameraPointFollower* Construct(CameraPointFollower* follower) RETAIL(FUN_0027de68);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027df20);
@@ -96,42 +124,42 @@ public:
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void TakeVirtual(const Vector4* rotation, const Vector4* point)
     {
-        CallVirtual<void>(this, vtable, 2, rotation, point);
+        CallVirtual<void>(this, vtable, TakeSlot, rotation, point);
     }
 
     void ResetVirtual()
     {
-        CallVirtual<void>(this, vtable, 3);
+        CallVirtual<void>(this, vtable, ResetSlot);
     }
 
     void StepVirtual(TimeClock* clock, const Vector4* rotation, Vector4* point)
     {
-        CallVirtual<void>(this, vtable, 4, clock, rotation, point);
+        CallVirtual<void>(this, vtable, StepSlot, clock, rotation, point);
     }
 
     void FollowSubtypeVirtual(const CameraSubtype* subtype)
     {
-        CallVirtual<void>(this, vtable, 5, subtype);
+        CallVirtual<void>(this, vtable, FollowSubtypeSlot, subtype);
     }
 
     void SetRateVirtual(f32 rate)
     {
-        CallVirtual<void>(this, vtable, 6, rate);
+        CallVirtual<void>(this, vtable, SetRateSlot, rate);
     }
 
     void SetKeepsRateVirtual(u32 keeps)
     {
-        CallVirtual<void>(this, vtable, 7, keeps);
+        CallVirtual<void>(this, vtable, SetKeepsRateSlot, keeps);
     }
 
     u32 CanChangeChunkVirtual(ChunkData* from, ChunkLinkData* link)
     {
-        return CallVirtual<u32>(this, vtable, 8, from, link);
+        return CallVirtual<u32>(this, vtable, CanChangeChunkSlot, from, link);
     }
 };
 CHECK_OFFSET(CameraPointFollower, point, 0x10);
@@ -146,8 +174,17 @@ CHECK_SIZE(CameraPointFollower, 0x30);
 class CameraTarget
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ResetSlot = 2,
+        StepSlot = 3,
+        ValueSlot = 4,
+        CanChangeChunkSlot = 5,
+    };
+
     f32 along;
-    u8 unknown04[0xC];
+    u8 unused04[0xC];
     Vector4 rotation;
     Vector4 point;
     Vector4 objectRotation;
@@ -155,7 +192,7 @@ public:
     Vector4 velocity;
     u8 facesMovement;
     u8 smoothed;
-    u8 unknown62[2];
+    u8 unused62[2];
     const GccVTableEntry* vtable;
 
     // The base made in the subclasses' constructors: no turn, at the origin, followed smoothly
@@ -165,27 +202,27 @@ public:
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void ResetVirtual()
     {
-        CallVirtual<void>(this, vtable, 2);
+        CallVirtual<void>(this, vtable, ResetSlot);
     }
 
     void StepVirtual(TimeClock* clock)
     {
-        CallVirtual<void>(this, vtable, 3, clock);
+        CallVirtual<void>(this, vtable, StepSlot, clock);
     }
 
     f32 ValueVirtual(CameraNode* trigger)
     {
-        return CallVirtual<f32>(this, vtable, 4, trigger);
+        return CallVirtual<f32>(this, vtable, ValueSlot, trigger);
     }
 
     u32 CanChangeChunkVirtual(ChunkData* from, ChunkLinkData* link)
     {
-        return CallVirtual<u32>(this, vtable, 5, from, link);
+        return CallVirtual<u32>(this, vtable, CanChangeChunkSlot, from, link);
     }
 };
 CHECK_OFFSET(CameraTarget, point, 0x20);
@@ -202,16 +239,26 @@ CHECK_OFFSET(CameraTarget, vtable, 0x64);
 class CameraPositioner
 {
 public:
-    u32 unknown00;
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ResetSlot = 2,
+        StepSlot = 3,
+        TakeSlot = 4,
+        CanChangeChunkSlot = 5,
+        KeepsRigRotationSlot = 6,
+    };
+
+    u32 unused00;
     s32 fov;
-    u8 unknown08[8];
+    u8 unused08[8];
     Vector4 rotation;
     Vector4 position;
     u8 smoothed;
     u8 keepsRate;
-    u8 unknown32[2];
+    u8 unused32[2];
     const GccVTableEntry* vtable;
-    u8 unknown38[8];
+    u8 unused38[8];
 
     // The base made in the subclasses' constructors: the default field of view, no turn, at the origin, followed smoothly
     static void ConstructBase(CameraPositioner* positioner);
@@ -221,38 +268,57 @@ public:
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void ResetVirtual(InstanceContext* instance, CameraTarget* target)
     {
-        CallVirtual<void>(this, vtable, 2, instance, target);
+        CallVirtual<void>(this, vtable, ResetSlot, instance, target);
     }
 
     void StepVirtual(TimeClock* clock, CameraTarget* target)
     {
-        CallVirtual<void>(this, vtable, 3, clock, target);
+        CallVirtual<void>(this, vtable, StepSlot, clock, target);
     }
 
     void TakeVirtual(f32 value, CameraNode* trigger, CameraTarget* target)
     {
-        CallVirtual<void>(this, vtable, 4, value, trigger, target);
+        CallVirtual<void>(this, vtable, TakeSlot, value, trigger, target);
     }
 
     u32 CanChangeChunkVirtual(ChunkData* from, ChunkLinkData* link)
     {
-        return CallVirtual<u32>(this, vtable, 5, from, link);
+        return CallVirtual<u32>(this, vtable, CanChangeChunkSlot, from, link);
     }
 
     u32 KeepsRigRotationVirtual()
     {
-        return CallVirtual<u32>(this, vtable, 6);
+        return CallVirtual<u32>(this, vtable, KeepsRigRotationSlot);
     }
 };
 CHECK_OFFSET(CameraPositioner, fov, 0x4);
 CHECK_OFFSET(CameraPositioner, position, 0x20);
 CHECK_OFFSET(CameraPositioner, vtable, 0x34);
 CHECK_SIZE(CameraPositioner, 0x40);
+
+// A camera rig's bits
+union CameraRigBits
+{
+    u32 value;
+    struct
+    {
+        // Its points are followed smoothly (where its parts ask); it takes nothing from the camera trigger
+        u32 smoothed : 1;
+        u32 ignoresTrigger : 1;
+        // The parts it owns (destroyed with it)
+        u32 ownsTargetFollower : 1;
+        u32 ownsCameraFollower : 1;
+        u32 ownsTarget : 1;
+        u32 ownsPositioner : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(CameraRigBits, 4);
 
 // A camera rig (the base, 0x40 bytes, retail's vtable 0x30 bytes in: 1 the destructor (the parts it owns destroyed), 2 set back to
 // its start for an instance (its target and positioner, their followers jumping to them), 3 a step, 4 whether it lets its instance
@@ -262,28 +328,28 @@ CHECK_SIZE(CameraPositioner, 0x40);
 class CameraRig
 {
 public:
-    enum Bits : u32
+    // Its vtable's functions, and 5 to 7, which every rig the game makes has (the base's vtable stops at 4)
+    enum Slot : u32
     {
-        // Its points are followed smoothly (where its parts ask); it takes nothing from the camera trigger
-        BitSmoothed = 0x1,
-        BitIgnoresTrigger = 0x2,
-        // The parts it owns
-        BitOwnsTargetFollower = 0x4,
-        BitOwnsCameraFollower = 0x8,
-        BitOwnsTarget = 0x10,
-        BitOwnsPositioner = 0x20,
+        DestroySlot = 1,
+        ResetSlot = 2,
+        StepSlot = 3,
+        CanChangeChunkSlot = 4,
+        PrepareSlot = 5,
+        RestoreDefaultsSlot = 6,
+        AssembleSlot = 7,
     };
 
-    u32 bits;
+    CameraRigBits bits;
     CameraNode* trigger;
     CameraPointFollower* targetFollower;
     CameraPointFollower* cameraFollower;
     CameraTarget* target;
     CameraPositioner* positioner;
-    u8 unknown18[8];
+    u8 unused18[8];
     Vector4 keptRotation;
     const GccVTableEntry* vtable;
-    u8 unknown34[0xC];
+    u8 unused34[0xC];
 
     static CameraRig* Construct(CameraRig* rig) RETAIL(FUN_0027b948);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0026f228);
@@ -297,22 +363,22 @@ public:
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void ResetVirtual(InstanceContext* instance)
     {
-        CallVirtual<void>(this, vtable, 2, instance);
+        CallVirtual<void>(this, vtable, ResetSlot, instance);
     }
 
     void StepVirtual(TimeClock* clock)
     {
-        CallVirtual<void>(this, vtable, 3, clock);
+        CallVirtual<void>(this, vtable, StepSlot, clock);
     }
 
     u32 CanChangeChunkVirtual(ChunkData* from, ChunkLinkData* link)
     {
-        return CallVirtual<u32>(this, vtable, 4, from, link);
+        return CallVirtual<u32>(this, vtable, CanChangeChunkSlot, from, link);
     }
 };
 CHECK_OFFSET(CameraRig, keptRotation, 0x20);
@@ -333,7 +399,7 @@ public:
 CHECK_SIZE(CutscenePositioner, 0x40);
 
 // The cutscenes' camera rig (the game controller's, 0x80 bytes, retail's vtable D_00304BE8: 5 made ready for play (put together
-// again), 6 nothing, 7 put together (with its own positioner)): the positioner the cutscenes' commands place
+// again), 6 back to its defaults (nothing), 7 put together (with its own positioner)): the positioner the cutscenes' commands place
 class CutsceneCameraRig : public CameraRig
 {
 public:
@@ -342,16 +408,30 @@ public:
     static CutsceneCameraRig* Construct(CutsceneCameraRig* rig) RETAIL(FUN_0027e7a0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027e888);
     void Prepare(InstanceContext* player) RETAIL(FUN_0027e8b8);
-    void Nothing() RETAIL(FUN_0027e8e0);
+    void RestoreDefaults() RETAIL(FUN_0027e8e0);
     void Assemble() RETAIL(FUN_0027e8e8);
 
     void AssembleVirtual()
     {
-        CallVirtual<void>(this, vtable, 7);
+        CallVirtual<void>(this, vtable, AssembleSlot);
     }
 };
 CHECK_OFFSET(CutsceneCameraRig, ownPositioner, 0x40);
 CHECK_SIZE(CutsceneCameraRig, 0x80);
+
+// The scripted camera's target's bits
+union ScriptedTargetBits
+{
+    u32 value;
+    struct
+    {
+        // It moves (its move started), by its curve (a CameraCurve)
+        u32 moving : 1;
+        u32 curve : 3;
+        u32 unused4 : 28;
+    };
+};
+CHECK_SIZE(ScriptedTargetBits, 4);
 
 // The scripted camera's target (0xB0 bytes, retail's vtable D_00304D30: 4 no value): what the cutscenes' commands have it look
 // at, moved from a point to another over a time (along a path when it has one: the path's point at the share, from the start
@@ -359,23 +439,14 @@ CHECK_SIZE(CutsceneCameraRig, 0x80);
 class ScriptedCameraTarget : public CameraTarget
 {
 public:
-    enum Bits : u32
-    {
-        // It moves (its move started)
-        BitMoving = 0x1,
-        CurveShift = 1,
-        CurveMask = 0x7 << CurveShift,
-        CurveSmooth = 2,
-    };
-
-    u32 bits;
-    u8 unknown74[0xC];
+    ScriptedTargetBits bits;
+    u8 unused74[0xC];
     Vector4 start;
     Vector4 end;
     u32 moveStart;
     s32 moveTicks;
     class LayoutPath* path;
-    u32 unknownAC;
+    u32 unusedAC;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027cbf8);
     void Reset() RETAIL(FUN_0027cc28);
@@ -391,6 +462,22 @@ CHECK_OFFSET(ScriptedCameraTarget, start, 0x80);
 CHECK_OFFSET(ScriptedCameraTarget, moveStart, 0xA0);
 CHECK_SIZE(ScriptedCameraTarget, 0xB0);
 
+// The scripted camera's positioner's bits
+union ScriptedPositionerBits
+{
+    u32 value;
+    struct
+    {
+        // Its move eases in or out over its ease's time, by its curve (a CameraCurve), arcing round the target
+        u32 easesIn : 1;
+        u32 easesOut : 1;
+        u32 curve : 3;
+        u32 arcs : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(ScriptedPositionerBits, 4);
+
 // The scripted camera's positioner (0x90 bytes, retail's vtable D_00304D68: 4 takes nothing): where the cutscenes' commands put
 // the camera, moved from a place to another over a time (along a path when it has one, or keeping the distance from the target
 // blended between the ends' when it arcs) with its field of view, looking at the target; its share even (or eased in and out),
@@ -398,19 +485,10 @@ CHECK_SIZE(ScriptedCameraTarget, 0xB0);
 class ScriptedCameraPositioner : public CameraPositioner
 {
 public:
-    enum Bits : u32
-    {
-        BitEasesIn = 0x1,
-        BitEasesOut = 0x2,
-        CurveShift = 2,
-        CurveMask = 0x7 << CurveShift,
-        CurveSmooth = 2,
-        BitArcs = 0x20,
-    };
-
-    u32 bits;
-    u32 unknown44;
-    u8 unknown48[8];
+    ScriptedPositionerBits bits;
+    // (The cutscene command's word 0x2C given to it)
+    u32 unused44;
+    u8 unused48[8];
     Vector4 start;
     Vector4 end;
     s32 startFov;
@@ -420,7 +498,7 @@ public:
     u32 easeStart;
     s32 easeTicks;
     class LayoutPath* path;
-    u32 unknown8C;
+    u32 unused8C;
 
     static ScriptedCameraPositioner* Construct(ScriptedCameraPositioner* positioner) RETAIL(FUN_00278798);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027ca40);
@@ -445,38 +523,51 @@ CHECK_OFFSET(ScriptedCameraPositioner, startFov, 0x70);
 CHECK_OFFSET(ScriptedCameraPositioner, path, 0x88);
 CHECK_SIZE(ScriptedCameraPositioner, 0x90);
 
+// The cutscenes' commands' state in the game's camera rig
+union GameRigScriptBits
+{
+    u32 value;
+    struct
+    {
+        // (Bits 0 and 1 cleared and bit 2 set when the rig's made)
+        u32 unused0 : 2;
+        u32 unused2 : 1;
+        // The framing's side angles and yaw turned the other way
+        u32 mirrored : 1;
+        // The frame's to be made (either), it changed since
+        u32 frameWanted : 1;
+        u32 frameChanged : 1;
+        // A place is given as such (not an object's)
+        u32 hasFirstPlace : 1;
+        u32 hasSecondPlace : 1;
+        // The frame's up is the world's (else square to the way and its side)
+        u32 worldUp : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(GameRigScriptBits, 4);
+
 // The game's camera rig (the game controller's, 0x260 bytes, retail's vtable D_00304C30: 5 made ready for play (its followers'
-// own ways and rates: where it looks by the square root, where it is linear, both at 6), 6 nothing, 7 put together (with its own
-// parts)): the cutscenes' commands' state (its bits; the places of what they name, bits 6 and 7 saying they're set), its
-// followers, its scripted target and positioner
+// own ways and rates: where it looks by the square root, where it is linear, both at 6), 6 back to its defaults (nothing), 7 put
+// together (with its own parts)): the cutscenes' commands' state (its bits, the places of what they name and the paths their
+// moves go along), its followers, its scripted target and positioner
 class GameCameraRig : public CameraRig
 {
 public:
-    enum ScriptBits : u32
-    {
-        // The frame's to be made (either), it changed since
-        BitFrameWanted = 0x10,
-        BitFrameChanged = 0x20,
-        // A place is given as such (not an object's)
-        BitHasFirstPlace = 0x40,
-        BitHasSecondPlace = 0x80,
-        // The frame's up is the world's (else square to the way and its side)
-        BitWorldUp = 0x100,
-    };
-
-    u32 scriptBits;
+    GameRigScriptBits scriptBits;
     // The objects whose places the commands name (the first's place, its place ahead along its z axis without a second one)
     ReferencedObject* firstObject;
     ReferencedObject* secondObject;
-    u32 unknown4C;
+    u32 unused4C;
     Vector4 firstPlace;
     Vector4 secondPlace;
     // Looking from the first place at the second (its columns the side, the up and the way)
     Matrix4x4 frame;
-    u32 unknownB0;
-    u32 unknownB4;
-    u32 unknownB8;
-    u32 unknownBC;
+    u32 unusedB0;
+    // The paths the commands move the scripted target and positioner along (an agent's waypoints')
+    class LayoutPath* targetPath;
+    class LayoutPath* cameraPath;
+    u32 unusedBC;
     CameraPointFollower ownTargetFollower;
     CameraPointFollower ownCameraFollower;
     ScriptedCameraTarget ownTarget;
@@ -485,7 +576,7 @@ public:
     static GameCameraRig* Construct(GameCameraRig* rig) RETAIL(FUN_0027ad50);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027e6c8);
     void Prepare(InstanceContext* player) RETAIL(FUN_0027e718);
-    void Nothing() RETAIL(FUN_0027e770);
+    void RestoreDefaults() RETAIL(FUN_0027e770);
     void Assemble() RETAIL(FUN_0027e778);
     // The commands' state set back (the places cleared, their bits off), and either place cleared
     void ResetScript() RETAIL(FUN_0027e608);
@@ -496,7 +587,7 @@ public:
 };
 CHECK_OFFSET(GameCameraRig, firstPlace, 0x50);
 CHECK_OFFSET(GameCameraRig, frame, 0x70);
-CHECK_OFFSET(GameCameraRig, unknownB4, 0xB4);
+CHECK_OFFSET(GameCameraRig, targetPath, 0xB4);
 CHECK_OFFSET(GameCameraRig, ownTargetFollower, 0xC0);
 CHECK_OFFSET(GameCameraRig, ownTarget, 0x120);
 CHECK_OFFSET(GameCameraRig, ownPositioner, 0x1D0);
@@ -548,6 +639,24 @@ extern "C"
     void ConstructCameraModule() RETAIL(FUN_0027ea00);
 }
 
+// A camera lens's bits
+union CameraLensBits
+{
+    u32 value;
+    struct
+    {
+        // The projection's to be made again (every update asks)
+        u32 projectionChanged : 1;
+        // It owns its rig, and the next one
+        u32 ownsRig : 1;
+        u32 ownsNext : 1;
+        // The blend's curve (a CameraCurve)
+        u32 curve : 3;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(CameraLensBits, 4);
+
 // A camera's lens (its instance's node of kind 9, 0x3C bytes, retail's vtable UnkNode_0x9_Methods: 4 whether the rigs let its
 // instance change chunks, 7 a step (its rigs set back to their start), 8 the update (the camera placed by its rigs), 10 its type
 // 0x141F): its bits, the field of view (65536ths of a turn across), the pixels' aspect (1 on a PAL TV, 0.96 on an NTSC one), the
@@ -555,25 +664,9 @@ extern "C"
 // takes
 struct CameraLensNode : GameNode
 {
-    enum Bits : u32
-    {
-        // The projection's to be made again (every update asks), it owns its rig and the next one, the blend's curve (2 eased in
-        // and out, else even)
-        BitProjectionChanged = 0x1,
-        BitOwnsRig = 0x2,
-        BitOwnsNext = 0x4,
-        CurveShift = 3,
-        CurveMask = 0x7 << CurveShift,
-    };
-
-    enum Curves : u32
-    {
-        CurveEased = 2,
-    };
-
     static constexpr u32 TypeId = 0x141F;
 
-    u32 bits;
+    CameraLensBits bits;
     s32 fov;
     f32 pixelAspect;
     f32 nearPlane;
@@ -587,7 +680,7 @@ struct CameraLensNode : GameNode
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027bef0);
     u32 CanChangeChunk(ChunkData* from, ChunkLinkData* link) RETAIL(FUN_0027bfb8);
     u32 Kind() RETAIL(GetNodeIndex_0x9);
-    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_0027c068);
+    void Step(TimeClock* clock, u32 way) RETAIL(FUN_0027c068);
     u32 Update(TimeClock* clock) RETAIL(FUN_00270ad8);
     u32 Type() RETAIL(FUN_0027b600);
     // The rig it shows (the old one destroyed when it owned it; any blend dropped, the next rig destroyed when it owned it),

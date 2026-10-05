@@ -18,9 +18,6 @@ EABI_EXPORT(FUN_0018f2d8, SplineDistanceSquaredIn);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 NearestTolerance = 0x1.a36e2ep-15f;
-constexpr s32 NearestSteps = 4;
 // Brent's golden section step: the share of the larger half (2 less the golden ratio)
 constexpr f32 GoldenSection = 0x1.872218p-2f;
 
@@ -138,9 +135,9 @@ void DestroySpline(CameraSpline* spline, u32 destroyFlags)
 s32 RefineSplineNearest(CameraSpline* spline, f32* into, f32* distanceSquared)
 {
     MinimumSearch search;
-    search.steps = NearestSteps;
-    search.tolerance = NearestTolerance;
-    search.closeness = NearestTolerance;
+    search.steps = CurveRefineSteps;
+    search.tolerance = CurveRefineTolerance;
+    search.closeness = CurveRefineTolerance;
     search.low = 0.0f;
     search.high = 1.0f;
     return FindMinimum(&search, spline, reinterpret_cast<const void*>(&SplineDistanceSquaredEntry), into, distanceSquared, 1);
@@ -293,5 +290,5 @@ s32 FindMinimum(MinimumSearch* search, void* argument, const void* function, f32
 
 void MathConstantsConstructor()
 {
-    InitMathConstants(1, 0xFFFF);
+    InitMathConstants(1, DefaultInitPriority);
 }

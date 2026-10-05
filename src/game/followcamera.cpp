@@ -15,29 +15,27 @@
 EABI_EXPORT(FUN_00273738, &FollowCameraPositioner::Construct);
 EABI_EXPORT(FUN_0027c560, &FollowCameraPositioner::SetDistanceAndPitch);
 EABI_EXPORT(FUN_00274b20, &FollowCameraPositioner::Take);
-EABI_EXPORT(FUN_00274e08, &FollowCameraPositioner::Apply);
+EABI_EXPORT(FUN_00274e08, &FollowCameraPositioner::TakeCamera);
 EABI_EXPORT(FUN_00277398, &FollowCameraTarget::EaseHeight);
 
 namespace
 {
-constexpr f32 TinyLength = 0x1.5798ecp-29f;
-constexpr f32 NoMove = Rounded(5e-5);
-constexpr f32 Far = 0x1.93e594p+99f;
-// 65536ths of a turn to radians and back
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
+// The rate the positioner's place follows at (the share of the way a second), the radius it keeps from the collision and from the
+// instances' hulls, and the distance it goes back to after a trigger's camera
 constexpr f32 DefaultRate = 6.0f;
 constexpr f32 DefaultRadius = Rounded(0.4);
 constexpr f32 DefaultDistance = 10.0f;
 // A blend asked for without a trigger
 constexpr f32 AskedBlendSeconds = 2.0f;
-// The collision's surfaces the camera can't go through (bit 5), and those lines of sight can't (bit 7)
-constexpr u32 CameraSurfaces = 0x20;
-constexpr u32 SightSurfaces = 0x80;
 constexpr u32 EveryInstance = 0xFFFFFFFF;
 constexpr s32 MostQueried = 0x10;
-// The instances the view checks find: ones with a sphere (bit 4), awake
-constexpr u32 QueriedFlags = 0x10;
+// What the box around the camera that the collision and the instances near it are gathered in is grown by
+constexpr f32 GatherMargin = Rounded(0.1);
+// The view checks look from a unit above the followed object
+constexpr f32 EyeHeight = 1.0f;
+// What a restart clears of the positioner's bits and state: their low halves
+constexpr u64 PositionerLowBits = 0xFFFFFFFF;
+constexpr u32 PositionerStateLowBits = 0xFFFF;
 
 f32 StepSeconds(const TimeClock* clock)
 {
@@ -54,20 +52,20 @@ Vector4 Origin()
 // The half turn from an angle (its 16 bits less half a turn)
 s32 Opposite(s32 angle)
 {
-    return static_cast<s32>((static_cast<u32>(angle) & 0xFFFF) - 0x8000);
+    return static_cast<s32>((static_cast<u32>(angle) & (FullTurnAngle - 1)) - HalfTurnAngle);
 }
 
 // The query of the instances a view check makes (the instance itself and its attachment left out, and the one it ignores)
-void MakeQuery(InstanceRayHit* query, void** results, InstanceContext* instance)
+void MakeQuery(InstanceQuery* query, void** results, InstanceContext* instance)
 {
     query->results = results;
     query->count = 0;
     query->most = MostQueried;
-    query->distance = Far;
+    query->distance = Infinite;
     // Retail keeps the stack's other bits (nothing reads them)
-    query->bits = InstanceRayHit::BitAllWanted;
-    query->wantedFlags = QueriedFlags;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->bits.value = InstanceQueryBits::AllWanted;
+    query->wantedFlags = ReferencedObjectFlags::CollisionActive;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->instance = nullptr;
     query->skipped[1] = nullptr;
@@ -78,7 +76,7 @@ void MakeQuery(InstanceRayHit* query, void** results, InstanceContext* instance)
 template <typename Blender>
 void EndStep(Blender* blender, u32 time)
 {
-    if ((blender->bits & AngleBlender::BitPushed) != 0 || blender->holdStart == 0)
+    if (blender->bits.pushed != 0 || blender->holdStart == 0)
     {
         blender->holdStart = time;
     }
@@ -87,12 +85,6 @@ void EndStep(Blender* blender, u32 time)
     blender->rateScale = 0.0f;
 }
 
-// The probe cast next
-u64 NextProbe(u64 bits)
-{
-    u64 next = (((bits >> FollowCameraPositioner::ProbeShift & 3) + 1) & 3) << FollowCameraPositioner::ProbeShift;
-    return (bits & ~static_cast<u64>(FollowCameraPositioner::ProbeMask)) | next;
-}
 
 // A point pulled back along the way from a point to where the view stopped
 Vector4 PullBack(const Vector4* from, const Vector4* hit, f32 pull)
@@ -103,7 +95,7 @@ Vector4 PullBack(const Vector4* from, const Vector4* hit, f32 pull)
     way.z = hit->z - from->z;
     way.w = 1.0f;
     Vector4 kept = way;
-    f32 inverse = InverseLength(&way, TinyLength);
+    f32 inverse = InverseLength(&way, LengthEpsilon);
     f32 x = way.x * inverse * pull;
     f32 y = way.y * inverse * pull;
     f32 z = way.z * inverse * pull;
@@ -136,17 +128,16 @@ void AnglesAlong(Vector4* way, s32* pitch, s32* yaw)
     *yaw = turn;
 }
 
-u32 SamePoint(const Vector4* a, const Vector4* b)
+u32 SamePoint(const Vector4* point, const Vector4* other)
 {
-    return a->x == b->x && a->y == b->y && a->z == b->z;
+    return point->x == other->x && point->y == other->y && point->z == other->z;
 }
 
-// Whether a camera target's box point stays as it is (its trigger's bit 28; the last one's while it doesn't settle)
-u32 OffsetUnturned(u32 bits)
+// Whether a camera target's box point stays as it is (its trigger's targetBoxUnturned; the last one's while its box doesn't
+// settle)
+u32 BoxUnturned(FollowTargetBits bits)
 {
-    return (bits & FollowCameraTarget::BitOffsetUnturned) != 0 ||
-           (bits & (FollowCameraTarget::BitSettled | FollowCameraTarget::BitLastOffsetUnturned)) ==
-               FollowCameraTarget::BitLastOffsetUnturned;
+    return bits.boxUnturned != 0 || (bits.settled == 0 && bits.lastBoxUnturned != 0);
 }
 
 // The ends blended by a share the way the cameras' angles are (through radians)
@@ -161,8 +152,9 @@ s32 BlendAngles(s32 start, s32 end, f32 share)
 FollowCameraPositioner* FollowCameraPositioner::Construct(FollowCameraPositioner* positioner, f32 distance, const s32* pitch)
 {
     constexpr f32 DistanceSpeed = 5.0f;
-    constexpr f32 ProbeTurn = 180.0f;
-    constexpr u8 Unknown384 = 60;
+    // Degrees a second
+    constexpr f32 ProbePushRate = 180.0f;
+    constexpr u8 Unused384 = 60;
     CameraPositioner::ConstructBase(positioner);
     positioner->instance = nullptr;
     positioner->vtable = g_FollowCameraPositionerVTable;
@@ -181,27 +173,30 @@ FollowCameraPositioner* FollowCameraPositioner::Construct(FollowCameraPositioner
     blender->high = distance;
     blender->secondLow = distance;
     blender->secondHigh = distance;
-    blender->unknown48 = 0.0f;
+    blender->unused48 = 0.0f;
     blender->Reset();
-    positioner->unknown1C8 = 1.0f;
-    AngleFrom(&positioner->pitchPushRate, ProbeTurn, AngleDegrees);
-    AngleFrom(&positioner->yawPushRate, ProbeTurn, AngleDegrees);
+    positioner->unused1C8 = 1.0f;
+    AngleFrom(&positioner->pitchPushRate, ProbePushRate, AngleDegrees);
+    AngleFrom(&positioner->yawPushRate, ProbePushRate, AngleDegrees);
     MainCamera::Construct(&positioner->camera);
     positioner->stepSeconds = 0.0f;
     positioner->turnShare = 1.0f;
-    positioner->unknown398 = 1.0f;
+    positioner->unused398 = 1.0f;
     positioner->cache = nullptr;
     positioner->ownRate = DefaultRate;
-    positioner->unknown384 = Unknown384;
+    positioner->unused384 = Unused384;
     AngleFrom(&positioner->roll, positioner->stepSeconds, AngleRadians);
-    positioner->bits = (positioner->bits | BitSteers) & ~static_cast<u64>(BitDistanceFollowsPitch) & ~BitPushedOffCollision;
+    positioner->bits.steers = 1;
+    positioner->bits.distanceFollowsPitch = 0;
+    positioner->bits.pushedOffCollision = 0;
     positioner->keyed = 0;
-    positioner->fieldOfView.bits |= AngleBlender::BitHolds;
+    positioner->fieldOfView.bits.holds = 1;
     positioner->lowTargetOffset = Origin();
     positioner->highTargetOffset = Origin();
     positioner->lowCameraOffset = Origin();
     positioner->highCameraOffset = Origin();
-    for (u32 index = 0; index < 4; index += 2)
+    // Each pair of sides at 1 and -1
+    for (u32 index = 0; index < ProbeCount; index += 2)
     {
         positioner->lowTargetSides[index] = 1.0f;
         positioner->lowTargetSides[index + 1] = -1.0f;
@@ -213,7 +208,7 @@ FollowCameraPositioner* FollowCameraPositioner::Construct(FollowCameraPositioner
         positioner->highCameraSides[index + 1] = -1.0f;
     }
 
-    positioner->place = Origin();
+    positioner->triggerPlace = Origin();
     s32 start = *pitch;
     positioner->SetDistanceAndPitch(distance, &start);
     return positioner;
@@ -227,9 +222,9 @@ void FollowCameraPositioner::Destroy(u32 destroyFlags)
         DestroyCollisionCache(cache, DestroyAndFree);
     }
 
-    camera.Destroy(2);
+    camera.Destroy(DestroyOnly);
     vtable = g_CameraPositionerVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -237,7 +232,6 @@ void FollowCameraPositioner::Destroy(u32 destroyFlags)
 
 void FollowCameraPositioner::Reset(InstanceContext* followed, CameraTarget* follower)
 {
-    constexpr u32 CacheSize = 0x50;
     target = follower;
     instance = followed;
     if (cache != nullptr)
@@ -246,16 +240,14 @@ void FollowCameraPositioner::Reset(InstanceContext* followed, CameraTarget* foll
     }
 
     cache = nullptr;
-    cache = ConstructCollisionCache(static_cast<CollisionCache*>(MemoryAllocate(CacheSize)), followed, CameraSurfaces);
+    auto* memory = static_cast<CollisionCache*>(MemoryAllocate(sizeof(CollisionCache)));
+    cache = ConstructCollisionCache(memory, followed, SurfaceFlags::BlocksCamera);
     Restart();
 }
 
 void FollowCameraPositioner::Restart()
 {
-    u64 old = bits;
-    u64 keptTilts = old >> 8 & 1;
-    u64 keptFollows = old >> 1 & 1;
-    u64 keptSteers = old >> 46 & 1;
+    FollowPositionerBits kept = bits;
     EndBlend();
     pitch.initial = g_FollowCameraPitch;
     pitch.Reset();
@@ -264,51 +256,59 @@ void FollowCameraPositioner::Restart()
     TargetYaw(&behind, this);
     yaw.initial = behind;
     yaw.Reset();
-    place = Origin();
-    if (keptFollows != 0)
+    triggerPlace = Origin();
+    if (kept.distanceFollowsPitch != 0)
     {
         distance.initial = distance.high * pitch.share + distance.low * (1.0f - pitch.share);
     }
 
     distance.Reset();
-    bits &= 0xFFFFFFFF'00000000;
-    state &= 0xFFFF0000;
-    probeHits = 0;
-    bits = (bits & ~BitPushedOutOfHull & ~BitPushedBack & ~BitSteers) | keptSteers << 46;
-    bits = (bits & ~static_cast<u64>(BitDistanceFollowsPitch)) | keptFollows << 1;
-    bits = (bits & ~static_cast<u64>(BitTilts)) | keptTilts << 8;
+    bits.value &= ~PositionerLowBits;
+    state.value &= ~PositionerStateLowBits;
+    unused1D4 = 0;
+    bits.pushedOutOfHull = 0;
+    bits.pushedBack = 0;
+    bits.steers = kept.steers;
+    bits.distanceFollowsPitch = kept.distanceFollowsPitch;
+    bits.tilts = kept.tilts;
     Vector4 point = target != nullptr ? target->point : Origin();
     Vector4 placed;
     PlaceFor(&point, &placed, 0);
     position = target != nullptr ? placed : Origin();
     fov = fieldOfView.current;
-    bits &= ~static_cast<u64>(Bit3 | BitHadProbesFromTarget | BitIgnoresValues | Bit6);
-    state &= ~StateBlendAsked;
+    bits.stickTurning = 0;
+    bits.unused4 = 0;
+    bits.characterMoving = 0;
+    bits.ignoresValues = 0;
+    state.blendAsked = 0;
     trigger = nullptr;
-    Clear();
+    ClearTriggerValues();
     AngleFrom(&tiltPitch, 0.0f, AngleRadians);
     AngleFrom(&tiltYaw, 0.0f, AngleRadians);
     blockedSince = 0;
     backOff = 0.0f;
     collisionRadius = DefaultRadius;
-    bits = (bits | BitRestarted) & ~BitBlockedAWhile & ~BitBlockedLong & ~BitBlocked;
-    bits |= BitFree;
+    bits.restarted = 1;
+    bits.blockedAWhile = 0;
+    bits.blockedLong = 0;
+    bits.blocked = 0;
+    bits.unpushed = 1;
     hullRadius = DefaultRadius;
     ClearProbes();
-    camera.flags = 0;
-    bits &= ~static_cast<u64>(BitOwnCamera);
-    camera.flags = (camera.flags & ~MainCamera::FlagSteers) | MainCamera::FlagSteers;
-    Clear();
+    camera.flags.value = 0;
+    bits.ownCamera = 0;
+    camera.flags.steers = 1;
+    ClearTriggerValues();
     ignored = nullptr;
     if (target == nullptr)
     {
         return;
     }
 
-    Vector4 from = target->objectPosition;
-    from.y = from.y + 1.0f;
+    Vector4 eye = target->objectPosition;
+    eye.y = eye.y + EyeHeight;
     Vector4 clear;
-    if (ViewBlocked(&position, &from) != 0 && FindClearPlace(&position, &from, &clear, 0) != 0)
+    if (ViewBlocked(&position, &eye) != 0 && FindClearPlace(&position, &eye, &clear, 0) != 0)
     {
         position = clear;
         PlaceBehind();
@@ -324,29 +324,46 @@ void FollowCameraPositioner::SetDistanceAndPitch(f32 length, const s32* angle)
     Restart();
 }
 
-void FollowCameraPositioner::Clear()
+void FollowCameraPositioner::ClearTriggerValues()
 {
     EndBlend();
-    bits |= BitTriggerBit4;
-    bits &= ~static_cast<u64>(BitProbesFromTarget | BitAtPlace | BitTriggerBit11 | 0x200 | BitYawExtraSpeed | BitStill |
-                              BitOnlyLooks | BitKeepsHeight | BitTriggerRate | BitViewUnchecked | BitYawExtra |
-                              BitTriggerBit22Clear);
-    bits &= ~BitProbesOff;
-    state = (state & ~(StateBlending | StateBlendStarted | StateCut)) | StatePlaced;
-    state &= ~(StateTimed | StateTimeEnded | StateBlendAsked | StateAlongLine);
-    pitch.bits &= ~AngleBlender::BitSecondRange;
-    fieldOfView.bits &= ~AngleBlender::BitSecondRange;
-    distance.bits &= ~AngleBlender::BitSecondRange;
-    yaw.bits &= ~(AngleBlender::BitSecondRange | AngleBlender::BitSineSpeed);
+    bits.triggerSteers = 1;
+    bits.atTriggerPlace = 0;
+    bits.probesFromTarget = 0;
+    bits.alwaysTakesValues = 0;
+    bits.unused9 = 0;
+    bits.yawSpeedSet = 0;
+    bits.holdsStill = 0;
+    bits.keepsHeight = 0;
+    bits.onlyLooksAtTarget = 0;
+    bits.noFacingTilt = 0;
+    bits.atTriggerRate = 0;
+    bits.skipsViewCheck = 0;
+    bits.addsExtraYaw = 0;
+    bits.probesOff = 0;
+    state.blending = 0;
+    state.blendStarted = 0;
+    state.cut = 0;
+    state.placed = 1;
+    state.blendAsked = 0;
+    state.timed = 0;
+    state.timeEnded = 0;
+    state.alongLine = 0;
+    pitch.bits.secondRange = 0;
+    fieldOfView.bits.secondRange = 0;
+    distance.bits.secondRange = 0;
+    yaw.bits.secondRange = 0;
+    yaw.bits.sineSpeed = 0;
     triggerRate = DefaultRate;
-    unknown398 = 1.0f;
+    unused398 = 1.0f;
     keepsRate = 0;
     smoothed = 0;
 }
 
 void FollowCameraPositioner::EndBlend()
 {
-    state = (state & ~StateTimed) | StateTimeEnded;
+    state.timed = 0;
+    state.timeEnded = 1;
     fieldOfView.speed = fieldOfView.previousSpeed;
     distance.speed = distance.previousSpeed;
     yaw.speed = yaw.previousSpeed;
@@ -355,12 +372,18 @@ void FollowCameraPositioner::EndBlend()
 
 void FollowCameraPositioner::ClearProbes()
 {
-    bits &= ~(BitLeftHit | BitRightHit | BitAboveHit | BitBelowHit | ProbeMask);
+    bits.leftHit = 0;
+    bits.rightHit = 0;
+    bits.aboveHit = 0;
+    bits.belowHit = 0;
+    bits.nextProbe = ProbeAbove;
 }
 
 void FollowCameraPositioner::ClearBlocked()
 {
-    bits &= ~(BitBlocked | BitBlockedAWhile | BitBlockedLong);
+    bits.blockedAWhile = 0;
+    bits.blocked = 0;
+    bits.blockedLong = 0;
 }
 
 void FollowCameraPositioner::EaseBackOff()
@@ -371,12 +394,12 @@ void FollowCameraPositioner::EaseBackOff()
 
 u32 FollowCameraPositioner::KeepsRigRotation()
 {
-    return bits >> 12 & 1;
+    return bits.holdsStill;
 }
 
 void FollowCameraPositioner::SetTilts(u32 tilts)
 {
-    bits = (bits & ~static_cast<u64>(BitTilts)) | static_cast<u64>(tilts & 1) << 8;
+    bits.tilts = tilts;
 }
 
 void FollowCameraPositioner::ResetTurnShare()
@@ -391,40 +414,40 @@ void FollowCameraPositioner::ResetOwnRate()
 
 u32 FollowCameraPositioner::SegmentBlocked(const Vector4* from, const Vector4* to)
 {
-    return GetCollisionCheck(instance->chunk, from, to, CameraSurfaces, nullptr, nullptr, nullptr);
+    return GetCollisionCheck(instance->chunk, from, to, SurfaceFlags::BlocksCamera, nullptr, nullptr, nullptr);
 }
 
 void FollowCameraPositioner::TimeBlocked(const Vector4* point, const Vector4* goal, const Vector4*, TimeClock* clock)
 {
-    constexpr f32 Long = Rounded(0.7);
-    constexpr f32 AWhile = Rounded(0.2);
+    constexpr f32 LongSeconds = Rounded(0.7);
+    constexpr f32 AWhileSeconds = Rounded(0.2);
     if (ViewBlocked(point, goal) == 0)
     {
         ClearBlocked();
         return;
     }
 
-    if ((bits & BitBlocked) == 0)
+    if (bits.blocked == 0)
     {
-        bits |= BitBlocked;
+        bits.blocked = 1;
         blockedSince = clock->time;
     }
 
     s32 since = static_cast<s32>(clock->time - blockedSince);
-    if (static_cast<s32>(g_ClockUnitsPerSecond * Long) < since)
+    if (static_cast<s32>(g_ClockUnitsPerSecond * LongSeconds) < since)
     {
-        bits |= BitBlockedLong;
+        bits.blockedLong = 1;
     }
-    else if (static_cast<s32>(g_ClockUnitsPerSecond * AWhile) < since)
+    else if (static_cast<s32>(g_ClockUnitsPerSecond * AWhileSeconds) < since)
     {
-        bits |= BitBlockedAWhile;
+        bits.blockedAWhile = 1;
     }
 }
 
 s32* FollowCameraPositioner::TargetYaw(s32* angle, FollowCameraPositioner* positioner)
 {
     Matrix4x4 matrix;
-    u32 turned = 1;
+    u32 hasDirection = 1;
     CameraTarget* follower = positioner->target;
     if (follower == nullptr)
     {
@@ -439,9 +462,9 @@ s32* FollowCameraPositioner::TargetYaw(s32* angle, FollowCameraPositioner* posit
         ahead.z = 1.0f;
         Vector4 way = follower->velocity;
         way.y = 0.0f;
-        if (LengthSquared(&way) <= TinyLength)
+        if (LengthSquared(&way) <= LengthEpsilon)
         {
-            turned = 0;
+            hasDirection = 0;
         }
 
         MatrixBetween(&matrix, &ahead, &way);
@@ -452,7 +475,7 @@ s32* FollowCameraPositioner::TargetYaw(s32* angle, FollowCameraPositioner* posit
     }
 
     s32 result;
-    if (turned != 0)
+    if (hasDirection != 0)
     {
         YawOfDirection(&result, RowOf(&matrix, 2));
         positioner->lastYaw = result;
@@ -468,53 +491,54 @@ s32* FollowCameraPositioner::TargetYaw(s32* angle, FollowCameraPositioner* posit
 
 void FollowCameraPositioner::PlaceFor(const Vector4* point, Vector4* out, u32 commit)
 {
-    s32 x = pitch.current + pitch.delta;
+    s32 aboutX = pitch.current + pitch.delta;
     s32 view = fieldOfView.current + fieldOfView.delta;
-    s32 y = yaw.current + yaw.delta;
-    if ((bits & BitYawExtra) != 0)
+    s32 aboutY = yaw.current + yaw.delta;
+    if (bits.addsExtraYaw != 0)
     {
-        y = y + yawExtra;
+        aboutY = aboutY + yawExtra;
     }
 
     f32 length = distance.current + (distance.delta + backOff);
-    x = WrapAngle(x);
-    y = WrapAngle(y);
+    aboutX = WrapAngle(aboutX);
+    aboutY = WrapAngle(aboutY);
     view = WrapAngle(view);
-    s32 z;
-    AngleFrom(&z, 0.0f, AngleRadians);
+    s32 aboutZ;
+    AngleFrom(&aboutZ, 0.0f, AngleRadians);
     Matrix4x4 matrix;
-    MatrixFromAngles(&matrix, &x, &y, &z);
+    MatrixFromAngles(&matrix, &aboutX, &aboutY, &aboutZ);
     *RowOf(&matrix, 3) = *point;
     out->x = 0.0f;
     out->y = 0.0f;
     out->z = -length;
     out->w = 1.0f;
     VuTransformPoint(&matrix, out, out);
-    if ((bits & BitKeepsHeight) != 0)
+    if (bits.keepsHeight != 0)
     {
         out->y = position.y;
     }
 
     if (commit != 0)
     {
-        pitch.current = x;
+        pitch.current = aboutX;
         fieldOfView.current = view;
-        yaw.current = y;
+        yaw.current = aboutY;
         distance.current = length - backOff;
     }
 }
 
 void FollowCameraPositioner::MoveToward(const Vector4* point, const Vector4* goal, u32 jumped)
 {
+    // A shake that turns the view less than this leaves it as it is
     constexpr f32 Steady = Rounded(0.001);
-    f32 share = (bits & BitTriggerRate) != 0 ? triggerRate : ownRate;
+    f32 share = bits.atTriggerRate != 0 ? triggerRate : ownRate;
     share = share * stepSeconds;
-    if (1.0f < share || (state & StateCut) != 0)
+    if (1.0f < share || state.cut != 0)
     {
         share = 1.0f;
     }
 
-    if ((bits & (BitOnlyLooks | BitKeepsHeight)) != 0)
+    if (bits.onlyLooksAtTarget != 0 || bits.keepsHeight != 0)
     {
         Vector4 up;
         up.x = 0.0f;
@@ -524,7 +548,7 @@ void FollowCameraPositioner::MoveToward(const Vector4* point, const Vector4* goa
         Matrix4x4 matrix;
         LookAtMatrix(&matrix, &position, point, &up);
         GetRotationVec(&rotation, &matrix);
-        if ((bits & BitOnlyLooks) != 0)
+        if (bits.onlyLooksAtTarget != 0)
         {
             return;
         }
@@ -576,19 +600,19 @@ void FollowCameraPositioner::MoveToward(const Vector4* point, const Vector4* goa
     else
     {
         f32 height = position.y;
-        s32 roll0;
-        AngleFrom(&roll0, 0.0f, AngleRadians);
-        s32 x = newPitch;
-        s32 y = newYaw;
+        s32 aboutZ;
+        AngleFrom(&aboutZ, 0.0f, AngleRadians);
+        s32 aboutX = newPitch;
+        s32 aboutY = newYaw;
         Matrix4x4 matrix;
-        MatrixFromAngles(&matrix, &x, &y, &roll0);
+        MatrixFromAngles(&matrix, &aboutX, &aboutY, &aboutZ);
         *RowOf(&matrix, 3) = *point;
         position.x = 0.0f;
         position.y = 0.0f;
         position.z = -length;
         position.w = 1.0f;
         VuTransformPoint(&matrix, &position, &position);
-        if ((bits & BitKeepsHeight) != 0)
+        if (bits.keepsHeight != 0)
         {
             position.y = height;
         }
@@ -614,14 +638,14 @@ void FollowCameraPositioner::MoveToward(const Vector4* point, const Vector4* goa
         RotationBetween(&turn, &ahead, &shaken);
     }
 
-    s32 tilt = roll;
-    s32 x = newPitch;
-    s32 y = newYaw;
+    s32 aboutZ = roll;
+    s32 aboutX = newPitch;
+    s32 aboutY = newYaw;
     Vector4 aimed;
-    GetRotationXYZ(&aimed, &x, &y, &tilt);
+    GetRotationXYZ(&aimed, &aboutX, &aboutY, &aboutZ);
     MultiplyRotations(&aimed, &aimed, &turn);
     SlerpRotations(turnShare, &rotation, &rotation, &aimed);
-    CallVirtual<void>(this, vtable, 7, &position, &rotation);
+    TiltVirtual(&position, &rotation);
     yaw.start = newYaw;
     fieldOfView.start = newView;
     pitch.start = newPitch;
@@ -630,10 +654,14 @@ void FollowCameraPositioner::MoveToward(const Vector4* point, const Vector4* goa
 
 u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32 keep)
 {
+    // The side probes' ends around the camera are behind it; it pulls in only further than PullFurther; it casts at most
+    // MostCasts probes
     constexpr f32 CameraDepth = Rounded(-0.42);
     constexpr f32 PullFurther = 2.0f;
+    constexpr s32 MostCasts = 4;
     s32 cast = 0;
-    u32 hits = 0;
+    ProbeHits hits;
+    hits.value = 0;
     u32 belowFloor = 0;
     Vector4 ahead = *point;
     ahead.x = ahead.x - goal->x;
@@ -645,7 +673,7 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
     up.y = 1.0f;
     up.z = 0.0f;
     up.w = 1.0f;
-    f32 inverse = InverseLength(&ahead, TinyLength);
+    f32 inverse = InverseLength(&ahead, LengthEpsilon);
     ahead.x = ahead.x * inverse;
     ahead.y = ahead.y * inverse;
     ahead.z = ahead.z * inverse;
@@ -664,7 +692,7 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
     *RowOf(&targetFrame, 1) = upward;
     *RowOf(&targetFrame, 2) = ahead;
     Vector4* targetOrigin = RowOf(&targetFrame, 3);
-    if ((bits & BitProbesFromTarget) != 0)
+    if (bits.probesFromTarget != 0)
     {
         *targetOrigin = *point;
     }
@@ -676,7 +704,7 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
         targetOrigin->z = lowTargetOffset.z + (highTargetOffset.z - lowTargetOffset.z) * share;
         VuRotateVector(&targetFrame, targetOrigin, targetOrigin);
         Vector4 object = target->objectPosition;
-        object.y = object.y + 1.0f;
+        object.y = object.y + EyeHeight;
         targetOrigin->x = targetOrigin->x + object.x;
         targetOrigin->y = targetOrigin->y + object.y;
         targetOrigin->z = targetOrigin->z + object.z;
@@ -696,17 +724,17 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
     cameraOrigin->y = cameraOrigin->y + goal->y;
     cameraOrigin->z = cameraOrigin->z + goal->z;
     f32 rest = 1.0f - share;
-    f32 targetSides[4];
-    f32 cameraSides[4];
-    for (u32 index = 0; index < 4; index++)
+    f32 targetSides[ProbeCount];
+    f32 cameraSides[ProbeCount];
+    for (u32 index = 0; index < ProbeCount; index++)
     {
         targetSides[index] = highTargetSides[index] * share + lowTargetSides[index] * rest;
         cameraSides[index] = highCameraSides[index] * share + lowCameraSides[index] * rest;
     }
 
-    if ((pitch.bits & AngleBlender::BitEnabled) != 0)
+    if (pitch.bits.enabled != 0)
     {
-        for (u32 index = 0; index < 2; index++)
+        for (u32 index = ProbeAbove; index <= ProbeBelow; index++)
         {
             probeTargetEnds[index].x = 0.0f;
             probeTargetEnds[index].y = targetSides[index];
@@ -718,48 +746,48 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
             probeCameraEnds[index].w = 1.0f;
         }
 
-        VuTransformPoint(&targetFrame, &probeTargetEnds[0], &probeTargetEnds[0]);
-        VuTransformPoint(&targetFrame, &probeTargetEnds[1], &probeTargetEnds[1]);
-        VuTransformPoint(&cameraFrame, &probeCameraEnds[0], &probeCameraEnds[0]);
-        VuTransformPoint(&cameraFrame, &probeCameraEnds[1], &probeCameraEnds[1]);
-        if (cast < 4 && (bits & ProbeMask) == 0)
+        VuTransformPoint(&targetFrame, &probeTargetEnds[ProbeAbove], &probeTargetEnds[ProbeAbove]);
+        VuTransformPoint(&targetFrame, &probeTargetEnds[ProbeBelow], &probeTargetEnds[ProbeBelow]);
+        VuTransformPoint(&cameraFrame, &probeCameraEnds[ProbeAbove], &probeCameraEnds[ProbeAbove]);
+        VuTransformPoint(&cameraFrame, &probeCameraEnds[ProbeBelow], &probeCameraEnds[ProbeBelow]);
+        if (cast < MostCasts && bits.nextProbe == ProbeAbove)
         {
-            if (SegmentBlocked(&probeCameraEnds[0], &probeTargetEnds[0]) != 0)
+            if (SegmentBlocked(&probeCameraEnds[ProbeAbove], &probeTargetEnds[ProbeAbove]) != 0)
             {
-                hits = 1;
+                hits.above = 1;
             }
 
-            bits = NextProbe(bits);
+            bits.nextProbe = bits.nextProbe + 1;
             cast = 1;
             if (keep != 0)
             {
-                bits = (bits & ~BitAboveHit) | static_cast<u64>(hits & 1) << 41;
+                bits.aboveHit = hits.above;
             }
         }
-        else if ((bits & BitAboveHit) != 0)
+        else if (bits.aboveHit != 0)
         {
-            hits = 1;
+            hits.above = 1;
         }
 
-        if (probeFloor < probeTargetEnds[1].y)
+        if (probeFloor < probeTargetEnds[ProbeBelow].y)
         {
-            if (cast < 4 && (bits & ProbeMask) == 1ull << ProbeShift)
+            if (cast < MostCasts && bits.nextProbe == ProbeBelow)
             {
-                if (SegmentBlocked(&probeCameraEnds[1], &probeTargetEnds[1]) != 0)
+                if (SegmentBlocked(&probeCameraEnds[ProbeBelow], &probeTargetEnds[ProbeBelow]) != 0)
                 {
-                    hits |= 2;
+                    hits.below = 1;
                 }
 
-                bits = NextProbe(bits);
+                bits.nextProbe = bits.nextProbe + 1;
                 cast = static_cast<s8>(cast + 1);
                 if (keep != 0)
                 {
-                    bits = (bits & ~BitBelowHit) | static_cast<u64>(hits >> 1 & 1) << 42;
+                    bits.belowHit = hits.below;
                 }
             }
-            else if ((bits & BitBelowHit) != 0)
+            else if (bits.belowHit != 0)
             {
-                hits |= 2;
+                hits.below = 1;
             }
         }
         else
@@ -768,9 +796,9 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
         }
     }
 
-    if ((yaw.bits & AngleBlender::BitEnabled) != 0)
+    if (yaw.bits.enabled != 0)
     {
-        for (u32 index = 2; index < 4; index++)
+        for (u32 index = ProbeLeft; index <= ProbeRight; index++)
         {
             probeTargetEnds[index].x = targetSides[index];
             probeTargetEnds[index].y = 0.0f;
@@ -782,79 +810,80 @@ u32 FollowCameraPositioner::Probe(const Vector4* point, const Vector4* goal, u32
             probeCameraEnds[index].w = 1.0f;
         }
 
-        VuTransformPoint(&targetFrame, &probeTargetEnds[2], &probeTargetEnds[2]);
-        VuTransformPoint(&targetFrame, &probeTargetEnds[3], &probeTargetEnds[3]);
-        VuTransformPoint(&cameraFrame, &probeCameraEnds[2], &probeCameraEnds[2]);
-        VuTransformPoint(&cameraFrame, &probeCameraEnds[3], &probeCameraEnds[3]);
-        if (cast < 4 && (bits & ProbeMask) == 2ull << ProbeShift)
+        VuTransformPoint(&targetFrame, &probeTargetEnds[ProbeLeft], &probeTargetEnds[ProbeLeft]);
+        VuTransformPoint(&targetFrame, &probeTargetEnds[ProbeRight], &probeTargetEnds[ProbeRight]);
+        VuTransformPoint(&cameraFrame, &probeCameraEnds[ProbeLeft], &probeCameraEnds[ProbeLeft]);
+        VuTransformPoint(&cameraFrame, &probeCameraEnds[ProbeRight], &probeCameraEnds[ProbeRight]);
+        if (cast < MostCasts && bits.nextProbe == ProbeLeft)
         {
-            if (SegmentBlocked(&probeCameraEnds[2], &probeTargetEnds[2]) != 0)
+            if (SegmentBlocked(&probeCameraEnds[ProbeLeft], &probeTargetEnds[ProbeLeft]) != 0)
             {
-                hits |= 4;
+                hits.left = 1;
             }
 
-            bits = NextProbe(bits);
+            bits.nextProbe = bits.nextProbe + 1;
             cast = static_cast<s8>(cast + 1);
             if (keep != 0)
             {
-                bits = (bits & ~BitLeftHit) | static_cast<u64>(hits >> 2 & 1) << 39;
+                bits.leftHit = hits.left;
             }
         }
-        else if ((bits & BitLeftHit) != 0)
+        else if (bits.leftHit != 0)
         {
-            hits |= 4;
+            hits.left = 1;
         }
 
-        if (cast < 4 && (bits & ProbeMask) == ProbeMask)
+        if (cast < MostCasts && bits.nextProbe == ProbeRight)
         {
-            if (SegmentBlocked(&probeCameraEnds[3], &probeTargetEnds[3]) != 0)
+            if (SegmentBlocked(&probeCameraEnds[ProbeRight], &probeTargetEnds[ProbeRight]) != 0)
             {
-                hits |= 8;
+                hits.right = 1;
             }
 
-            bits &= ~ProbeMask;
+            bits.nextProbe = ProbeAbove;
             if (keep != 0)
             {
-                bits = (bits & ~BitRightHit) | static_cast<u64>(hits >> 3 & 1) << 40;
+                bits.rightHit = hits.right;
             }
         }
-        else if ((bits & BitRightHit) != 0)
+        else if (bits.rightHit != 0)
         {
-            hits |= 8;
+            hits.right = 1;
         }
     }
 
-    if ((distance.bits & AngleBlender::BitEnabled) != 0)
+    if (distance.bits.enabled != 0)
     {
-        u32 bothUpright = (hits & 3) == 3;
-        u32 noneUpright = (hits & 3) == 0;
-        u32 bothSides = (hits & 0xC) == 0xC;
+        u32 bothUpright = hits.above != 0 && hits.below != 0;
+        u32 noneUpright = hits.above == 0 && hits.below == 0;
+        u32 bothSides = hits.left != 0 && hits.right != 0;
         if (bothSides != 0 && noneUpright != 0)
         {
             if (belowFloor == 0)
             {
-                hits |= 0x22;
+                hits.below = 1;
+                hits.pair = 1;
             }
         }
         else if (bothUpright != 0 || bothSides != 0)
         {
-            hits |= 0x20;
+            hits.pair = 1;
         }
 
-        if ((bits & Bit3) != 0 && hits != 0 && bothUpright == 0 && bothSides == 0 && PullFurther < distance.current)
+        if (bits.stickTurning != 0 && hits.value != 0 && bothUpright == 0 && bothSides == 0 && PullFurther < distance.current)
         {
-            hits |= 0x40;
+            hits.pullIn = 1;
         }
     }
 
-    probeHits = static_cast<u8>(hits | probeHits);
-    return hits;
+    unused1D4 = static_cast<u8>(hits.value | unused1D4);
+    return hits.value;
 }
 
 u32 FollowCameraPositioner::ProbeRates(const Vector4* point, s32* pitchRate, s32* yawRate, f32* distanceRate, u32 keep)
 {
     constexpr f32 PullRate = -20.0f;
-    if ((bits & BitProbesOff) != 0)
+    if (bits.probesOff != 0)
     {
         *pitchRate = 0;
         *yawRate = 0;
@@ -864,32 +893,34 @@ u32 FollowCameraPositioner::ProbeRates(const Vector4* point, s32* pitchRate, s32
 
     Vector4 goal;
     PlaceFor(point, &goal, 0);
-    u32 hits = Probe(point, &goal, keep);
-    if ((hits & 4) != 0)
+    ProbeHits hits;
+    hits.value = Probe(point, &goal, keep);
+    // Turned away from the probe that hit (not when both of the pair did)
+    if (hits.left != 0)
     {
-        *yawRate = (hits & 8) != 0 ? 0 : -yawPushRate;
+        *yawRate = hits.right != 0 ? 0 : -yawPushRate;
     }
     else
     {
-        *yawRate = (hits & 8) != 0 ? yawPushRate : 0;
+        *yawRate = hits.right != 0 ? yawPushRate : 0;
     }
 
-    if ((hits & 1) != 0)
+    if (hits.above != 0)
     {
-        *pitchRate = (hits & 2) != 0 ? 0 : -pitchPushRate;
+        *pitchRate = hits.below != 0 ? 0 : -pitchPushRate;
     }
     else
     {
-        *pitchRate = (hits & 2) != 0 ? pitchPushRate : 0;
+        *pitchRate = hits.below != 0 ? pitchPushRate : 0;
     }
 
     *distanceRate = 0.0f;
-    if ((hits & 0x40) != 0)
+    if (hits.pullIn != 0)
     {
         *distanceRate = PullRate;
     }
 
-    return hits;
+    return hits.value;
 }
 
 u32 FollowCameraPositioner::PushByProbes(TimeClock* clock, const Vector4* point)
@@ -897,9 +928,10 @@ u32 FollowCameraPositioner::PushByProbes(TimeClock* clock, const Vector4* point)
     s32 pitchRate;
     s32 yawRate;
     f32 distanceRate;
-    u32 hits = ProbeRates(point, &pitchRate, &yawRate, &distanceRate, 1);
+    ProbeHits hits;
+    hits.value = ProbeRates(point, &pitchRate, &yawRate, &distanceRate, 1);
     f32 seconds = StepSeconds(clock);
-    if ((hits & 0xC) != 0)
+    if (hits.left != 0 || hits.right != 0)
     {
         if (yaw.delta != 0)
         {
@@ -910,7 +942,7 @@ u32 FollowCameraPositioner::PushByProbes(TimeClock* clock, const Vector4* point)
         yaw.Push(seconds, &rate, 0);
     }
 
-    if ((hits & 3) != 0)
+    if (hits.above != 0 || hits.below != 0)
     {
         if (pitch.delta != 0)
         {
@@ -921,40 +953,41 @@ u32 FollowCameraPositioner::PushByProbes(TimeClock* clock, const Vector4* point)
         pitch.Push(seconds, &rate, 0);
     }
 
-    if ((hits & 0x40) != 0)
+    if (hits.pullIn != 0)
     {
-        if ((distance.bits & AngleBlender::BitEnabled) != 0)
+        if (distance.bits.enabled != 0)
         {
             distance.delta = distanceRate * seconds;
             distance.KeepWithin(distance.low, distance.high);
-            distance.bits |= AngleBlender::BitPushed;
+            distance.bits.pushed = 1;
         }
     }
-    else if ((hits & 0x30) != 0)
+    // (Retail also tests bit 4, which Probe never sets)
+    else if (hits.pair != 0)
     {
-        if (!(__builtin_fabsf(distance.delta) <= NoMove))
+        if (!(__builtin_fabsf(distance.delta) <= Epsilon))
         {
             distanceRate = 0.0f;
         }
 
-        if ((distance.bits & AngleBlender::BitEnabled) != 0)
+        if (distance.bits.enabled != 0)
         {
             distance.delta = distanceRate * seconds;
-            distance.bits |= AngleBlender::BitPushed;
+            distance.bits.pushed = 1;
         }
     }
 
-    return hits;
+    return hits.value;
 }
 
 u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
 {
     u32 moving = 0;
     u32 distanceMoving;
-    distance.bits &= ~AngleBlender::BitBlendedGoal;
-    if ((bits & BitAtPlace) == 0)
+    distance.bits.blendedGoal = 0;
+    if (bits.atTriggerPlace == 0)
     {
-        if ((state & StateTimed) != 0 && !(static_cast<s32>(clock->time - blendStart) < blendTicks))
+        if (state.timed != 0 && !(static_cast<s32>(clock->time - blendStart) < blendTicks))
         {
             EndBlend();
         }
@@ -962,7 +995,7 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
         EaseBackOff();
         s32 pitchGoal;
         AngleFrom(&pitchGoal, 0.0f, AngleDegrees);
-        if ((bits & BitTilts) != 0)
+        if (bits.tilts != 0)
         {
             s32 standard = g_FollowCameraPitch;
             pitchGoal = standard;
@@ -979,23 +1012,23 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
         s32 yawGoal;
         TargetYaw(&yawGoal, this);
         s32 goal = pitchGoal;
-        u32 pitchMoving = pitch.Step(clock, &goal, 1, state >> 6 & 1);
+        u32 pitchMoving = pitch.Step(clock, &goal, 1, state.cut);
         goal = yawGoal;
-        u32 yawMoving = yaw.Step(clock, &goal, 0, state >> 6 & 1);
+        u32 yawMoving = yaw.Step(clock, &goal, 0, state.cut);
         moving = pitchMoving != 0 || yawMoving != 0;
-        if ((bits & BitDistanceFollowsPitch) != 0)
+        if (bits.distanceFollowsPitch != 0)
         {
-            distance.bits |= AngleBlender::BitBlendedGoal;
+            distance.bits.blendedGoal = 1;
             distance.goalShare = pitch.share;
         }
 
-        distanceMoving = distance.Step(DefaultDistance, clock, 1, state >> 6 & 1) != 0;
+        distanceMoving = distance.Step(DefaultDistance, clock, 1, state.cut) != 0;
     }
     else
     {
         Vector4 way = target->point;
         f32 share = StepSeconds(clock);
-        if ((state & StateBlendStarted) == 0)
+        if (state.blendStarted == 0)
         {
             share = 1.0f;
         }
@@ -1009,15 +1042,15 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
             }
             else
             {
-                u32 curve = state >> CurveShift & 7;
-                if (curve == 0)
+                u32 curve = state.curve;
+                if (curve == FollowCurveEven)
                 {
-                    if ((state & StateAlongLine) != 0)
+                    if (state.alongLine != 0)
                     {
-                        if ((state & StateCut) != 0)
+                        if (state.cut != 0)
                         {
                             share = 1.0f;
-                            blendFrom = place;
+                            blendFrom = triggerPlace;
                         }
                         else
                         {
@@ -1032,7 +1065,7 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
                         share = share / (static_cast<f32>(blendTicks - since) * g_SecondsPerClockUnit);
                     }
                 }
-                else if (curve == CurveCubic)
+                else if (curve == FollowCurveCubic)
                 {
                     f32 elapsed = static_cast<f32>(since) * g_SecondsPerClockUnit /
                                   (static_cast<f32>(blendTicks) * g_SecondsPerClockUnit);
@@ -1041,12 +1074,12 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
             }
         }
 
-        if ((state & StateAlongLine) != 0)
+        if (state.alongLine != 0)
         {
             Vector4 line;
-            line.x = place.x - blendFrom.x;
-            line.y = place.y - blendFrom.y;
-            line.z = place.z - blendFrom.z;
+            line.x = triggerPlace.x - blendFrom.x;
+            line.y = triggerPlace.y - blendFrom.y;
+            line.z = triggerPlace.z - blendFrom.z;
             line.w = 1.0f;
             Vector4 along = line;
             along.x = along.x * share + blendFrom.x;
@@ -1058,25 +1091,25 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
         }
         else
         {
-            way.x = way.x - place.x;
-            way.y = way.y - place.y;
-            way.z = way.z - place.z;
+            way.x = way.x - triggerPlace.x;
+            way.y = way.y - triggerPlace.y;
+            way.z = way.z - triggerPlace.z;
         }
 
         f32 length = __builtin_sqrtf(way.x * way.x + way.y * way.y + way.z * way.z);
         s32 tilt;
         s32 turn;
         AnglesAlong(&way, &tilt, &turn);
-        if ((state & StateCut) != 0)
+        if (state.cut != 0)
         {
             pitch.current = tilt;
             yaw.current = turn;
             distance.current = length;
             s32 goal = fieldOfView.low;
-            return 1 | (fieldOfView.Step(clock, &goal, 1, state >> 6 & 1) != 0);
+            return 1 | (fieldOfView.Step(clock, &goal, 1, state.cut) != 0);
         }
 
-        if ((state & StateAlongLine) != 0)
+        if (state.alongLine != 0)
         {
             pitch.current = tilt;
             yaw.current = turn;
@@ -1085,42 +1118,42 @@ u32 FollowCameraPositioner::StepBlenders(TimeClock* clock)
             AngleFrom(&yaw.delta, 0.0f, AngleRadians);
             distance.delta = 0.0f;
             s32 goal = fieldOfView.low;
-            return fieldOfView.Step(clock, &goal, 1, state >> 6 & 1) != 0;
+            return fieldOfView.Step(clock, &goal, 1, state.cut) != 0;
         }
 
-        if ((pitch.bits & AngleBlender::BitEnabled) != 0)
+        if (pitch.bits.enabled != 0)
         {
             pitch.delta = static_cast<s32>(static_cast<f32>(WrapAngle(tilt - pitch.current)) * share);
             s32 low = tilt;
             s32 high = tilt;
             pitch.KeepWithin(&low, &high);
-            pitch.bits |= AngleBlender::BitPushed;
+            pitch.bits.pushed = 1;
         }
 
-        moving = pitch.bits >> 4 & 1;
-        if ((yaw.bits & AngleBlender::BitEnabled) != 0)
+        moving = pitch.bits.pushed;
+        if (yaw.bits.enabled != 0)
         {
             yaw.delta = static_cast<s32>(static_cast<f32>(WrapAngle(turn - yaw.current)) * share);
             s32 low = turn;
             s32 high = turn;
             yaw.KeepWithin(&low, &high);
-            yaw.bits |= AngleBlender::BitPushed;
+            yaw.bits.pushed = 1;
         }
 
-        moving |= yaw.bits >> 4 & 1;
-        if ((distance.bits & AngleBlender::BitEnabled) != 0)
+        moving |= yaw.bits.pushed;
+        if (distance.bits.enabled != 0)
         {
             distance.delta = (length - distance.current) * share;
             distance.KeepWithin(length, length);
-            distance.bits |= AngleBlender::BitPushed;
+            distance.bits.pushed = 1;
         }
 
-        distanceMoving = distance.bits >> 4 & 1;
+        distanceMoving = distance.bits.pushed;
     }
 
     moving |= distanceMoving;
     s32 goal = fieldOfView.low;
-    return moving | (fieldOfView.Step(clock, &goal, 1, state >> 6 & 1) != 0);
+    return moving | (fieldOfView.Step(clock, &goal, 1, state.cut) != 0);
 }
 
 void FollowCameraPositioner::MeasureFacing()
@@ -1130,7 +1163,7 @@ void FollowCameraPositioner::MeasureFacing()
     constexpr f32 Spread = 0x1.1c71c8p+0f;
     f32 cosine = 0.0f;
     f32 sine = 0.0f;
-    if ((bits & (BitRestarted | BitTriggerBit22Clear | Bit19)) == 0)
+    if (bits.restarted == 0 && bits.noFacingTilt == 0 && bits.stickTurned == 0)
     {
         Vector4 cameraAhead;
         cameraAhead.x = 0.0f;
@@ -1183,10 +1216,11 @@ void FollowCameraPositioner::MeasureFacing()
 
 u32 FollowCameraPositioner::PushOutOfHulls(const Vector4* goal, const Vector4* from, Vector4* out)
 {
+    // The radius grows a unit a second while the hulls push it, up to MostRadius
     constexpr f32 MostRadius = 0.5f;
     Vector4 reached = *goal;
     u32 pushed = 0;
-    if ((bits & BitPushedOutOfHull) != 0)
+    if (bits.pushedOutOfHull != 0)
     {
         hullRadius = hullRadius + stepSeconds;
         if (MostRadius < hullRadius)
@@ -1200,10 +1234,11 @@ u32 FollowCameraPositioner::PushOutOfHulls(const Vector4* goal, const Vector4* f
     }
 
     void* results[MostQueried];
-    InstanceRayHit query;
+    InstanceQuery query;
     MakeQuery(&query, results, instance);
     f32 share = 0.0f;
     Vector4 hit;
+    // Up to where the segment from where it was hits an instance
     if (SegmentHitsInstances(instance->chunk, from, goal, &query, EveryInstance, &share, &hit, 0) != 0)
     {
         reached = hit;
@@ -1220,7 +1255,7 @@ u32 FollowCameraPositioner::PushOutOfHulls(const Vector4* goal, const Vector4* f
     box.max.y = reached.y + radius;
     box.max.z = reached.z + radius;
     box.max.w = 1.0f;
-    GrowBox(Rounded(0.1), &box);
+    GrowBox(GatherMargin, &box);
     QueryChunkInstances(instance->chunk, &box, EveryInstance, &query);
     for (s32 index = 0; index < query.count; index++)
     {
@@ -1232,7 +1267,7 @@ u32 FollowCameraPositioner::PushOutOfHulls(const Vector4* goal, const Vector4* f
             Matrix4x4 matrix;
             GetInstanceHull(collision, hull, &model, &matrix);
             const CollisionSurface* surface = &g_CollisionSurfaces.surfaces[static_cast<u16>(model->surface)];
-            if ((surface->collisionMask & CameraSurfaces) == 0)
+            if (surface->flags.blocksCamera == 0)
             {
                 continue;
             }
@@ -1253,15 +1288,7 @@ u32 FollowCameraPositioner::PushOutOfHulls(const Vector4* goal, const Vector4* f
         }
     }
 
-    if (pushed != 0)
-    {
-        bits |= BitPushedOutOfHull;
-    }
-    else
-    {
-        bits &= ~BitPushedOutOfHull;
-    }
-
+    bits.pushedOutOfHull = pushed;
     return pushed;
 }
 
@@ -1270,17 +1297,18 @@ u32 FollowCameraPositioner::PushOffCollision(const Vector4* goal, const Vector4*
     constexpr f32 Clearance = Rounded(0.01);
     u32 pushed = 0;
     Vector4 reached = *goal;
-    if ((state & StateCut) == 0)
+    if (state.cut == 0)
     {
         f32 distanceAlong;
-        if (GetCollisionCheck(instance->chunk, &position, goal, CameraSurfaces, &distanceAlong, &reached, nullptr) != 0)
+        if (GetCollisionCheck(instance->chunk, &position, goal, SurfaceFlags::BlocksCamera, &distanceAlong, &reached, nullptr)
+            != 0)
         {
             Vector4 away;
             away.x = position.x - reached.x;
             away.y = position.y - reached.y;
             away.z = position.z - reached.z;
             away.w = 1.0f;
-            f32 inverse = InverseLength(&away, TinyLength);
+            f32 inverse = InverseLength(&away, LengthEpsilon);
             away.x = away.x * inverse * Clearance;
             away.y = away.y * inverse * Clearance;
             away.z = away.z * inverse * Clearance;
@@ -1302,7 +1330,7 @@ u32 FollowCameraPositioner::PushOffCollision(const Vector4* goal, const Vector4*
     box.max.y = reached.y + radius;
     box.max.z = reached.z + radius;
     box.max.w = 1.0f;
-    GrowBox(Rounded(0.1), &box);
+    GrowBox(GatherMargin, &box);
     RefreshCollisionCache(cache, &box);
     for (CollisionHit* hit = FirstCollisionHit(cache); hit != nullptr; hit = NextCollisionHit(cache))
     {
@@ -1322,28 +1350,16 @@ u32 FollowCameraPositioner::PushOffCollision(const Vector4* goal, const Vector4*
 
     if (pushed != 0)
     {
-        bits = (bits | BitPushedOffCollision) & ~BitFree;
-        if (DistanceSquared(goal, point) - DistanceSquared(out, point) < NoMove)
-        {
-            bits |= BitPushedBack;
-        }
-        else
-        {
-            bits &= ~BitPushedBack;
-        }
+        bits.pushedOffCollision = 1;
+        bits.unpushed = 0;
+        bits.pushedBack = DistanceSquared(goal, point) - DistanceSquared(out, point) < Epsilon;
     }
     else
     {
-        if ((bits & BitPushedOffCollision) != 0)
-        {
-            bits &= ~BitFree;
-        }
-        else
-        {
-            bits |= BitFree;
-        }
-
-        bits &= ~BitPushedOffCollision & ~BitPushedBack;
+        // Free once a step goes by without a push
+        bits.unpushed = bits.pushedOffCollision == 0;
+        bits.pushedOffCollision = 0;
+        bits.pushedBack = 0;
     }
 
     return pushed;
@@ -1351,15 +1367,15 @@ u32 FollowCameraPositioner::PushOffCollision(const Vector4* goal, const Vector4*
 
 u32 FollowCameraPositioner::CastView(const Vector4* from, const Vector4* to, Vector4* hit, u32 instances, u32 lineOfSight)
 {
-    u32 mask = lineOfSight != 0 ? SightSurfaces : CameraSurfaces;
+    u32 surfaces = lineOfSight != 0 ? SurfaceFlags::BlocksLineOfSight : SurfaceFlags::BlocksCamera;
     if (instances == 0)
     {
         f32 distanceAlong;
-        return GetCollisionCheck(instance->chunk, from, to, mask, &distanceAlong, hit, nullptr);
+        return GetCollisionCheck(instance->chunk, from, to, surfaces, &distanceAlong, hit, nullptr);
     }
 
     void* results[MostQueried];
-    InstanceRayHit query;
+    InstanceQuery query;
     MakeQuery(&query, results, instance);
     if (ignored != nullptr)
     {
@@ -1367,17 +1383,21 @@ u32 FollowCameraPositioner::CastView(const Vector4* from, const Vector4* to, Vec
     }
 
     f32 share = 0.0f;
-    return SegmentHitsAnything(instance->chunk, from, to, mask, &query, EveryInstance, &share, hit, nullptr);
+    return SegmentHitsAnything(instance->chunk, from, to, surfaces, &query, EveryInstance, &share, hit, nullptr);
 }
 
 u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* from, Vector4* out, u32 instances)
 {
-    constexpr f32 Near = 4.0f;
+    // Where the view stops within NearDistance of the point is no place; the pull back from where it stops further than the
+    // radius and NearDistance (squared) is the radius, NearDistance and PullMargin, else ShortPull
+    constexpr f32 NearDistance = 2.0f;
+    constexpr f32 NearSquared = NearDistance * NearDistance;
+    constexpr f32 PullMargin = Rounded(0.1);
     constexpr f32 ShortPull = Rounded(0.2);
     constexpr f32 Behind = -10.0f;
     f32 radius = collisionRadius;
-    f32 longPull = (radius + 2.0f) + Rounded(0.1);
-    f32 farSquared = radius * radius + Near;
+    f32 longPull = (radius + NearDistance) + PullMargin;
+    f32 farSquared = radius * radius + NearSquared;
     u32 found = 0;
     Vector4 hit;
     if (CastView(from, goal, &hit, instances, 0) == 0)
@@ -1388,7 +1408,7 @@ u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* f
     else
     {
         f32 lengthSquared = DistanceSquared(&hit, from);
-        if (Near < lengthSquared)
+        if (NearSquared < lengthSquared)
         {
             found = 1;
             *out = PullBack(from, &hit, farSquared < lengthSquared ? longPull : ShortPull);
@@ -1405,9 +1425,9 @@ u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* f
         back.w = 1.0f;
         Matrix4x4 matrix;
         InitIdentityMatrix(&matrix);
-        s32 x = attempt == 0 ? g_FollowCameraPitch : pitch.current;
-        s32 y = Opposite(yaw.current);
-        MatrixFromPitchYaw(&matrix, &x, &y);
+        s32 aboutX = attempt == 0 ? g_FollowCameraPitch : pitch.current;
+        s32 aboutY = Opposite(yaw.current);
+        MatrixFromPitchYaw(&matrix, &aboutX, &aboutY);
         *RowOf(&matrix, 3) = *from;
         Vector4 candidate;
         VuTransformPoint(&matrix, &back, &candidate);
@@ -1419,7 +1439,7 @@ u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* f
         }
 
         f32 lengthSquared = DistanceSquared(&hit, from);
-        if (Near < lengthSquared)
+        if (NearSquared < lengthSquared)
         {
             found = 1;
             f32 pull;
@@ -1438,8 +1458,11 @@ u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* f
 
     if (found != 0)
     {
-        bits = (bits & ~BitPushedOffCollision & ~BitTargetStill) | BitFree;
-        bits &= ~BitProbesOff & ~static_cast<u64>(BitTriggerRate);
+        bits.pushedOffCollision = 0;
+        bits.targetStill = 0;
+        bits.unpushed = 1;
+        bits.probesOff = 0;
+        bits.atTriggerRate = 0;
     }
 
     return found;
@@ -1447,33 +1470,33 @@ u32 FollowCameraPositioner::FindClearPlace(const Vector4* goal, const Vector4* f
 
 u32 FollowCameraPositioner::ViewBlocked(const Vector4* point, const Vector4* other)
 {
-    constexpr f32 Near = 4.0f;
-    u64 old = bits;
-    if ((old & BitViewUnchecked) != 0)
+    // Within 2 (squared)
+    constexpr f32 NearSquared = 4.0f;
+    if (bits.skipsViewCheck != 0)
     {
         return 0;
     }
 
-    if ((old & BitPushedBack) != 0)
+    if (bits.pushedBack != 0)
     {
         return 1;
     }
 
-    if ((old & (BitPushedOffCollision | BitPushedOutOfHull)) != 0 && DistanceSquared(point, other) < Near)
+    if ((bits.pushedOffCollision != 0 || bits.pushedOutOfHull != 0) && DistanceSquared(point, other) < NearSquared)
     {
         return 1;
     }
 
-    Vector4 from = target->objectPosition;
-    from.y = from.y + 1.0f;
+    Vector4 eye = target->objectPosition;
+    eye.y = eye.y + EyeHeight;
     Vector4 hit;
-    return CastView(&from, point, &hit, (bits & BitPushedOutOfHull) != 0, 1);
+    return CastView(&eye, point, &hit, bits.pushedOutOfHull, 1);
 }
 
-void FollowCameraPositioner::FollowKeyed(Camera1C0E* keys)
+void FollowCameraPositioner::FollowKeyed(KeyedCamera* keys)
 {
     constexpr f32 Ease = Rounded(0.05);
-    TimeClock* clock = &G_GameClockController->clocks[0];
+    TimeClock* clock = &G_GameClockController->clocks[FirstClock];
     if (keys->playing == 0)
     {
         keys->Play(clock, &position, &rotation);
@@ -1487,7 +1510,7 @@ void FollowCameraPositioner::FollowKeyed(Camera1C0E* keys)
         keys->playing = 0;
         keys->finished = 1;
         keyed = 0;
-        state |= StateCut;
+        state.cut = 1;
         return;
     }
 
@@ -1507,21 +1530,27 @@ void FollowCameraPositioner::FollowKeyed(Camera1C0E* keys)
 
 void FollowCameraPositioner::CheckTargetStill()
 {
+    // A squared speed
     constexpr f32 Still = Rounded(1e-4);
     const Vector4* velocity = &target->velocity;
-    f32 speed = __builtin_fabsf(velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z);
-    u64 old = bits;
-    if (!(speed <= Still) || (old & (Bit3 | BitTriggerBit11)) == Bit3)
+    f32 speedSquared = __builtin_fabsf(velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z);
+    if (!(speedSquared <= Still) || (bits.stickTurning != 0 && bits.alwaysTakesValues == 0))
     {
-        bits = (old & ~BitTargetStill) | BitFree;
-        bits &= ~BitProbesOff & ~static_cast<u64>(BitTriggerRate);
+        bits.targetStill = 0;
+        bits.unpushed = 1;
+        bits.probesOff = 0;
+        bits.atTriggerRate = 0;
         return;
     }
 
-    if ((old & (BitPushedOffCollision | BitIgnoresValues)) == BitPushedOffCollision)
+    // Against the collision it stays where it is (at the trigger's rate, 0) with its probes off
+    if (bits.pushedOffCollision != 0 && bits.ignoresValues == 0)
     {
         triggerRate = 0.0f;
-        bits = ((old | BitTargetStill) & ~BitFree) | BitProbesOff | BitTriggerRate;
+        bits.targetStill = 1;
+        bits.unpushed = 0;
+        bits.probesOff = 1;
+        bits.atTriggerRate = 1;
     }
 }
 
@@ -1554,7 +1583,7 @@ void FollowCameraPositioner::Step(TimeClock* clock, CameraTarget* follower)
     }
 
     stepSeconds = StepSeconds(clock);
-    if ((bits & (BitStill | BitOnlyLooks)) != 0)
+    if (bits.holdsStill != 0 || bits.onlyLooksAtTarget != 0)
     {
         Vector4 point = target != nullptr ? target->point : Origin();
         // Retail hands over a place its stack had (read only without the look-only bit, which no camera of the game's has
@@ -1567,81 +1596,90 @@ void FollowCameraPositioner::Step(TimeClock* clock, CameraTarget* follower)
     }
 
     MeasureFacing();
-    pitch.bits = (pitch.bits | AngleBlender::BitEnabled) & ~AngleBlender::BitPushed;
-    fieldOfView.bits = (fieldOfView.bits | AngleBlender::BitEnabled) & ~AngleBlender::BitPushed;
-    yaw.bits = (yaw.bits | AngleBlender::BitEnabled) & ~AngleBlender::BitPushed;
+    pitch.bits.enabled = 1;
+    pitch.bits.pushed = 0;
+    fieldOfView.bits.enabled = 1;
+    fieldOfView.bits.pushed = 0;
+    yaw.bits.enabled = 1;
+    yaw.bits.pushed = 0;
     target = follower;
-    probeHits = 0;
+    unused1D4 = 0;
     pitch.delta = 0;
     fieldOfView.delta = 0;
     yaw.delta = 0;
     distance.delta = 0.0f;
-    distance.bits = (distance.bits | AngleBlender::BitEnabled) & ~AngleBlender::BitPushed;
-    if ((state & (StateCut | StatePlaced)) == (StateCut | StatePlaced))
+    distance.bits.enabled = 1;
+    distance.bits.pushed = 0;
+    if (state.cut != 0 && state.placed != 0)
     {
-        state &= ~StateCut;
+        state.cut = 0;
     }
 
-    if ((state & (StateBlending | StateTimed)) != 0 && (state & StateBlendStarted) == 0)
+    if ((state.blending != 0 || state.timed != 0) && state.blendStarted == 0)
     {
         blendStart = clock->time;
         blendFrom = position;
-        state = (state | StateBlendStarted) & ~StateTimeEnded;
+        state.blendStarted = 1;
+        state.timeEnded = 0;
     }
 
     Vector4 point = target != nullptr ? target->point : Origin();
-    u32 steering = (bits & (BitTriggerBit4 | BitIgnoresValues)) != 0;
+    u32 steering = bits.triggerSteers != 0 || bits.ignoresValues != 0;
     Vector4 hit;
     hit.x = 0.0f;
     hit.y = 0.0f;
     hit.z = 0.0f;
     hit.w = 1.0f;
     u32 jumped = 0;
-    if ((bits & BitBlockedLong) != 0)
+    if (bits.blockedLong != 0)
     {
-        Vector4 from = target->objectPosition;
-        from.y = from.y + 1.0f;
-        if (ViewBlocked(&position, &from) != 0 && FindClearPlace(&position, &target->point, &hit, 1) != 0)
+        Vector4 eye = target->objectPosition;
+        eye.y = eye.y + EyeHeight;
+        if (ViewBlocked(&position, &eye) != 0 && FindClearPlace(&position, &target->point, &hit, 1) != 0)
         {
             jumped = 1;
             ClearBlocked();
             smoothed = 0;
-            state = (state | StateCut) & ~StatePlaced;
+            state.cut = 1;
+            state.placed = 0;
         }
     }
 
-    if ((bits & BitSteers) != 0 && steering != 0 && (state & StateCut) == 0)
+    if (bits.steers != 0 && steering != 0 && state.cut == 0)
     {
         s32 pitchRate;
         s32 yawRate;
         f32 distanceRate;
-        u32 hits = ProbeRates(&point, &pitchRate, &yawRate, &distanceRate, 1);
-        if (hits != 0)
+        ProbeHits hits;
+        hits.value = ProbeRates(&point, &pitchRate, &yawRate, &distanceRate, 1);
+        if (hits.value != 0)
         {
             f32 seconds = StepSeconds(clock);
             s32 rate = pitchRate;
             pitch.Push(seconds, &rate, 1);
             rate = yawRate;
             yaw.Push(seconds, &rate, 0);
-            if ((distance.bits & AngleBlender::BitEnabled) != 0)
+            if (distance.bits.enabled != 0)
             {
                 distance.delta = distanceRate * seconds;
                 f32 toLow = distance.low;
                 f32 toHigh = distance.high;
-                if ((distance.bits & AngleBlender::BitSecondRange) != 0)
+                if (distance.bits.secondRange != 0)
                 {
                     toLow = distance.secondLow;
                     toHigh = distance.secondHigh;
                 }
 
                 distance.KeepWithin(toLow, toHigh);
-                distance.bits |= AngleBlender::BitPushed;
+                distance.bits.pushed = 1;
             }
         }
 
-        pitch.bits = (pitch.bits & ~AngleBlender::BitEnabled) | ((hits & 3) == 0 ? AngleBlender::BitEnabled : 0);
-        yaw.bits = (yaw.bits & ~AngleBlender::BitEnabled) | ((hits & 0xC) == 0 ? AngleBlender::BitEnabled : 0);
-        distance.bits = (distance.bits & ~AngleBlender::BitEnabled) | ((hits & 0x70) == 0 ? AngleBlender::BitEnabled : 0);
+        // The blenders the probes push don't move on their own this step (retail also tests bit 4 for the distance's, which
+        // Probe never sets)
+        pitch.bits.enabled = hits.above == 0 && hits.below == 0;
+        yaw.bits.enabled = hits.left == 0 && hits.right == 0;
+        distance.bits.enabled = hits.pair == 0 && hits.pullIn == 0;
         if (StepBlenders(clock) != 0)
         {
             PushByProbes(clock, &point);
@@ -1689,64 +1727,66 @@ void FollowCameraPositioner::Step(TimeClock* clock, CameraTarget* follower)
         MoveToward(&point, &goal, 0);
     }
 
-    state |= StatePlaced;
+    state.placed = 1;
     fov = fieldOfView.current;
-    bits &= ~static_cast<u64>(BitRestarted);
+    bits.restarted = 0;
     CheckTargetStill();
     lastPosition = position;
 }
 
 void FollowCameraPositioner::Take(f32 value, CameraNode* node, CameraTarget* follower)
 {
-    if (node != nullptr && (node->camera->switches & MainCamera::SwitchResetsController) != 0)
+    if (node != nullptr && node->camera->switches.resetsController != 0)
     {
-        camera.flags = 0;
-        bits &= ~static_cast<u64>(BitOwnCamera);
-        camera.flags = (camera.flags & ~MainCamera::FlagSteers) | MainCamera::FlagSteers;
-        Clear();
+        camera.flags.value = 0;
+        bits.ownCamera = 0;
+        camera.flags.steers = 1;
+        ClearTriggerValues();
     }
 
-    if ((bits & BitOwnCamera) != 0)
+    if (bits.ownCamera != 0)
     {
-        Apply(value, &camera, follower);
-        bits = (bits & ~static_cast<u64>(BitHadProbesFromTarget)) | (bits >> 2 & 1) << 4;
+        TakeCamera(value, &camera, follower);
+        bits.unused4 = bits.probesFromTarget;
         trigger = node;
         return;
     }
 
     if (node != nullptr)
     {
-        bits = (bits & ~static_cast<u64>(BitTriggerBit11)) | static_cast<u64>(node->camera->flags >> 11 & 1) << 5;
+        bits.alwaysTakesValues = node->camera->flags.alwaysTakesValues;
         u32 switched = 0;
-        if ((bits & BitTriggerBit11) != 0)
+        if (bits.alwaysTakesValues != 0)
         {
-            bits &= ~static_cast<u64>(BitIgnoresValues);
+            bits.ignoresValues = 0;
         }
-        else if ((bits & BitIgnoresValues) != 0)
+        else if (bits.ignoresValues != 0)
         {
-            if ((bits & (Bit6 | Bit3)) == Bit6)
+            // The character moving with the stick let go: the triggers' values taken again (blended to)
+            if (bits.characterMoving != 0 && bits.stickTurning == 0)
             {
-                state |= StateBlendAsked;
-                bits &= ~static_cast<u64>(BitIgnoresValues);
+                state.blendAsked = 1;
+                bits.ignoresValues = 0;
                 switched = 1;
             }
         }
-        else if ((bits & (BitIgnoresValues | Bit3)) == Bit3)
+        // The stick turning it: the triggers' values ignored
+        else if (bits.stickTurning != 0)
         {
-            state &= ~StateBlendAsked;
-            bits |= BitIgnoresValues;
+            state.blendAsked = 0;
+            bits.ignoresValues = 1;
             switched = 1;
         }
 
         if (switched != 0)
         {
-            Clear();
+            ClearTriggerValues();
         }
     }
 
     if (node != trigger)
     {
-        Clear();
+        ClearTriggerValues();
         if (node == nullptr)
         {
             BlendBack(trigger, 1);
@@ -1755,29 +1795,29 @@ void FollowCameraPositioner::Take(f32 value, CameraNode* node, CameraTarget* fol
         {
             MainCamera* taken = node->camera;
             u32 cut = 0;
-            if ((taken->flags >> 5 & 1) != 0 || (bits & BitRestarted) != 0)
+            if (taken->flags.noBlendIn != 0 || bits.restarted != 0)
             {
                 cut = 1;
             }
 
-            state = (state & ~StateCut) | cut << 6;
+            state.cut = cut;
             if (trigger != nullptr)
             {
                 u32 same = 0;
-                if ((trigger->camera->flags >> 24 & 1) != 0)
+                if (trigger->camera->flags.cutsFromSameKind != 0)
                 {
-                    same = taken->flags >> 24 & 1;
+                    same = taken->flags.cutsFromSameKind;
                 }
 
-                state = (state & ~StateCut) | ((state >> 6 & 1) | same) << 6;
+                state.cut = state.cut | same;
             }
 
-            state &= ~StatePlaced;
+            state.placed = 0;
             CameraSubtype* second = taken->second;
             if (second != nullptr)
             {
                 second->TakeLastVirtual(&position, &target->point);
-                if (second->TypeVirtual() == CameraSubtype::Type1C0E)
+                if (second->TypeVirtual() == CameraSubtype::TypeKeyed)
                 {
                     keyed = 1;
                 }
@@ -1787,60 +1827,60 @@ void FollowCameraPositioner::Take(f32 value, CameraNode* node, CameraTarget* fol
 
     if (node != nullptr)
     {
-        Apply(value, node->camera, follower);
+        TakeCamera(value, node->camera, follower);
     }
 
     trigger = node;
-    bits = (bits & ~static_cast<u64>(BitHadProbesFromTarget)) | (bits >> 2 & 1) << 4;
+    bits.unused4 = bits.probesFromTarget;
 }
 
-void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* follower)
+void FollowCameraPositioner::TakeCamera(f32 value, MainCamera* taken, CameraTarget* follower)
 {
     CameraSubtype* second = taken->second;
     CameraSubtype* first = taken->first;
     if (keyed != 0)
     {
-        FollowKeyed(reinterpret_cast<Camera1C0E*>(second));
+        FollowKeyed(reinterpret_cast<KeyedCamera*>(second));
         return;
     }
 
-    u32 flags = taken->flags;
+    MainCameraFlags flags = taken->flags;
     u32 along = 0;
-    if ((flags >> 10 & 1) != 0)
+    if (flags.valuesAlongGeometry != 0)
     {
         along = follower != nullptr;
     }
 
-    bits = (bits & ~static_cast<u64>(BitStill)) | static_cast<u64>((bits >> 12 & 1) | (flags >> 21 & 1)) << 12;
-    bits = (bits & ~static_cast<u64>(BitOnlyLooks)) | static_cast<u64>((bits >> 14 & 1) | (flags >> 19 & 1)) << 14;
-    bits = (bits & ~static_cast<u64>(BitKeepsHeight)) | static_cast<u64>((bits >> 13 & 1) | (flags >> 20 & 1)) << 13;
-    state = (state & ~StateAlongLine) | (flags >> 29 & 1) << 11;
-    bits = (bits & ~static_cast<u64>(BitViewUnchecked)) | static_cast<u64>(flags >> 30 & 1) << 20;
-    bits = (bits & ~static_cast<u64>(BitYawExtra)) | static_cast<u64>(flags >> 31 & 1) << 21;
-    u32 blendIn = !(flags >> 5 & 1);
-    if (trigger != nullptr && (flags >> 24 & 1) != 0 && (trigger->camera->flags >> 24 & 1) != 0)
+    bits.holdsStill |= flags.holdsStill;
+    bits.onlyLooksAtTarget |= flags.onlyLooksAtTarget;
+    bits.keepsHeight |= flags.keepsHeight;
+    state.alongLine = flags.blendsAlongLine;
+    bits.skipsViewCheck = flags.skipsViewCheck;
+    bits.addsExtraYaw = flags.addsExtraYaw;
+    u32 blendIn = !flags.noBlendIn;
+    if (trigger != nullptr && flags.cutsFromSameKind != 0 && trigger->camera->flags.cutsFromSameKind != 0)
     {
         blendIn = 0;
     }
 
-    u32 timed = (state & StateBlendAsked) != 0 ? 1 : blendIn;
-    if (timed != 0 && (state & StateBlending) == 0)
+    u32 timed = state.blendAsked != 0 ? 1 : blendIn;
+    if (timed != 0 && state.blending == 0)
     {
-        f32 seconds = (state & StateBlendAsked) != 0 ? AskedBlendSeconds : taken->blendTime;
+        f32 seconds = state.blendAsked != 0 ? AskedBlendSeconds : taken->blendTime;
         blendTicks = static_cast<s32>(seconds * g_ClockUnitsPerSecond);
     }
 
     s32 currentYaw = yaw.current;
     u32 blendInValues = taken->NearerBlendIn(&currentYaw);
     // Only the blend's start sets the blenders' speeds for its time
-    u32 canTime = timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0;
-    if ((flags >> 7 & 1) != 0)
+    u32 canTime = timed != 0 && state.timed == 0 && state.timeEnded == 0;
+    if (flags.setsFov != 0)
     {
         s32 start = static_cast<s32>(taken->fovStart);
         s32 end = static_cast<s32>(taken->fovEnd);
         if (along != 0)
         {
-            fieldOfView.bits |= AngleBlender::BitSecondRange;
+            fieldOfView.bits.secondRange = 1;
             s32 blended = BlendAngles(start, end, follower->along);
             fieldOfView.secondHigh = blended;
             fieldOfView.secondLow = blended;
@@ -1852,21 +1892,21 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
                 fieldOfView.TimeToward(&blendTicks, &start, &end);
             }
 
-            fieldOfView.bits |= AngleBlender::BitSecondRange;
+            fieldOfView.bits.secondRange = 1;
             fieldOfView.secondLow = start;
             fieldOfView.secondHigh = end;
         }
     }
     else
     {
-        fieldOfView.bits &= ~AngleBlender::BitSecondRange;
+        fieldOfView.bits.secondRange = 0;
     }
 
-    if ((flags >> 3 & 1) != 0)
+    if (flags.setsDistance != 0)
     {
         f32 low = taken->distanceStart;
         f32 high = taken->distanceEnd;
-        if (blendInValues != 0 && (flags >> 18 & 1) != 0)
+        if (blendInValues != 0 && flags.blendsInFromDistance != 0)
         {
             high = taken->blendInDistance;
             low = high;
@@ -1875,7 +1915,7 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
         if (along != 0)
         {
             f32 share = follower->along;
-            distance.bits |= AngleBlender::BitSecondRange;
+            distance.bits.secondRange = 1;
             f32 blended = high * share + low * (1.0f - share);
             distance.secondHigh = blended;
             distance.secondLow = blended;
@@ -1891,48 +1931,46 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
                 distance.speed = __builtin_fabsf(nearer / (static_cast<f32>(blendTicks) * g_SecondsPerClockUnit));
             }
 
-            distance.bits |= AngleBlender::BitSecondRange;
+            distance.bits.secondRange = 1;
             distance.secondHigh = high;
             distance.secondLow = low;
         }
     }
     else
     {
-        distance.bits &= ~AngleBlender::BitSecondRange;
+        distance.bits.secondRange = 0;
     }
 
-    u64 old = bits;
-    bits = (old & ~static_cast<u64>(BitTriggerBit22Clear)) | static_cast<u64>(!(flags >> 22 & 1)) << 16;
-    u64 cleared = bits & ~BitProbesOff;
-    bits = cleared | static_cast<u64>(flags >> 23 & 1) << 32;
-    if ((bits & (BitProbesOff | BitIgnoresValues)) == (BitProbesOff | BitIgnoresValues))
+    bits.noFacingTilt = !flags.tilts;
+    bits.probesOff = flags.noProbes;
+    if (bits.probesOff != 0 && bits.ignoresValues != 0)
     {
-        bits = cleared | static_cast<u64>(!(taken->switches >> 1 & 1)) << 32;
+        bits.probesOff = !taken->switches.keepsProbesWhileIgnoring;
     }
 
-    if ((bits & BitIgnoresValues) == 0)
+    if (bits.ignoresValues == 0)
     {
-        bits = (bits & ~BitTriggerBit4) | static_cast<u64>(flags >> 4 & 1) << 47;
-        bits = (bits & ~static_cast<u64>(BitProbesFromTarget)) | static_cast<u64>(first != nullptr) << 2;
+        bits.triggerSteers = flags.steers;
+        bits.probesFromTarget = first != nullptr;
         if (second != nullptr)
         {
-            if ((flags & MainCamera::FlagSecondAtParameter) != 0)
+            if (flags.secondAtParameter != 0)
             {
-                second->AtParameter(value, &place);
+                second->AtParameter(value, &triggerPlace);
             }
             else if (follower != nullptr)
             {
-                second->At(first == nullptr ? &follower->point : &follower->objectPosition, follower, &place);
+                second->At(first == nullptr ? &follower->point : &follower->objectPosition, follower, &triggerPlace);
             }
 
-            state &= ~StateBlendAsked;
+            state.blendAsked = 0;
         }
 
-        if ((flags >> 2 & 1) != 0)
+        if (flags.setsPitch != 0)
         {
             s32 start = static_cast<s32>(taken->pitchStart);
             s32 end = static_cast<s32>(taken->pitchEnd);
-            if (blendInValues != 0 && (flags >> 17 & 1) != 0)
+            if (blendInValues != 0 && flags.blendsInFromPitch != 0)
             {
                 end = static_cast<s32>(taken->blendInPitch);
                 start = end;
@@ -1940,7 +1978,7 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
 
             if (along != 0)
             {
-                pitch.bits |= AngleBlender::BitSecondRange;
+                pitch.bits.secondRange = 1;
                 s32 blended = BlendAngles(start, end, follower->along);
                 pitch.secondHigh = blended;
                 pitch.secondLow = blended;
@@ -1952,21 +1990,21 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
                     pitch.TimeToward(&blendTicks, &start, &end);
                 }
 
-                pitch.bits |= AngleBlender::BitSecondRange;
+                pitch.bits.secondRange = 1;
                 pitch.secondLow = start;
                 pitch.secondHigh = end;
             }
         }
         else
         {
-            pitch.bits &= ~AngleBlender::BitSecondRange;
+            pitch.bits.secondRange = 0;
         }
 
-        if ((flags >> 6 & 1) != 0)
+        if (flags.setsYaw != 0)
         {
             s32 start = static_cast<s32>(taken->yawStart);
             s32 end = static_cast<s32>(taken->yawEnd);
-            if (blendInValues != 0 && (flags >> 16 & 1) != 0)
+            if (blendInValues != 0 && flags.blendsInFromYaw != 0)
             {
                 end = static_cast<s32>(taken->blendInYaw);
                 start = end;
@@ -1974,7 +2012,7 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
 
             if (along != 0)
             {
-                yaw.bits |= AngleBlender::BitSecondRange;
+                yaw.bits.secondRange = 1;
                 s32 blended = BlendAngles(start, end, follower->along);
                 yaw.secondHigh = blended;
                 yaw.secondLow = blended;
@@ -1986,7 +2024,7 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
                     yaw.TimeToward(&blendTicks, &start, &end);
                 }
 
-                yaw.bits |= AngleBlender::BitSecondRange;
+                yaw.bits.secondRange = 1;
                 yaw.secondLow = start;
                 yaw.secondHigh = end;
                 if (start == end)
@@ -1997,37 +2035,37 @@ void FollowCameraPositioner::Apply(f32 value, MainCamera* taken, CameraTarget* f
         }
         else
         {
-            yaw.bits &= ~AngleBlender::BitSecondRange;
+            yaw.bits.secondRange = 0;
         }
 
-        if ((flags >> 15 & 1) != 0)
+        if (flags.setsYawSpeed != 0)
         {
-            yaw.bits |= AngleBlender::BitSineSpeed;
-            yaw.speed = static_cast<s32>(taken->yawExtra);
-            bits |= BitYawExtraSpeed;
+            yaw.bits.sineSpeed = 1;
+            yaw.speed = static_cast<s32>(taken->yawSpeed);
+            bits.yawSpeedSet = 1;
         }
 
-        if ((flags >> 12 & 1) != 0)
+        if (flags.setsPositionFollowRate != 0)
         {
-            triggerRate = taken->secondValue;
-            bits |= BitTriggerRate;
+            triggerRate = taken->positionFollowRate;
+            bits.atTriggerRate = 1;
         }
 
         if (second != nullptr || keepsRate != 0)
         {
-            bits |= BitViewUnchecked;
+            bits.skipsViewCheck = 1;
         }
     }
 
-    if (second != nullptr && (bits & BitIgnoresValues) == 0)
+    if (second != nullptr && bits.ignoresValues == 0)
     {
-        bits |= BitAtPlace;
-        state = (state & ~StateBlending) | (timed & 1);
+        bits.atTriggerPlace = 1;
+        state.blending = timed;
     }
 
-    if (timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+    if (timed != 0 && state.timed == 0 && state.timeEnded == 0)
     {
-        state |= StateTimed;
+        state.timed = 1;
     }
 }
 
@@ -2035,45 +2073,47 @@ void FollowCameraPositioner::BlendBack(CameraNode* last, u32 time)
 {
     MainCamera* taken = last->camera;
     CameraSubtype* second = taken->second;
-    u32 timed = (state & StateBlendAsked) != 0 ? 1 : !(taken->flags >> 5 & 1);
-    if (timed != 0 && (state & StateBlending) == 0)
+    u32 timed = state.blendAsked != 0 ? 1 : !taken->flags.noBlendIn;
+    if (timed != 0 && state.blending == 0)
     {
-        f32 seconds = (state & StateBlendAsked) != 0 ? AskedBlendSeconds : taken->blendTime;
+        f32 seconds = state.blendAsked != 0 ? AskedBlendSeconds : taken->blendTime;
         blendTicks = static_cast<s32>(seconds * g_ClockUnitsPerSecond);
     }
 
-    if ((taken->flags >> 7 & 1) != 0)
+    // Only the blend's start sets the blenders' speeds for its time
+    u32 canTime = timed != 0 && state.timed == 0 && state.timeEnded == 0;
+    if (taken->flags.setsFov != 0)
     {
         s32 goal = g_DefaultFov;
-        if (timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+        if (canTime != 0)
         {
             fieldOfView.TimeToward(&blendTicks, &goal, &goal);
         }
     }
 
-    if ((taken->flags >> 2 & 1) != 0 || second != nullptr)
+    if (taken->flags.setsPitch != 0 || second != nullptr)
     {
         s32 goal;
         AngleFrom(&goal, 0.0f, AngleDegrees);
-        if ((bits & BitTilts) != 0)
+        if (bits.tilts != 0)
         {
             goal = g_FollowCameraPitch;
         }
 
-        if (timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+        if (canTime != 0)
         {
             pitch.TimeToward(&blendTicks, &goal, &goal);
         }
     }
 
-    if (((taken->flags >> 3 & 1) != 0 || second != nullptr) && timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+    if ((taken->flags.setsDistance != 0 || second != nullptr) && canTime != 0)
     {
         distance.previousSpeed = distance.speed;
         distance.speed = __builtin_fabsf((DefaultDistance - distance.current) /
                                          (static_cast<f32>(blendTicks) * g_SecondsPerClockUnit));
     }
 
-    if (((taken->flags >> 6 & 1) != 0 || second != nullptr) && timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+    if ((taken->flags.setsYaw != 0 || second != nullptr) && canTime != 0)
     {
         // 10 radians, as retail has it
         s32 low;
@@ -2083,22 +2123,22 @@ void FollowCameraPositioner::BlendBack(CameraNode* last, u32 time)
         yaw.TimeToward(&blendTicks, &low, &high);
     }
 
-    if (time != 0 && timed != 0 && (state & (StateTimed | StateTimeEnded)) == 0)
+    if (time != 0 && canTime != 0)
     {
-        state |= StateTimed;
+        state.timed = 1;
     }
 }
 
 u32 FollowCameraPositioner::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
 
-    TransformVectorThroughLink(link, &place, 1);
+    TransformVectorThroughLink(link, &triggerPlace, 1);
     u32 moved = 0;
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) != 0)
+    if (link->flags.linkedRm2Loaded != 0)
     {
         TransformRotationThroughLink(link, &rotation);
         TransformVectorThroughLink(link, &position, 1);
@@ -2124,49 +2164,54 @@ u32 FollowCameraPositioner::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 
 void FollowCameraPositioner::Tilt(Vector4*, Vector4* turned)
 {
-    constexpr f32 Fast = 3.0f;
-    if ((bits & BitTilts) == 0)
+    // The tilt toward the target's facing (radians, by its facing and sideways values), more past the target's fast speed
+    constexpr f32 FastSpeed = 3.0f;
+    constexpr f32 FastPitchTilt = Rounded(0.2);
+    constexpr f32 PitchTilt = Rounded(0.05);
+    constexpr f32 FastYawTilt = 0.25f;
+    constexpr f32 YawTilt = Rounded(0.12);
+    if (bits.tilts == 0)
     {
         return;
     }
 
     const Vector4* velocity = &target->velocity;
     f32 speed = __builtin_sqrtf(velocity->x * velocity->x + velocity->z * velocity->z);
-    f32 pitchScale = Fast < speed ? Rounded(0.2) : Rounded(0.05);
+    f32 pitchScale = FastSpeed < speed ? FastPitchTilt : PitchTilt;
     s32 change;
     AngleFrom(&change, -facing * pitchScale - static_cast<f32>(tiltPitch) * AngleToRadians, AngleRadians);
     s32 rate = g_CameraTiltRate;
     s32* scaled = MultiplyAngle(&rate, stepSeconds);
     change = static_cast<s32>(static_cast<f32>(change) * (static_cast<f32>(*scaled) * AngleToRadians));
     tiltPitch = tiltPitch + change;
-    f32 yawScale = Fast < speed ? 0.25f : Rounded(0.12);
+    f32 yawScale = FastSpeed < speed ? FastYawTilt : YawTilt;
     AngleFrom(&change, sideways * yawScale - static_cast<f32>(tiltYaw) * AngleToRadians, AngleRadians);
     rate = g_CameraTiltRate;
     scaled = MultiplyAngle(&rate, stepSeconds);
     change = static_cast<s32>(static_cast<f32>(change) * (static_cast<f32>(*scaled) * AngleToRadians));
     tiltYaw = tiltYaw + change;
-    s32 x;
-    AngleFrom(&x, 0.0f, AngleRadians);
-    s32 z;
-    AngleFrom(&z, 0.0f, AngleRadians);
-    s32 y = tiltYaw;
+    s32 aboutX;
+    AngleFrom(&aboutX, 0.0f, AngleRadians);
+    s32 aboutZ;
+    AngleFrom(&aboutZ, 0.0f, AngleRadians);
+    s32 aboutY = tiltYaw;
     Vector4 turn;
-    GetRotationXYZ(&turn, &x, &y, &z);
+    GetRotationXYZ(&turn, &aboutX, &aboutY, &aboutZ);
     Vector4 product;
     MultiplyRotations(&product, &turn, turned);
     *turned = product;
-    f32 inverse = InverseLength4(0.0f, Rounded(1e-10), turned);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, turned);
     turned->x = turned->x * inverse;
     turned->y = turned->y * inverse;
     turned->z = turned->z * inverse;
     turned->w = turned->w * inverse;
-    x = tiltPitch;
-    AngleFrom(&y, 0.0f, AngleRadians);
-    AngleFrom(&z, 0.0f, AngleRadians);
-    GetRotationXYZ(&turn, &x, &y, &z);
+    aboutX = tiltPitch;
+    AngleFrom(&aboutY, 0.0f, AngleRadians);
+    AngleFrom(&aboutZ, 0.0f, AngleRadians);
+    GetRotationXYZ(&turn, &aboutX, &aboutY, &aboutZ);
     MultiplyRotations(&product, turned, &turn);
     *turned = product;
-    inverse = InverseLength4(0.0f, Rounded(1e-10), turned);
+    inverse = InverseLength4(0.0f, InverseEpsilon, turned);
     turned->x = turned->x * inverse;
     turned->y = turned->y * inverse;
     turned->z = turned->z * inverse;
@@ -2191,49 +2236,57 @@ FollowCameraTarget* FollowCameraTarget::Construct(FollowCameraTarget* target)
 void FollowCameraTarget::Destroy(u32 destroyFlags)
 {
     vtable = g_FollowCameraTargetVTable;
-    camera.Destroy(2);
+    camera.Destroy(DestroyOnly);
     RemoveReference(&followed);
     vtable = g_CameraTargetVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
 }
 
-void FollowCameraTarget::Clear()
+void FollowCameraTarget::ClearTriggerValues()
 {
-    bits &= ~(BitHasCamera | BitBlends | BitBlending | BitGivenBox | BitFramesInstances | BitPointFollows | BitBoxBlending |
-              BitCut);
-    bits |= BitStepped | BitSettled;
-    bits &= ~(BitBlendsNear | BitOffsetUnturned);
+    bits.atCameraPoint = 0;
+    bits.blends = 0;
+    bits.blending = 0;
+    bits.givenBox = 0;
+    bits.framesInstances = 0;
+    bits.pointFollows = 0;
+    bits.boxBlending = 0;
+    bits.cut = 0;
+    bits.stepped = 1;
+    bits.settled = 1;
+    bits.blendsWhenNear = 0;
+    bits.boxUnturned = 0;
     smoothed = 1;
 }
 
 void FollowCameraTarget::ClearBox()
 {
-    bits &= ~BitGivenBox;
+    bits.givenBox = 0;
 }
 
 void FollowCameraTarget::SetBox(const Vector4* min, const Vector4* max)
 {
     givenMin = *min;
-    bits |= BitGivenBox;
+    bits.givenBox = 1;
     givenMax = *max;
 }
 
 void FollowCameraTarget::Reset()
 {
-    bits = 0;
-    offset = boxMin;
+    bits.value = 0;
+    boxOffset = boxMin;
     fixedPlace = nullptr;
     trigger = nullptr;
     boxShare = 0.5f;
-    offset.x = offset.x + boxMax.x;
-    offset.y = offset.y + boxMax.y;
-    offset.z = offset.z + boxMax.z;
-    offset.x = offset.x * 0.5f;
-    offset.y = offset.y * 0.5f;
-    offset.z = offset.z * 0.5f;
+    boxOffset.x = boxOffset.x + boxMax.x;
+    boxOffset.y = boxOffset.y + boxMax.y;
+    boxOffset.z = boxOffset.z + boxMax.z;
+    boxOffset.x = boxOffset.x * 0.5f;
+    boxOffset.y = boxOffset.y * 0.5f;
+    boxOffset.z = boxOffset.z * 0.5f;
     ReferencedObject* object = followed != nullptr ? followed->object : nullptr;
     if (object == nullptr)
     {
@@ -2244,7 +2297,7 @@ void FollowCameraTarget::Reset()
         point = Origin();
         easedPoint = Origin();
         along = 0.0f;
-        height = 0.0f;
+        easedHeight = 0.0f;
     }
     else
     {
@@ -2254,16 +2307,16 @@ void FollowCameraTarget::Reset()
         GetRotationVec(&rotation, &place->matrix);
         objectPosition = point;
         objectRotation = rotation;
-        height = place->matrix.m[3][1];
+        easedHeight = place->matrix.m[3][1];
         EaseHeight(0.0f, &point, &easedPoint);
         Vector4 turned;
-        if (OffsetUnturned(bits) != 0)
+        if (BoxUnturned(bits) != 0)
         {
-            turned = offset;
+            turned = boxOffset;
         }
         else
         {
-            RotateByQuaternion(&rotation, &offset, &turned, 0);
+            RotateByQuaternion(&rotation, &boxOffset, &turned, 0);
         }
 
         easedPoint.x = easedPoint.x + turned.x;
@@ -2271,31 +2324,31 @@ void FollowCameraTarget::Reset()
         easedPoint.z = easedPoint.z + turned.z;
     }
 
-    bits &= ~BitPointFollows;
+    bits.pointFollows = 0;
     lastTrigger = nullptr;
-    groundHeight = height;
+    groundHeight = easedHeight;
     currentMin = Origin();
     currentMax = Origin();
-    bits |= BitReset;
+    bits.wasReset = 1;
     cameraPoint = Origin();
-    Clear();
-    camera.flags = 0;
-    bits &= ~BitOwnCamera;
-    camera.flags = (camera.flags & ~MainCamera::FlagSteers) | MainCamera::FlagSteers;
-    Clear();
+    ClearTriggerValues();
+    camera.flags.value = 0;
+    bits.ownCamera = 0;
+    camera.flags.steers = 1;
+    ClearTriggerValues();
 }
 
 void FollowCameraTarget::ObjectPoint(ObjectPlace* place, Vector4* out)
 {
     const Vector4* position = RowOf(&place->matrix, 3);
     CameraNode* node = trigger;
-    if (node == nullptr || (bits & BitFramesInstances) == 0 || node->instanceCount == 0)
+    if (node == nullptr || bits.framesInstances == 0 || node->bits.instanceCount == 0)
     {
         *out = *position;
         return;
     }
 
-    u32 count = node->instanceCount;
+    u32 count = node->bits.instanceCount;
     Vector4 sum;
     sum.x = 0.0f;
     sum.w = 1.0f;
@@ -2311,14 +2364,14 @@ void FollowCameraTarget::ObjectPoint(ObjectPlace* place, Vector4* out)
     }
 
     f32 inverse = 1.0f / static_cast<f32>(static_cast<s32>(count));
-    f32 x = (sum.x * inverse - position->x) * pull;
-    f32 y = (sum.y * inverse - position->y) * pull;
-    f32 z = (sum.z * inverse - position->z) * pull;
+    f32 x = (sum.x * inverse - position->x) * framingShare;
+    f32 y = (sum.y * inverse - position->y) * framingShare;
+    f32 z = (sum.z * inverse - position->z) * framingShare;
     f32 length = __builtin_sqrtf(x * x + y * y + z * z);
     along = length;
-    if (most < length)
+    if (framingDistance < length)
     {
-        f32 scale = most / length;
+        f32 scale = framingDistance / length;
         along = 1.0f;
         z = z * scale;
         x = x * scale;
@@ -2326,7 +2379,7 @@ void FollowCameraTarget::ObjectPoint(ObjectPlace* place, Vector4* out)
     }
     else
     {
-        along = length / most;
+        along = length / framingDistance;
     }
 
     *out = *position;
@@ -2340,22 +2393,22 @@ void FollowCameraTarget::EaseHeight(f32 seconds, const Vector4* followedPoint, V
     constexpr f32 RiseRate = 5.0f;
     constexpr f32 Margin = Rounded(0.1);
     f32 ground = groundHeight;
-    f32 eased = height;
+    f32 eased = easedHeight;
     if (eased < ground)
     {
-        f32 level = followedPoint->y - offset.y;
+        f32 level = followedPoint->y - boxOffset.y;
         f32 raised = seconds * RiseRate + eased;
-        if (eased < level && NoMove < offset.y)
+        if (eased < level && Epsilon < boxOffset.y)
         {
-            height = level;
+            easedHeight = level;
         }
         else if (raised < groundHeight)
         {
-            height = raised;
+            easedHeight = raised;
         }
         else
         {
-            height = groundHeight;
+            easedHeight = groundHeight;
         }
     }
     else
@@ -2364,31 +2417,32 @@ void FollowCameraTarget::EaseHeight(f32 seconds, const Vector4* followedPoint, V
         f32 top = y + Margin;
         if (top < ground)
         {
-            height = ground;
+            easedHeight = ground;
         }
         else
         {
-            f32 level = top - offset.y;
+            f32 level = top - boxOffset.y;
             if (eased < level)
             {
-                height = offset.y < NoMove ? y : level;
+                easedHeight = boxOffset.y < Epsilon ? y : level;
             }
             else if (top < eased)
             {
-                height = top;
+                easedHeight = top;
             }
         }
     }
 
     out->x = followedPoint->x;
     out->w = 1.0f;
-    out->y = height;
+    out->y = easedHeight;
     out->z = followedPoint->z;
 }
 
 void FollowCameraTarget::Step(TimeClock* clock)
 {
-    constexpr f32 Near = 15.0f;
+    // A camera point this near (squared) the last point isn't blended to (unless the trigger blends when near)
+    constexpr f32 NearSquared = 15.0f;
     ReferencedObject* object = followed != nullptr ? followed->object : nullptr;
     if (object == nullptr)
     {
@@ -2404,10 +2458,10 @@ void FollowCameraTarget::Step(TimeClock* clock)
 
     f32 seconds = StepSeconds(clock);
     Vector4 old = point;
-    if ((bits & (BitCut | BitStepped)) == (BitCut | BitStepped))
+    if (bits.cut != 0 && bits.stepped != 0)
     {
         smoothed = 1;
-        bits &= ~BitCut;
+        bits.cut = 0;
     }
 
     if (fixedPlace == nullptr)
@@ -2426,17 +2480,18 @@ void FollowCameraTarget::Step(TimeClock* clock)
 
     rotation = objectRotation;
     point = objectPosition;
-    if ((bits & (BitSettled | BitBoxBlending | BitBlending | BitBlends)) == BitBlends)
+    // A blend asked for starts (the box blending too unless it's the same box)
+    if (bits.blends != 0 && bits.blending == 0 && bits.boxBlending == 0 && bits.settled == 0)
     {
         blendStart = clock->time;
-        bits |= BitBlending;
-        if ((bits & BitBlendsNear) == 0 && DistanceSquared(&cameraPoint, &old) < Near)
+        bits.blending = 1;
+        if (bits.blendsWhenNear == 0 && DistanceSquared(&cameraPoint, &old) < NearSquared)
         {
-            bits &= ~BitBlending;
+            bits.blending = 0;
         }
 
         u32 differs;
-        if ((bits & BitGivenBox) != 0)
+        if (bits.givenBox != 0)
         {
             differs = SamePoint(&currentMin, &givenMin) == 0 || SamePoint(&currentMax, &givenMax) == 0;
         }
@@ -2445,10 +2500,17 @@ void FollowCameraTarget::Step(TimeClock* clock)
             differs = SamePoint(&currentMin, &boxMin) == 0 || SamePoint(&currentMax, &boxMax) == 0;
         }
 
-        bits |= differs != 0 ? BitBoxBlending : BitSettled;
+        if (differs != 0)
+        {
+            bits.boxBlending = 1;
+        }
+        else
+        {
+            bits.settled = 1;
+        }
     }
 
-    if ((bits & BitGivenBox) != 0)
+    if (bits.givenBox != 0)
     {
         currentMin = givenMin;
         currentMax = givenMax;
@@ -2459,7 +2521,7 @@ void FollowCameraTarget::Step(TimeClock* clock)
         currentMax = boxMax;
     }
 
-    if ((bits & BitBoxBlending) != 0)
+    if (bits.boxBlending != 0)
     {
         s32 since = static_cast<s32>(clock->time - blendStart);
         if (since < blendTicks)
@@ -2487,15 +2549,16 @@ void FollowCameraTarget::Step(TimeClock* clock)
         }
         else
         {
-            bits = (bits | BitSettled) & ~BitBoxBlending;
+            bits.settled = 1;
+            bits.boxBlending = 0;
         }
     }
 
-    offset.x = currentMin.x + (currentMax.x - currentMin.x) * boxShare;
-    offset.y = currentMin.y + (currentMax.y - currentMin.y) * boxShare;
-    offset.w = 1.0f;
-    offset.z = currentMin.z + (currentMax.z - currentMin.z) * boxShare;
-    if ((bits & BitUneased) == 0)
+    boxOffset.x = currentMin.x + (currentMax.x - currentMin.x) * boxShare;
+    boxOffset.y = currentMin.y + (currentMax.y - currentMin.y) * boxShare;
+    boxOffset.w = 1.0f;
+    boxOffset.z = currentMin.z + (currentMax.z - currentMin.z) * boxShare;
+    if (bits.heightUneased == 0)
     {
         EaseHeight(seconds, &point, &easedPoint);
     }
@@ -2505,26 +2568,26 @@ void FollowCameraTarget::Step(TimeClock* clock)
     }
 
     Vector4 turned;
-    if (OffsetUnturned(bits) != 0)
+    if (BoxUnturned(bits) != 0)
     {
-        turned = offset;
+        turned = boxOffset;
     }
     else
     {
-        RotateByQuaternion(&rotation, &offset, &turned, 0);
+        RotateByQuaternion(&rotation, &boxOffset, &turned, 0);
     }
 
     easedPoint.x = easedPoint.x + turned.x;
     easedPoint.y = easedPoint.y + turned.y;
     easedPoint.z = easedPoint.z + turned.z;
-    if ((bits & BitPointFollows) != 0)
+    if (bits.pointFollows != 0)
     {
         cameraPoint = easedPoint;
     }
 
-    if ((bits & BitBlending) == 0)
+    if (bits.blending == 0)
     {
-        point = (bits & BitHasCamera) != 0 ? cameraPoint : easedPoint;
+        point = bits.atCameraPoint != 0 ? cameraPoint : easedPoint;
     }
     else
     {
@@ -2540,7 +2603,7 @@ void FollowCameraTarget::Step(TimeClock* clock)
         else
         {
             f32 share = static_cast<f32>(since) * g_SecondsPerClockUnit / (static_cast<f32>(blendTicks) * g_SecondsPerClockUnit);
-            if ((bits & CurveMask) == CurveCubic)
+            if (bits.curve == FollowCurveCubic)
             {
                 share = share * (share * share);
             }
@@ -2553,48 +2616,49 @@ void FollowCameraTarget::Step(TimeClock* clock)
         }
     }
 
-    bits |= BitStepped;
+    bits.stepped = 1;
 }
 
 f32 FollowCameraTarget::TakeCamera(MainCamera* taken)
 {
     f32 value = 0.0f;
-    u32 flags = taken->flags;
+    MainCameraFlags flags = taken->flags;
     CameraSubtype* first = taken->first;
-    bits = (bits & ~BitGivenBox) | (flags >> 8 & 1) << 3;
-    bits = (bits & ~BitFramesInstances) | (flags >> 9 & 1) << 4;
-    bits = (bits & ~BitOffsetUnturned) | (flags >> 28 & 1) << 18;
-    u32 blendIn = !(flags >> 5 & 1);
+    bits.givenBox = flags.givesTargetBox;
+    bits.framesInstances = flags.framesInstances;
+    bits.boxUnturned = flags.targetBoxUnturned;
+    u32 blendIn = !flags.noBlendIn;
     if (first != nullptr)
     {
         value = first->At(&easedPoint, this, &cameraPoint);
     }
     else
     {
-        bits |= BitPointFollows;
+        bits.pointFollows = 1;
     }
 
-    if ((bits & BitGivenBox) != 0)
+    if (bits.givenBox != 0)
     {
-        givenMin = taken->leftoverVector1;
-        givenMax = taken->leftoverVector2;
+        givenMin = taken->targetBoxMin;
+        givenMax = taken->targetBoxMax;
     }
 
-    if (blendIn != 0 && (bits & BitBlends) == 0)
+    if (blendIn != 0 && bits.blends == 0)
     {
         blendTicks = static_cast<s32>(taken->blendTime * g_ClockUnitsPerSecond);
         blendFrom = point;
         startMin = currentMin;
         startMax = currentMax;
-        bits = (bits & ~BitBlendsNear) | (taken->flags >> 25 & 1) << 17;
-        bits &= ~BitSettled;
+        bits.blendsWhenNear = taken->flags.blendsWhenNear;
+        bits.settled = 0;
     }
 
-    bits = ((bits | BitHasCamera) & ~BitBlends) | blendIn << 1;
-    if ((bits & BitFramesInstances) != 0)
+    bits.atCameraPoint = 1;
+    bits.blends = blendIn;
+    if (bits.framesInstances != 0)
     {
-        pull = taken->leftoverFloat2;
-        most = taken->leftoverFloat1;
+        framingShare = taken->framingShare;
+        framingDistance = taken->framingDistance;
     }
 
     return value;
@@ -2603,15 +2667,15 @@ f32 FollowCameraTarget::TakeCamera(MainCamera* taken)
 f32 FollowCameraTarget::Value(CameraNode* node)
 {
     f32 value = 0.0f;
-    if (node != nullptr && (node->camera->switches & MainCamera::SwitchResetsController) != 0)
+    if (node != nullptr && node->camera->switches.resetsController != 0)
     {
-        camera.flags = 0;
-        bits &= ~BitOwnCamera;
-        camera.flags = (camera.flags & ~MainCamera::FlagSteers) | MainCamera::FlagSteers;
-        Clear();
+        camera.flags.value = 0;
+        bits.ownCamera = 0;
+        camera.flags.steers = 1;
+        ClearTriggerValues();
     }
 
-    if ((bits & BitOwnCamera) != 0)
+    if (bits.ownCamera != 0)
     {
         TakeCamera(&camera);
     }
@@ -2621,43 +2685,44 @@ f32 FollowCameraTarget::Value(CameraNode* node)
         CameraNode* last = lastTrigger;
         if (last != node)
         {
-            Clear();
+            ClearTriggerValues();
             if (last != nullptr && node == nullptr)
             {
                 MainCamera* previous = last->camera;
-                bits |= BitPointFollows;
-                u32 blendIn = !(previous->flags >> 5 & 1);
-                if (blendIn != 0 && (bits & BitBlends) == 0)
+                bits.pointFollows = 1;
+                u32 blendIn = !previous->flags.noBlendIn;
+                if (blendIn != 0 && bits.blends == 0)
                 {
                     blendTicks = static_cast<s32>(previous->blendTime * g_ClockUnitsPerSecond);
                     blendFrom = point;
                     startMin = currentMin;
                     startMax = currentMax;
-                    bits = (bits & ~BitBlendsNear) | (previous->flags >> 25 & 1) << 17;
-                    bits &= ~BitSettled;
+                    bits.blendsWhenNear = previous->flags.blendsWhenNear;
+                    bits.settled = 0;
                 }
 
-                bits = ((bits | BitHasCamera) & ~BitBlends) | blendIn << 1;
-                bits = (bits & ~BitLastOffsetUnturned) | (previous->flags >> 28 & 1) << 19;
+                bits.atCameraPoint = 1;
+                bits.blends = blendIn;
+                bits.lastBoxUnturned = previous->flags.targetBoxUnturned;
             }
             else
             {
                 u32 cut = 0;
-                if ((node->camera->flags >> 5 & 1) != 0 || (bits & BitReset) != 0)
+                if (node->camera->flags.noBlendIn != 0 || bits.wasReset != 0)
                 {
                     cut = 1;
                 }
 
-                bits = (bits & ~BitCut) | cut << 13;
-                bits &= ~BitStepped;
-                smoothed = !(bits >> 13 & 1);
+                bits.cut = cut;
+                bits.stepped = 0;
+                smoothed = !bits.cut;
                 if (lastTrigger != nullptr)
                 {
-                    bits = (bits & ~BitLastOffsetUnturned) | (lastTrigger->camera->flags >> 28 & 1) << 19;
+                    bits.lastBoxUnturned = lastTrigger->camera->flags.targetBoxUnturned;
                 }
                 else
                 {
-                    bits &= ~BitLastOffsetUnturned;
+                    bits.lastBoxUnturned = 0;
                 }
             }
         }
@@ -2668,7 +2733,7 @@ f32 FollowCameraTarget::Value(CameraNode* node)
         }
     }
 
-    bits &= ~BitReset;
+    bits.wasReset = 0;
     lastTrigger = trigger;
     trigger = node;
     return value;
@@ -2676,7 +2741,7 @@ f32 FollowCameraTarget::Value(CameraNode* node)
 
 u32 FollowCameraTarget::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -2687,14 +2752,14 @@ u32 FollowCameraTarget::CanChangeChunk(ChunkData*, ChunkLinkData* link)
     ground.z = 0.0f;
     ground.w = 1.0f;
     Vector4 eased;
-    eased.y = height;
+    eased.y = easedHeight;
     eased.x = 0.0f;
     eased.z = 0.0f;
     eased.w = 1.0f;
     TransformVectorThroughLink(link, &ground, 1);
     TransformVectorThroughLink(link, &eased, 1);
     groundHeight = ground.y;
-    height = eased.y;
+    easedHeight = eased.y;
     TransformVectorThroughLink(link, &cameraPoint, 1);
     TransformRotationThroughLink(link, &rotation);
     TransformVectorThroughLink(link, &point, 1);

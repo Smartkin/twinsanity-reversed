@@ -17,13 +17,6 @@ EABI_EXPORT(FUN_0015e330, &FollowCameraRig::RollerbrawlFrame);
 
 namespace
 {
-constexpr s32 MechaBandicoot = 5;
-// 65536ths of a turn to radians
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-// An input below it is none
-constexpr f32 NoInput = Rounded(5e-5);
-// The bindings' dead zone
-constexpr f32 DeadZone = Rounded(0.3);
 constexpr u32 AxisCount = 5;
 constexpr u32 PressureCount = 3;
 // What the followers' points move at (the share of the way a second)
@@ -43,7 +36,7 @@ constexpr f32 HighTargetSides[4] = {1.0f, Rounded(-0.8), Rounded(0.8), Rounded(-
 constexpr f32 HighCameraSides[4] = {0.5f, -0.5f, 0.5f, -0.5f};
 constexpr Vector4 TargetProbeOffset = {0.0f, 0.0f, -0.5f, 1.0f};
 constexpr Vector4 CameraProbeOffset = {0.0f, 0.0f, 0.0f, 1.0f};
-constexpr f32 PositionerUnknown1C8 = 10.0f;
+constexpr f32 PositionerUnused1C8 = 10.0f;
 // The Rollerbrawl: the ball's speed its yaw speed grows with (0.02 of the range for each unit a second), the snowball's scale the
 // camera backs off and rises past, its distance then and the target box's height
 constexpr f32 RollerbrawlTopSpeed = 50.0f;
@@ -65,15 +58,15 @@ constexpr f32 MovingSpeedSquared = 0.5f;
 // on to 135 by half the tilting yaw speed more and falls from 1.3 times it to none at 179 (those spans in radians); and how much
 // of the way to that goal it eases each frame
 constexpr s32 OneDegree = 0xB6;
-constexpr s32 QuarterTurn = 0x4000;
 constexpr s32 ThreeEighthsTurn = 0x6000;
 constexpr s32 AlmostHalfTurn = 0x7F49;
 constexpr f32 EightyNineDegrees = 0x1.8da7e4p+0f;
-constexpr f32 FortyFiveDegrees = 0x1.921fb6p-1f;
 constexpr f32 FortyFourDegrees = 0x1.893012p-1f;
 constexpr f32 GrowingOnShare = 0.5f;
 constexpr f32 FallingShare = Rounded(1.3);
 constexpr f32 WalkYawEasing = Rounded(0.1);
+// The walk's yaw speed's share in the air
+constexpr f32 AirborneYawShare = 0.5f;
 // How long the blenders hold (seconds)
 constexpr f32 ShortHold = Rounded(0.1);
 constexpr f32 TiltingHold = Rounded(0.2);
@@ -82,24 +75,22 @@ constexpr f32 TiltingHold = Rounded(0.2);
 void DestroyRigParts(FollowCameraRig* rig)
 {
     rig->vtable = g_FollowCameraRigVTable;
-    rig->ownPositioner.Destroy(2);
-    rig->ownTarget.Destroy(2);
-    rig->ownCameraFollower.Destroy(2);
-    rig->ownTargetFollower.Destroy(2);
+    rig->ownPositioner.Destroy(DestroyOnly);
+    rig->ownTarget.Destroy(DestroyOnly);
+    rig->ownCameraFollower.Destroy(DestroyOnly);
+    rig->ownTargetFollower.Destroy(DestroyOnly);
     rig->vtable = g_PadCameraRigVTable;
-    rig->bindings.Destroy(2);
+    rig->bindings.Destroy(DestroyOnly);
 }
 
 void SetOwnWay(CameraPointFollower* follower, u32 way)
 {
-    follower->bits = (follower->bits & ~CameraPointFollower::OwnWayMask) | way << CameraPointFollower::OwnWayShift;
+    follower->bits.ownWay = way;
 }
 
 void SetSteers(FollowCameraPositioner* positioner, u32 steers)
 {
-    constexpr u32 SteersShift = 46;
-    positioner->bits = (positioner->bits & ~static_cast<u64>(FollowCameraPositioner::BitSteers)) |
-                       static_cast<u64>(steers & 1) << SteersShift;
+    positioner->bits.steers = steers;
 }
 
 CameraLensNode* LensOf(InstanceContext* camera)
@@ -111,7 +102,7 @@ CameraLensNode* LensOf(InstanceContext* camera)
 void PadCameraRig::Destroy(u32 destroyFlags)
 {
     vtable = g_PadCameraRigVTable;
-    bindings.Destroy(2);
+    bindings.Destroy(DestroyOnly);
     CameraRig::Destroy(destroyFlags);
 }
 
@@ -133,13 +124,14 @@ FollowCameraRig* FollowCameraRig::Construct(FollowCameraRig* rig)
     s32 pitch = g_RigStartPitch;
     FollowCameraPositioner::Construct(&rig->ownPositioner, StartDistance, &pitch);
     AngleFrom(&rig->walkYawSpeed, 0.0f, AngleRadians);
-    rig->bits = BitDistanceHolds;
-    rig->bindings.AddAxis(DeadZone, AxisLookX, PadAxisRightX);
-    rig->bindings.AddAxis(DeadZone, AxisLookY, PadAxisRightY);
-    rig->bindings.AddAxis(DeadZone, AxisMoveY, PadAxisLeftY);
-    rig->bindings.AddAxis(DeadZone, AxisMoveY, PadAxisDirectionY);
-    rig->bindings.AddAxis(DeadZone, AxisMoveX, PadAxisLeftX);
-    rig->bindings.AddAxis(DeadZone, AxisMoveX, PadAxisDirectionX);
+    rig->bits.value = 0;
+    rig->bits.distanceHolds = 1;
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisLookX, PadAxisRightX);
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisLookY, PadAxisRightY);
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisMoveY, PadAxisLeftY);
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisMoveY, PadAxisDirectionY);
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisMoveX, PadAxisLeftX);
+    rig->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisMoveX, PadAxisDirectionX);
     rig->bindings.AddButton(PressureShoulders, PadR1);
     rig->bindings.AddButton(PressureShoulders, PadR2);
     rig->bindings.AddButton(PressureShoulders, PadL1);
@@ -171,7 +163,7 @@ void FollowCameraRig::Prepare(void*, InstanceContext*, InstanceContext* characte
     positioner.highTargetOffset = TargetProbeOffset;
     positioner.lowCameraOffset = CameraProbeOffset;
     positioner.highCameraOffset = CameraProbeOffset;
-    for (u32 side = 0; side < 4; side++)
+    for (u32 side = 0; side < ProbeCount; side++)
     {
         positioner.lowTargetSides[side] = LowTargetSides[side];
         positioner.lowCameraSides[side] = LowCameraSides[side];
@@ -179,10 +171,10 @@ void FollowCameraRig::Prepare(void*, InstanceContext*, InstanceContext* characte
         positioner.highCameraSides[side] = HighCameraSides[side];
     }
 
-    positioner.unknown1C8 = PositionerUnknown1C8;
+    positioner.unused1C8 = PositionerUnused1C8;
     positioner.pitchPushRate = g_RigPitchPushRate;
     positioner.yawPushRate = g_RigYawPushRate;
-    positioner.bits |= FollowCameraPositioner::BitDistanceFollowsPitch;
+    positioner.bits.distanceFollowsPitch = 1;
     s32 shortHold = static_cast<s32>(g_ClockUnitsPerSecond * ShortHold);
     positioner.pitch.inputSpeed = g_RigPitchInputSpeed;
     positioner.pitch.low = g_RigPitchLowest;
@@ -204,7 +196,7 @@ void FollowCameraRig::Prepare(void*, InstanceContext*, InstanceContext* characte
 
 void FollowCameraRig::RestoreDefaults(CharacterAgent* character)
 {
-    if (character->properties->GetInt(0) == MechaBandicoot)
+    if (character->properties->GetInt(CharacterKindProperty) == CharacterMecha)
     {
         SetMechaView();
         return;
@@ -214,12 +206,12 @@ void FollowCameraRig::RestoreDefaults(CharacterAgent* character)
     positioner.distance.high = FarthestDistance;
     positioner.distance.initial = DefaultDistance;
     positioner.distance.low = NearestDistance;
-    positioner.distance.bits = (positioner.distance.bits & ~AngleBlender::BitHolds) | (bits >> 2 & 1);
-    positioner.pitch.bits = (positioner.pitch.bits & ~AngleBlender::BitHolds) | (bits >> 1 & 1);
-    positioner.yaw.bits = (positioner.yaw.bits & ~AngleBlender::BitHolds) | (bits & BitYawHolds);
+    positioner.distance.bits.holds = bits.distanceHolds;
+    positioner.pitch.bits.holds = bits.pitchHolds;
+    positioner.yaw.bits.holds = bits.yawHolds;
     positioner.pitch.initial = g_RigStartPitch;
-    SetTilts(bits >> 3 & 1);
-    bits &= ~VehicleMask;
+    SetTilts(bits.tilts);
+    bits.vehicle = 0;
 }
 
 void FollowCameraRig::Assemble()
@@ -259,9 +251,9 @@ void FollowCameraRig::Frame(TimeClock*, CharacterAgent* character)
 {
     FollowCameraPositioner& positioner = ownPositioner;
     Vehicle* vehicle = character->vehicle;
-    if ((character->state & CharacterAgent::StateDead) != 0)
+    if (character->state.dead != 0)
     {
-        positioner.bits |= FollowCameraPositioner::BitViewUnchecked;
+        positioner.bits.skipsViewCheck = 1;
     }
 
     // The target follows the vehicle's exit matrix (read as a place's matrix), the character on foot
@@ -269,7 +261,7 @@ void FollowCameraRig::Frame(TimeClock*, CharacterAgent* character)
     ownTarget.groundHeight = character->groundPoint.y;
     ownTarget.boxShare = positioner.pitch.share;
     positioner.probeFloor = character->groundPoint.y;
-    if ((positioner.bits & FollowCameraPositioner::BitTriggerBit11) == 0)
+    if (positioner.bits.alwaysTakesValues == 0)
     {
         positioner.pitch.input = axes[AxisLookY];
         positioner.yaw.input = -axes[AxisLookX];
@@ -282,24 +274,24 @@ void FollowCameraRig::Frame(TimeClock*, CharacterAgent* character)
         positioner.distance.input = 0.0f;
     }
 
-    bool still = __builtin_fabsf(axes[AxisLookY]) <= NoInput && __builtin_fabsf(axes[AxisLookX]) <= NoInput &&
-                 __builtin_fabsf(axes[AxisZoom]) <= NoInput;
+    bool still = __builtin_fabsf(axes[AxisLookY]) <= Epsilon && __builtin_fabsf(axes[AxisLookX]) <= Epsilon &&
+                 __builtin_fabsf(axes[AxisZoom]) <= Epsilon;
     if (still)
     {
-        positioner.bits &= ~static_cast<u64>(FollowCameraPositioner::Bit3);
-        ownTarget.bits &= ~FollowCameraTarget::BitStickTurns;
-        bits &= ~BitStickTurning;
+        positioner.bits.stickTurning = 0;
+        ownTarget.bits.unused10 = 0;
+        bits.stickTurning = 0;
     }
     else
     {
-        positioner.bits |= FollowCameraPositioner::Bit3;
-        ownTarget.bits |= FollowCameraTarget::BitStickTurns;
-        bits |= BitStickTurning;
+        positioner.bits.stickTurning = 1;
+        ownTarget.bits.unused10 = 1;
+        bits.stickTurning = 1;
     }
 
-    CheckMoving(character, still && (positioner.bits & FollowCameraPositioner::BitYawExtraSpeed) == 0);
+    CheckMoving(character, still && positioner.bits.yawSpeedSet == 0);
     positioner.pitch.rateScale = pressures[PressurePitch];
-    if ((bits & BitMoving) == 0)
+    if (bits.moving == 0)
     {
         positioner.yaw.rateScale = pressures[PressureShoulders];
     }
@@ -321,16 +313,17 @@ void FollowCameraRig::LookStick(f32* x, f32* y)
 void FollowCameraRig::SetTilts(u32 tilts)
 {
     FollowCameraPositioner& positioner = ownPositioner;
-    bits = (bits & ~BitTilts) | (tilts & 1) << 3;
+    bits.tilts = tilts;
     positioner.SetTilts(tilts);
-    positioner.fieldOfView.bits &= ~AngleBlender::BitSecondRange;
-    positioner.pitch.bits &= ~AngleBlender::BitSecondRange;
-    positioner.yaw.bits &= ~AngleBlender::BitSecondRange;
-    positioner.distance.bits &= ~AngleBlender::BitSecondRange;
+    positioner.fieldOfView.bits.secondRange = 0;
+    positioner.pitch.bits.secondRange = 0;
+    positioner.yaw.bits.secondRange = 0;
+    positioner.distance.bits.secondRange = 0;
     ownTarget.ClearBox();
-    // Retail writes the yaw's hold twice: the argument's bit, then its own bit 0 over it
-    positioner.yaw.bits = (positioner.yaw.bits & ~(AngleBlender::BitSineSpeed | AngleBlender::BitHolds)) | (tilts & 1);
-    positioner.yaw.bits = (positioner.yaw.bits & ~AngleBlender::BitHolds) | (bits & BitYawHolds);
+    // Retail writes the yaw's hold twice: the argument's bit, then its own yawHolds over it
+    positioner.yaw.bits.sineSpeed = 0;
+    positioner.yaw.bits.holds = tilts;
+    positioner.yaw.bits.holds = bits.yawHolds;
     if (tilts != 0)
     {
         positioner.yaw.speed = g_RigTiltYawSpeed;
@@ -342,7 +335,7 @@ void FollowCameraRig::SetTilts(u32 tilts)
         positioner.yaw.holdTicks = static_cast<s32>(g_ClockUnitsPerSecond);
     }
 
-    positioner.pitch.bits = (positioner.pitch.bits & ~AngleBlender::BitHolds) | (tilts & 1);
+    positioner.pitch.bits.holds = tilts;
     if (tilts != 0)
     {
         positioner.pitch.holdTicks = 0;
@@ -361,7 +354,7 @@ void FollowCameraRig::SetTilts(u32 tilts)
 
     positioner.ResetTurnShare();
     positioner.ResetOwnRate();
-    positioner.bits &= ~static_cast<u64>(FollowCameraPositioner::BitTriggerBit22Clear);
+    positioner.bits.noFacingTilt = 0;
     positioner.fieldOfView.high = g_DefaultFov;
     positioner.fieldOfView.low = g_DefaultFov;
     positioner.distance.high = FarthestDistance;
@@ -378,9 +371,9 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
     Vector4 velocity;
     if (character->MovingVelocity(&velocity) == 0)
     {
-        if ((bits & BitTilts) != 0 && (bits & VehicleMask) != 0)
+        if (bits.tilts != 0 && bits.vehicle != 0)
         {
-            if (character->properties->GetInt(0) == MechaBandicoot)
+            if (character->properties->GetInt(CharacterKindProperty) == CharacterMecha)
             {
                 SetMechaView();
             }
@@ -393,7 +386,7 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
 
         UpdateHolds();
         StepWalkYaw(character);
-        bits &= ~VehicleMask;
+        bits.vehicle = 0;
         ownTarget.velocity = velocity;
         return;
     }
@@ -401,7 +394,7 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
     switch (character->vehicle->Kind())
     {
     case Vehicle::KindRollerbrawl:
-        if ((bits & VehicleMask) != Vehicle::KindRollerbrawl << VehicleShift)
+        if (bits.vehicle != Vehicle::KindRollerbrawl)
         {
             SetRollerbrawlView();
         }
@@ -419,7 +412,7 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
         break;
     }
     case Vehicle::KindHoverboard:
-        if ((bits & VehicleMask) != Vehicle::KindHoverboard << VehicleShift)
+        if (bits.vehicle != Vehicle::KindHoverboard)
         {
             SetHoverboardView();
         }
@@ -431,7 +424,7 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
     default:
         // Retail bug: the kind is kept in 3 bits, so a character riding along (kind 8) never matches it and is set tilting again
         // every frame
-        if ((bits >> VehicleShift & 7) != character->vehicle->Kind() && (bits & BitTilts) != 0)
+        if (bits.vehicle != character->vehicle->Kind() && bits.tilts != 0)
         {
             SetTilts(1);
         }
@@ -441,7 +434,7 @@ void FollowCameraRig::FollowRide(CharacterAgent* character)
         break;
     }
 
-    bits = (bits & ~VehicleMask) | (character->vehicle->Kind() & 7) << VehicleShift;
+    bits.vehicle = character->vehicle->Kind();
     ownTarget.velocity = velocity;
 }
 
@@ -477,16 +470,17 @@ void FollowCameraRig::SetRollerbrawlView()
 {
     FollowCameraPositioner& positioner = ownPositioner;
     ownTarget.facesMovement = 1;
-    bits |= BitTilts;
+    bits.tilts = 1;
     positioner.SetTilts(1);
-    positioner.yaw.bits |= AngleBlender::BitSineSpeed | AngleBlender::BitHolds;
+    positioner.yaw.bits.sineSpeed = 1;
+    positioner.yaw.bits.holds = 1;
     positioner.yaw.holdTicks = static_cast<s32>(g_ClockUnitsPerSecond * TiltingHold);
     positioner.yaw.speed = g_RigTiltYawSpeed;
-    positioner.pitch.bits |= AngleBlender::BitHolds;
+    positioner.pitch.bits.holds = 1;
     positioner.pitch.holdTicks = 0;
     positioner.pitch.speed = g_RigTiltPitchSpeed;
-    positioner.bits |= FollowCameraPositioner::BitTriggerBit22Clear;
-    positioner.distance.bits |= AngleBlender::BitSecondRange;
+    positioner.bits.noFacingTilt = 1;
+    positioner.distance.bits.secondRange = 1;
     positioner.distance.secondHigh = RollerbrawlDistance;
     positioner.distance.secondLow = RollerbrawlDistance;
     positioner.ResetTurnShare();
@@ -496,15 +490,16 @@ void FollowCameraRig::SetHumiliskateView()
 {
     FollowCameraPositioner& positioner = ownPositioner;
     ownTarget.facesMovement = 0;
-    bits |= BitTilts;
+    bits.tilts = 1;
     positioner.SetTilts(1);
-    positioner.yaw.bits |= AngleBlender::BitSineSpeed | AngleBlender::BitHolds;
-    positioner.pitch.bits |= AngleBlender::BitHolds;
+    positioner.yaw.bits.sineSpeed = 1;
+    positioner.yaw.bits.holds = 1;
+    positioner.pitch.bits.holds = 1;
     positioner.yaw.speed = g_HumiliskateYawSpeed;
     positioner.yaw.holdTicks = 0;
     positioner.pitch.holdTicks = 0;
     positioner.pitch.speed = g_RigTiltPitchSpeed;
-    positioner.bits |= FollowCameraPositioner::BitTriggerBit22Clear;
+    positioner.bits.noFacingTilt = 1;
     positioner.turnShare = HumiliskateTurnShare;
     positioner.ownRate = HumiliskateOwnRate;
     s32 lowFieldOfView;
@@ -528,13 +523,13 @@ void FollowCameraRig::SetHumiliskateView()
 void FollowCameraRig::StepWalkYaw(CharacterAgent* character)
 {
     FollowCameraPositioner& positioner = ownPositioner;
-    if ((positioner.bits & FollowCameraPositioner::BitYawExtraSpeed) != 0)
+    if (positioner.bits.yawSpeedSet != 0)
     {
         return;
     }
 
     AngleBlender& yaw = positioner.yaw;
-    if (!(__builtin_fabsf(yaw.rateScale) <= NoInput))
+    if (!(__builtin_fabsf(yaw.rateScale) <= Epsilon))
     {
         // The shoulder buttons swing it behind the character
         yaw.speed = g_RigYawSpeed * 2;
@@ -546,13 +541,13 @@ void FollowCameraRig::StepWalkYaw(CharacterAgent* character)
     f32 speed = __builtin_sqrtf(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
     s32 goal;
     AngleFrom(&goal, 0.0f, AngleRadians);
-    if ((yaw.bits & AngleBlender::BitSecondRange) != 0)
+    if (yaw.bits.secondRange != 0)
     {
         walkYawSpeed = goal;
         return;
     }
 
-    f32 scale = (static_cast<CreaturePart*>(character->part)->flags & CreaturePart::FlagOnGround) != 0 ? 1.0f : 0.5f;
+    f32 scale = static_cast<CreaturePart*>(character->part)->flags.onGround != 0 ? 1.0f : AirborneYawShare;
     f32 stickY = axes[AxisMoveY];
     f32 stickX = axes[AxisMoveX];
     if (stickY != 0.0f || stickX != 0.0f)
@@ -563,16 +558,16 @@ void FollowCameraRig::StepWalkYaw(CharacterAgent* character)
         YawOfDirection(&angle, &stick);
         angle = WrapAngle(angle);
         AngleFrom(&angle, __builtin_fabsf(static_cast<f32>(angle) * AngleToRadians), AngleRadians);
-        if (angle >= OneDegree && angle < QuarterTurn)
+        if (angle >= OneDegree && angle < QuarterTurnAngle)
         {
             s32 past = angle - OneDegree;
             f32 share = static_cast<f32>(*DivideAngle(&past, EightyNineDegrees)) * AngleToRadians;
             goal = static_cast<s32>(static_cast<f32>(g_RigTiltYawSpeed) * share);
         }
-        else if (angle >= QuarterTurn && angle <= ThreeEighthsTurn)
+        else if (angle >= QuarterTurnAngle && angle <= ThreeEighthsTurn)
         {
-            s32 past = angle - QuarterTurn;
-            f32 share = static_cast<f32>(*DivideAngle(&past, FortyFiveDegrees)) * AngleToRadians;
+            s32 past = angle - QuarterTurnAngle;
+            f32 share = static_cast<f32>(*DivideAngle(&past, QuarterPi)) * AngleToRadians;
             s32 half = g_RigTiltYawSpeed;
             goal = static_cast<s32>(static_cast<f32>(*MultiplyAngle(&half, GrowingOnShare)) * share) + g_RigTiltYawSpeed;
         }
@@ -580,8 +575,8 @@ void FollowCameraRig::StepWalkYaw(CharacterAgent* character)
         {
             s32 past = angle - ThreeEighthsTurn;
             f32 share = static_cast<f32>(*DivideAngle(&past, FortyFourDegrees)) * AngleToRadians;
-            s32 most = g_RigTiltYawSpeed;
-            goal = static_cast<s32>(static_cast<f32>(*MultiplyAngle(&most, FallingShare)) * (1.0f - share));
+            s32 peak = g_RigTiltYawSpeed;
+            goal = static_cast<s32>(static_cast<f32>(*MultiplyAngle(&peak, FallingShare)) * (1.0f - share));
         }
     }
 
@@ -595,42 +590,44 @@ void FollowCameraRig::StepWalkYaw(CharacterAgent* character)
 void FollowCameraRig::UpdateHolds()
 {
     FollowCameraPositioner& positioner = ownPositioner;
-    if ((bits & BitStickTurning) != 0)
+    if (bits.stickTurning != 0)
     {
-        positioner.yaw.bits &= ~AngleBlender::BitHolds;
-        positioner.pitch.bits &= ~AngleBlender::BitHolds;
-        positioner.bits |= FollowCameraPositioner::Bit19;
-        bits |= BitStickTurned;
+        positioner.yaw.bits.holds = 0;
+        positioner.pitch.bits.holds = 0;
+        positioner.bits.stickTurned = 1;
+        bits.stickTurned = 1;
     }
-    else if ((bits & BitMoving) != 0)
+    else if (bits.moving != 0)
     {
-        positioner.yaw.bits |= AngleBlender::BitHolds;
-        positioner.pitch.bits |= AngleBlender::BitHolds;
-        positioner.bits &= ~static_cast<u64>(FollowCameraPositioner::Bit19);
-        bits &= ~BitStickTurned;
+        positioner.yaw.bits.holds = 1;
+        positioner.pitch.bits.holds = 1;
+        positioner.bits.stickTurned = 0;
+        bits.stickTurned = 0;
     }
-    else if ((bits & BitStickTurned) == 0)
+    else if (bits.stickTurned == 0)
     {
-        positioner.pitch.bits |= AngleBlender::BitHolds;
-        positioner.yaw.bits &= ~AngleBlender::BitHolds;
-        positioner.bits &= ~static_cast<u64>(FollowCameraPositioner::Bit19);
+        positioner.pitch.bits.holds = 1;
+        positioner.yaw.bits.holds = 0;
+        positioner.bits.stickTurned = 0;
     }
 
-    if ((positioner.bits & FollowCameraPositioner::BitFree) == 0)
+    if (positioner.bits.unpushed == 0)
     {
-        positioner.pitch.bits &= ~AngleBlender::BitHolds;
-        positioner.yaw.bits &= ~AngleBlender::BitHolds;
+        positioner.pitch.bits.holds = 0;
+        positioner.yaw.bits.holds = 0;
     }
 }
 
 void FollowCameraRig::SetTarget(InstanceContext* instance)
 {
     ownTarget.smoothed = 0;
-    ownTarget.bits = (ownTarget.bits | FollowCameraTarget::BitUneased | FollowCameraTarget::BitCut) &
-                     ~FollowCameraTarget::BitStepped;
+    ownTarget.bits.heightUneased = 1;
+    ownTarget.bits.cut = 1;
+    ownTarget.bits.stepped = 0;
     AssignReference(&ownTarget.followed, instance);
-    ownPositioner.state = (ownPositioner.state | FollowCameraPositioner::StateCut) & ~FollowCameraPositioner::StatePlaced;
-    ownPositioner.bits |= FollowCameraPositioner::BitKeepsHeight;
+    ownPositioner.state.cut = 1;
+    ownPositioner.state.placed = 0;
+    ownPositioner.bits.keepsHeight = 1;
     ownPositioner.smoothed = 0;
 }
 
@@ -640,13 +637,13 @@ void FollowCameraRig::CheckMoving(CharacterAgent* character, u32)
     character->MovingVelocity(&velocity);
     if (velocity.x * velocity.x + velocity.z * velocity.z < MovingSpeedSquared)
     {
-        ownPositioner.bits &= ~static_cast<u64>(FollowCameraPositioner::Bit6);
-        bits &= ~BitMoving;
+        ownPositioner.bits.characterMoving = 0;
+        bits.moving = 0;
     }
     else
     {
-        ownPositioner.bits |= FollowCameraPositioner::Bit6;
-        bits |= BitMoving;
+        ownPositioner.bits.characterMoving = 1;
+        bits.moving = 1;
     }
 }
 
@@ -656,7 +653,7 @@ void FollowCameraRig::RollerbrawlFrame(CharacterAgent* character, f32 speed)
     f32 excess = static_cast<RollerbrawlVehicle*>(character->vehicle)->snowScale - SnowScaleBackingOff;
     if (0.0f < excess)
     {
-        ownPositioner.distance.bits |= AngleBlender::BitSecondRange;
+        ownPositioner.distance.bits.secondRange = 1;
         Vector4 min = {0.0f, excess + RollerbrawlBoxHeight, 0.0f, 1.0f};
         Vector4 max = min;
         ownPositioner.distance.secondHigh = excess + RollerbrawlDistance;
@@ -665,16 +662,16 @@ void FollowCameraRig::RollerbrawlFrame(CharacterAgent* character, f32 speed)
     }
     else
     {
-        ownPositioner.distance.bits &= ~AngleBlender::BitSecondRange;
+        ownPositioner.distance.bits.secondRange = 0;
     }
 
-    ownPositioner.bits |= FollowCameraPositioner::BitTriggerBit22Clear;
+    ownPositioner.bits.noFacingTilt = 1;
 }
 
 void FollowCameraRig::SetHoverboardView()
 {
     ownTarget.facesMovement = 1;
-    ownPositioner.bits |= FollowCameraPositioner::BitTriggerBit22Clear;
+    ownPositioner.bits.noFacingTilt = 1;
 }
 
 void FollowCameraRig::HoverboardFrame(CharacterAgent*)
@@ -683,7 +680,7 @@ void FollowCameraRig::HoverboardFrame(CharacterAgent*)
 
 void FollowCameraRig::HumiliskateFrame(Vehicle*)
 {
-    ownPositioner.bits |= FollowCameraPositioner::BitTriggerBit22Clear;
+    ownPositioner.bits.noFacingTilt = 1;
 }
 
 void FollowCameraRig::IgnoreLinked(CharacterAgent* character)
@@ -710,15 +707,18 @@ void FollowCameraRig::Restart()
 FollowCamera* ConstructFollowCamera(FollowCamera* follow)
 {
     FollowCameraRig::Construct(&follow->rig);
-    follow->bits = FollowCamera::BitSmoothed | FollowCamera::BitSteers | FollowCamera::BitStepsRig;
+    follow->bits.value = 0;
+    follow->bits.smoothed = 1;
+    follow->bits.steers = 1;
+    follow->bits.stepsRig = 1;
     return follow;
 }
 
 void DestroyFollowCamera(FollowCamera* follow, u32 destroyFlags)
 {
     DestroyRigParts(&follow->rig);
-    follow->rig.CameraRig::Destroy(2);
-    if ((destroyFlags & 1) != 0)
+    follow->rig.CameraRig::Destroy(DestroyOnly);
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(follow);
     }
@@ -727,12 +727,11 @@ void DestroyFollowCamera(FollowCamera* follow, u32 destroyFlags)
 void RestartFollowCamera(FollowCamera* follow, void* controller, InstanceContext* camera, InstanceContext* character)
 {
     CameraLensNode* lens = LensOf(camera);
-    follow->bits &= FollowCamera::BitSmoothed | FollowCamera::BitSteers | FollowCamera::BitIgnoresTriggers |
-                    FollowCamera::BitStepsRig;
+    follow->bits.value &= FollowCameraBits::KeptByRestart;
     follow->current = nullptr;
     follow->pending = nullptr;
     follow->last = nullptr;
-    follow->second = nullptr;
+    follow->secondSlot = nullptr;
     if (character->chunk != nullptr)
     {
         MoveToChunk(character->chunk, camera);
@@ -745,18 +744,18 @@ void RestartFollowCamera(FollowCamera* follow, void* controller, InstanceContext
 void RestoreFollowCameraDefaults(FollowCamera* follow, CharacterAgent* character)
 {
     follow->rig.RestoreDefaults(character);
-    SetSteers(&follow->rig.ownPositioner, follow->bits >> 1);
+    SetSteers(&follow->rig.ownPositioner, follow->bits.steers);
 }
 
 void ShowFollowCamera(FollowCamera* follow, InstanceContext* camera, InstanceContext* character, u32 reset)
 {
     CameraLensNode* lens = LensOf(camera);
-    if ((follow->bits & FollowCamera::BitRigAway) == 0)
+    if (follow->bits.rigAway == 0)
     {
         follow->lensRig = lens->SetRig(&follow->rig, reset);
     }
 
-    auto* node = static_cast<AgentNode*>(GetGameNode(&character->nodes, NodePlayer));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&character->nodes, NodeCharacter));
     static_cast<PadCameraRig*>(follow->lensRig)->RestoreDefaultsVirtual(static_cast<CharacterAgent*>(node->agent));
     TakeChosenCamera(follow);
     follow->lensRig->trigger = follow->current;
@@ -765,7 +764,7 @@ void ShowFollowCamera(FollowCamera* follow, InstanceContext* camera, InstanceCon
 void PutFollowCameraOnLens(FollowCamera* follow, InstanceContext* camera)
 {
     CameraLensNode* lens = LensOf(camera);
-    if ((follow->bits & FollowCamera::BitRigAway) == 0)
+    if (follow->bits.rigAway == 0)
     {
         follow->lensRig = lens->SetRig(&follow->rig, 1);
     }
@@ -773,22 +772,22 @@ void PutFollowCameraOnLens(FollowCamera* follow, InstanceContext* camera)
 
 void SetFollowCameraSmoothed(FollowCamera* follow, u32 smoothed)
 {
-    follow->bits = (follow->bits & ~FollowCamera::BitSmoothed) | (smoothed & 1);
+    follow->bits.smoothed = smoothed;
     CameraRig& rig = follow->rig;
-    rig.bits = (rig.bits & ~CameraRig::BitSmoothed) | (smoothed & 1);
+    rig.bits.smoothed = smoothed;
 }
 
 void SetFollowCameraSteers(FollowCamera* follow, u32 steers)
 {
-    follow->bits = (follow->bits & ~FollowCamera::BitSteers) | (steers & 1) << 1;
+    follow->bits.steers = steers;
     SetSteers(&follow->rig.ownPositioner, steers);
 }
 
 void SetFollowCameraIgnoresTriggers(FollowCamera* follow, u32 ignores)
 {
     CameraRig& rig = follow->rig;
-    rig.bits = (rig.bits & ~CameraRig::BitIgnoresTrigger) | (ignores & 1) << 1;
-    follow->bits = (follow->bits & ~FollowCamera::BitIgnoresTriggers) | (ignores & 1) << 2;
+    rig.bits.ignoresTrigger = ignores;
+    follow->bits.ignoresTriggers = ignores;
 }
 
 void TakeChosenCamera(FollowCamera* follow)
@@ -815,7 +814,7 @@ void OfferCamera(FollowCamera* follow, CameraNode* trigger, u32 priority, Charac
 
 void FollowCameraReadPad(FollowCamera* follow, GamePad* pad)
 {
-    follow->bits &= ~FollowCamera::BitSwitchBack;
+    follow->bits.switchBack = 0;
     static_cast<PadCameraRig*>(follow->lensRig)->ReadPadVirtual(pad);
 }
 
@@ -823,12 +822,12 @@ u32 FollowCameraTakes(FollowCamera* follow, CameraNode* trigger, CharacterAgent*
 {
     MainCamera* camera = trigger->camera;
     u32 takes = 1;
-    if ((camera->flags & MainCamera::FlagNeedsRunningCamera) != 0 && follow->last == nullptr)
+    if (camera->flags.needsRunningCamera != 0 && follow->last == nullptr)
     {
         takes = 0;
     }
 
-    if ((camera->switches & MainCamera::SwitchSecondSlot) != 0 && (follow->bits & FollowCamera::BitCharacterDied) == 0)
+    if (camera->switches.secondSlot != 0 && follow->bits.characterDied == 0)
     {
         takes = 0;
     }
@@ -845,9 +844,9 @@ u32 FollowCameraTakes(FollowCamera* follow, CameraNode* trigger, CharacterAgent*
 
     // On foot a new camera needs the character on the ground or a restart, unless it says it doesn't
     if (takes != 0 && character->vehicle == nullptr && trigger != follow->last &&
-        (camera->flags & MainCamera::FlagIgnoresPlayerState) == 0 &&
-        (static_cast<CreaturePart*>(character->part)->flags & CreaturePart::FlagOnGround) == 0 &&
-        (follow->rig.ownPositioner.bits & FollowCameraPositioner::BitRestarted) == 0)
+        camera->flags.ignoresPlayerState == 0 &&
+        static_cast<CreaturePart*>(character->part)->flags.onGround == 0 &&
+        follow->rig.ownPositioner.bits.restarted == 0)
     {
         takes = 0;
     }
@@ -856,48 +855,48 @@ u32 FollowCameraTakes(FollowCamera* follow, CameraNode* trigger, CharacterAgent*
     {
         // A keyed camera (the second subtype) is taken until it finished (retail returns its finished byte xor 1)
         CameraSubtype* keyed = camera->second;
-        if (keyed != nullptr && keyed->TypeVirtual() == CameraSubtype::Type1C0E)
+        if (keyed != nullptr && keyed->TypeVirtual() == CameraSubtype::TypeKeyed)
         {
-            takes = static_cast<Camera1C0E*>(keyed)->finished ^ 1;
+            takes = static_cast<KeyedCamera*>(keyed)->finished ^ 1;
         }
     }
 
-    if (takes == 0 || (camera->switches & MainCamera::SwitchSecondSlot) == 0)
+    if (takes == 0 || camera->switches.secondSlot == 0)
     {
-        follow->second = nullptr;
+        follow->secondSlot = nullptr;
         return takes;
     }
 
-    follow->second = trigger;
+    follow->secondSlot = trigger;
     return takes;
 }
 
 void StepFollowCamera(FollowCamera* follow, TimeClock* clock, CharacterAgent* character, InstanceContext* camera)
 {
     MainCamera* chosen = follow->pending != nullptr ? follow->pending->camera : nullptr;
-    u32 allowsSwitchBack = chosen != nullptr ? (chosen->flags & MainCamera::FlagAllowsSwitchBack) != 0 : 1;
+    u32 allowsSwitchBack = chosen != nullptr ? chosen->flags.allowsSwitchBack != 0 : 1;
     if (follow->pending != follow->last)
     {
-        follow->rig.bits &= ~FollowCameraRig::VehicleMask;
+        follow->rig.bits.vehicle = 0;
     }
 
-    if ((character->state & CharacterAgent::StateDead) != 0 && follow->second != nullptr)
+    if (character->state.dead != 0 && follow->secondSlot != nullptr)
     {
-        follow->pending = follow->second;
-        follow->bits |= FollowCamera::BitKeepsTarget;
+        follow->pending = follow->secondSlot;
+        follow->bits.keepsTarget = 1;
     }
 
-    // Nothing sets bit 3, so this switch back never runs
-    if (allowsSwitchBack != 0 && (follow->bits & FollowCamera::BitSwitchBack) != 0)
+    // Nothing sets switchBack, so this switch back never runs
+    if (allowsSwitchBack != 0 && follow->bits.switchBack != 0)
     {
         constexpr f32 SwitchBackSeconds = 0.5f;
         CameraLensNode* lens = LensOf(camera);
-        follow->bits ^= FollowCamera::BitRigAway;
-        follow->lensRig = lens->BlendTo(&follow->rig, static_cast<s32>(g_ClockUnitsPerSecond * SwitchBackSeconds), 0);
-        follow->bits &= ~FollowCamera::BitSwitchBack;
+        follow->bits.rigAway ^= 1;
+        follow->lensRig = lens->BlendTo(&follow->rig, static_cast<s32>(g_ClockUnitsPerSecond * SwitchBackSeconds), CurveEven);
+        follow->bits.switchBack = 0;
     }
 
-    if ((follow->bits & FollowCamera::BitRigAway) != 0)
+    if (follow->bits.rigAway != 0)
     {
         follow->pending = nullptr;
     }
@@ -906,16 +905,16 @@ void StepFollowCamera(FollowCamera* follow, TimeClock* clock, CharacterAgent* ch
         follow->lensRig->trigger = follow->pending;
     }
 
-    follow->lensRig->bits = (follow->lensRig->bits & ~CameraRig::BitSmoothed) | (follow->bits & FollowCamera::BitSmoothed);
-    follow->lensRig->bits = (follow->lensRig->bits & ~CameraRig::BitIgnoresTrigger) | (follow->bits >> 2 & 1) << 1;
-    if ((follow->bits & FollowCamera::BitStepsRig) != 0)
+    follow->lensRig->bits.smoothed = follow->bits.smoothed;
+    follow->lensRig->bits.ignoresTrigger = follow->bits.ignoresTriggers;
+    if (follow->bits.stepsRig != 0)
     {
         static_cast<PadCameraRig*>(follow->lensRig)->FrameVirtual(clock, character);
     }
 
-    if ((follow->bits & FollowCamera::BitCharacterDied) == 0)
+    if (follow->bits.characterDied == 0)
     {
-        follow->bits = (follow->bits & ~FollowCamera::BitCharacterDied) | (character->state >> 14 & 1) << 6;
+        follow->bits.characterDied = character->state.dead;
     }
 
     follow->last = follow->pending;

@@ -1,35 +1,36 @@
 #include "game/colour.h"
 
 #include "game/math.h"
+#include "gcc2.h"
 
 namespace
 {
 // The bytes set one at a time (the colour class's setters)
 void SetBytes(u32* colour, f32 red, f32 green, f32 blue, f32 alpha)
 {
-    auto* bytes = reinterpret_cast<u8*>(colour);
-    bytes[0] = Colour::ColourByte(red);
-    bytes[1] = Colour::ColourByte(green);
-    bytes[2] = Colour::ColourByte(blue);
-    bytes[3] = Colour::AlphaByte(alpha);
+    auto* rgba = reinterpret_cast<Rgba*>(colour);
+    rgba->red = Colour::ColourByte(red);
+    rgba->green = Colour::ColourByte(green);
+    rgba->blue = Colour::ColourByte(blue);
+    rgba->alpha = Colour::AlphaByte(alpha);
 }
 }
 
-// The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), 0 and 0.01 twice (one block of
-// 16 bytes, its second word left alone), a black of half alpha
+// The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), 0 and the UI's shadow offset
+// (one block of 16 bytes, its second word left alone), the UI's shadow colour
 struct ColourConstants
 {
-    u32 zero;
-    u32 unknown04;
-    f32 small;
-    f32 small2;
+    u32 unused00;
+    u32 unused04;
+    f32 unused08;
+    f32 unused0C;
 };
 
 extern "C"
 {
     extern Vector4 g_ColourUp RETAIL(D_0030AE80);
     extern ColourConstants g_ColourConstants RETAIL(D_0030A480);
-    extern u32 g_ColourShade RETAIL(D_0030A490);
+    extern u32 g_ColourShadowColour RETAIL(D_0030A490);
     // GCC 2.9x's initialisation function (for every priority) and the module's global constructor
     void InitColourModule(s32 initialise, s32 priority) RETAIL(FUN_001010e8);
     void ConstructColourModule() RETAIL(FUN_001016f8);
@@ -44,14 +45,16 @@ extern "C"
 
     void ColourLerp(f32 t, u32* colour, u32 from, u32 to)
     {
-        f32 fromRed = Colour::ColourFraction(from, 0);
-        f32 fromGreen = Colour::ColourFraction(from, 1);
-        f32 fromBlue = Colour::ColourFraction(from, 2);
-        f32 fromAlpha = Colour::AlphaFraction(from);
-        f32 toRed = Colour::ColourFraction(to, 0);
-        f32 toGreen = Colour::ColourFraction(to, 1);
-        f32 toBlue = Colour::ColourFraction(to, 2);
-        f32 toAlpha = Colour::AlphaFraction(to);
+        Rgba start = {from};
+        Rgba end = {to};
+        f32 fromRed = Colour::ColourFraction(start.red);
+        f32 fromGreen = Colour::ColourFraction(start.green);
+        f32 fromBlue = Colour::ColourFraction(start.blue);
+        f32 fromAlpha = Colour::AlphaFraction(start.alpha);
+        f32 toRed = Colour::ColourFraction(end.red);
+        f32 toGreen = Colour::ColourFraction(end.green);
+        f32 toBlue = Colour::ColourFraction(end.blue);
+        f32 toAlpha = Colour::AlphaFraction(end.alpha);
         f32 red = fromRed + (toRed - fromRed) * t;
         f32 green = fromGreen + (toGreen - fromGreen) * t;
         f32 blue = fromBlue + (toBlue - fromBlue) * t;
@@ -61,22 +64,24 @@ extern "C"
 
     u32 ColourScale(u32* colour, f32 scale)
     {
-        auto* bytes = reinterpret_cast<u8*>(colour);
-        f32 red = scale * Colour::ColourFraction(*colour, 0);
-        f32 green = scale * Colour::ColourFraction(*colour, 1);
-        f32 blue = scale * Colour::ColourFraction(*colour, 2);
-        bytes[0] = Colour::ColourByte(red);
-        bytes[1] = Colour::ColourByte(green);
-        bytes[2] = Colour::ColourByte(blue);
+        auto* rgba = reinterpret_cast<Rgba*>(colour);
+        f32 red = scale * Colour::ColourFraction(rgba->red);
+        f32 green = scale * Colour::ColourFraction(rgba->green);
+        f32 blue = scale * Colour::ColourFraction(rgba->blue);
+        rgba->red = Colour::ColourByte(red);
+        rgba->green = Colour::ColourByte(green);
+        rgba->blue = Colour::ColourByte(blue);
         return *colour;
     }
 
     u32 ColourTint(u32* colour, u32 tint)
     {
-        f32 red = Colour::ColourFraction(tint, 0) * Colour::ColourFraction(*colour, 0);
-        f32 green = Colour::ColourFraction(tint, 1) * Colour::ColourFraction(*colour, 1);
-        f32 blue = Colour::ColourFraction(tint, 2) * Colour::ColourFraction(*colour, 2);
-        f32 alpha = Colour::AlphaFraction(tint) * Colour::AlphaFraction(*colour);
+        Rgba tinting = {tint};
+        const auto* own = reinterpret_cast<const Rgba*>(colour);
+        f32 red = Colour::ColourFraction(tinting.red) * Colour::ColourFraction(own->red);
+        f32 green = Colour::ColourFraction(tinting.green) * Colour::ColourFraction(own->green);
+        f32 blue = Colour::ColourFraction(tinting.blue) * Colour::ColourFraction(own->blue);
+        f32 alpha = Colour::AlphaFraction(tinting.alpha) * Colour::AlphaFraction(own->alpha);
         SetBytes(colour, red, green, blue, alpha);
         return *colour;
     }
@@ -86,47 +91,45 @@ extern "C"
 {
     void ColourSetAlpha(u32* colour, f32 alpha)
     {
-        reinterpret_cast<u8*>(colour)[3] = Colour::AlphaByte(alpha);
+        reinterpret_cast<Rgba*>(colour)->alpha = Colour::AlphaByte(alpha);
     }
 
     void ColourSetRed(u32* colour, f32 red)
     {
-        reinterpret_cast<u8*>(colour)[0] = Colour::ColourByte(red);
+        reinterpret_cast<Rgba*>(colour)->red = Colour::ColourByte(red);
     }
 
     void ColourSetGreen(u32* colour, f32 green)
     {
-        reinterpret_cast<u8*>(colour)[1] = Colour::ColourByte(green);
+        reinterpret_cast<Rgba*>(colour)->green = Colour::ColourByte(green);
     }
 
     void ColourSetBlue(u32* colour, f32 blue)
     {
-        reinterpret_cast<u8*>(colour)[2] = Colour::ColourByte(blue);
+        reinterpret_cast<Rgba*>(colour)->blue = Colour::ColourByte(blue);
     }
 }
 
 void InitColourModule(s32 initialise, s32 priority)
 {
-    constexpr s32 AllPriorities = 0xFFFF;
-    constexpr f32 Small = Rounded(0.01);
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
     g_ColourUp.x = 0.0f;
     g_ColourUp.w = 1.0f;
-    g_ColourConstants.small2 = Small;
-    g_ColourConstants.zero = 0;
+    g_ColourConstants.unused0C = UiShadowOffset;
+    g_ColourConstants.unused00 = 0;
     g_ColourUp.y = 1.0f;
     g_ColourUp.z = 0.0f;
-    g_ColourConstants.small = Small;
-    ColourSet(&g_ColourShade, 0.0f, 0.0f, 0.0f, 0.5f);
+    g_ColourConstants.unused08 = UiShadowOffset;
+    ColourSet(&g_ColourShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
 }
 
 void ConstructColourModule()
 {
-    InitColourModule(1, 0xFFFF);
+    InitColourModule(1, DefaultInitPriority);
 }
 
 EABI_EXPORT(FUN_00101168, ColourSet);

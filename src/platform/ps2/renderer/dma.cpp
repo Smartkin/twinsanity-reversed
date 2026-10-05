@@ -10,30 +10,20 @@ namespace
 // The channels' registers (SetDmaRegisterPointers' table): CHCR, with QWC and TADR after it
 constexpr u32 ChannelRegisters[] = {A_EE_D0_CHCR, A_EE_D1_CHCR, A_EE_D2_CHCR, A_EE_D3_CHCR, A_EE_D4_CHCR,
                                     A_EE_D5_CHCR, A_EE_D6_CHCR, A_EE_D7_CHCR, A_EE_D8_CHCR, A_EE_D9_CHCR};
-constexpr u32 QwcOffset = A_EE_D0_QWC - A_EE_D0_CHCR;
-constexpr u32 TadrOffset = A_EE_D0_TADR - A_EE_D0_CHCR;
-// D_CHCR: DIR from memory, MOD chain, STR, and TTE (the tags sent too)
-constexpr u32 ChainFromMemory = 0x105;
-constexpr u32 ChainWithTags = 0x145;
-// TADR takes the scratchpad's addresses (0x70000000 up) with SPR (bit 31) set, main memory's physical ones
-constexpr u32 ScratchpadAddress = 0x70000000;
-constexpr u32 ScratchpadBit = 0x80000000;
-constexpr u32 PhysicalMask = 0x0FFFFFFF;
-// D_PCR.CDE for every channel: COP0's condition follows them
-constexpr u32 ConditionChannels = 0x3FF0000;
 // The pause between two looks at a busy channel
 constexpr s32 BusyPause = 100;
-constexpr s32 Vif1Channel = 1;
 
 volatile u32* ChannelRegister(s32 channel, u32 offset)
 {
     return reinterpret_cast<volatile u32*>(ChannelRegisters[channel] + offset);
 }
 
-// CHCR's STR, read as its byte
+// CHCR's STR (bit 8), read as its byte
 bool IsSending(volatile u32* control)
 {
-    return (reinterpret_cast<volatile u8*>(control)[1] & 1) != 0;
+    constexpr u32 StartedByte = 1;
+    constexpr u8 StartedBit = 1;
+    return (reinterpret_cast<volatile u8*>(control)[StartedByte] & StartedBit) != 0;
 }
 }
 
@@ -55,9 +45,9 @@ void StartDmaChain(s32 channel, const void* chain, bool sendTags)
 
     *ChannelRegister(channel, QwcOffset) = 0;
     u32 address = reinterpret_cast<u32>(chain);
-    if ((address & ScratchpadAddress) == ScratchpadAddress)
+    if ((address & Scratchpad) == Scratchpad)
     {
-        address = (address & PhysicalMask) | ScratchpadBit;
+        address = (address & PhysicalMask) | DmaScratchpad;
     }
     else
     {
@@ -66,7 +56,13 @@ void StartDmaChain(s32 channel, const void* chain, bool sendTags)
 
     *ChannelRegister(channel, TadrOffset) = address;
     asm volatile("sync" : : : "memory");
-    *control = sendTags ? ChainWithTags : ChainFromMemory;
+    // From memory in chain mode, the tags sent too when asked
+    DmaChannelControl start = {};
+    start.fromMemory = 1;
+    start.mode = DmaChainMode;
+    start.sendsTags = sendTags;
+    start.started = 1;
+    *control = start.value;
 }
 
 s32 WaitForDmaChannel(s32 channel)
@@ -74,7 +70,7 @@ s32 WaitForDmaChannel(s32 channel)
     RendererDmaChannel& dma = g_RendererDma[channel];
     while (dma.sending != 0)
     {
-        *R_EE_D_PCR = dma.statusBit | ConditionChannels;
+        *R_EE_D_PCR = WaitOnChannels(dma.statusBit);
         asm volatile(".set push\n"
                      ".set noreorder\n"
                      "1:\n"
@@ -109,26 +105,25 @@ extern "C"
     volatile u32* sceDmaGetChan(u32 channel) RETAIL(sceDmaGetChan);
     // The register each channel's address goes in (TADR for the channels that follow chains, MADR for the others), which nothing
     // reads
-    extern volatile u32* g_DmaAddressRegisters[10] RETAIL(VIF0_TADR_PTR);
+    extern volatile u32* g_DmaAddressRegisters[DmaChannels] RETAIL(VIF0_TADR_PTR);
 }
 
 namespace
 {
 constexpr u32 AddressRegisters[] = {A_EE_D0_TADR, A_EE_D1_TADR, A_EE_D2_TADR, A_EE_D3_MADR, A_EE_D4_TADR,
                                     A_EE_D5_MADR, A_EE_D6_TADR, A_EE_D7_MADR, A_EE_D8_MADR, A_EE_D9_TADR};
-constexpr s32 DmaChannels = 10;
-// D_PCR: PCE, and CDE for every channel
-constexpr u32 PriorityAndChannels = 0x83FF0000;
 // The SIF's channels (5 to 7), which the renderer leaves alone
 constexpr u32 FirstSifChannel = 5;
 constexpr u32 SifChannels = 3;
-// D_CHCR.TTE: the tags are sent with the data
-constexpr u32 TagsSent = 0x40;
 }
 
+// Priority control on, every channel enabled
 void SetDmaRegisterPointers()
 {
-    *R_EE_D_PCR = PriorityAndChannels;
+    DmaPriorityControl priority = {};
+    priority.enabledChannels = AllDmaChannels;
+    priority.priorityControl = 1;
+    *R_EE_D_PCR = priority.value;
     for (s32 channel = 0; channel < DmaChannels; channel++)
     {
         g_DmaAddressRegisters[channel] = reinterpret_cast<volatile u32*>(AddressRegisters[channel]);
@@ -143,7 +138,11 @@ void SetDmaRegisterPointers()
 
         RendererDmaChannel& dma = g_RendererDma[channel];
         dma.registers = sceDmaGetChan(channel);
-        *dma.registers |= TagsSent;
+        // The tags sent with the data (TTE)
+        DmaChannelControl control;
+        control.value = *dma.registers;
+        control.sendsTags = 1;
+        *dma.registers = control.value;
         dma.statusBit = 1 << channel;
         dma.sending = 0;
     }

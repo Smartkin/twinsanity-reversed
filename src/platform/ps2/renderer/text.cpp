@@ -6,10 +6,13 @@ namespace
 {
 // A packet's lines' glyphs fit 0x260 bytes with 4 bytes of each line
 constexpr s32 PacketGlyphBytes = 0x260;
-// VIF1's UNPACK of the text's header and lines to 0 (FLG: VU1's double buffer's place added), of its glyphs as V4-8 elements
-// after them, and MSCNT (VU1 goes on running)
-constexpr u32 HeaderUnpack = 0x6C008000;
-constexpr u32 GlyphUnpack = 0x6E008000;
+// Where the font's glyphs go in VU1's memory; a text's header and lines go to its double buffer's place (FLG), and its glyphs
+// after them as V4-8 elements
+constexpr u32 VuGlyphsAddress = 0x36;
+constexpr u32 HeaderUnpack = VifUnpackV4Count | VifTops;
+constexpr u32 GlyphUnpack = VifUnpackV4Bytes | VifTops;
+// A glyph's page is its font page's index plus this
+constexpr s32 GlyphPageBase = 1;
 
 Material* PageMaterial(const Font* font, s32 page)
 {
@@ -71,7 +74,7 @@ extern "C"
             at[0] = (count + 1) | ReferenceTag;
             at[1] = Address(font->glyphs);
             at[2] = 0;
-            at[3] = count << 16 | 0x6C000036;
+            at[3] = VifUnpackTo(VifUnpackV4Count, VuGlyphsAddress, count);
             g_TextNext = reinterpret_cast<u8*>(at + 4);
             return;
         }
@@ -96,10 +99,10 @@ extern "C"
         RenderText(font, text, &size, &layout);
         Vector2 cursor;
         CopyVector2(&cursor, position);
-        u32 flags = item->flags;
-        if ((flags & Font::AlignTop) == 0)
+        TextAlignment alignment = item->alignment;
+        if (alignment.top == 0)
         {
-            if ((flags & Font::AlignBottom) != 0)
+            if (alignment.bottom != 0)
             {
                 cursor.y = cursor.y - layout.height;
             }
@@ -121,7 +124,7 @@ extern "C"
             tag[0] = 0;
             tag[1] = 0;
             tag[2] = 0;
-            tag[3] = (count + 2) << 16 | HeaderUnpack;
+            tag[3] = VifUnpackTo(HeaderUnpack, 0, count + 2);
             u32* at = tag + 4;
             u32 quadwords = 2;
             u32 colour = item->colour;
@@ -141,9 +144,9 @@ extern "C"
                 Vector2 start;
                 CopyVector2(&extent, &layout.lines[first + line]);
                 CopyVector2(&start, &cursor);
-                if ((flags & Font::AlignLeft) == 0)
+                if (alignment.left == 0)
                 {
-                    if ((flags & Font::AlignRight) != 0)
+                    if (alignment.right != 0)
                     {
                         start.x = start.x - extent.x;
                     }
@@ -162,7 +165,7 @@ extern "C"
             }
 
             // The glyphs as bytes after an UNPACK of them, each line's padded to a word
-            at[0] = (count + 2) | (bytes >> 2) << 16 | GlyphUnpack;
+            at[0] = VifUnpackTo(GlyphUnpack, count + 2, bytes >> 2);
             auto* glyphs = reinterpret_cast<u8*>(at);
             s32 offset = 4;
             for (s32 line = 0; line < count; line++)
@@ -244,8 +247,8 @@ void Font::Draw(const TextItem* item, TextPackets* packets)
     WriteTextPackets(this, item, &position, packets);
 }
 
-// The first page's packet finished; each other page with glyphs of its page (a glyph's page is the font page's index + 1) sends the
-// same packets with its material, by REF
+// The first page's packet finished; each other page with glyphs of its page (a glyph's page is the font page's index + 1) sends
+// the same packets with its material, by REF
 void Font::End(TextPackets* packets)
 {
     Material* material = PageMaterial(this, 0);
@@ -253,7 +256,7 @@ void Font::End(TextPackets* packets)
     g_TextNext = nullptr;
     for (s32 page = 1; page < pageCount; page++)
     {
-        if (packets->pages[page + 1] == 0)
+        if (packets->pages[page + GlyphPageBase] == 0)
         {
             continue;
         }

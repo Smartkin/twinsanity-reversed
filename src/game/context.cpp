@@ -6,6 +6,7 @@
 #include "game/chunkdata.h"
 #include "game/chunkloading.h"
 #include "game/clock.h"
+#include "game/colour.h"
 #include "game/controllers.h"
 #include "game/rigidbody.h"
 #include "game/filestream.h"
@@ -28,9 +29,6 @@ constexpr f32 DestroyingTime = Rounded(0.0013563);
 constexpr f32 ResourcesTime = Rounded(0.0010173);
 constexpr f32 CompactionTime = Rounded(0.0006782);
 constexpr f32 StepTime = Rounded(0.001);
-
-// The color table's clear color
-constexpr s32 ClearColorIndex = 8;
 }
 
 extern "C"
@@ -50,14 +48,14 @@ extern "C"
 
 GameContextPrototype* GameContextPrototype::Construct(GameContextPrototype* context)
 {
-    context->unknown00 = 0;
-    context->unknown04 = 1.0f;
+    context->unused00 = 0;
+    context->unused04 = 1.0f;
     context->vtable = g_GameContextPrototypeVTable;
-    GetColor(&context->clearColor, ClearColorIndex);
-    context->unknown0C = nullptr;
-    context->unknown14 = nullptr;
-    context->unknown10 = 0;
-    UnkDebugFunction3();
+    GetColor(&context->clearColor, ColourBlack);
+    context->chunksPath = nullptr;
+    context->unused14 = nullptr;
+    context->unused10 = 0;
+    MathsDebugStub();
     return context;
 }
 
@@ -72,14 +70,14 @@ void GameContextPrototype::StartUp()
         description.displayWidth = width;
         description.displayHeight = height;
         u32 color;
-        GetColor(&color, ClearColorIndex);
+        GetColor(&color, ColourBlack);
         description.width = width;
         description.height = height;
         description.clearColor = color;
         description.offsetX = 0;
         description.offsetY = 0;
         G_Renderer_ = G_GameRendererController->CreateRenderer(&description, 1);
-        G_Renderer_->flags |= 1;
+        G_Renderer_->flags.draws = 1;
         G_Renderer_->target->clearColor = clearColor;
         StartGame();
         g_GameState = GameStateRunning;
@@ -189,9 +187,9 @@ void GameContextPrototype::UpdatePrototype(bool playingMovie)
         }
     }
 
-    if (G_UnkStruct_5C0 != nullptr)
+    if (g_SaveManager != nullptr)
     {
-        G_UnkStruct_5C0->Update(&g_GlobalClock);
+        g_SaveManager->Update(&g_GlobalClock);
     }
 
     GameUpdate(playingMovie);
@@ -206,9 +204,9 @@ void GameContextPrototype::EndFrame(bool playingMovie)
     G_GameRendererController->EndFrame();
     GameEndFrame(playingMovie);
     G_GameRendererController->AfterEndFrame();
-    if (G_UnkStruct_5C0 != nullptr)
+    if (g_SaveManager != nullptr)
     {
-        G_UnkStruct_5C0->Render(G_Renderer_);
+        g_SaveManager->Render(G_Renderer_);
     }
 }
 
@@ -379,9 +377,9 @@ extern "C"
         for (s32 i = 0; i < value->length; i++)
         {
             s8 character = static_cast<s8>(value->string[i]);
-            if ((CasingTable[character] & 0x2) != 0)
+            if ((CasingTable[character] & RetailLibc::CasingLowerCase) != 0)
             {
-                character = static_cast<s8>(character - 0x20);
+                character = static_cast<s8>(character - ('a' - 'A'));
             }
 
             value->string[i] = static_cast<char>(character);
@@ -398,7 +396,7 @@ extern "C"
             const char* argument = arguments[i];
             if (ContextIsOption(context, argument, "RB"))
             {
-                context->flags |= GameContext::FlagRb;
+                context->flags.queuesFiles = 1;
             }
 
             String value;

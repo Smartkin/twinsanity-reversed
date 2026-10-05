@@ -2,7 +2,9 @@
 
 #include "game/camerarig.h"
 #include "game/chunkdata.h"
+#include "game/colour.h"
 #include "game/controllers.h"
+#include "game/font.h"
 #include "game/instances.h"
 #include "game/lights.h"
 #include "game/math.h"
@@ -17,9 +19,7 @@
 
 namespace
 {
-// The widths the game's places were made for (4:3) and a 16:9 TV's, as the game has them; a width over 4:3's
-constexpr f32 NarrowAspect = 0x1.555556p+0f;
-constexpr f32 WideAspect = 0x1.C71C72p+0f;
+// A width over 4:3's
 constexpr f32 InverseNarrowAspect = 0.75f;
 
 // What the TV's shape squeezes horizontal places and sizes by
@@ -47,16 +47,7 @@ void FinishFrame()
     g_RenderBuffer = g_RenderBuffer == 0;
 }
 
-// The controllers' vtable functions their own call
-constexpr u32 BeforeDrawingSlot = 5;
-constexpr u32 AfterDrawingSlot = 6;
-constexpr u32 FinishSceneSlot = 10;
-constexpr u32 RenderSlot = 13;
-// The colour table's colours of a render target's clear colour and a renderer's texts
-constexpr s32 TargetClearColour = 8;
-constexpr s32 RendererTextColour = 0xF;
-constexpr u32 RendererTextFlags = 0x11;
-constexpr u32 RendererStartFlags = Renderer::FlagDraws | Renderer::FlagClearColour | Renderer::FlagClearDepth;
+constexpr u32 RendererStartFlags = RendererFlags::Draws | RendererFlags::ClearsColour | RendererFlags::ClearsDepth;
 // The size of a render target's packet (the platform's)
 constexpr u32 TargetPacketSize = 0x60;
 
@@ -115,14 +106,14 @@ void GameRendererController::BaseDestroy(u32 destroyFlags)
 
         if (renderer->target != nullptr)
         {
-            renderer->target->Destroy(3);
+            renderer->target->Destroy(DestroyAndFree);
         }
 
-        TextQueueDestroy(&renderer->texts, 2);
+        TextQueueDestroy(&renderer->texts, DestroyOnly);
         MemoryDeallocate2_(renderer);
     });
-    RendererPoolDestroy(&renderers, 2);
-    if ((destroyFlags & 1) != 0)
+    RendererPoolDestroy(&renderers, DestroyOnly);
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -134,7 +125,7 @@ void GameRendererController::Destroy(u32 destroyFlags)
     BaseDestroy(destroyFlags);
 }
 
-u32 GameRendererController::Unknown2()
+u32 GameRendererController::None2()
 {
     return 0;
 }
@@ -144,9 +135,10 @@ void GameRendererController::ClearFrames()
     CallVirtual<void>(this, vtable, BeforeDrawingSlot);
     ForEachRenderer(this, [](Renderer* renderer)
     {
-        if ((renderer->flags & Renderer::FlagDraws) != 0)
+        if (renderer->flags.draws != 0)
         {
-            renderer->flags |= Renderer::FlagClearColour | Renderer::FlagClearDepth;
+            renderer->flags.clearsColour = 1;
+            renderer->flags.clearsDepth = 1;
         }
     });
     CallVirtual<void>(this, vtable, AfterDrawingSlot);
@@ -161,7 +153,7 @@ void GameRendererController::CountCameraRenderers()
 {
     ForEachRenderer(this, [](Renderer* renderer)
     {
-        if ((renderer->flags & Renderer::FlagDraws) == 0 || renderer->view == nullptr)
+        if (renderer->flags.draws == 0 || renderer->view == nullptr)
         {
             return;
         }
@@ -186,7 +178,7 @@ void GameRendererController::DrawOverlays()
 {
     ForEachRenderer(this, [](Renderer* renderer)
     {
-        if ((renderer->flags & Renderer::FlagDraws) != 0)
+        if (renderer->flags.draws != 0)
         {
             DrawOverlay(renderer);
         }
@@ -295,7 +287,7 @@ void GameRendererController::BaseNothing14()
 void RendererWalk::Destroy(u32 destroyFlags)
 {
     vtable = g_RendererWalkBaseVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -304,7 +296,7 @@ void RendererWalk::Destroy(u32 destroyFlags)
 void RendererWalk::BaseDestroy(u32 destroyFlags)
 {
     vtable = g_RendererWalkBaseVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -313,10 +305,9 @@ void RendererWalk::BaseDestroy(u32 destroyFlags)
 // The first slot in use; the last one is taken without looking (it's the one in use when no other is)
 void RendererWalk::First()
 {
-    constexpr s16 InUse = -1;
     index = 0;
     passed = 0;
-    while (index < pool->capacity - 1 && pool->links[index] != InUse)
+    while (index < pool->capacity - 1 && pool->links[index] != PoolSlotUsed)
     {
         index++;
     }
@@ -334,7 +325,6 @@ Renderer** RendererWalk::Current()
 
 void RendererWalk::Next()
 {
-    constexpr s16 InUse = -1;
     if (!(passed < pool->used - 1))
     {
         passed = pool->used;
@@ -345,7 +335,7 @@ void RendererWalk::Next()
     {
         s16 counted = passed;
         index++;
-        if (pool->links[index] == InUse)
+        if (pool->links[index] == PoolSlotUsed)
         {
             passed = static_cast<s16>(counted + 1);
             return;
@@ -376,13 +366,13 @@ Renderer* Renderer::Construct(Renderer* renderer, GameRendererController* contro
     renderer->controller = controller;
     renderer->view = nullptr;
     renderer->target = nullptr;
-    GetColor(&renderer->colour, RendererTextColour);
+    GetColor(&renderer->colour, ColourWhite);
     TextQueueConstruct(&renderer->texts);
     renderer->font = nullptr;
-    renderer->textFlags = RendererTextFlags;
+    renderer->textAlignment.value = TextAlignment::TopLeft;
     renderer->textScale.y = 1.0f;
     renderer->textScale.x = 1.0f;
-    renderer->flags = RendererStartFlags;
+    renderer->flags.value = RendererStartFlags;
     renderer->target = RenderTargetDescription::Copy(
         static_cast<RenderTargetDescription*>(MemoryAllocate(sizeof(RenderTargetDescription))), target);
     for (u32 layer = 0; layer < Renderer::OverlayLayers; layer++)
@@ -402,7 +392,7 @@ RenderTargetDescription* RenderTargetDescription::Construct(RenderTargetDescript
     description->offsetY = 0;
     description->width = 0;
     description->height = 0;
-    GetColor(&description->clearColor, TargetClearColour);
+    GetColor(&description->clearColor, ColourBlack);
     description->displayWidth = 0;
     description->displayHeight = 0;
     description->packet = static_cast<u8*>(MemoryAllocate2(TargetPacketSize));
@@ -431,7 +421,7 @@ void RenderTargetDescription::Destroy(u32 flags)
         MemoryDeallocate_(packet);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -486,9 +476,11 @@ extern "C" void SetUpFrame(RenderTargetDescription* target, u32 clearColor, u32 
     frame.height = target->height;
     frame.screenWidth = target->displayWidth;
     frame.screenHeight = target->displayHeight;
-    frame.red = static_cast<u8>(target->clearColor);
-    frame.green = static_cast<u8>(target->clearColor >> 8);
-    frame.blue = static_cast<u8>(target->clearColor >> 16);
+    Rgba clear;
+    clear.value = target->clearColor;
+    frame.red = clear.red;
+    frame.green = clear.green;
+    frame.blue = clear.blue;
     frame.clearColor = clearColor != 0;
     frame.clearDepth = clearDepth != 0;
     Platform::Graphics::StartFrame(frame);
@@ -517,11 +509,8 @@ extern "C" void FitSizeToScreen(u32 inPixels, Vector2* size)
 // its scenery and links, then the shadows cast in them), a cleared frame without one; the overlay last
 extern "C" void DrawRendererScene(Renderer* renderer)
 {
-    constexpr u32 NodeLens = 9;
-    constexpr u32 ClearColourShift = 4;
-    constexpr u32 ClearDepthShift = 5;
     GameMovieController* movie = G_GameMovieController;
-    if (movie != nullptr && (movie->flags & GameMovieController::StateMask) == GameMovieController::StatePlaying)
+    if (movie != nullptr && movie->IsPlaying())
     {
         SetUpFrame(renderer->target, 1, 0);
         movie->Draw();
@@ -539,7 +528,7 @@ extern "C" void DrawRendererScene(Renderer* renderer)
         {
             ObjectPlace* place = camera->place;
             RotateAndTranslate(place);
-            auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeLens));
+            auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens));
             g_RenderView = renderer->view;
             g_RenderTarget = renderer->target;
             Sky* sky = chunk->sky;
@@ -558,7 +547,7 @@ extern "C" void DrawRendererScene(Renderer* renderer)
             }
             else
             {
-                SetUpFrame(renderer->target, renderer->flags >> ClearColourShift & 1, renderer->flags >> ClearDepthShift & 1);
+                SetUpFrame(renderer->target, renderer->flags.clearsColour, renderer->flags.clearsDepth);
             }
 
             DrawScene(chunk, place, renderer->view);
@@ -568,6 +557,6 @@ extern "C" void DrawRendererScene(Renderer* renderer)
         }
     }
 
-    SetUpFrame(renderer->target, renderer->flags >> ClearColourShift & 1, renderer->flags >> ClearDepthShift & 1);
+    SetUpFrame(renderer->target, renderer->flags.clearsColour, renderer->flags.clearsDepth);
     DrawOverlay(renderer);
 }

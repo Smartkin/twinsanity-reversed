@@ -1,6 +1,7 @@
 #include "game/objectnode.h"
 
 #include "game/attachments.h"
+#include "game/behaviours.h"
 #include "game/clock.h"
 #include "game/collision.h"
 #include "game/instances.h"
@@ -23,30 +24,9 @@
 
 namespace
 {
-// The nodes it reaches: the object node, the attachments
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-// The object node's vtable: whether it takes packets, its sound stopped
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 StopSoundSlot = 44;
-// A destructor's flags: destroyed and freed
-constexpr u32 DestroyAndFree = 3;
-
-// The node's flags: a ball or a grabber still looks for contact, a cover search ended, it found cover (the stored position), it
-// found none
-constexpr u32 FlagSeeksContact = 0x4000;
-constexpr u32 FlagSearchEnded = 0x8000;
-constexpr u32 FlagFoundCover = 0x10000;
-constexpr u32 FlagNoCover = 0x20000;
-
-// A block's mover moving the node's own instance
-constexpr u8 OwnInstance = 0xFF;
-// A cover block's search among the positions in a box around the instance, and the most links a cover position may have
-constexpr u16 SearchMask = 0x1F;
-constexpr u16 SearchBox = 1;
+// The most links a cover position may have
 constexpr u32 MostCoverLinks = 4;
-// The surfaces that stop the line of sight to the player, and the most instances its query takes
-constexpr u32 SightMask = 0x40;
+// The most instances the query of its line of sight to the player takes
 constexpr u16 MostSightInstances = 0x80;
 
 // A body resting far from the player that long (frames, after the first second and a half) is put back
@@ -58,15 +38,9 @@ constexpr f32 GrabbedSize = 3.0f;
 constexpr f32 GrabbedDrag = Rounded(0.03);
 constexpr f32 GrabbedLengthDrag = Rounded(0.01);
 
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 NoHit = Rounded(1e30);
-// 65536ths of a turn in a radian and the other way round
-constexpr f32 UnitsPerRadian = 0x1.45f306p+13f;
-constexpr f32 RadiansPerUnit = 0x1.921fb6p-14f;
-
 bool IsAsleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // The player's instance (none without a player)
@@ -150,7 +124,7 @@ namespace
 // The entry of an instance on the attachments' path of what it hangs from (none without a path)
 Attachment* AttachmentOf(InstanceContext* parent, InstanceContext* instance)
 {
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&parent->nodes, AttachmentsKind));
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&parent->nodes, NodeAttachments));
     if (attachments->path == nullptr)
     {
         return nullptr;
@@ -162,8 +136,8 @@ Attachment* AttachmentOf(InstanceContext* parent, InstanceContext* instance)
 // The trajectory of an instance's object node when it takes packets (none otherwise)
 Trajectory* TrajectoryOf(InstanceContext* instance)
 {
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-    if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
+    if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
     {
         return nullptr;
     }
@@ -214,9 +188,9 @@ void RotationOfRadians(Vector4* rotation, const f32* radians)
 // motion moves the stored place), its sound stopped, its node no longer moving the stored place and its physics body riding again
 void PutBackStuckBody(Trajectory* trajectory, ObjectNode* node, InstanceContext* instance, DynamicBody* physics)
 {
-    if ((trajectory->followed->cycles & MotionBlock::PutsBackStuck) != 0)
+    if (trajectory->followed->motion.putsBackStuck)
     {
-        if ((node->flags & ObjectNodeBase::FlagMovesStoredPlace) != 0)
+        if (node->flags.movesStoredPlace)
         {
             ObjectPlace* stored = node->storedPlace;
             if (stored != nullptr)
@@ -263,9 +237,9 @@ void PutBackStuckBody(Trajectory* trajectory, ObjectNode* node, InstanceContext*
         }
     }
 
-    trajectory->count = 0;
-    CallVirtual<void>(node, node->vtable, StopSoundSlot);
-    node->flags &= ~ObjectNodeBase::FlagMovesStoredPlace;
+    trajectory->bits.count = 0;
+    CallVirtual<void>(node, node->vtable, ObjectNode::StopSoundSlot);
+    node->flags.movesStoredPlace = 0;
     physics->StartRide();
 }
 
@@ -323,9 +297,8 @@ void StepBodyTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* no
 
     InstanceContext* instance = node->owner;
     const MotionBlock* block = trajectory->followed;
-    if ((block->bodyBits & MotionBlock::NeverPutBack) == 0 && (physics->bodyFlags & RigidBody::FlagLeftOut) == 0
-        && ((trajectory->bits & Trajectory::BitMadeBody) != 0 || (physics->bodyFlags & RigidBody::FlagTouched) != 0
-            || (physics->bodyFlags & RigidBody::FlagTouchedBody) != 0))
+    if (!block->body.neverPutBack && physics->bodyFlags.leftOut == 0
+        && (trajectory->bits.madeBody || physics->bodyFlags.touchedWorld != 0 || physics->bodyFlags.touchedBody != 0))
     {
         InstanceContext* player = PlayerInstance();
         Vector4 position = PositionOf(instance->place);
@@ -341,8 +314,8 @@ void StepBodyTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* no
             if (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z < RestingSquared
                 && spin.x * spin.x + spin.y * spin.y + spin.z * spin.z < RestingSquared)
             {
-                trajectory->count++;
-                if (trajectory->count > StuckFrames)
+                trajectory->bits.count++;
+                if (trajectory->bits.count > StuckFrames)
                 {
                     PutBackStuckBody(trajectory, node, instance, physics);
                     return;
@@ -350,7 +323,7 @@ void StepBodyTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* no
             }
             else
             {
-                trajectory->count = 0;
+                trajectory->bits.count = 0;
             }
         }
     }
@@ -369,14 +342,14 @@ void StepBodyTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* no
     }
     else if (kind == MotionBlock::KindBall || kind == MotionBlock::KindGrabber)
     {
-        if ((node->flags & FlagSeeksContact) != 0)
+        if (node->flags.seeksContact)
         {
             StepTrajectoryContact(trajectory, node);
         }
     }
 
     block = trajectory->followed;
-    u32 axis = block->bodyBits >> MotionBlock::SlowedShift & MotionBlock::SlowedMask;
+    u32 axis = block->body.slowedAxis;
     if (axis != 0)
     {
         SlowBodyAlongAxis(block->slowing, trajectory, physics, axis);
@@ -386,9 +359,9 @@ void StepBodyTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* no
 // Where the cycles move the instance to (the cycles' values along the axes of its space)
 void SetCycleMove(Trajectory* trajectory, ObjectNode* node, InstanceContext* instance, const Vector4* by)
 {
-    switch (trajectory->followed->cycles & MotionBlock::SpaceMask)
+    switch (trajectory->followed->motion.space)
     {
-    case MotionBlock::SpaceStart:
+    case SpaceStart:
     {
         CopyQuadword(&trajectory->move, &g_DefaultBox.min);
         trajectory->move.w = 1.0f;
@@ -397,7 +370,7 @@ void SetCycleMove(Trajectory* trajectory, ObjectNode* node, InstanceContext* ins
         AddAlongRows(&trajectory->move, &matrix, by);
         return;
     }
-    case MotionBlock::SpaceOwn:
+    case SpaceOwn:
     {
         CopyQuadword(&trajectory->move, &g_DefaultBox.min);
         trajectory->move.w = 1.0f;
@@ -406,7 +379,7 @@ void SetCycleMove(Trajectory* trajectory, ObjectNode* node, InstanceContext* ins
         AddAlongRows(&trajectory->move, &place->matrix, by);
         return;
     }
-    case MotionBlock::SpaceTracked:
+    case SpaceTracked:
     {
         trajectory->move = trajectory->position;
         Matrix4x4 matrix;
@@ -414,7 +387,7 @@ void SetCycleMove(Trajectory* trajectory, ObjectNode* node, InstanceContext* ins
         AddAlongRows(&trajectory->move, &matrix, by);
         return;
     }
-    case MotionBlock::SpaceStored:
+    case SpaceStored:
     {
         // The stored place's move is added to the last one rather than made anew
         ObjectPlace* stored = node->storedPlace;
@@ -440,10 +413,11 @@ Trajectory* ConstructTrajectory(Trajectory* trajectory)
     constexpr f32 FirstRollRate = 4.0f;
     trajectory->rollRate = FirstRollRate;
     trajectory->cover = nullptr;
-    trajectory->bits = (trajectory->bits & ~(Trajectory::BitLetGo | Trajectory::BitMadeBody
-                                             | Trajectory::CycleSourceMask << Trajectory::CycleSourceShift))
-                     | Trajectory::BitNew;
-    trajectory->unknownD4 = 0;
+    trajectory->bits.unused16 = 0;
+    trajectory->bits.madeBody = 0;
+    trajectory->bits.cycleSource = OwnCycles;
+    trajectory->bits.unused18 = 1;
+    trajectory->unusedD4 = 0;
     trajectory->coverRoute = nullptr;
     trajectory->followed = nullptr;
     return trajectory;
@@ -453,18 +427,18 @@ void StartFollowing(Trajectory* trajectory, MotionBlock* block, TimeClock* clock
 {
     if (trajectory->followed != nullptr)
     {
-        if ((trajectory->followed->flags & MotionBlock::CarriedOver) != 0)
+        if (trajectory->followed->flags.sticky)
         {
-            block->flags |= MotionBlock::CarriedOver;
+            block->flags.sticky = 1;
         }
 
-        block->stickyFlags |= trajectory->followed->stickyFlags;
+        block->stickyKinds |= trajectory->followed->stickyKinds;
     }
 
     trajectory->followed = block;
-    trajectory->count = 0;
+    trajectory->bits.count = 0;
     trajectory->startTime = clock->time;
-    switch (block->cycles >> MotionBlock::KindShift & MotionBlock::KindMask)
+    switch (block->motion.kind)
     {
     case MotionBlock::KindCycles:
     {
@@ -477,7 +451,7 @@ void StartFollowing(Trajectory* trajectory, MotionBlock* block, TimeClock* clock
         for (u32 axis = 0; axis < 3; axis++)
         {
             f32 phase = cycling->cyclePhases[axis];
-            if ((cycling->cycles & MotionBlock::RandomPhaseX << axis) != 0)
+            if (cycling->motion.StartsAtRandom(axis))
             {
                 phase = RandomAround(0.0f, cycling->cyclePhases[axis]);
             }
@@ -490,14 +464,12 @@ void StartFollowing(Trajectory* trajectory, MotionBlock* block, TimeClock* clock
             trajectory->wobblePhases[axis] = trajectory->cycles[axis];
         }
 
-        u32 source = trajectory->followed->flags & MotionBlock::CycleSourceMask;
-        trajectory->bits = (trajectory->bits & ~(Trajectory::CycleSourceMask << Trajectory::CycleSourceShift))
-                         | source << Trajectory::CycleSourceShift;
+        trajectory->bits.cycleSource = trajectory->followed->flags.cycleSource;
         trajectory->rollRate = 1.0f / node->rollRadius;
         break;
     }
     case MotionBlock::KindBody:
-        trajectory->bits |= Trajectory::BitMadeBody;
+        trajectory->bits.madeBody = 1;
         MakeTrajectoryBody(trajectory, node);
         break;
     case MotionBlock::KindBall:
@@ -513,7 +485,7 @@ void StartFollowing(Trajectory* trajectory, MotionBlock* block, TimeClock* clock
         break;
     }
 
-    if (trajectory->followed->mover == OwnInstance)
+    if (trajectory->followed->mover == MotionBlock::MoverOwnInstance)
     {
         InstanceContext* instance = node->owner;
         InstanceContext* parent = instance->parent;
@@ -555,7 +527,7 @@ void GatherCoverPositions(Trajectory* trajectory, ObjectNode* node)
         trajectory->coverRoute->count = 0;
     }
 
-    trajectory->count = g_PathFinder->CollectInside(&box, trajectory->coverRoute);
+    trajectory->bits.count = g_PathFinder->CollectInside(&box, trajectory->coverRoute);
 }
 
 void MakeTrajectoryBody(Trajectory* trajectory, ObjectNode* node)
@@ -585,13 +557,13 @@ void MakeTrajectoryBody(Trajectory* trajectory, ObjectNode* node)
     ObjectRigidBody* body = ConstructRigidBody(MemoryAllocate(sizeof(ObjectRigidBody)), node);
     node->rigidBody = body;
     ListRigidBodyFirst(body, BodyKind);
-    if ((trajectory->followed->bodyBits & MotionBlock::NoCollisions) != 0)
+    if (trajectory->followed->body.noCollisions)
     {
         StopRigidBodyCollisions(body);
         DynamicBody* physics = body->physicsBody;
         if (physics != nullptr)
         {
-            physics->bits |= DynamicBody::BitNoCollisions;
+            physics->bits.noCollisions = 1;
         }
     }
     else
@@ -600,9 +572,9 @@ void MakeTrajectoryBody(Trajectory* trajectory, ObjectNode* node)
     }
 
     SetRigidBodyDrag(trajectory->followed->drag, body);
-    SetRigidBodyMass(node->PacketProperties()->GetFloat(0), body);
+    SetRigidBodyMass(node->PacketProperties()->GetFloat(RigidBodyMassProperty), body);
     SetUpTrajectoryBody(trajectory, body);
-    node->flags |= ObjectNodeBase::FlagMovesStoredPlace;
+    node->flags.movesStoredPlace = 1;
     place = node->owner->place;
     if (node->storedPlace != nullptr)
     {
@@ -658,17 +630,17 @@ void SetUpTrajectoryBody(Trajectory* trajectory, ObjectRigidBody* body)
     }
 
     const MotionBlock* block = trajectory->followed;
-    if ((block->flags & MotionBlock::HasCenterOfMass) != 0)
+    if (block->flags.hasCenterOfMass)
     {
         Vector4 center = {block->centerOfMass[0], block->centerOfMass[1], block->centerOfMass[2], 1.0f};
         SetRigidBodyCenterOfMass(body, &center);
     }
 
-    physics->unknown60 = trajectory->followed->bodyUnknown44;
-    u32 substeps = trajectory->followed->bodyBits >> MotionBlock::SubstepsShift & MotionBlock::SubstepsMask;
+    physics->knockScale = trajectory->followed->knockScale;
+    u32 substeps = trajectory->followed->body.substeps;
     physics->substeps = static_cast<s32>(substeps);
     f32 buoyancy = -1.0f;
-    if ((trajectory->followed->bodyBits & MotionBlock::Floats) != 0)
+    if (trajectory->followed->body.floats)
     {
         buoyancy = trajectory->followed->springStiffness;
     }
@@ -678,25 +650,25 @@ void SetUpTrajectoryBody(Trajectory* trajectory, ObjectRigidBody* body)
         physics->buoyancy = buoyancy;
     }
 
-    if ((trajectory->followed->bodyBits & MotionBlock::PhysicsFlag20) != 0)
+    if (trajectory->followed->body.pushable20)
     {
-        physics->bodyFlags |= 0x20;
+        physics->bodyFlags.pushable |= 1;
     }
 
-    if ((trajectory->followed->bodyBits & MotionBlock::PhysicsFlag40) != 0)
+    if (trajectory->followed->body.pushable40)
     {
-        physics->bodyFlags |= 0x40;
+        physics->bodyFlags.pushable |= 2;
     }
 
     block = trajectory->followed;
-    if ((block->bodyBits & MotionBlock::ConstraintBits) != 0)
+    if (block->body.constraint != 0)
     {
         Vector4 direction = {block->constraint[0], block->constraint[1], block->constraint[2], block->constraint[3]};
         BodyConstraint* constraint = &body->physicsBody->constraint;
         ObjectPlace* place = trajectory->node->owner->place;
         RotateAndTranslate(place);
         VuRotateVector(&place->matrix, &direction, &direction);
-        switch (trajectory->followed->bodyBits >> MotionBlock::ConstraintShift & MotionBlock::ConstraintMask)
+        switch (trajectory->followed->body.constraint)
         {
         case MotionBlock::ConstraintFixed:
             FixHere(constraint);
@@ -712,49 +684,48 @@ void SetUpTrajectoryBody(Trajectory* trajectory, ObjectRigidBody* body)
         }
     }
 
-    u32 bits = trajectory->followed->bodyBits;
-    if ((bits & MotionBlock::HingesMask) != 0)
+    MotionBlockBody bits = trajectory->followed->body;
+    if ((bits.value & MotionBlockBody::HingesMask) != 0)
     {
         BodyConstraint* constraint = &body->physicsBody->constraint;
-        if ((trajectory->followed->bodyBits & MotionBlock::HingeX) != 0 && (bits & MotionBlock::HingeY) != 0
-            && (bits & MotionBlock::HingeZ) != 0)
+        if (trajectory->followed->body.hingeX && bits.hingeY && bits.hingeZ)
         {
             // Hinged about all three axes: it doesn't turn at all
-            physics->bits = (physics->bits & ~DynamicBody::BitPlacesPosition) | DynamicBody::BitPlacesPosition;
+            physics->bits.placesPositionOnly = 1;
         }
         else
         {
-            if ((trajectory->followed->bodyBits & MotionBlock::HingeX) != 0)
+            if (trajectory->followed->body.hingeX)
             {
                 Vector4 axis = {1.0f, 0.0f, 0.0f, 1.0f};
                 SetLocalHinge(constraint, &axis);
             }
 
-            if ((trajectory->followed->bodyBits & MotionBlock::HingeY) != 0)
+            if (trajectory->followed->body.hingeY)
             {
                 Vector4 axis = {0.0f, 1.0f, 0.0f, 1.0f};
                 SetLocalHinge(constraint, &axis);
             }
 
-            if ((trajectory->followed->bodyBits & MotionBlock::HingeZ) != 0)
+            if (trajectory->followed->body.hingeZ)
             {
                 Vector4 axis = {0.0f, 0.0f, 1.0f, 1.0f};
                 SetLocalHinge(constraint, &axis);
             }
 
-            if ((trajectory->followed->bodyBits & MotionBlock::LimitsTurn) != 0)
+            if (trajectory->followed->body.limitsTurn)
             {
                 SetRotationLimit(trajectory->followed->turnLimit, constraint);
             }
         }
     }
 
-    if ((trajectory->followed->bodyBits & MotionBlock::NoCollisions) != 0)
+    if (trajectory->followed->body.noCollisions)
     {
         StopRigidBodyCollisions(body);
         if (physics != nullptr)
         {
-            physics->bits |= DynamicBody::BitNoCollisions;
+            physics->bits.noCollisions = 1;
         }
     }
 }
@@ -762,11 +733,11 @@ void SetUpTrajectoryBody(Trajectory* trajectory, ObjectRigidBody* body)
 void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
 {
     const MotionBlock* block = trajectory->followed;
-    u32 kind = block->cycles >> MotionBlock::KindShift & MotionBlock::KindMask;
+    u32 kind = block->motion.kind;
     InstanceContext* instance = node->owner;
     if (kind == MotionBlock::KindCover)
     {
-        if ((block->search & SearchMask) == SearchBox && StepCoverSearch(trajectory, node) != 0)
+        if (block->search.kind == MotionBlock::SearchInBox && StepCoverSearch(trajectory, node) != 0)
         {
             ReleaseNodeTrajectory(node);
         }
@@ -787,28 +758,28 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
     }
 
     f32 values[3] = {0.0f, 0.0f, 0.0f};
-    u32 source = trajectory->bits >> Trajectory::CycleSourceShift & Trajectory::CycleSourceMask;
+    u32 source = trajectory->bits.cycleSource;
     u8 mover = trajectory->followed->mover;
     switch (source)
     {
-    case 0:
-        if ((trajectory->followed->flags & MotionBlock::CyclesAboutX) != 0)
+    case OwnCycles:
+        if (trajectory->followed->flags.cyclesAboutX)
         {
             values[0] = StepCycleX(elapsed, trajectory->motionFloats[0], trajectory->followed, &trajectory->cycles[0]);
         }
 
-        if ((trajectory->followed->flags & MotionBlock::CyclesAboutY) != 0)
+        if (trajectory->followed->flags.cyclesAboutY)
         {
             values[1] = StepCycleY(elapsed, trajectory->motionFloats[1], trajectory->followed, &trajectory->cycles[1]);
         }
 
-        if ((trajectory->followed->flags & MotionBlock::CyclesAboutZ) != 0)
+        if (trajectory->followed->flags.cyclesAboutZ)
         {
             values[2] = StepCycleZ(elapsed, trajectory->motionFloats[2], trajectory->followed, &trajectory->cycles[2]);
         }
 
         break;
-    case 1:
+    case FocusCycles:
     {
         InstanceContext* focus = node->AwakeFocus();
         if (focus != nullptr)
@@ -822,9 +793,9 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
 
         break;
     }
-    case 2:
+    case AttachedCycles:
     {
-        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, AttachmentsKind));
+        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&instance->nodes, NodeAttachments));
         if (attachments != nullptr && attachments->linked[0] != nullptr)
         {
             Trajectory* other = TrajectoryOf(attachments->linked[0]);
@@ -841,15 +812,15 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
     }
 
     block = trajectory->followed;
-    if ((block->cycles & MotionBlock::Turns) != 0)
+    if (block->motion.turns)
     {
-        u32 space = block->cycles & MotionBlock::SpaceMask;
-        if (mover == OwnInstance
-            && (space == MotionBlock::SpaceStart || space == MotionBlock::SpaceOwn || space == MotionBlock::SpaceStored))
+        u32 space = block->motion.space;
+        if (mover == MotionBlock::MoverOwnInstance
+            && (space == SpaceStart || space == SpaceOwn || space == SpaceStored))
         {
-            trajectory->turnAngles[0] = static_cast<s32>(values[0] * UnitsPerRadian);
-            trajectory->turnAngles[1] = static_cast<s32>(values[1] * UnitsPerRadian);
-            trajectory->turnAngles[2] = static_cast<s32>(values[2] * UnitsPerRadian);
+            trajectory->turnAngles[0] = static_cast<s32>(values[0] * RadiansToAngle);
+            trajectory->turnAngles[1] = static_cast<s32>(values[1] * RadiansToAngle);
+            trajectory->turnAngles[2] = static_cast<s32>(values[2] * RadiansToAngle);
         }
         else
         {
@@ -859,7 +830,7 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
     else
     {
         Vector4 by = {values[0], values[1], values[2], 1.0f};
-        if (mover == OwnInstance)
+        if (mover == MotionBlock::MoverOwnInstance)
         {
             SetCycleMove(trajectory, node, instance, &by);
         }
@@ -871,7 +842,7 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
 
     // The amplitudes fade out (the trajectory let go of after the duration) or grow in over the duration
     block = trajectory->followed;
-    if ((block->cycles & MotionBlock::Fades) != 0)
+    if (block->motion.fades)
     {
         f32 seconds = static_cast<f32>(static_cast<s32>(clock->time - trajectory->startTime)) * g_SecondsPerClockUnit;
         if (block->duration < seconds)
@@ -889,7 +860,7 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
         return;
     }
 
-    if ((block->flags & MotionBlock::GrowsIn) == 0)
+    if (!block->flags.growsIn)
     {
         return;
     }
@@ -905,7 +876,7 @@ void StepTrajectory(Trajectory* trajectory, TimeClock* clock, ObjectNode* node)
 
 void RestartTrajectory(Trajectory* trajectory)
 {
-    trajectory->count = 0;
+    trajectory->bits.count = 0;
     InstanceContext* instance = trajectory->node->owner;
     trajectory->startTime = GetContextClock(instance)->time;
     trajectory->position = PositionOf(instance->place);
@@ -918,7 +889,7 @@ void TurnBodyTowardFocus(f32 strength, Trajectory*, DynamicBody* body, ObjectNod
 {
     InstanceContext* focus = nullptr;
     Vector4 target;
-    if ((node->flags & ObjectNodeBase::FlagFocusInstance) != 0)
+    if (node->flags.focusInstance)
     {
         focus = node->AwakeFocus();
         if (focus == nullptr)
@@ -926,7 +897,7 @@ void TurnBodyTowardFocus(f32 strength, Trajectory*, DynamicBody* body, ObjectNod
             return;
         }
     }
-    else if ((node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+    else if (node->flags.focusPosition)
     {
         target = node->focusPosition;
     }
@@ -953,7 +924,7 @@ void TurnBodyTowardFocus(f32 strength, Trajectory*, DynamicBody* body, ObjectNod
 
 u32 StepCoverSearch(Trajectory* trajectory, ObjectNode* node)
 {
-    if (trajectory->count == 0)
+    if (trajectory->bits.count == 0)
     {
         if (trajectory->coverRoute != nullptr)
         {
@@ -964,9 +935,9 @@ u32 StepCoverSearch(Trajectory* trajectory, ObjectNode* node)
         return 1;
     }
 
-    trajectory->count--;
-    AiPosition* candidate = trajectory->coverRoute->PositionAt(static_cast<u8>(trajectory->count));
-    if ((candidate->bits >> AiPosition::LinkCountShift & AiPosition::LinkCountMask) < MostCoverLinks)
+    trajectory->bits.count--;
+    AiPosition* candidate = trajectory->coverRoute->PositionAt(static_cast<u8>(trajectory->bits.count));
+    if (candidate->bits.linkCount < MostCoverLinks)
     {
         // Without a player its place, box and position are read at address 0 (retail)
         InstanceContext* player = PlayerInstance();
@@ -985,22 +956,22 @@ u32 StepCoverSearch(Trajectory* trajectory, ObjectNode* node)
         f32 length = Kept(__builtin_sqrtf(way.x * way.x + way.y * way.y + way.z * way.z));
 
         void* results[MostSightInstances];
-        InstanceRayHit query;
+        InstanceQuery query;
         query.results = results;
         query.count = 0;
         query.most = MostSightInstances;
-        query.distance = NoHit;
+        query.distance = NoHitDistance;
         // Retail leaves the bits nothing reads as the stack had them
-        query.bits = InstanceRayHit::BitAllWanted;
-        query.wantedFlags = ReferencedObject::FlagSphereContact;
-        query.unwantedFlags = ReferencedObject::FlagAsleep;
+        query.bits.value = InstanceQueryBits::AllWanted;
+        query.wantedFlags = ReferencedObjectFlags::CollisionActive;
+        query.unwantedFlags = ReferencedObjectFlags::Asleep;
         query.skipped[0] = nullptr;
         query.skipped[1] = nullptr;
         query.instance = nullptr;
         SkipInQuery(&query, instance);
         query.skipped[1] = player;
         f32 score = 0.0f;
-        if (LineOfSight(instance->chunk, &spot, &way, SightMask, &query, g_CoverKinds) != 0)
+        if (LineOfSight(instance->chunk, &spot, &way, SurfaceFlags::SolidToObjects, &query, g_CoverKinds) != 0)
         {
             constexpr f32 Nearness = 100.0f;
             Vector4 here = PositionOf(node->owner->place);
@@ -1032,7 +1003,7 @@ u32 StepCoverSearch(Trajectory* trajectory, ObjectNode* node)
         }
     }
 
-    if (trajectory->count != 0)
+    if (trajectory->bits.count != 0)
     {
         return 0;
     }
@@ -1045,13 +1016,16 @@ u32 StepCoverSearch(Trajectory* trajectory, ObjectNode* node)
     trajectory->coverRoute = nullptr;
     if (trajectory->cover == nullptr)
     {
-        node->flags |= FlagSearchEnded | FlagNoCover;
+        node->flags.searchEnded = 1;
+        node->flags.noCover = 1;
         return 0;
     }
 
     Vector4 position = trajectory->cover->position;
     position.w = 1.0f;
-    node->flags |= ObjectNodeBase::FlagStoredPosition | FlagSearchEnded | FlagFoundCover;
+    node->flags.storedPosition = 1;
+    node->flags.searchEnded = 1;
+    node->flags.foundCover = 1;
     node->storedPosition = position;
     return 1;
 }
@@ -1062,15 +1036,15 @@ void FollowOtherCycles(Trajectory* trajectory, const Trajectory* other, f32* x, 
     for (u32 axis = 0; axis < 3; axis++)
     {
         const MotionBlock* block = trajectory->followed;
-        if ((block->flags & MotionBlock::CyclesAboutX << axis) == 0)
+        if (!block->flags.CyclesAbout(axis))
         {
             continue;
         }
 
         f32 amplitude = trajectory->motionFloats[axis];
-        trajectory->cycles[axis] = (other->cycles[axis] + trajectory->wobblePhases[axis]) & 0xFFFF;
+        trajectory->cycles[axis] = (other->cycles[axis] + trajectory->wobblePhases[axis]) & (FullTurnAngle - 1);
         f32 value;
-        switch (block->cycles >> (MotionBlock::CycleShift + 3 * axis) & MotionBlock::CycleMask)
+        switch (block->motion.CycleOf(axis))
         {
         case MotionBlock::CycleSine:
             value = amplitude * SinOfAngle(&trajectory->cycles[axis]);
@@ -1078,7 +1052,7 @@ void FollowOtherCycles(Trajectory* trajectory, const Trajectory* other, f32* x, 
         case MotionBlock::CycleSquare:
         case MotionBlock::CycleSquareToo:
             value = amplitude;
-            if ((static_cast<s32>(block->cycleRates[axis] * (static_cast<f32>(trajectory->cycles[axis]) * RadiansPerUnit)) & 1)
+            if ((static_cast<s32>(block->cycleRates[axis] * (static_cast<f32>(trajectory->cycles[axis]) * AngleToRadians)) & 1)
                 != 0)
             {
                 value = -value;
@@ -1089,14 +1063,14 @@ void FollowOtherCycles(Trajectory* trajectory, const Trajectory* other, f32* x, 
             value = RandomSignedTimes(amplitude);
             break;
         case MotionBlock::CycleAngle:
-            value = static_cast<f32>(trajectory->cycles[axis]) * RadiansPerUnit;
+            value = static_cast<f32>(trajectory->cycles[axis]) * AngleToRadians;
             break;
         default:
             *values[axis] = 0.0f;
             continue;
         }
 
-        u32 sign = block->cycles >> (MotionBlock::SignShift + 2 * axis) & MotionBlock::SignMask;
+        u32 sign = block->motion.SignOf(axis);
         if (sign == MotionBlock::SignPositive)
         {
             value = __builtin_fabsf(value);
@@ -1113,19 +1087,19 @@ void FollowOtherCycles(Trajectory* trajectory, const Trajectory* other, f32* x, 
 void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
 {
     const MotionBlock* block = trajectory->followed;
-    u32 bits = block->cycles;
+    MotionBlockMotion bits = block->motion;
     InstanceContext* instance = node->owner;
-    if ((bits >> MotionBlock::KindShift & MotionBlock::KindMask) != MotionBlock::KindCycles || block->mover != OwnInstance)
+    if (bits.kind != MotionBlock::KindCycles || block->mover != MotionBlock::MoverOwnInstance)
     {
         return;
     }
 
-    if ((bits & MotionBlock::Turns) != 0)
+    if (bits.turns)
     {
         u32 turned;
-        switch (bits & MotionBlock::SpaceMask)
+        switch (bits.space)
         {
-        case MotionBlock::SpaceStart:
+        case SpaceStart:
         {
             InstanceContext* parent = instance->parent;
             if (parent != nullptr)
@@ -1170,10 +1144,10 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
             turned = TurnAboutAxes(instance->place, trajectory->turnAngles);
             break;
         }
-        case MotionBlock::SpaceOwn:
+        case SpaceOwn:
             turned = TurnAboutAxes(instance->place, trajectory->turnAngles);
             break;
-        case MotionBlock::SpaceStored:
+        case SpaceStored:
         {
             ObjectPlace* stored = node->storedPlace;
             if (stored == nullptr)
@@ -1213,7 +1187,7 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
     }
 
     block = trajectory->followed;
-    if ((block->cycles & (MotionBlock::FacesMove | MotionBlock::RollMask << MotionBlock::RollShift)) != 0)
+    if (block->motion.facesMove || block->motion.roll != 0)
     {
         Vector4 position = PositionOf(instance->place);
         Vector4 moved = position;
@@ -1221,7 +1195,7 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
         moved.y = moved.y - trajectory->lastPosition.y;
         moved.z = moved.z - trajectory->lastPosition.z;
         block = trajectory->followed;
-        switch (block->cycles >> MotionBlock::RollShift & MotionBlock::RollMask)
+        switch (block->motion.roll)
         {
         case MotionBlock::RollFaces:
         {
@@ -1230,7 +1204,7 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
             YawOfDirection(&yaw, &moved);
             ObjectPlace* place = instance->place;
             place->SyncRotation();
-            place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+            place->MarkTurned();
             s32 pitch;
             s32 oldYaw;
             s32 roll;
@@ -1247,7 +1221,7 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
             break;
         default:
             SpinAlongMove(trajectory->rollRate, block->spinDegrees, node, &moved,
-                          (block->flags & MotionBlock::SpinsBySize) != 0 ? 1 : 0);
+                          block->flags.spinsBySize ? 1 : 0);
             break;
         }
 
@@ -1255,26 +1229,25 @@ void TrajectoryFrame(Trajectory* trajectory, ObjectNode* node)
         return;
     }
 
-    if ((block->flags & MotionBlock::FacesTracked) == 0)
+    if (!block->flags.facesTracked)
     {
         return;
     }
 
-    constexpr f32 MostLean = 90.0f;
     Vector4 target = PositionOf(node->tracked->place);
-    SteerTowards(1.0f, 0.0f, MostLean, instance, &target);
+    SteerTowards(1.0f, 0.0f, SteerMostLean, instance, &target);
 }
 
 void HoldTrajectory(Trajectory* trajectory, ObjectNode* node)
 {
     const MotionBlock* block = trajectory->followed;
-    u32 bits = block->cycles;
-    if ((bits >> MotionBlock::KindShift & MotionBlock::KindMask) != MotionBlock::KindCycles || block->mover != OwnInstance)
+    MotionBlockMotion bits = block->motion;
+    if (bits.kind != MotionBlock::KindCycles || block->mover != MotionBlock::MoverOwnInstance)
     {
         return;
     }
 
-    if ((bits & MotionBlock::Turns) == 0)
+    if (!bits.turns)
     {
         InstanceContext* instance = node->owner;
         ObjectPlace* place = instance->place;
@@ -1308,11 +1281,11 @@ void StepTrajectoryContact(Trajectory* trajectory, ObjectNode* node)
 {
     ObjectRigidBody* body = node->rigidBody;
     DynamicBody* physics = body->physicsBody;
-    u32 contacts = physics->bodyFlags;
-    if ((contacts & RigidBody::FlagTouchedBody) != 0)
+    RigidBodyFlags contacts = physics->bodyFlags;
+    if (contacts.touchedBody != 0)
     {
         // Grabbing AgentRef1 when it touched it and holds, else what it touched
-        node->flags &= ~FlagSeeksContact;
+        node->flags.seeksContact = 0;
         InstanceContext* touched = physics->lastTouched;
         f32 strength = trajectory->followed->holdStrength;
         if (node->agentRef1 != nullptr && IsAsleep(node->agentRef1))
@@ -1341,7 +1314,7 @@ void StepTrajectoryContact(Trajectory* trajectory, ObjectNode* node)
         return;
     }
 
-    if ((contacts & RigidBody::FlagTouched) != 0)
+    if (contacts.touchedWorld != 0)
     {
         ReferencedObject* leftOut = node->owner->collision.leftOut;
         if (leftOut != nullptr)
@@ -1355,7 +1328,7 @@ void StepTrajectoryContact(Trajectory* trajectory, ObjectNode* node)
             return;
         }
 
-        node->flags &= ~FlagSeeksContact;
+        node->flags.seeksContact = 0;
         HoldWithAttachments(strength, trajectory, node);
         return;
     }

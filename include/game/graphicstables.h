@@ -17,12 +17,12 @@ struct BlendSkin;
 struct Lod;
 struct Sky;
 
-// A material resource: the platform's material after the header, and a byte its constructor clears
+// A material resource: the platform's material after the header, and a byte its constructor clears (never read)
 struct MaterialResource
 {
     ResourceHeader header;
     Material* material;
-    u8 unknown0C;
+    u8 unused0C;
 };
 CHECK_SIZE(MaterialResource, 0x10);
 
@@ -109,6 +109,13 @@ struct GraphicsTable
     enum Slots : u32
     {
         MadeSlot = 1,
+        DestroySlot = 2,
+        AddReferenceSlot = 3,
+        AcquireSlot = 4,
+        ReleaseSlot = 5,
+        ReleaseItemSlot = 6,
+        ExistsSlot = 7,
+        GetSlot = 8,
     };
 
     Entry* entries;
@@ -173,9 +180,10 @@ CHECK_OFFSET(TextureTable, vtable, 0x14);
 CHECK_SIZE(TextureTable, 0x24);
 
 // A reader of a kind's subsection of a chunk's graphics section into its table (8 bytes; its vtable functions: 1 the destructor,
-// which lets go of the references the reading took, 2 how many resources the table has, 3 (3), 4 whether it reads a section's
-// type (3), 5 a section reader of a resource the table hasn't got, made with a reference for the reading (one it has gets the
-// reference instead), 6 every resource of the table released and deleted, 7 and 8 nothing)
+// which lets go of the references the reading took, 2 how many resources the table has, 3 the section type it reads
+// (GraphicsKindSectionType), 4 whether it reads a section's type, 5 a section reader of a resource the table hasn't got, made with
+// a reference for the reading (one it has gets the reference instead), 6 every resource of the table released and deleted, 7 and 8
+// nothing)
 template <typename Kind>
 struct GraphicsKindReader : ItemInterface
 {
@@ -205,6 +213,7 @@ struct GraphicsResourceReader : SectionReader
 // meshes, LODs and skies)
 struct GraphicsItem : ItemInterface
 {
+    // The subsections' IDs (TT Lab's GRAPHICS_*_SECTION)
     enum Subsections : u32
     {
         TextureSubsection,
@@ -262,12 +271,13 @@ extern "C"
     void GraphicsTablesStaticInit() RETAIL(FUN_001c75a0);
 
     // The graphics item: its constructor and destructor (the references the reading took let go of first), and its vtable's
-    // functions 2 to 7 (9 subsections, 1, whether it reads a section's type (1), a reader of a subsection, every table's
-    // resources released and deleted (the skies' first, the textures' last, the item unused), and the reading started)
+    // functions 2 to 7 (9 subsections, the section type it reads, whether it reads a section's type, a reader of a subsection,
+    // every table's resources released and deleted (the skies' first, the textures' last, the item unused), and the reading
+    // started)
     GraphicsItem* InitGraphicsItem(GraphicsItem* item) RETAIL(InitGraphicsItem);
     void UnloadGraphics(GraphicsItem* item, u32 flags) RETAIL(UnloadGraphics);
     u32 GraphicsItemCount(GraphicsItem* item) RETAIL(GetSubSectionsAmount);
-    u32 GraphicsItemSlot3(GraphicsItem* item) RETAIL(FUN_001a2330);
+    u32 GraphicsItemSectionType(GraphicsItem* item) RETAIL(FUN_001a2330);
     bool GraphicsItemCanRead(GraphicsItem* item, u32 type) RETAIL(FUN_001a2338);
     SectionReader* GetGraphicsSectionReader(GraphicsItem* item, s32 index, ItemHeader* header, s32* size)
         RETAIL(GetGraphicsSectionReader);

@@ -5,21 +5,17 @@
 
 namespace
 {
-// Skins drawn clipped send their matrix to camera space and the view's clip vector too
-constexpr u32 ClippedMode = 2;
 // A skin's data (quadwords): its matrix to the screen, its lights' directions (a column each) with their colours over the
-// fourth row, and the ambient light; then the clipped's matrix and clip vector, or the eye's matrix
+// fourth row, and the ambient light; then, drawn clipped (DrawClipped), the clipped's matrix and clip vector, or the eye's matrix
 constexpr u32 SkinDataSize = 0xB;
 constexpr u32 ClipDataSize = 5;
 constexpr u32 MatrixSize = 4;
-// Shaders' vtable function: whether the shader needs the eye
-constexpr u32 ShaderNeedsEyeSlot = 8;
 // The VU1 programs a blend skin's parts call: the first shape's blend, the next shapes', the part's (an odd count of shapes runs
-// program 2 first), and without shapes program 6, 2 and the part's
+// EndProgram first), and without shapes program 6, EndProgram and the part's. The shapes' programs are the resident ones whose
+// indexes g_BlendFirstShapeProgram, g_BlendNextShapeProgram and g_BlendNoShapesProgram hold
 constexpr u32 FirstShapeProgram = 8;
 constexpr u32 NextShapeProgram = 7;
 constexpr u32 PartProgram = 1;
-constexpr u32 OddShapesProgram = 2;
 constexpr u32 NoShapesProgram = 6;
 
 u32 Mscal(u32 program)
@@ -37,10 +33,10 @@ u8* WriteJoints(RenderBucket& bucket, u8* packet, const Matrix4x4* joints, u32 j
 
     bucket.lastJoints = Address(joints);
     auto* at = reinterpret_cast<u32*>(packet);
-    at[0] = jointCount << 2 | ReferenceTag;
+    at[0] = jointCount * MatrixSize | ReferenceTag;
     at[1] = Address(joints);
     at[2] = VifFlushE;
-    at[3] = g_VuJoints | jointCount << 18 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, g_VuJoints, jointCount * MatrixSize);
     return packet + 0x10;
 }
 
@@ -50,7 +46,7 @@ u32* WriteUnpack(u8* packet, u32 count, u32 vif, u32 address)
     at[0] = CountTag | count;
     at[1] = 0;
     at[2] = vif;
-    at[3] = address | count << 16 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, address, count);
     return at + 4;
 }
 
@@ -97,7 +93,7 @@ extern "C"
         Matrix4x4 toScreen;
         Matrix4x4 toCamera;
         VuMultiplyMatrices(g_SkinMatrix, &g_RenderView->toScreen, &toScreen);
-        if (mode == ClippedMode)
+        if (mode == DrawClipped)
         {
             VuMultiplyMatrices(g_SkinMatrix, &g_RenderView->toClip, &toCamera);
         }
@@ -113,19 +109,19 @@ extern "C"
             // The buffer RenderMaterial's turn is about to give the material
             u32 buffer = bucket.vuBuffer != 0 ? g_VuBuffer1 : g_VuBuffer2;
             packet = WriteSkinData(packet, buffer, 0, toScreen, g_SkinLights, g_SkinLightColours, g_SkinAmbient);
-            if (mode == ClippedMode)
+            if (mode == DrawClipped)
             {
                 packet = WriteClipData(packet, buffer, toCamera);
             }
 
             if (NeedsEye(material))
             {
-                if (mode != ClippedMode)
+                if (mode != DrawClipped)
                 {
                     VuMultiplyMatrices(g_SkinMatrix, &g_RenderView->toClip, &toCamera);
                 }
 
-                packet = FUN_001be720(skin, packet, &toCamera, buffer);
+                packet = WriteSkinEyeData(skin, packet, &toCamera, buffer);
             }
 
             packet = RenderMaterial(material, packet, mode);
@@ -140,7 +136,7 @@ extern "C"
         }
     }
 
-    u8* FUN_001be720(const Skin*, u8* packet, const Matrix4x4* toCamera, u32 buffer)
+    u8* WriteSkinEyeData(const Skin*, u8* packet, const Matrix4x4* toCamera, u32 buffer)
     {
         WriteUnpack(packet, MatrixSize, 0, buffer + g_VuSkinData + g_VuSkinClip);
         *reinterpret_cast<Matrix4x4*>(packet + 0x10) = *toCamera;
@@ -158,7 +154,7 @@ extern "C"
         Matrix4x4 toScreen;
         Matrix4x4 toCamera;
         VuMultiplyMatrices(g_BlendSkinMatrix, &g_RenderView->toScreen, &toScreen);
-        if (mode == ClippedMode)
+        if (mode == DrawClipped)
         {
             VuMultiplyMatrices(g_BlendSkinMatrix, &g_RenderView->toClip, &toCamera);
         }
@@ -174,7 +170,7 @@ extern "C"
             u32 buffer = g_VuBuffer2;
             packet = WriteSkinData(packet, buffer, VifFlushE, toScreen, g_BlendSkinLights, g_BlendSkinLightColours,
                                    g_BlendSkinAmbient);
-            if (mode == ClippedMode)
+            if (mode == DrawClipped)
             {
                 packet = WriteClipData(packet, buffer, toCamera);
             }
@@ -187,14 +183,15 @@ extern "C"
                 packet += 0x50;
             }
 
-            packet = FUN_001bbc08(material, packet, &buffer, mode);
-            packet = FUN_001c1ac0(skin->subModels[i], packet, weights, shapes, shapeCount);
+            packet = RenderBlendSkinMaterial(material, packet, &buffer, mode);
+            packet = WriteBlendSubModel(skin->subModels[i], packet, weights, shapes, shapeCount);
             EndPacket(bucket, packet);
             material->drawnDirectly = 1;
         }
     }
 
-    u8* FUN_001c1ac0(const BlendSubModel* subModel, u8* packet, const f32* weights, const s32* shapes, const s32* shapeCount)
+    u8* WriteBlendSubModel(const BlendSubModel* subModel, u8* packet, const f32* weights, const s32* shapes,
+                           const s32* shapeCount)
     {
         f32 factors[4];
         const f32* first = subModel->parts[0]->shapeFactors;
@@ -204,14 +201,14 @@ extern "C"
         factors[3] = 0.0f;
         for (u32 i = 0; i < subModel->count; i++)
         {
-            packet = CreateSubBlendDMA_Chain_(subModel->parts[i], packet, weights, shapes, shapeCount, factors);
+            packet = WriteBlendPart(subModel->parts[i], packet, weights, shapes, shapeCount, factors);
         }
 
         return packet;
     }
 
-    u8* CreateSubBlendDMA_Chain_(const BlendPart* part, u8* packet, const f32* weights, const s32* shapes,
-                                 const s32* shapeCount, const f32* factors)
+    u8* WriteBlendPart(const BlendPart* part, u8* packet, const f32* weights, const s32* shapes, const s32* shapeCount,
+                       const f32* factors)
     {
         // The part's vertexes
         auto* at = reinterpret_cast<u32*>(packet);
@@ -225,7 +222,7 @@ extern "C"
             at[0] = CountTag | 1;
             at[1] = 0;
             at[2] = Mscal(NoShapesProgram);
-            at[3] = Mscal(OddShapesProgram);
+            at[3] = Mscal(EndProgram);
             at[4] = Mscal(PartProgram);
             at[5] = VifCycle1;
             at[6] = 0;
@@ -265,7 +262,7 @@ extern "C"
             at[0] = part->shapeSizes[shape] | ReferenceTag;
             at[1] = part->shapeAddresses[shape];
             at[2] = 0;
-            at[3] = (buffer + 1) | part->shapeCounts[shape] << 16 | VifUnpackV4Bytes;
+            at[3] = VifUnpackTo(VifUnpackV4Bytes, buffer + 1, part->shapeCounts[shape]);
             at += 4;
             at[0] = CountTag;
             at[1] = 0;
@@ -284,7 +281,7 @@ extern "C"
         }
         else
         {
-            at[2] = Mscal(OddShapesProgram);
+            at[2] = Mscal(EndProgram);
             at[3] = Mscal(PartProgram);
         }
 

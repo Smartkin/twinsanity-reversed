@@ -1,68 +1,36 @@
 #include "game/scripttokens.h"
 
+#include "game/agentlab.h"
 #include "game/math.h"
 #include "game/objectnode.h"
 #include "game/properties.h"
 
-// The helpers the commands' development tools parsers share (game/scripttokens.h): a token's value as a setting, a designator or
+// The helpers the commands' development tools parsers share (game/scripttokens.h): a token's value as a switch, a designator or
 // a space, a vector's component, a tagged value, and a motion block's arguments. The retail game never calls them
-
-extern "C"
-{
-}
-
 
 namespace
 {
-constexpr u16 KeywordKind = 0xFFFF;
-constexpr u8 KeywordType = 4;
-
-// SetBodyConstraint's constraints
-enum Constraint : u32
+// The axis a body is slowed along (MotionBlockBody::slowedAxis)
+enum SlowedAxis : u32
 {
-    ConstraintFixed = 1,
-    ConstraintLine = 2,
-    ConstraintPlane = 3,
-    HingeX = 4,
-    HingeY = 5,
-    HingeZ = 6,
+    SlowedAlongX = 1,
+    SlowedAlongY = 2,
+    SlowedAlongZ = 3,
 };
 
-// The designators of the AgentLab tool's keywords no Designator names: 0xF1, 0xF3, the originator and the route step
-constexpr u32 Designates0xF1 = 0xF1;
-constexpr u32 Designates0xF3 = 0xF3;
-constexpr u32 DesignatesOriginator = 0xF4;
-constexpr u32 DesignatesRouteStep = 0xEF;
-
-// The motion blocks' bits no MotionBlock enum names
-constexpr u32 FlagUnknown400 = 0x400;
-constexpr u32 FlagUnknown800 = 0x800;
-constexpr u32 FlagUnknown1000 = 0x1000;
-constexpr u32 BodyTurnsToFocus = 0x400;
-constexpr u32 BodyUnknown4000 = 0x4000;
+// The designators of the tool's keywords no Designator names: two nothing answers
+constexpr u32 UnusedDesignatorF1 = 0xF1;
+constexpr u32 UnusedDesignatorF3 = 0xF3;
 
 bool IsKeyword(const ScriptToken* token)
 {
-    return token->kind == KeywordKind && token->type == KeywordType;
+    return token->tag == TagNone && token->type == TokenKeyword;
 }
 
 void SetSlowedAxis(MotionBlock* block, f32 slowing, u32 axis)
 {
-    constexpr u32 SlowedBits = MotionBlock::SlowedMask << MotionBlock::SlowedShift;
     block->slowing = slowing;
-    block->bodyBits = (block->bodyBits & ~SlowedBits) | axis << MotionBlock::SlowedShift;
-}
-
-void SetBodyBit(MotionBlock* block, u32 bit, bool set)
-{
-    if (set)
-    {
-        block->bodyBits |= bit;
-    }
-    else
-    {
-        block->bodyBits &= ~bit;
-    }
+    block->body.slowedAxis = axis;
 }
 
 // A keyword's setting of a motion block
@@ -70,70 +38,70 @@ void ApplyMotionKeyword(MotionBlock* block, u32 keyword)
 {
     switch (keyword)
     {
-    case 0x50:
-        SetMotionBlockConstraint(block, HingeX, nullptr);
-        SetMotionBlockConstraint(block, HingeY, nullptr);
-        SetMotionBlockConstraint(block, HingeZ, nullptr);
+    case KeywordJustMove:
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeX, nullptr);
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeY, nullptr);
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeZ, nullptr);
         break;
-    case 0x5A:
+    case KeywordCornerSprings:
         SetMotionBlockKind(block, MotionBlock::KindBody);
         break;
-    case 0x5B:
+    case KeywordFreeSphere:
         SetMotionBlockKind(block, MotionBlock::KindBall);
         break;
-    case 0x5C:
+    case KeywordFreeCuboid:
         SetMotionBlockKind(block, MotionBlock::KindGrabber);
         break;
-    case 0x5D:
-        block->cycles |= MotionBlock::PutsBackStuck;
+    case KeywordResnap:
+        block->motion.putsBackStuck = 1;
         break;
-    case 0x7F:
-        block->flags |= FlagUnknown400;
+    case KeywordUprightLaunched:
+        block->flags.uprightsLaunched = 1;
         break;
-    case 0x80:
-        block->flags |= FlagUnknown800;
+    case KeywordHoldTouched:
+        block->flags.holdsTouched = 1;
         break;
-    case 0x81:
-        block->flags |= FlagUnknown1000;
+    case KeywordHoldAgentRef1:
+        block->flags.holdsAgentRef1 = 1;
         break;
-    case 0x92:
-        SetMotionBlockConstraint(block, ConstraintFixed, nullptr);
+    case KeywordConstraintFixed:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintFixed, nullptr);
         break;
-    case 0x93:
-        SetMotionBlockConstraint(block, ConstraintLine, &g_XAxis);
+    case KeywordLineX:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintLine, &g_XAxis);
         break;
-    case 0x94:
-        SetMotionBlockConstraint(block, ConstraintLine, &g_YAxis);
+    case KeywordLineY:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintLine, &g_YAxis);
         break;
-    case 0x95:
-        SetMotionBlockConstraint(block, ConstraintLine, &g_ZAxis);
+    case KeywordLineZ:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintLine, &g_ZAxis);
         break;
-    case 0x96:
-        SetMotionBlockConstraint(block, ConstraintPlane, &g_YAxis);
+    case KeywordPlaneY:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintPlane, &g_YAxis);
         break;
-    case 0x97:
-        SetMotionBlockConstraint(block, ConstraintPlane, &g_ZAxis);
+    case KeywordPlaneZ:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintPlane, &g_ZAxis);
         break;
-    case 0x98:
-        SetMotionBlockConstraint(block, ConstraintPlane, &g_XAxis);
+    case KeywordPlaneX:
+        SetMotionBlockConstraint(block, MotionBlock::ConstraintPlane, &g_XAxis);
         break;
-    case 0x99:
-        SetMotionBlockConstraint(block, HingeX, nullptr);
+    case KeywordHingeX:
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeX, nullptr);
         break;
-    case 0x9A:
-        SetMotionBlockConstraint(block, HingeY, nullptr);
+    case KeywordHingeY:
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeY, nullptr);
         break;
-    case 0x9B:
-        SetMotionBlockConstraint(block, HingeZ, nullptr);
+    case KeywordHingeZ:
+        SetMotionBlockConstraint(block, MotionBlock::GivenHingeZ, nullptr);
         break;
-    case 0xA2:
-        block->bodyBits |= MotionBlock::NoCollisions;
+    case KeywordNoCollisions:
+        block->body.noCollisions = 1;
         break;
-    case 0xD1:
-        block->bodyBits |= BodyUnknown4000;
+    case KeywordPushedByVolumes:
+        block->body.pushedByVolumes = 1;
         break;
-    case 0x10B:
-        block->bodyBits |= MotionBlock::NeverPutBack;
+    case KeywordNeverPutBack:
+        block->body.neverPutBack = 1;
         break;
     default:
         break;
@@ -155,97 +123,96 @@ void ParseMotionBlockTokens(const ScriptTokenList* tokens, MotionBlock* block)
     {
         const ScriptToken* token = reader.Current();
         f32 value = token->Float();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x1C:
+        case TagTurn:
             SetMotionBlockTurnLimit(value, block);
             break;
-        case 0x3E:
-        case 0x8C:
-        case 0xA5:
+        case TagPower:
+        case TagSpringPower:
+        case TagStiffness:
             block->springStiffness = value;
             break;
-        case 0x3F:
+        case TagDamping:
             block->drag = value;
             break;
-        case 0x6A:
+        case TagGravity:
             block->gravity = value;
             break;
-        case 0x73:
+        case TagFriction:
             block->friction = value;
             break;
-        case 0x74:
+        case TagBounce:
             block->restitution = value;
             break;
-        case 0x79:
+        case TagInertia:
             block->size = value;
             break;
-        case 0x82:
+        case TagXShift:
             centerX = value;
             centerGiven = true;
             break;
-        case 0x83:
+        case TagYShift:
             centerY = value;
             centerGiven = true;
             break;
-        case 0x84:
+        case TagZShift:
             centerZ = value;
             centerGiven = true;
             break;
-        case 0x8B:
+        case TagAntiRoll:
             block->spinFriction = value;
             break;
-        case 0x8D:
+        case TagSpringDamping:
             block->springDamping = value;
             break;
-        case 0x8F:
+        case TagSteady:
             block->lengthDrag = value;
             break;
-        case 0x90:
+        case TagFlatMultiplier:
             block->springAcross = value;
             break;
-        case 0xA1:
+        case TagGrabStrength:
             block->grabStrength = value;
             break;
-        case 0xA4:
+        case TagHoldStrength:
             block->holdStrength = value;
             break;
-        case 0xCE:
-            block->bodyUnknown44 = value;
+        case TagKnockScale:
+            block->knockScale = value;
             break;
-        case 0xD0:
-            SetSlowedAxis(block, value, 1);
+        case TagSlowingX:
+            SetSlowedAxis(block, value, SlowedAlongX);
             break;
-        case 0xD1:
-            SetSlowedAxis(block, value, 2);
+        case TagSlowingY:
+            SetSlowedAxis(block, value, SlowedAlongY);
             break;
-        case 0xD2:
-            SetSlowedAxis(block, value, 3);
+        case TagSlowingZ:
+            SetSlowedAxis(block, value, SlowedAlongZ);
             break;
-        case 0xF3:
+        case TagTurnToFocus:
             block->turnStrength = value;
-            block->bodyBits |= BodyTurnsToFocus;
+            block->body.unused10 = 1;
             break;
-        case 0xF9:
-            block->bodyBits = (block->bodyBits & ~(MotionBlock::SubstepsMask << MotionBlock::SubstepsShift)) |
-                              (token->value & MotionBlock::SubstepsMask) << MotionBlock::SubstepsShift;
+        case TagSubsteps:
+            block->body.substeps = token->value;
             break;
-        case 0xFD:
+        case TagMass:
             block->mass = value;
             break;
-        // A 0 sets the physics body's flags
-        case 0x120:
-            SetBodyBit(block, MotionBlock::PhysicsFlag20, TokenIsZero(token));
+        // On sets the physics body's pushable bits
+        case TagPushable:
+            block->body.pushable20 = TokenIsOn(token);
             break;
-        case 0x121:
-            SetBodyBit(block, MotionBlock::PhysicsFlag40, TokenIsZero(token));
+        case TagPushableToo:
+            block->body.pushable40 = TokenIsOn(token);
             break;
-        case 0x12C:
+        case TagBuoyancy:
             block->springStiffness = value;
-            block->bodyBits |= MotionBlock::Floats;
+            block->body.floats = 1;
             break;
-        case KeywordKind:
-            if (token->type == KeywordType)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 ApplyMotionKeyword(block, token->value);
             }
@@ -260,97 +227,97 @@ void ParseMotionBlockTokens(const ScriptTokenList* tokens, MotionBlock* block)
 
     if (centerGiven)
     {
-        block->flags |= MotionBlock::HasCenterOfMass;
+        block->flags.hasCenterOfMass = 1;
         block->centerOfMass[0] = centerX;
         block->centerOfMass[1] = centerY;
         block->centerOfMass[2] = centerZ;
     }
 }
 
-// The kinds that name a designator by a keyword (the others' keywords name none); kind 6's value is one, kind 7's is one more
+// The tags that name a designator by a keyword (the others' keywords name none); TagAgent's value is one, TagKey's is one more
 // than its designator
 void ParseDesignatorToken(const ScriptToken* token, u32* designator)
 {
-    switch (token->kind)
+    switch (token->tag)
     {
-    case KeywordKind:
-    case 0xC7:
-    case 0xC8:
-    case 0xEC:
-    case 0x104:
-    case 0x105:
-    case 0x107:
-    case 0x108:
-    case 0x110:
-    case 0x111:
-    case 0x117:
+    case TagNone:
+    case TagSourceDesignator:
+    case TagDestinationDesignator:
+    case TagSourceAgent:
+    case TagFromDesignator:
+    case TagToDesignator:
+    case TagFirstTarget:
+    case TagSecondTarget:
+    case TagFirstTargetPosition:
+    case TagSecondTargetPosition:
+    case TagAgentDesignator:
         break;
-    case 0x7:
+    case TagKey:
         *designator = token->value - 1;
         return;
-    case 0x6:
+    case TagAgent:
         *designator = token->value;
         return;
     default:
         return;
     }
 
-    if (token->type != KeywordType)
+    if (token->type != TokenKeyword)
     {
         return;
     }
 
     switch (token->value)
     {
-    case 0x1C:
+    case KeywordFocus:
         *designator = DesignatesFocus;
         break;
-    case 0x1D:
+    case KeywordFocusPosition:
         *designator = DesignatesFocusPosition;
         break;
-    case 0x20:
+    case KeywordSelf:
         *designator = DesignatesItself;
         break;
-    case 0x24:
+    case KeywordCurrentKey:
         *designator = DesignatesCurrentKey;
         break;
-    case 0x25:
+    case KeywordNextKey:
         *designator = DesignatesNextKey;
         break;
-    case 0x2C:
+    case KeywordCurrentNode:
         *designator = DesignatesCurrentStep;
         break;
-    case 0x2D:
+    case KeywordNextNode:
         *designator = DesignatesPreviousStep;
         break;
-    case 0x74:
+    case KeywordAgentRef1:
         *designator = DesignatesAgentRef1;
         break;
-    case 0x75:
+    case KeywordAgentRef2:
         *designator = DesignatesAgentRef2;
         break;
-    case 0x7A:
+    case KeywordStoredPosition:
         *designator = DesignatesStoredPosition;
         break;
-    case 0x88:
+    case KeywordPlayer:
         *designator = DesignatesPlayer;
         break;
-    case 0x89:
+    case KeywordOriginator:
         *designator = DesignatesOriginator;
         break;
-    case 0x8F:
+    case KeywordHeadTarget:
         *designator = DesignatesHeadTarget;
         break;
-    case 0x90:
-        *designator = Designates0xF1;
+    case KeywordUnusedDesignator90:
+        *designator = UnusedDesignatorF1;
         break;
-    case 0x91:
-        *designator = Designates0xF3;
+    case KeywordUnusedDesignator91:
+        *designator = UnusedDesignatorF3;
         break;
-    case 0xB1:
-        *designator = DesignatesRouteStep;
+    case KeywordNextStep:
+        *designator = DesignatesNextStep;
         break;
-    case 0xCE:
+    case KeywordLinkedById:
         *designator = DesignatesLinkedById;
         break;
     default:
@@ -368,26 +335,26 @@ void ParseSpaceToken(const ScriptToken* token, u32* space)
 
     switch (token->value)
     {
-    case 0x2:
-        *space = 0;
+    case KeywordWorldSpace:
+        *space = ControlPacket::WorldSpace;
         break;
-    case 0x3:
-        *space = 1;
+    case KeywordInitialSpace:
+        *space = ControlPacket::InitialSpace;
         break;
-    case 0x4:
-        *space = 2;
+    case KeywordCurrentSpace:
+        *space = ControlPacket::CurrentSpace;
         break;
-    case 0x5:
-        *space = 3;
+    case KeywordTargetSpace:
+        *space = ControlPacket::TargetSpace;
         break;
-    case 0x7C:
-        *space = 4;
+    case KeywordTrackedSpace:
+        *space = ControlPacket::ParentSpace;
         break;
-    case 0xA1:
-        *space = 5;
+    case KeywordInitialPosition:
+        *space = ControlPacket::InitialPosition;
         break;
-    case 0x21:
-        *space = 7;
+    case KeywordStoredSpace:
+        *space = ControlPacket::StoredSpace;
         break;
     default:
         break;
@@ -402,14 +369,14 @@ void ParseTaggedValueTokens(const ScriptTokenList* tokens, TaggedValue* value)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x38)
+        if (token->tag == TagDegreesPerSecond)
         {
-            value->raw = (value->raw & ~TaggedValue::TypeMask) | TaggedValue::TypeAngle << TaggedValue::TypeShift;
+            value->type = TaggedValue::TypeAngle;
             ParseTaggedValueRecord(token, value);
         }
-        else if (token->kind == 0x39)
+        else if (token->tag == TagMetresPerSecond)
         {
-            value->raw = (value->raw & ~TaggedValue::TypeMask) | TaggedValue::TypeFloat << TaggedValue::TypeShift;
+            value->type = TaggedValue::TypeFloat;
             ParseTaggedValueRecord(token, value);
         }
 
@@ -417,19 +384,19 @@ void ParseTaggedValueTokens(const ScriptTokenList* tokens, TaggedValue* value)
     }
 }
 
-bool TokenIsZero(const ScriptToken* token)
+bool TokenIsOn(const ScriptToken* token)
 {
-    return token->value == 0;
+    return token->value == KeywordOn;
 }
 
-bool TokenIsZero2(const ScriptToken* token)
+bool TokenIsOn2(const ScriptToken* token)
 {
-    return token->value == 0;
+    return token->value == KeywordOn;
 }
 
 u32 TokenSetting(const ScriptToken* token)
 {
-    return token->value == 0 ? 1 : 2;
+    return token->value == KeywordOn ? SwitchOn : SwitchOff;
 }
 
 u32 TokenDesignator(const ScriptToken* token, u32 designator)
@@ -446,15 +413,15 @@ u32 TokenSpace(const ScriptToken* token, u32 space)
 
 void TokenVectorComponent(const ScriptToken* token, f32* vector)
 {
-    if (token->kind == 1)
+    if (token->tag == TagY)
     {
         vector[1] = token->Float();
     }
-    else if (token->kind == 0)
+    else if (token->tag == TagX)
     {
         vector[0] = token->Float();
     }
-    else if (token->kind == 2)
+    else if (token->tag == TagZ)
     {
         vector[2] = token->Float();
     }

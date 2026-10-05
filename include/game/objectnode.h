@@ -8,6 +8,7 @@
 #include "game/string.h"
 
 class LayoutPath;
+class NodeController;
 class PropertyHolder;
 struct AiPath;
 struct AiPosition;
@@ -25,14 +26,20 @@ struct Route;
 struct ScriptStarter;
 struct TimeClock;
 
-// The script designators an object node answers (the AgentLab tool's): what its instance's ID entry links, its own instance, the
-// player, the head tracking's target, the stored position, AgentRef2 and AgentRef1, the route's previous and current step, the
-// focus instance and position, the next and the current key
+// The script designators an object node answers (the AgentLab tool's; those below 0xDE are the starter's receivers): what its
+// instance's ID entry links, the route's next step (the focus position's command only: a route is kept from its end, the next
+// step's index is the current one's less one), its own instance, the player, the runner's originator, the head tracking's
+// target, the stored position, AgentRef2 and AgentRef1, the route's previous and current step, the focus instance and position,
+// the next and the current key, and none (the receivers' too)
 enum Designator : u32
 {
+    // The first that isn't a receiver's index
+    FirstDesignator = 0xDE,
     DesignatesLinkedById = 0xDF,
+    DesignatesNextStep = 0xEF,
     DesignatesItself = 0xF0,
     DesignatesPlayer = 0xF2,
+    DesignatesOriginator = 0xF4,
     DesignatesHeadTarget = 0xF5,
     DesignatesStoredPosition = 0xF6,
     DesignatesAgentRef2 = 0xF7,
@@ -43,33 +50,54 @@ enum Designator : u32
     DesignatesFocusPosition = 0xFC,
     DesignatesNextKey = 0xFD,
     DesignatesCurrentKey = 0xFE,
+    DesignatesNone = 0xFF,
+};
+
+// What the focus commands give an instance or a position to (the object node's slot 34, ForgetDesignator, forgets them by
+// these): the focus, AgentRef1, AgentRef2, the stored position
+enum DesignatorSlot : u32
+{
+    SlotFocus = 0,
+    SlotAgentRef1 = 1,
+    SlotAgentRef2 = 2,
+    SlotStoredPosition = 3,
 };
 
 // The object instances' nodes (kind 1): the agent's node the behaviour runners drive, and its parts that move the instance along
 // the control packets (the AgentLab tool's names for what a packet does are in game/agentlab.h)
 
-// How a control packet's motion goes (made the first time, kept by the node, 0x60 bytes): the time it takes and its inverse, the
-// bits (0: the translation is done, 1: the rotation; bit fields the retail code reads and writes as the 64 bits from 8 on, the
-// speed's included), the speed, the speed of a chase, the velocity (the one it starts from while it accelerates), the speed of a
-// turn and the rotation's change per second
+// A motion's bits (the retail code reads and writes them as the 64 bits from 8 on, the speed's included): the translation is
+// done, the rotation is; bit 3 is what a snap to the ground sets, and the resets clear bits 2-4 too (nothing reads them)
+union MotionStateBits
+{
+    u32 value;
+    struct
+    {
+        u32 translationDone : 1;
+        u32 rotationDone : 1;
+        u32 unused2 : 1;
+        u32 unused3 : 1;
+        u32 unused4 : 1;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(MotionStateBits, 4);
+
+// How a control packet's motion goes (made the first time, kept by the node, 0x60 bytes): the time it takes and its inverse, its
+// bits, the speed, the speed of a chase, the velocity (the one it starts from while it accelerates), the speed of a turn and the
+// rotation's change per second
 struct MotionState
 {
-    enum Bits : u32
-    {
-        TranslationDone = 0x1,
-        RotationDone = 0x2,
-    };
-
     f32 duration;
     f32 inverseDuration;
-    u32 bits;
+    MotionStateBits bits;
     f32 speed;
     f32 chaseSpeed;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     Vector4 velocity;
     Vector4 startVelocity;
     f32 turnSpeed;
-    u8 unknown44[0xC];
+    u8 unused44[0xC];
     Vector4 turn;
 
     static MotionState* Construct(MotionState* state) RETAIL(FUN_0020ee90);
@@ -89,11 +117,11 @@ struct Translator
     Vector4 start;
     Vector4 target;
     Vector4 direction;
-    u8 unknown30[0x10];
+    u8 unused30[0x10];
     Vector4 wander;
     MotionState* motion;
     f32 distance;
-    u8 unknown58[8];
+    u8 unused58[8];
 
     static Translator* Construct(Translator* translator) RETAIL(FUN_0020edd0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0020edf8);
@@ -102,14 +130,15 @@ struct Translator
 CHECK_OFFSET(Translator, motion, 0x50);
 CHECK_SIZE(Translator, 0x60);
 
-// A rotation (0x40 bytes): the motion's state, where it starts and where it goes
+// A rotation (0x40 bytes): the motion's state, where it starts and where it goes, and a vector its resets clear that nothing
+// reads
 struct Rotator
 {
     MotionState* motion;
-    u8 unknown04[0xC];
+    u8 unused04[0xC];
     Vector4 start;
     Vector4 target;
-    Vector4 unknown30;
+    Vector4 unused30;
 
     static Rotator* Construct(Rotator* rotator) RETAIL(FUN_0020f9b8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0020f9e0);
@@ -117,27 +146,41 @@ struct Rotator
 };
 CHECK_SIZE(Rotator, 0x40);
 
+// The physics' bits (read and written as 64 bits in retail): a spring's deceleration is negative (1), and a kind nothing reads
+// (2-5: its resets make it 1, a spring 0, a chase 3)
+union PhysicsBits
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 negativeDeceleration : 1;
+        u32 unused2 : 4;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(PhysicsBits, 4);
+
 // The physics of the motions that aren't straight (0x60 bytes): a velocity, four parameters (a spring's power and damping; a
-// chase's duration, power, damping and bounce), the motion's state and bits (1: a spring's deceleration is negative, 2-5 the kind:
-// 1 made, 3 a chase; read and written as 64 bits in retail)
+// chase's duration, power, damping and bounce), a vector its resets clear that nothing reads, the motion's state and its bits
 struct Physics
 {
-    enum Bits : u32
+    // The kinds its bits keep
+    enum Kind : u32
     {
-        NegativeDeceleration = 0x2,
-        KindMask = 0x3C,
-        KindMade = 0x4,
-        KindChase = 0xC,
+        KindSpring = 0,
+        KindMade = 1,
+        KindChase = 3,
     };
 
-    u8 unknown00[0x20];
+    u8 unused00[0x20];
     Vector4 velocity;
-    Vector4 unknown30;
+    Vector4 unused30;
     f32 parameters[4];
     MotionState* motion;
-    u32 unknown54;
-    u32 bits;
-    u32 unknown5C;
+    u32 unused54;
+    PhysicsBits bits;
+    u32 unused5C;
 
     static Physics* Construct(Physics* physics) RETAIL(FUN_0020f878);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0020f8a0);
@@ -147,70 +190,188 @@ CHECK_OFFSET(Physics, parameters, 0x40);
 CHECK_OFFSET(Physics, bits, 0x58);
 CHECK_SIZE(Physics, 0x60);
 
-// A block of motion an object node can follow (its cycles, sticking and resets are game/objectnodemotion.cpp's, what the
-// trajectory controller does with it game/trajectory.cpp's): what it does depends on its kind (bits 28-30 of its motion bits):
-// 0 cycles move or turn the instance, 1-3 a rigid body of the node's own carries it (1 one the block's values shape and springs
-// hold at its place, 2 a ball, 3 one that grabs what it touches), 4 it looks for cover from the player among the AI positions
-// around. The first 0x3C bytes hold each kind's own values. Then the strengths kind 3 grabs with (what it touches, AgentRef1),
-// the turn toward the focus a body gets, a body's constraint (an axis or a normal, turned by the instance's place) and its bits,
-// its mass, the limit of its hinges' turn, its motion bits (0-2 the space the cycles move it in, 3-11 how each axis cycles, 12
-// they turn it, 13 they fade out and end after the duration, 14 a body resting far from the player is put back, 15 the instance
-// faces the way it moves, 16-18 the cycles start at a random phase, 20-25 their signs, 26-27 how it rolls along the way it moves)
-// and its flags (0-2 where the cycles' angles come from: 0 their own steps, 1 the focus's trajectory, 2 that of the first
-// instance attached to the node's; 3-5 the trajectory cycles about x, y and z; 6 a spin goes by the move's size alone; 7 the
-// cycles grow in over the duration; 8 a body has a centre of mass; 9 the instance faces the instance its packet tracks; 13 handed
-// on to the block followed next; 14 a touch or a push makes the node follow it; 15 the trajectory controller following it asks
-// for its frame while the node isn't updated)
-struct MotionBlock
+// The spaces of a script's positions and moves: the world's, the instance's start, its own place, the target's (the receiver's
+// instance or the designated one), facing from the instance to what its packet tracks, its rigid body's object, none, its
+// stored place
+enum PositionSpace : u32
 {
-    enum Flags : u32
+    SpaceWorld = 0,
+    SpaceStart = 1,
+    SpaceOwn = 2,
+    SpaceTarget = 3,
+    SpaceTracked = 4,
+    SpaceRigidBody = 5,
+    SpaceNone = 6,
+    SpaceStored = 7,
+};
+
+// A motion block's motion bits: the space its cycles move the instance in (PositionSpace), how the cycle about each axis
+// goes (MotionBlock::Cycle), its cycles turn the instance, they fade out and end after the duration, a body resting far from the
+// player is put back, the instance faces the way it moves, the cycles about each axis start at a random phase, their signs
+// (MotionBlock::Sign), how it rolls along the way it moves (MotionBlock::Roll) and the block's kind (MotionBlock::Kind)
+union MotionBlockMotion
+{
+    static constexpr u32 CycleShift = 3;
+    static constexpr u32 CycleMask = 0x7;
+    static constexpr u32 SignShift = 20;
+    static constexpr u32 SignMask = 0x3;
+    static constexpr u32 RandomPhaseXMask = 0x10000;
+
+    u32 value;
+    struct
     {
-        CycleSourceMask = 0x7,
-        CyclesAboutX = 0x8,
-        CyclesAboutY = 0x10,
-        CyclesAboutZ = 0x20,
-        SpinsBySize = 0x40,
-        GrowsIn = 0x80,
-        HasCenterOfMass = 0x100,
-        FacesTracked = 0x200,
-        CarriedOver = 0x2000,
-        FollowedWhenTouched = 0x4000,
-        KeepsStepping = 0x8000,
+        u32 space : 3;
+        u32 cycleX : 3;
+        u32 cycleY : 3;
+        u32 cycleZ : 3;
+        u32 turns : 1;
+        u32 fades : 1;
+        u32 putsBackStuck : 1;
+        u32 facesMove : 1;
+        u32 randomPhaseX : 1;
+        u32 randomPhaseY : 1;
+        u32 randomPhaseZ : 1;
+        u32 unused19 : 1;
+        u32 signX : 2;
+        u32 signY : 2;
+        u32 signZ : 2;
+        u32 roll : 2;
+        u32 kind : 3;
+        u32 unused31 : 1;
     };
 
-    // A cycle about an axis (bits 3-5 about x, 6-8 about y, 9-11 about z): 1 a sine, 2 and 3 a square wave, 4 random, 5 the angle
-    // itself (radians, turning amplitude times faster), else none; and its sign (bits 20-21, 22-23, 24-25): 1 negative, 2
-    // positive, else as it comes
+    // The cycle and the sign about an axis (0 x, 1 y, 2 z), and whether its cycle starts at a random phase
+    u32 CycleOf(u32 axis) const
+    {
+        return value >> (CycleShift + 3 * axis) & CycleMask;
+    }
+
+    u32 SignOf(u32 axis) const
+    {
+        return value >> (SignShift + 2 * axis) & SignMask;
+    }
+
+    bool StartsAtRandom(u32 axis) const
+    {
+        return (value & RandomPhaseXMask << axis) != 0;
+    }
+};
+CHECK_SIZE(MotionBlockMotion, 4);
+
+// Where a motion block's cycles take their angles from (MotionBlockFlags::cycleSource, TrajectoryBits::cycleSource): their own
+// steps, the focus's trajectory, that of the first instance attached to the node's
+enum CycleSource : u32
+{
+    OwnCycles = 0,
+    FocusCycles = 1,
+    AttachedCycles = 2,
+};
+
+// A motion block's flags: where the cycles' angles come from (0 their own steps, 1 the focus's trajectory, 2 that of the first
+// instance attached to the node's), the trajectory cycles about x, y and z, a spin goes by the move's size alone, the cycles
+// grow in over the duration, a body has a centre of mass, the instance faces the instance its packet tracks, an instance
+// launched with it is set upright (keeping its facing), a grabber holds what it touches or holds on to AgentRef1 when it touches
+// it, things stick to it (handed on to the block followed next), a touch or a push makes the node follow it, the trajectory
+// controller following it asks for its frame while the node isn't updated, and what touches it is sent its touch message
+union MotionBlockFlags
+{
+    static constexpr u32 CyclesAboutXMask = 0x8;
+
+    u32 value;
+    struct
+    {
+        u32 cycleSource : 3;
+        u32 cyclesAboutX : 1;
+        u32 cyclesAboutY : 1;
+        u32 cyclesAboutZ : 1;
+        u32 spinsBySize : 1;
+        u32 growsIn : 1;
+        u32 hasCenterOfMass : 1;
+        u32 facesTracked : 1;
+        u32 uprightsLaunched : 1;
+        u32 holdsTouched : 1;
+        u32 holdsAgentRef1 : 1;
+        u32 sticky : 1;
+        u32 followedWhenTouched : 1;
+        u32 keepsStepping : 1;
+        u32 sendsTouches : 1;
+        u32 unused17 : 15;
+    };
+
+    // Whether the trajectory cycles about an axis (0 x, 1 y, 2 z)
+    bool CyclesAbout(u32 axis) const
+    {
+        return (value & CyclesAboutXMask << axis) != 0;
+    }
+};
+CHECK_SIZE(MotionBlockFlags, 4);
+
+// A body's bits: hinges about its own x, y and z (all three: it doesn't turn), no collisions, the axis it's slowed along (1 x, 2
+// y, 3 z), its constraint (MotionBlock::Constraint), its substeps, the volume controllers push it, it's never put back when it
+// rests, its physics body's flags 0x20 and 0x40 (either lets the playable characters push it), its hinges' turn is limited and
+// it floats by the stiffness. Bit 10 is set with the turn toward the focus and never read
+union MotionBlockBody
+{
+    static constexpr u32 HingesMask = 0x7;
+
+    u32 value;
+    struct
+    {
+        u32 hingeX : 1;
+        u32 hingeY : 1;
+        u32 hingeZ : 1;
+        u32 noCollisions : 1;
+        u32 slowedAxis : 2;
+        u32 constraint : 4;
+        u32 unused10 : 1;
+        u32 substeps : 3;
+        u32 pushedByVolumes : 1;
+        u32 neverPutBack : 1;
+        u32 pushable20 : 1;
+        u32 pushable40 : 1;
+        u32 limitsTurn : 1;
+        u32 floats : 1;
+        u32 unused20 : 12;
+    };
+};
+CHECK_SIZE(MotionBlockBody, 4);
+
+// How a cover search looks (1: among the positions in a box around the instance)
+union CoverSearch
+{
+    u16 value;
+    struct
+    {
+        u16 kind : 5;
+        u16 unused5 : 11;
+    };
+};
+CHECK_SIZE(CoverSearch, 2);
+
+// A block of motion an object node can follow (its cycles, sticking and resets are game/objectnodemotion.cpp's, what the
+// trajectory controller does with it game/trajectory.cpp's): what it does depends on its kind: 0 cycles move or turn the
+// instance, 1-3 a rigid body of the node's own carries it (1 one the block's values shape and springs hold at its place, 2 a
+// ball, 3 one that grabs what it touches), 4 it looks for cover from the player among the AI positions around. The first 0x3C
+// bytes hold each kind's own values. Then the strengths kind 3 grabs with (what it touches, AgentRef1), the scale of the knocks
+// its body's collisions hand the nodes it hits, the turn toward the focus a body gets, a body's constraint (an axis or a normal,
+// turned by the instance's place) and its bits, its mass, the limit of its hinges' turn, its motion bits and its flags
+struct MotionBlock
+{
+    // A cycle about an axis: 1 a sine, 2 and 3 a square wave, 4 random, 5 the angle itself (radians, turning amplitude times
+    // faster), else none; and its sign: 1 negative, 2 positive, else as it comes
     enum Cycle : u32
     {
-        CycleShift = 3,
-        CycleMask = 0x7,
         CycleSine = 1,
         CycleSquare = 2,
         CycleSquareToo = 3,
         CycleRandom = 4,
         CycleAngle = 5,
-        SignShift = 20,
-        SignMask = 0x3,
-        SignNegative = 1,
-        SignPositive = 2,
     };
 
-    // The rest of the motion bits
-    enum Motion : u32
+    enum Sign : u32
     {
-        SpaceMask = 0x7,
-        Turns = 0x1000,
-        Fades = 0x2000,
-        PutsBackStuck = 0x4000,
-        FacesMove = 0x8000,
-        RandomPhaseX = 0x10000,
-        RandomPhaseY = 0x20000,
-        RandomPhaseZ = 0x40000,
-        RollShift = 26,
-        RollMask = 0x3,
-        KindShift = 28,
-        KindMask = 0x7,
+        SignNegative = 1,
+        SignPositive = 2,
     };
 
     // The kinds, the spaces the cycles move the instance in (its start's turn, its own axes, facing the instance its packet
@@ -225,14 +386,6 @@ struct MotionBlock
         KindCover = 4,
     };
 
-    enum Space : u32
-    {
-        SpaceStart = 1,
-        SpaceOwn = 2,
-        SpaceTracked = 4,
-        SpaceStored = 7,
-    };
-
     enum Roll : u32
     {
         RollFaces = 0,
@@ -241,33 +394,28 @@ struct MotionBlock
         RollSpin = 3,
     };
 
-    // The bits of a body: 0-2 hinges about its own x, y and z (all three: it doesn't turn), 3 no collisions, 4-5 the axis it's
-    // slowed along (1 x, 2 y, 3 z), 6-9 its constraint (1 fixed where it is, 2 kept on a line along the axis, 3 on a plane of the
-    // normal), 11-13 its substeps, 15 never put back when it rests, 16 and 17 its physics body's flags 0x20 and 0x40, 18 its
-    // hinges' turn is limited, 19 it floats by the stiffness
-    enum BodyBits : u32
+    // A body's constraints: fixed where it is, kept on a line along the axis, on a plane of the normal
+    enum Constraint : u32
     {
-        HingesMask = 0x7,
-        HingeX = 0x1,
-        HingeY = 0x2,
-        HingeZ = 0x4,
-        NoCollisions = 0x8,
-        SlowedShift = 4,
-        SlowedMask = 0x3,
-        ConstraintShift = 6,
-        ConstraintMask = 0xF,
-        ConstraintBits = 0x3C0,
         ConstraintFixed = 1,
         ConstraintLine = 2,
         ConstraintPlane = 3,
-        SubstepsShift = 11,
-        SubstepsMask = 0x7,
-        NeverPutBack = 0x8000,
-        PhysicsFlag20 = 0x10000,
-        PhysicsFlag40 = 0x20000,
-        LimitsTurn = 0x40000,
-        Floats = 0x80000,
     };
+
+    // What SetMotionBlockConstraint takes besides a Constraint: the hinges about the body's own x, y and z, and a constraint kind
+    // nothing handles
+    enum GivenKind : u32
+    {
+        GivenHingeX = 4,
+        GivenHingeY = 5,
+        GivenHingeZ = 6,
+        GivenOddConstraint = 7,
+    };
+
+    // The search a cover block makes among the positions in a box around the instance, and the mover that's the node's own
+    // instance
+    static constexpr u16 SearchInBox = 1;
+    static constexpr u8 MoverOwnInstance = 0xFF;
 
     union
     {
@@ -303,15 +451,15 @@ struct MotionBlock
             f32 springDamping;
             f32 springStiffness;
             f32 springAcross;
-            u8 unknown2C[4];
+            u8 unused2C[4];
             f32 centerOfMass[3];
         };
-        // Cover (kind 4): how it looks (1: among the positions in a box around the instance), the box's half width and half
-        // height, and the weights of a position's exposure and of how much further from the player it is
+        // Cover (kind 4): how it looks, the box's half width and half height, and the weights of a position's exposure and of
+        // how much further from the player it is
         struct
         {
-            u16 search;
-            u8 unknown02[2];
+            CoverSearch search;
+            u8 unused02[2];
             f32 halfWidth;
             f32 halfHeight;
             f32 exposureWeight;
@@ -320,24 +468,24 @@ struct MotionBlock
     };
     f32 grabStrength;
     f32 holdStrength;
-    // What the physics body's float 0x60 bytes in gets
-    f32 bodyUnknown44;
+    f32 knockScale;
     f32 turnStrength;
     f32 constraint[4];
-    u32 bodyBits;
+    MotionBlockBody body;
     // The mass the physics body of the node it moves gets (the node's first float property's when it's 0 or less)
     f32 mass;
     f32 turnLimit;
-    u32 cycles;
-    u32 flags;
-    // What becoming sticky asks of an instance and gives it: the kinds of nodes it has (one of them) or its object (when given),
-    // the strength its attachments hold it with, the message it's sent and the object
-    u32 stickyFlags;
-    f32 stickyValue;
-    u32 unknown78;
+    MotionBlockMotion motion;
+    MotionBlockFlags flags;
+    // What becoming sticky asks of an instance and gives it: the kinds of nodes it has (one of them, a bit per kind) or its
+    // object (when given), the strength its attachments hold it with, the message what touches it is sent (its low half),
+    // the message a stuck instance is sent and the object
+    u32 stickyKinds;
+    f32 stickyStrength;
+    u32 touchMessage;
     u32 stickyMessage;
     u16 stickyObject;
-    u8 unknown82[2];
+    u8 unused82[2];
     // The node it's the motion block of (springy contacts')
     struct ObjectNode* node;
 };
@@ -349,43 +497,51 @@ CHECK_OFFSET(MotionBlock, centerOfMass, 0x30);
 CHECK_OFFSET(MotionBlock, distanceWeight, 0x10);
 CHECK_OFFSET(MotionBlock, grabStrength, 0x3C);
 CHECK_OFFSET(MotionBlock, turnStrength, 0x48);
-CHECK_OFFSET(MotionBlock, bodyBits, 0x5C);
+CHECK_OFFSET(MotionBlock, body, 0x5C);
 CHECK_OFFSET(MotionBlock, mass, 0x60);
-CHECK_OFFSET(MotionBlock, cycles, 0x68);
+CHECK_OFFSET(MotionBlock, motion, 0x68);
+CHECK_OFFSET(MotionBlock, touchMessage, 0x78);
 CHECK_OFFSET(MotionBlock, flags, 0x6C);
 CHECK_SIZE(MotionBlock, 0x88);
+
+// A trajectory controller's bits: a count (the frames its body rested far from the player, the cover positions left), it made
+// the node's rigid body, where its cycles' angles come from (MotionBlockFlags::cycleSource); bit 16 set when it's let go of and
+// 18 when it's made, neither read
+union TrajectoryBits
+{
+    u32 value;
+    struct
+    {
+        u32 count : 16;
+        u32 unused16 : 1;
+        u32 madeBody : 1;
+        u32 unused18 : 1;
+        u32 unused19 : 1;
+        u32 cycleSource : 3;
+        u32 unused23 : 9;
+    };
+};
+CHECK_SIZE(TrajectoryBits, 4);
 
 // The node's trajectory controller (0x110 bytes, game/trajectory.cpp): its node; what its cycles move the instance by or turn it
 // to (a rotation, or angles about x, y and z), where the instance was at its last frame (for its rolls); the position and the
 // rotation it holds the instance at, the rotation's angles; a body's reach (its instance's own box's corner) and its place's
 // axes (x, z, y); the best cover position found, its score and the positions left to look at; the motion block it follows, the
 // angles of its cycles about the three axes (65536ths of a turn) and their wobble's phases (the offsets from the cycles they
-// follow), their amplitudes (what the motion floats command sets), its bits (0-15 a count: the frames its body rested far from
-// the player, the cover positions left; 16 it was let go of, 17 it made the node's rigid body, 18 new, 20-22 where its cycles'
-// angles come from) and the time it started following
+// follow), their amplitudes (what SetCycleAmplitudes sets), its bits and the time it started following
 struct Trajectory
 {
-    enum Bits : u32
-    {
-        CountMask = 0xFFFF,
-        BitLetGo = 0x10000,
-        BitMadeBody = 0x20000,
-        BitNew = 0x40000,
-        CycleSourceShift = 20,
-        CycleSourceMask = 0x7,
-    };
-
     struct ObjectNode* node;
-    u8 unknown04[0xC];
+    u8 unused04[0xC];
     Vector4 move;
     Vector4 turn;
     s32 turnAngles[3];
-    u8 unknown3C[4];
+    u8 unused3C[4];
     Vector4 lastPosition;
     Vector4 position;
     Vector4 rotation;
     s32 angles[3];
-    u8 unknown7C[4];
+    u8 unused7C[4];
     Vector4 reach;
     union
     {
@@ -394,24 +550,20 @@ struct Trajectory
         f32 rollRate;
         f32 farDistance;
     };
-    u8 unknown94[0xC];
+    u8 unused94[0xC];
     Vector4 axisX;
     Vector4 axisZ;
     Vector4 axisY;
     struct AiPosition* cover;
-    u32 unknownD4;
+    u32 unusedD4;
     struct Route* coverRoute;
     f32 coverScore;
     MotionBlock* followed;
     s32 cycles[3];
     s32 wobblePhases[3];
-    // What the motion floats command sets
+    // What SetCycleAmplitudes sets
     f32 motionFloats[3];
-    union
-    {
-        u32 bits;
-        u16 count;
-    };
+    TrajectoryBits bits;
     u32 startTime;
 };
 CHECK_OFFSET(Trajectory, move, 0x10);
@@ -427,21 +579,31 @@ CHECK_OFFSET(Trajectory, motionFloats, 0xFC);
 CHECK_OFFSET(Trajectory, bits, 0x108);
 CHECK_SIZE(Trajectory, 0x110);
 
+// A node's particle trails' bits: how many, and the turn a packet facing the way it moves makes is measured into the motion's
+// state (a trail of kind 5 asks for it)
+union ParticleTrailsBits
+{
+    u32 value;
+    struct
+    {
+        u32 count : 5;
+        u32 measuresTurn : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(ParticleTrailsBits, 4);
+
 // The particle trails an object node leaves (game/objectnodeparts.cpp, a trail's step game/particletrails.cpp): up to 8 trails
-// (AddTrail commands' arguments), the emitter each one plays (-1 none) and a time of each, its bits (0-4 how many; with bit 5
-// the turn a packet facing the way it moves makes is measured into the motion's state), and the time of the trail being stepped
+// (AddTrail commands' arguments), the emitter each one plays (-1 none) and a time of each, its bits, how strong they are and the
+// time of the trail being stepped
 struct ParticleTrails
 {
-    enum Bits : u32
-    {
-        CountMask = 0x1F,
-        MeasuresTurn = 0x20,
-    };
+    static constexpr u32 MostTrails = 8;
 
-    struct TrailArguments* trails[8];
-    s32 emitters[8];
-    s32 times[8];
-    u32 bits;
+    struct TrailArguments* trails[MostTrails];
+    s32 emitters[MostTrails];
+    s32 times[MostTrails];
+    ParticleTrailsBits bits;
     // How strong the trails are (0 to 1: the skate's 1 on the ground and 0 in the air, the wrestle's how much the pushes oppose)
     f32 strength;
     s32* time;
@@ -458,52 +620,184 @@ struct ParticleTrails
     // Its instance moving from a chunk through a link
     void ChangeChunk(struct ChunkData* from, struct ChunkLinkData* link) RETAIL(FUN_00240648);
 };
+CHECK_SIZE(ParticleTrails, 0x6C);
+
+// The kinds of a rigid body's motion and of its collisions with the world (ObjectRigidBodyBits; SetCollisions' keywords pick
+// them): none, plain, an upright cylinder (an upright ellipsoid's collisions), pushed away from the instances around (slid out
+// by its friction), an axis box, then its physics body's: a sphere, hulls sized by the instance's own box, more hulls
+enum RigidBodyKind : u32
+{
+    BodyKindNone = 0,
+    BodyKindPlain = 1,
+    BodyKindUpright = 5,
+    BodyKindSlide = 6,
+    BodyKindAxisBox = 8,
+    BodyKindSphere = 9,
+    BodyKindCuboid = 10,
+    BodyKindSimplex = 11,
+    // The kinds from this one on are the physics body's
+    FirstPhysicsBodyKind = BodyKindSphere,
+};
+
+// The float property a rigid body's mass comes from (the node's, or its packet's for a body block's body)
+constexpr u32 RigidBodyMassProperty = 0;
+
+// A rigid body's launch (ObjectRigidBodyBits::launch): none, and the tool's vertical one, which the game tells from none and from
+// a full launch (ObjectRigidBodyBits::Launched) alone
+enum RigidBodyLaunch : u32
+{
+    NoLaunch = 0,
+    VerticalLaunch = 1,
+};
+
+// A node's rigid body's 64 bits at 0x88 (game/commandsphysics.cpp and game/rigidbodyframe.cpp): four bytes the constructor sets
+// to 0xFF that nothing reads; the kind of its motion (0 none; below 9 its node's motion moves it, it's in its chunk's first list
+// and its collision cache's triangles stop it, from 9 on its physics body does: 9 a sphere of the node's roll radius, 10 and 11
+// hulls sized by its instance's own box, more hulls; 5 an upright cylinder as wide as its radius times its width scale, 6
+// pushed away from the instances around it instead) and of its collisions with the world (5 an upright ellipsoid, 6 slid out by
+// its friction, the others a sphere), how it's launched, no collisions with the world (nothing sets them), its being in the
+// first list, its velocity dragged, gripped by what it touches, its own restitution, a size given, it falls, touching an
+// instance, the world and anything, it's let go of once it nearly rests on the world (nothing sets it), it doesn't move for
+// other rigid bodies or hulls, it moves (its frame steps it), it stops once it rests (15 steps after its launch, once it
+// touches something or nearly rests), it turns, it steers itself, its size is the least slope it stands on and its
+// restitution the rate its contact normal follows (a size and a restitution given while it had no physics body), its own
+// length drag
+union ObjectRigidBodyBits
+{
+    // The kinds' bits together: something moves it; the launch a node's launch gives it (its velocity moves it)
+    static constexpr u64 KindsMask = u64{0xFF} << 32;
+    static constexpr u32 Launched = 2;
+
+    u64 value;
+    struct
+    {
+        u64 unused0 : 32;
+        u64 motionKind : 4;
+        u64 collisionKind : 4;
+        u64 launch : 2;
+        u64 noWorldCollisions : 2;
+        u64 inFirstList : 1;
+        u64 dragged : 1;
+        u64 gripped : 1;
+        u64 ownRestitution : 1;
+        u64 sizeGiven : 1;
+        u64 falls : 1;
+        u64 unused50 : 1;
+        u64 touchingInstance : 1;
+        u64 touchingWorld : 1;
+        u64 touching : 1;
+        u64 releasedAtRest : 1;
+        u64 immovable : 1;
+        u64 moving : 1;
+        u64 stopsAtRest : 1;
+        u64 turning : 1;
+        u64 steersItself : 1;
+        u64 slopeLimited : 1;
+        u64 ownNormalRate : 1;
+        u64 ownLengthDrag : 1;
+        u64 unused63 : 1;
+    };
+};
+CHECK_SIZE(ObjectRigidBodyBits, 8);
+
+// A rigid body's magnet's ways (ObjectRigidBodyState::magnetWay): from the body toward the position, along its z axis
+enum MagnetWay : u32
+{
+    MagnetFromBody = 0,
+    MagnetAlongZAxis = 1,
+};
+
+// The modes of the magnet's strength the keywords set (ObjectRigidBodyState::magnetStrength): MagnetPull pulls with neither
+enum MagnetStrength : u32
+{
+    MagnetEven = 1,
+    MagnetMode2 = 2,
+};
+
+// A node's rigid body's word at 0x90 (the retail code reads and writes it as 64 bits, with its node): on the ground and against
+// a wall this frame (the movement step clears them), its contact normal eases toward each new one and it keeps to what it
+// touches (a climbing chase's), the modes of its magnet's strength and its way (MagnetStrength, MagnetWay), it's out of action,
+// the steps since it was launched (counting up to 15) and since it last touched what it rides (the ride let go at 5), a
+// surface's contact message told, the impulses it gives no longer than its impulse length or that long, the volume controllers
+// push it, it touched something when its contacts were last forgotten, its agent is told when it touches water. Bits 0 and 19
+// are set when it's made, 2 and 3 by the physics commands, and none of them read
+union ObjectRigidBodyState
+{
+    static constexpr u32 MostSteps = 0xF;
+    static constexpr u32 RideLostSteps = 5;
+
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 onGround : 1;
+        u32 unused2 : 1;
+        u32 unused3 : 1;
+        u32 followsSurface : 1;
+        u32 againstWall : 1;
+        u32 magnetStrength : 2;
+        u32 magnetWay : 2;
+        u32 outOfAction : 1;
+        u32 launchSteps : 4;
+        u32 rideSteps : 4;
+        u32 unused19 : 1;
+        u32 touchedMessageSurface : 1;
+        u32 impulseCapped : 1;
+        u32 impulseFixed : 1;
+        u32 pushedByVolumes : 1;
+        u32 touched : 1;
+        u32 tellsWaterTouches : 1;
+        u32 unused26 : 6;
+    };
+};
+CHECK_SIZE(ObjectRigidBodyState, 4);
 
 // The rigid body an object node moves with (0xE0 bytes): the normal of what it touches, the frame's contacts with instances, the
-// instance it rides (a packet's offset spreads over its box) with its movement node and where the body is in its space, 64 bits
-// 0x88 bytes in (four bytes the constructor sets to 0xFF, then bit fields: the kinds of its motion and of its collisions in bits
-// 32-35 and 36-39, game/commandsphysics.cpp and game/rigidbodyframe.cpp have them), the word at 0x90 (the retail code reads and
-// writes it as 64 bits, its node in the upper half), what the physics commands give it (its physics body gets them too when it
-// has one), its collision cache, the physics body it moves as (one of the world's), and the lists of its chunk's rigid bodies
-// it's in with its index in each (none 0xFFFF and 0xFF)
+// instance it rides (a packet's offset spreads over its box) with its movement node and where the body is in its space, its bits
+// and its state with its node, what the physics commands give it (its physics body gets them too when it has one), its
+// collision cache, the physics body it moves as (one of the world's), and the lists of its chunk's rigid bodies it's in with its
+// index in each
 struct ObjectRigidBody
 {
-    u8 unknown00[0x40];
+    static constexpr u16 NoFirstIndex = 0xFFFF;
+    static constexpr u8 NoSecondIndex = 0xFF;
+    // The speed (squared) it rests below
+    static constexpr f32 RestingSpeedSquared = Rounded(0.001);
+
+    u8 unused00[0x40];
     // The normal of what it touches (eased toward each new one's, back up once it has touched nothing for a while)
     Vector4 contactNormal;
     // The frame's contacts with instances: the normals of the hulls it touched added up and how many things it touched
     Vector4 contactSum;
     f32 contactCount;
-    u8 unknown64[0x70 - 0x64];
+    u8 unused64[0x70 - 0x64];
     // Where it is in the space of the instance it rides
     Vector4 ridePosition;
     ReferencedObject* object;
     struct MovementNode* rideMovement;
-    u64 bits88;
-    union
-    {
-        u64 bits90;
-        struct
-        {
-            u32 unknown90;
-            struct ObjectNode* node;
-        };
-    };
-    // What the physics sizes command sets
+    ObjectRigidBodyBits bits;
+    ObjectRigidBodyState state;
+    struct ObjectNode* node;
+    // What SetMagnet sets: a size nothing reads and the magnet's pull
     f32 sizes[2];
-    f32 unknownA0;
+    // An upright cylinder's width over its radius
+    f32 widthScale;
     f32 gravity;
     f32 drag;
     f32 lengthDrag;
     f32 friction;
     f32 restitution;
     f32 size;
-    f32 unknownBC;
-    f32 unknownC0;
-    f32 unknownC4;
-    f32 unknownC8;
-    // Its node's vertical speed when it was made
-    f32 unknownCC;
+    // How long its capped or fixed impulses are
+    f32 impulseLength;
+    // The seconds since it last touched anything
+    f32 untouchedTime;
+    // The turn the turn command gives it (radians), which nothing reads
+    f32 unusedC4;
+    // The grip of what it touches (the strongest of a frame, up to 1)
+    f32 grip;
+    // Its node's vertical speed when it was made, which nothing reads
+    f32 unusedCC;
     struct CollisionCache* cache;
     DynamicBody* physicsBody;
     struct ChunkRigidBodies* chunkBodies;
@@ -514,10 +808,14 @@ CHECK_OFFSET(ObjectRigidBody, contactSum, 0x50);
 CHECK_OFFSET(ObjectRigidBody, contactCount, 0x60);
 CHECK_OFFSET(ObjectRigidBody, ridePosition, 0x70);
 CHECK_OFFSET(ObjectRigidBody, rideMovement, 0x84);
-CHECK_OFFSET(ObjectRigidBody, bits88, 0x88);
+CHECK_OFFSET(ObjectRigidBody, bits, 0x88);
+CHECK_OFFSET(ObjectRigidBody, state, 0x90);
 CHECK_OFFSET(ObjectRigidBody, node, 0x94);
+CHECK_OFFSET(ObjectRigidBody, widthScale, 0xA0);
 CHECK_OFFSET(ObjectRigidBody, gravity, 0xA4);
-CHECK_OFFSET(ObjectRigidBody, unknownCC, 0xCC);
+CHECK_OFFSET(ObjectRigidBody, impulseLength, 0xBC);
+CHECK_OFFSET(ObjectRigidBody, grip, 0xC8);
+CHECK_OFFSET(ObjectRigidBody, unusedCC, 0xCC);
 CHECK_OFFSET(ObjectRigidBody, physicsBody, 0xD4);
 CHECK_OFFSET(ObjectRigidBody, secondIndex, 0xDE);
 CHECK_SIZE(ObjectRigidBody, 0xE0);
@@ -526,6 +824,8 @@ CHECK_SIZE(ObjectRigidBody, 0xE0);
 // (taking one out moves the last into its place, a list takes 255)
 struct ChunkRigidBodies
 {
+    static constexpr u16 MostBodies = 0xFF;
+
     u16 secondCount;
     u16 firstCount;
     ObjectRigidBody* first[256];
@@ -533,70 +833,104 @@ struct ChunkRigidBodies
 };
 CHECK_SIZE(ChunkRigidBodies, 0x800);
 
+// A head tracking's settings' bits: the joints and the exit point its head is (0xFF none), how it steers
+// (HeadTrackingSettings::Steering: none, it turns its joints) and it doesn't hear noises. Bit 27 is set with the turn about y's
+// limit and never read, 28-31 are what the memory had
+union HeadTrackingSettingsBits
+{
+    u32 value;
+    struct
+    {
+        u32 joint : 8;
+        u32 secondJoint : 8;
+        u32 exitPoint : 8;
+        u32 steering : 2;
+        u32 ignoresNoises : 1;
+        u32 unused27 : 1;
+        u32 unused28 : 4;
+    };
+};
+CHECK_SIZE(HeadTrackingSettingsBits, 4);
+
 // What a head tracking is made with (the CreateHeadTracking command's arguments from its first, which it keeps): how fast it
 // turns (the share of the way an instance steers), how far its head turns about x either way and about y (65536ths of a turn),
-// the joints (bytes 0 and 1, 0xFF none) and the exit point (byte 2) its head is, bits 24 and 25 (neither: it turns its joints;
-// else it steers its instance, by its facing alone with bit 25) and 26 (it doesn't hear noises), its damping, and the seen stamp
-// of its instance past which it isn't stepped (0x640 less it; none from 0xFF on)
+// the directions of those limits, its bits, its damping, and the seen stamp of its instance past which it isn't stepped (0x640
+// less it; none from 0xFF on)
 struct HeadTrackingSettings
 {
-    enum Bits : u32
+    // Its instance steered whole or by its facing alone (either of the bits)
+    enum Steering : u32
     {
-        SteersInstance = 0x3000000,
-        SteersFacing = 0x2000000,
-        IgnoresNoises = 0x4000000,
+        SteersInstance = 1,
+        SteersFacing = 2,
     };
 
-    u32 unknown00;
+    u32 unused00;
     f32 range;
     f32 stiffness;
     s32 negativePitch;
     s32 positivePitch;
     s32 yawLimit;
     f32 direction[3];
-    u32 unknown24[6];
-    u32 bits;
+    u32 unused24[6];
+    HeadTrackingSettingsBits bits;
     f32 damping;
     u32 unseenLimit;
 };
 CHECK_OFFSET(HeadTrackingSettings, bits, 0x3C);
 CHECK_SIZE(HeadTrackingSettings, 0x48);
 
+// A head tracking's bits (the low half of 64 bits in retail, its stiffness the upper half): the joints and the exit point its
+// head is, a limit was hit this frame, the turn about y went below and above its limit, the turn about x did, it turns back to
+// rest, its joints are hooked. Bit 31 is cleared and never read
+union HeadTrackingState
+{
+    // The limits' bits (limited and the four below and above)
+    static constexpr u32 LimitsMask = 0x1F000000;
+
+    u32 value;
+    struct
+    {
+        u32 joint : 8;
+        u32 secondJoint : 8;
+        u32 exitPoint : 8;
+        u32 limited : 1;
+        u32 yawBelow : 1;
+        u32 yawAbove : 1;
+        u32 pitchBelow : 1;
+        u32 pitchAbove : 1;
+        u32 returning : 1;
+        u32 hooked : 1;
+        u32 unused31 : 1;
+    };
+};
+CHECK_SIZE(HeadTrackingState, 4);
+
+// A head tracking's flags: it tracks (the look following it only then), it stops once back at rest, it has a target, its agent
+// turns the head itself, the playable characters' look ignores it. Bit 0 is cleared and never read
+union HeadTrackingFlags
+{
+    u64 value;
+    struct
+    {
+        u64 unused0 : 1;
+        u64 tracking : 1;
+        u64 stops : 1;
+        u64 hasTarget : 1;
+        u64 agentTurns : 1;
+        u64 ignoredByLook : 1;
+        u64 unused6 : 58;
+    };
+};
+CHECK_SIZE(HeadTrackingFlags, 8);
+
 // What a node tracks with its head (0xE0 bytes, vtable D_00300EB8: 1 the destructor, 2 its joints hooked on an animator, 3
 // unhooked, 4 a joint posed): its node, its head's turns about x and y (radians), how fast they turn and their limits, the turns
 // in 65536ths of a turn, its head's matrix in the world when it was last posed and the direction to its target from there, its
-// bits (64 in retail: bytes 0-2 the joints and the exit point its head is, 24 a limit was hit this frame, 25 and 26 the turn
-// about y went below and above its limit, 27 and 28 the turn about x, 29 it turns back to rest, 30 its joints are hooked; the
-// upper half its stiffness), its damping, what it looks at, the target it comes back to (once its weight fades below that one's)
-// and the last one it looked at, its settings, when it took its target (on the target's clock), its weight, its flags (1 it
-// tracks, the look following it only then; 2 it stops once back at rest; 3 it has a target; 4 its agent turns the head itself; 5
-// the playable characters' look ignores it)
+// bits and stiffness, its damping, what it looks at, the target it comes back to (once its weight fades below that one's) and the
+// last one it looked at, its settings, when it took its target (on the target's clock), its weight and its flags
 struct HeadTracking
 {
-    enum Bits : u32
-    {
-        NoJoint = 0xFF,
-        BitLimited = 0x1000000,
-        BitYawBelow = 0x2000000,
-        BitYawAbove = 0x4000000,
-        BitPitchBelow = 0x8000000,
-        BitPitchAbove = 0x10000000,
-        BitLimits = 0x1F000000,
-        BitReturning = 0x20000000,
-        BitHooked = 0x40000000,
-        Bit31 = 0x80000000,
-    };
-
-    enum Flags : u32
-    {
-        Flag0 = 0x1,
-        FlagTracking = 0x2,
-        FlagStops = 0x4,
-        FlagHasTarget = 0x8,
-        FlagAgentTurns = 0x10,
-        FlagIgnoredByLook = 0x20,
-    };
-
     const GccVTableEntry* vtable;
     struct ObjectNode* node;
     f32 pitch;
@@ -609,34 +943,25 @@ struct HeadTracking
     s32 pitchAngle;
     s32 yawAngle;
     s32 rollAngle;
-    u8 unknown30[0x10];
+    // Three words the turns' resets clear, which nothing reads
+    u8 unused30[0x10];
     Matrix4x4 matrix;
     Vector4 direction;
-    Vector4 unknown90;
-    union
-    {
-        u64 bits;
-        struct
-        {
-            u8 joint;
-            u8 secondJoint;
-            u8 exitPoint;
-            u8 unknownA3;
-            f32 stiffness;
-        };
-    };
+    Vector4 unused90;
+    HeadTrackingState bits;
+    f32 stiffness;
     f32 damping;
-    u32 unknownAC;
+    u32 unusedAC;
     Reference* target;
     Reference* remembered;
     Reference* last;
     const HeadTrackingSettings* settings;
     u32 time;
-    // A random 2 to 10 its setting up gives it (nothing here reads it)
-    f32 unknownC4;
+    // A random 2 to 10 its setting up gives it, which nothing reads
+    f32 unusedC4;
     f32 weight;
     f32 rememberedWeight;
-    u64 flags;
+    HeadTrackingFlags flags;
 
     // Made for a node: its turns' base (its joints none, its damping 1), then no targets, settings or flags
     static HeadTracking* ConstructTurner(HeadTracking* tracking, struct ObjectNode* node) RETAIL(FUN_00236d00);
@@ -656,32 +981,44 @@ CHECK_SIZE(HeadTracking, 0xE0);
 CHECK_OFFSET(HeadTracking, target, 0xB0);
 CHECK_OFFSET(HeadTracking, flags, 0xD0);
 
-// A perception's sense (an AddPerception command's arguments from its first): its bits (0-2 its kind: 0 the instances around,
-// 1 a level rising by its decay, 2 its node's speed; 3 the player counts as noticed), what the noticed instances' presence is
-// divided by, the kinds of nodes of the instances it senses, the objects it notices (their IDs, how many), its radius, the
-// squared distance their presence falls off over, how fast its level decays, the seconds between its steps, its level's
-// limits, the speed's scale and the weight of the attention the instances pay its node
+// A sense's bits: its kind (PerceptionSense::Kind), the player counts as noticed
+union PerceptionSenseBits
+{
+    u32 value;
+    struct
+    {
+        u32 kind : 3;
+        u32 noticesPlayer : 1;
+        u32 unused4 : 28;
+    };
+};
+CHECK_SIZE(PerceptionSenseBits, 4);
+
+// A perception's sense (an AddPerception command's arguments from its first): its bits, what the noticed instances' presence is
+// divided by, the kinds of nodes of the instances it senses (a bit per kind), the objects it notices (their IDs, how many), its
+// radius, the squared distance their presence falls off over, how fast its level decays, the seconds between its steps, its
+// level's limits, the speed's scale and the weight of the attention the instances pay its node
 struct PerceptionSense
 {
-    enum Bits : u32
-    {
-        KindMask = 0x7,
-        NoticesPlayer = 0x8,
-    };
-
+    // The instances around, a level rising by its decay, its node's speed, and a kind the scripts can give (KeywordUnusedSense)
+    // that nothing steps
     enum Kind : u32
     {
         KindInstances = 0,
         KindRising = 1,
         KindSpeed = 2,
+        KindUnused = 3,
     };
 
-    u32 bits;
+    // The share of its decay its level moves by in a step (rising, or falling back while nothing's sensed)
+    static constexpr f32 DecayShare = Rounded(0.3);
+
+    PerceptionSenseBits bits;
     f32 divisor;
     u32 kinds;
     u16 objects[8];
     u8 objectCount;
-    u8 unknown1D[3];
+    u8 unused1D[3];
     f32 radius;
     f32 falloff;
     f32 decay;
@@ -696,26 +1033,33 @@ CHECK_OFFSET(PerceptionSense, radius, 0x20);
 CHECK_OFFSET(PerceptionSense, interval, 0x2C);
 CHECK_OFFSET(PerceptionSense, attentionWeight, 0x3C);
 
+// A perception's bits: how many senses it has
+union PerceptionBits
+{
+    u64 value;
+    struct
+    {
+        u64 count : 4;
+        u64 unused4 : 60;
+    };
+};
+CHECK_SIZE(PerceptionBits, 8);
+
 // An object node's perception (ObjectNode::perception, 0x90 bytes, made the first time a sense is added): its senses (up to 8),
 // each one's level (0 to 1), whether it's on and when it last stepped (on its node's clock), the direction away from what the
-// instances sense pushes it, and how many senses it has (bits 0-3 of 64)
+// instances sense pushes it, and its bits
 struct Perception
 {
     static constexpr u32 MostSenses = 8;
-
-    enum Bits : u32
-    {
-        CountMask = 0xF,
-    };
 
     PerceptionSense* senses[MostSenses];
     f32 levels[MostSenses];
     u8 on[MostSenses];
     u32 times[MostSenses];
-    u8 unknown68[8];
+    u8 unused68[8];
     Vector4 direction;
-    u64 bits;
-    u8 unknown88[8];
+    PerceptionBits bits;
+    u8 unused88[8];
 };
 CHECK_OFFSET(Perception, on, 0x40);
 CHECK_OFFSET(Perception, times, 0x48);
@@ -723,18 +1067,29 @@ CHECK_OFFSET(Perception, direction, 0x70);
 CHECK_OFFSET(Perception, bits, 0x80);
 CHECK_SIZE(Perception, 0x90);
 
+// How a route's keys are stepped: they go backwards, they don't go on, they went round
+union WaypointFlags
+{
+    u8 value;
+    struct
+    {
+        u8 backwards : 1;
+        u8 stopped : 1;
+        u8 unused2 : 1;
+        u8 wrapped : 1;
+        u8 unused4 : 4;
+    };
+};
+CHECK_SIZE(WaypointFlags, 1);
+
 // The positions and the paths an object instance names (0x50 bytes), the route it follows: its keys are its positions (the key
 // it's at, the first and the last), the path it's on (its direction and how far along it the instance is), the route's step
-// it's at (0xFF none) and the path that led there; the flags (bit 0: the keys go backwards, bit 1: they don't go on, bit 3: they
-// went round) and the counts are the bytes of a 64 bit word in retail
+// it's at (0xFF none) and the path that led there; the flags and the counts are the bytes of a 64 bit word in retail
 struct Waypoints
 {
-    enum Flags : u8
-    {
-        FlagBackwards = 0x1,
-        FlagStopped = 0x2,
-        FlagWrapped = 0x8,
-    };
+    // A key of none, and a route's step of none (what a step comes to stepped back past 0)
+    static constexpr u8 NoKey = 0xFF;
+    static constexpr u8 NoRouteStep = 0xFF;
 
     PointerArray<LayoutPosition> positions;
     PointerArray<LayoutPath> paths;
@@ -743,16 +1098,16 @@ struct Waypoints
     Route* route;
     AiPath* routePath;
     u8 routeIndex;
-    u8 unknown3D[3];
-    u8 flags;
+    u8 unused3D[3];
+    WaypointFlags flags;
     u8 keyCount;
     u8 pathCount;
     u8 pathIndex;
     u8 key;
     u8 firstKey;
     u8 lastKey;
-    u8 unknown47;
-    u8 unknown48[8];
+    u8 unused47;
+    u8 unused48[8];
 
     static Waypoints* Construct(Waypoints* waypoints) RETAIL(FUN_0020f0f0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0020f160);
@@ -776,38 +1131,102 @@ CHECK_OFFSET(Waypoints, route, 0x34);
 CHECK_OFFSET(Waypoints, flags, 0x40);
 CHECK_SIZE(Waypoints, 0x50);
 
-// The base of the kind 1 nodes (0xD0 bytes, vtable D_00301058 over InstanceNodePrototype_Methods): what it focuses on (an instance
-// with flag 0, a position with flag 1), its object, its properties and agent, its flags (0: a focus instance, 1: a focus position,
-// 2: springs stay level, 4: a step fell short, 13: a stored position, 18: its motion moves the stored place, 20: AgentRef2 kept while asleep, 24: it moves, 25: it
-// accelerates), the node it takes its object and
-// properties from when there's one, its two behaviour runners and the instance its packet tracks
+// An object node's flags: a focus instance, a focus position, its rigid body falls (a spring then doesn't pull it up or down),
+// it was updated this frame, it handled an event since its last update and its rigid body rides an instance (either updates it
+// every frame), what a runner finishing leaves it (its particles but the trails of kind 1, its trajectory controller), a stored
+// position, it was launched or its ball or grabber still looks for contact (its trajectory's step watches its physics body until
+// it touches something), its cover search ended, found cover (the stored position) or found none, its motion moves the stored
+// place, AgentRef2 is kept while it's asleep, a runner finishing leaves its perception, it's put back where it was before its
+// frame unless it moved (the playable characters'), it moves, it accelerates. Bit 4 is what a motion's step that left it short
+// of its target sets and 10-12 what the Keep command's bits 2-4 set, none of them read. Other nodes built on the base read the
+// word their own way (pickups)
+union ObjectNodeFlags
+{
+    // The focus instance and focus position bits, cleared together when the node forgets its focus
+    static constexpr u32 FocusMask = 0x3;
+
+    u32 value;
+    struct
+    {
+        u32 focusInstance : 1;
+        u32 focusPosition : 1;
+        u32 falls : 1;
+        u32 updated : 1;
+        u32 unused4 : 1;
+        u32 handledEvent : 1;
+        u32 riding : 1;
+        u32 unused7 : 1;
+        u32 keepsParticles : 1;
+        u32 keepsTrajectory : 1;
+        u32 unused10 : 1;
+        u32 unused11 : 1;
+        u32 unused12 : 1;
+        u32 storedPosition : 1;
+        u32 seeksContact : 1;
+        u32 searchEnded : 1;
+        u32 foundCover : 1;
+        u32 noCover : 1;
+        u32 movesStoredPlace : 1;
+        u32 unused19 : 1;
+        u32 keepsAgentRef2 : 1;
+        u32 unused21 : 1;
+        u32 keepsPerception : 1;
+        u32 pinned : 1;
+        u32 moves : 1;
+        u32 accelerates : 1;
+        u32 unused26 : 6;
+    };
+};
+CHECK_SIZE(ObjectNodeFlags, 4);
+
+// The base of the kind 1 nodes (0xD0 bytes, vtable D_00301058 over InstanceNodePrototype_Methods): the middle of its instance's
+// collision box, what it focuses on (an instance or a position, as its flags say), where its instance started, its object, its
+// properties and agent, its flags, a rank scripts give it (0xFF none: the messages command 210 sends go by it), its last trigger
+// message, the node it takes its object and properties from when there's one, its two behaviour runners, the instance its
+// packet tracks, and where its instance was when its frame started and how far the frame moved it
 struct ObjectNodeBase : GameNode
 {
-    enum Flags : u32
+    // Its vtable's functions past the game node's
+    enum Slot : u32
     {
-        FlagFocusInstance = 0x1,
-        FlagFocusPosition = 0x2,
-        // A spring doesn't pull it up or down; a step left it short of its target
-        FlagLevel = 0x4,
-        FlagUnsettled = 0x10,
-        FlagHandledEvent = 0x20,
-        // Its rigid body rides an instance
-        FlagRiding = 0x40,
-        // What a runner finishing leaves: its particles (but the trails of kind 1), its trajectory controller, its perception
-        FlagKeepsParticles = 0x100,
-        FlagKeepsTrajectory = 0x200,
-        FlagStoredPosition = 0x2000,
-        FlagMovesStoredPlace = 0x40000,
-        FlagKeepsAgentRef2 = 0x100000,
-        FlagKeepsPerception = 0x400000,
-        // Put back where it was before its frame unless it moved (the playable characters')
-        FlagPinned = 0x800000,
-        FlagMoves = 0x1000000,
-        FlagAccelerates = 0x2000000,
+        ReleasePartsUnlessUnloadingSlot = 11,
+        SetAgentSlot = 12,
+        ResetSlot = 13,
+        TakesPacketsSlot = 15,
+        UnpinCollisionSlot = 16,
+        PinCollisionSlot = 17,
+        StartBehaviourSlot = 18,
+        TriggerMessageSlot = 19,
+        DoNothingSlot = 20,
+        StopRunnersSlot = 21,
+        RunnerFinishedSlot = 22,
+        AddParticleTrailSlot = 23,
+        DestroyParticleTrailsSlot = 24,
+        CustomSlotSlot = 25,
+        LaunchSlot = 26,
+        PushSlot = 27,
+        CollidedSlot = 28,
+        LandedSlot = 29,
+        LandedHardSlot = 30,
+        ScrapedSlot = 31,
+        BumpedSlot = 32,
+        ForgetDesignatorSlot = 34,
+        ReleasePartsSlot = 35,
+        GetDesignatorSlot = 36,
+        GetDesignatorPositionSlot = 37,
+        SetDesignatorPositionSlot = 38,
+        SetDesignatorSlot = 39,
+        HasNoTrackedSoundSlot = 40,
+        CodeModelKindSlot = 41,
+        PacketEndedSlot = 42,
+        PacketStartedSlot = 43,
+        StopSoundSlot = 44,
     };
 
-    u8 unknown18[8];
-    Vector4 unknown20;
+    static constexpr u8 NoRank = 0xFF;
+
+    u8 unused18[8];
+    Vector4 middle;
     union
     {
         InstanceContext* focusInstance;
@@ -820,24 +1239,25 @@ struct ObjectNodeBase : GameNode
     GameObject* object;
     // The ID of the object it was made of (0xFFFF none), which sounds its own object lacks come from
     u16 ownObjectId;
-    u8 unknown7E[2];
+    u8 unused7E[2];
     PropertyHolder* properties;
     Agent* agent;
-    u32 flags;
-    u8 unknown8C;
-    u8 unknown8D;
+    ObjectNodeFlags flags;
+    u8 rank;
+    u8 unused8D;
     // The last trigger message, who sent it and when (on its instance's clock)
     u16 message;
     InstanceContext* messageSender;
     u32 messageTime;
     // The node it takes its object and properties from when it has one
     GameNode* sourceNode;
-    u32 unknown9C;
+    u32 unused9C;
     BehaviourRunner* runners[2];
-    u32 unknownA8;
+    u32 unusedA8;
     InstanceContext* tracked;
-    Vector4 unknownB0;
-    Vector4 unknownC0;
+    Vector4 frameStart;
+    // (A projectile's node keeps its state here)
+    Vector4 frameMove;
 
     // Made for a chunk's instance (its start's information named after the chunk): no agent, runners or messages
     static ObjectNodeBase* Construct(ObjectNodeBase* node, struct ChunkEntry* chunk, u32 unused) RETAIL(FUN_0023e970);
@@ -871,32 +1291,34 @@ struct ObjectNodeBase : GameNode
     // The object of its own object ID (none without one)
     GameObject* OwnObject() RETAIL(FUN_0023d3a8);
 
-    // The prototype's defaults, which its own table and the base's keep: 5 its kind (an object's), 9, 11, 22, 24, 26, 27 and 33-35
-    // nothing, 23 no particle (0xFF), 28 yes, 29-31 and 36-40 no; the base's 41 no; the prototype's own 18 no, 19 and 21 nothing
+    // The prototype's defaults, which its own table and the base's keep (ObjectNode's functions of the same names are its own):
+    // 5 its kind (an object's), 9 taken out of its chunk's list, 11 put to sleep, 22, 24, 26, 27 and 33-35 nothing, 23 no
+    // particle (0xFF), 28 yes, 29-31 and 36-40 no; the base's 41 no; the prototype's own 18 no, 19 and 21 nothing. Nothing calls
+    // slot 33
     u32 Kind() RETAIL(GetNodeIndex_0023C7A8);
-    void DefaultSlot9() RETAIL(FUN_0023c850);
-    void DefaultSlot11() RETAIL(FUN_0023c7b0);
-    void DefaultSlot22() RETAIL(FUN_0023c7e8);
-    u32 DefaultSlot23() RETAIL(FUN_0023c7f0);
-    void DefaultSlot24() RETAIL(FUN_0023c7f8);
-    void DefaultSlot26() RETAIL(FUN_0023c808);
-    void DefaultSlot27() RETAIL(FUN_0023c810);
-    u32 DefaultSlot28() RETAIL(FUN_0023c818);
-    u32 DefaultSlot29() RETAIL(FUN_0023c820);
-    u32 DefaultSlot30() RETAIL(FUN_0023c828);
-    u32 DefaultSlot31() RETAIL(FUN_0023c830);
-    void DefaultSlot33() RETAIL(FUN_0023c838);
-    void DefaultSlot34() RETAIL(FUN_0023c840);
-    void DefaultSlot35() RETAIL(FUN_0023c848);
-    u32 DefaultSlot36() RETAIL(FUN_0023c8e8);
-    u32 DefaultSlot37() RETAIL(FUN_0023c8f0);
-    u32 DefaultSlot38() RETAIL(FUN_0023c8f8);
-    u32 DefaultSlot39() RETAIL(FUN_0023c900);
-    u32 DefaultSlot40() RETAIL(FUN_0023c908);
-    u32 DefaultSlot41() RETAIL(FUN_0023c930);
-    u32 PrototypeSlot18() RETAIL(FUN_0023c7c8);
-    void PrototypeSlot19() RETAIL(FUN_0023c7d0);
-    void PrototypeSlot21() RETAIL(FUN_0023c7e0);
+    void Removed() RETAIL(FUN_0023c850);
+    void Sleep() RETAIL(FUN_0023c7b0);
+    void RunnerFinished() RETAIL(FUN_0023c7e8);
+    u32 AddParticleTrail() RETAIL(FUN_0023c7f0);
+    void DestroyParticleTrails() RETAIL(FUN_0023c7f8);
+    void Launch() RETAIL(FUN_0023c808);
+    void Push() RETAIL(FUN_0023c810);
+    u32 Collided() RETAIL(FUN_0023c818);
+    u32 Landed() RETAIL(FUN_0023c820);
+    u32 LandedHard() RETAIL(FUN_0023c828);
+    u32 Scraped() RETAIL(FUN_0023c830);
+    void UnusedDoNothing() RETAIL(FUN_0023c838);
+    void ForgetDesignator() RETAIL(FUN_0023c840);
+    void ReleaseParts() RETAIL(FUN_0023c848);
+    u32 GetDesignator() RETAIL(FUN_0023c8e8);
+    u32 GetDesignatorPosition() RETAIL(FUN_0023c8f0);
+    u32 SetDesignatorPosition() RETAIL(FUN_0023c8f8);
+    u32 SetDesignator() RETAIL(FUN_0023c900);
+    u32 HasNoTrackedSound() RETAIL(FUN_0023c908);
+    u32 CodeModelKind() RETAIL(FUN_0023c930);
+    u32 PrototypeStartBehaviour() RETAIL(FUN_0023c7c8);
+    void PrototypeOnTriggerMessage() RETAIL(FUN_0023c7d0);
+    void PrototypeStopRunners() RETAIL(FUN_0023c7e0);
 
     // The properties the agent's packets read
     PropertyHolder* PacketProperties();
@@ -909,11 +1331,34 @@ CHECK_OFFSET(ObjectNodeBase, flags, 0x88);
 CHECK_OFFSET(ObjectNodeBase, runners, 0xA0);
 CHECK_SIZE(ObjectNodeBase, 0xD0);
 
+// An object node's 64 bits at 0x150: the clock time of its last splash into water (or of its wake's sound), a countdown its
+// knocks raise and its movement step lowers while it isn't pinned, a noise it hears is passed on to its instance as an event of
+// the noise message, its contacts play no sounds (command 194's)
+union ObjectNodeReactions
+{
+    u64 value;
+    struct
+    {
+        u64 splashTime : 32;
+        u64 knockCountdown : 8;
+        u64 passesNoises : 1;
+        u64 noContactSounds : 1;
+        u64 noiseMessage : 16;
+        u64 unused58 : 6;
+    };
+};
+CHECK_SIZE(ObjectNodeReactions, 8);
+
 // An object instance's node (0x180 bytes, vtable InstanceNodeType0_Methods): the rotation between its keys, a stored position,
-// its motion's parts, its trajectory controller and head tracking, its AgentRef1 and AgentRef2, its waypoints and its motion's
-// state
+// its motion's parts, its trajectory controller, head tracking and perception, the controller command 645 gives it, its
+// AgentRef1 and AgentRef2, its waypoints and its motion's state, its rigid body, the surfaces it stands on and of the water it's
+// in, its sounds and a value scripts give it
 struct ObjectNode : ObjectNodeBase
 {
+    static constexpr u32 ClassId = 0x180D;
+    static constexpr u8 NoContactSoundSlot = 0xFF;
+    static constexpr s32 NoSurface = -1;
+
     Vector4 keyRotation;
     Vector4 storedPosition;
     // The place the stored space is (nullptr none), the radius it rolls with along its natural axes
@@ -925,22 +1370,36 @@ struct ObjectNode : ObjectNodeBase
     ParticleTrails* particleTrails;
     Trajectory* trajectory;
     HeadTracking* headTracking;
-    void* perception;
-    u32 unknown114;
+    Perception* perception;
+    NodeController* controller;
     InstanceContext* agentRef1;
     InstanceContext* agentRef2;
     MotionBlock* motionBlock;
     Waypoints* waypoints;
     MotionState* motion;
     ObjectRigidBody* rigidBody;
+    // The surface it stands on and the surface of the water it's in (where it touches the water), -1 none
     s32 surface;
-    s32 unknown134;
-    u8 unknown138[8];
-    Vector4 unknown140;
-    u32 unknown150;
-    // A countdown the movement step lowers while the node isn't pinned (bit fields of the 64 bits from 0x150 in retail)
-    u8 unknown154;
-    u8 unknown155[0x180 - 0x155];
+    s32 waterSurface;
+    u8 unused138[8];
+    Vector4 waterPoint;
+    ObjectNodeReactions reactions;
+    // The instance sound its hard contacts and scrapes keep playing, the one followed with it (PlaySlotSound's), 0xFF none
+    u8 playingSound;
+    u8 unused159[7];
+    u8 trackedSound;
+    u8 unused161[3];
+    s32 unused164;
+    // Its contact sound: its first and last slot (0xFF none) and a value it plays while it's negative
+    u8 contactSoundFirst;
+    u8 contactSoundLast;
+    u8 unused16A[2];
+    f32 contactSoundValue;
+    // The clock time of its last surface contact, and a value scripts give it (at most 1; while it's positive the instance is
+    // counted, g_CountedInstances)
+    u32 lastContactTime;
+    f32 countedValue;
+    u8 unused178[8];
 
     // Made for a chunk's instance (with waypoints when asked), and destroyed
     static ObjectNode* Construct(ObjectNode* node, struct ChunkEntry* chunk, u32 waypoints, u32 unused) RETAIL(InitInstanceNodeType0);
@@ -950,28 +1409,31 @@ struct ObjectNode : ObjectNodeBase
     void ForgetStoredPosition() RETAIL(FUN_0023e7a0);
     // Its rigid body, made the first time it's asked for
     ObjectRigidBody* RigidBody() RETAIL(FUN_0023e608);
-    // Its vtable's slot 35 called unless everything's being unloaded, and the part 0x114 bytes in told (slot 5) and destroyed
-    void ReleaseLinks() RETAIL(FUN_0023d668);
-    void DestroyPart114() RETAIL(FUN_0023e4a8);
+    // Its parts let go (its vtable's slot 35) unless everything's being unloaded, and its controller told (its slot 5) and
+    // destroyed
+    void ReleasePartsUnlessUnloading() RETAIL(FUN_0023d668);
+    void DestroyController() RETAIL(FUN_0023e4a8);
 
     // Its vtable's small functions: 3 given its instance (its start taken from the instance's place), 6 its instance left its
-    // chunk (the comeback placement forgotten for the first two reasons), 9 slot 11 called, 10 its item type, 14 and 15 (it takes
-    // packets) yes, 16 and 17 no, 20 nothing, 25 none (0xFF), 33 nothing, 40
-    // whether it has no byte 0x160 bytes in, 41 yes, 43 nothing, 44 its sound (the byte 0x158 bytes in) stopped
+    // chunk (the comeback placement forgotten for the first two reasons), 9 taken out of its chunk's list (its parts let go
+    // unless everything's being unloaded, slot 11), 10 its item type, 14 and 15 (it takes packets) yes, 16 and 17 (its collision
+    // placed with its instance again or where it started: a pickup's) no, 20 nothing, 25 no custom slot (0xFF), 33 nothing, 40
+    // whether it has no tracked sound, 41 its code model's kind (1), 43 a packet started (nothing), 44 its playing sound stopped.
+    // Nothing calls slots 14 and 33
     void SetOwner(InstanceContext* instance) RETAIL(FUN_0023d750);
     void LeftChunk(u32 why) RETAIL(FUN_0023d300);
-    void CallSlot11() RETAIL(FUN_0023d6a0);
+    void Removed() RETAIL(FUN_0023d6a0);
     u32 ItemType() RETAIL(FUN_0023c7a0);
-    u32 Slot14() RETAIL(FUN_0023c940);
+    u32 UnusedTakesPackets() RETAIL(FUN_0023c940);
     u32 TakesPackets() RETAIL(FUN_0023c948);
-    u32 Slot16() RETAIL(FUN_0023c7b8);
-    u32 Slot17() RETAIL(FUN_0023c7c0);
-    void Slot20() RETAIL(FUN_0023c7d8);
-    u32 Slot25() RETAIL(FUN_0023c800);
-    void Slot33() RETAIL(FUN_0023ddd0);
-    u32 HasNoByte160() RETAIL(FUN_0023c998);
-    u32 Slot41() RETAIL(FUN_0023c950);
-    void Slot43() RETAIL(FUN_0023e118);
+    u32 UnpinCollision() RETAIL(FUN_0023c7b8);
+    u32 PinCollision() RETAIL(FUN_0023c7c0);
+    void DoNothing() RETAIL(FUN_0023c7d8);
+    u32 CustomSlot() RETAIL(FUN_0023c800);
+    void UnusedDoNothing() RETAIL(FUN_0023ddd0);
+    u32 HasNoTrackedSound() RETAIL(FUN_0023c998);
+    u32 CodeModelKind() RETAIL(FUN_0023c950);
+    void PacketStarted() RETAIL(FUN_0023e118);
     void StopSound() RETAIL(FUN_0023dc68);
 
     // Its vtable's slot 13: made as new again (its runners, motion, route, parts and links let go), and slot 42: a runner's
@@ -992,8 +1454,8 @@ struct ObjectNode : ObjectNodeBase
     // Slot 4: its instance let move into the chunk a link leads to once the linked chunk's RM2 is loaded, its rigid body moved into
     // that chunk's lists and its trails told
     u32 CanChangeChunk(struct ChunkData* from, struct ChunkLinkData* link) RETAIL(FUN_0023d7f0);
-    // Slot 7 (the game node's step, once its instance starts again): the part 0x114 bytes in told, its parts let go, its runners
-    // stopped, made as new, its instance put back where it started; the middle of the instance's box and its position kept
+    // Slot 7 (the game node's step, once its instance starts again): its controller told, its parts let go, its runners stopped,
+    // made as new, its instance put back where it started; the middle of the instance's box and its position kept
     void Restart(TimeClock* clock, u32 word) RETAIL(FUN_0022fd38);
     // Slot 28: it collided with something (what, where, the impulse): its motion block told, a hard knock while it rides
     // something (a squared impulse over 10) sent to the instances around, its agent told (its slot 7)
@@ -1009,7 +1471,7 @@ struct ObjectNode : ObjectNodeBase
     // Every one asks for the surface's impact sound
     u32 Landed(CollisionSurface* surface, const Vector4* point, const Vector4* velocity) RETAIL(OnRigidBodyLanded);
     // Its physics body touched a triangle not solid to objects: of water (surface 0xC), where it touched kept and the water
-    // entered or moved in, its agent told when its rigid body asks (bit 25 of its word at 0x90)
+    // entered or moved in, its agent told when its rigid body asks
     void TouchedWater(const struct CollisionHit* hit, const Vector4* position) RETAIL(OnRigidBodyTouchedWater);
     // Slots 23 and 24: a particle trail added (its trails made the first time), its trails destroyed
     u32 AddParticleTrail(const void* arguments) RETAIL(CreateInstanceParticle);
@@ -1038,8 +1500,8 @@ struct ObjectNode : ObjectNodeBase
     u32 SetDesignator(u32 designator, InstanceContext* instance) RETAIL(FUN_0023e868);
 
     // Its frame (vtable slot 8): while the clock runs, at the rate g_ObjectUpdateRate gives since the instance was last seen
-    // (every frame while bits 5 or 6 of its flags are set), its parts and its behaviour runners step and it moves; else only its
-    // trajectory (when its controller asks) and the part 0x12C bytes in. The base's update after
+    // (every frame after it handled an event or while it rides), its controller, its parts and its behaviour runners step and it
+    // moves; else only its trajectory (when its controller asks) and its rigid body's physics body. The base's update after
     u32 Update(TimeClock* clock) RETAIL(UpdateNode_0022FEE8);
 
     // The parts made the first time they're needed (their motion the node's)
@@ -1085,7 +1547,7 @@ extern "C"
     // times that move (its size when asked; the first float unused, the roll radius RollAlongX and RollAlongY take)
     void SpinAlongMove(f32 unused, f32 degreesPerUnit, ObjectNode* node, const Vector4* moved, u32 bySize)
         RETAIL_N32(FUN_0022ec40);
-    // The instances around a node's instance with a physics body or sphere contacts pushed by it with no strength: within a
+    // The instances around a node's instance with a physics body or collision pushed by it with no strength: within a
     // radius of the middle of its collision box, or without one touching the box grown by half a unit (the float first)
     void NotifyInstancesWithin(f32 radius, ObjectNode* node) RETAIL_N32(FUN_0022f018);
     // Its physics body went into water: a splash ahead of where it touched (at most every half second), and a body falling in
@@ -1101,16 +1563,16 @@ extern "C"
     void SetStoredPosition(ObjectNode* node, const Vector4* position) RETAIL(FUN_0023d958);
     // A node's trajectory controller made to follow its motion block unless it already does
     void FollowOwnMotionBlock(ObjectNode* node) RETAIL(FUN_0023ddd8);
-    // The countdown the movement step lowers (the node's byte 0x154 bytes in) raised by 4, 3, 2 or 1 for how hard the node was
-    // knocked (past 6.4e-11, 1.6e-11, 4e-12 or 1e-12), at most to 255 (the float first)
+    // The knock countdown the movement step lowers raised by 4, 3, 2 or 1 for how hard the node was knocked (past 6.4e-11,
+    // 1.6e-11, 4e-12 or 1e-12), at most to 255 (the float first)
     void KnockNode(f32 strength, ObjectNode* node) RETAIL_N32(FUN_0023de38);
-    // A node's perception made the first time and a sense added to it, and its sound (the byte 0x160 bytes in) stopped
+    // A node's perception made the first time and a sense added to it, and its tracked sound stopped
     void AddPerception(ObjectNode* node, const void* arguments) RETAIL(FUN_0023e178);
     void StopNodeSounds(ObjectNode* node) RETAIL(FUN_0023e2c0);
     // A head tracking made from a command's arguments (the node's one let go of and destroyed)
     void CreateHeadTracking(ObjectNode* node, const void* arguments, TimeClock* clock) RETAIL(FUN_0023e398);
     // The node's contact sound's value (it plays while it's negative) and its first and last slot (the float first)
-    void SetNodeBytes168(f32 value, ObjectNode* node, u32 first, u32 second) RETAIL_N32(FUN_0023e650);
+    void SetContactSounds(f32 value, ObjectNode* node, u32 first, u32 last) RETAIL_N32(FUN_0023e650);
     // The node's motion stopped, its rigid body's too
     void StopNodeMotion(ObjectNode* node) RETAIL(FUN_0023e6d8);
     // The object node of an instance when it takes packets
@@ -1156,7 +1618,7 @@ extern "C"
     // The instances linked to the block's node's instance let go; the block not sticky any more (what stuck to it let go too
     // unless asked)
     void MakeMotionBlockNormal(MotionBlock* block) RETAIL(FUN_0023f9e0);
-    void SetMotionBlockFlag(MotionBlock* block, u32 keepStuck) RETAIL(FUN_0023fa10);
+    void StopMotionBlockSticking(MotionBlock* block, u32 keepStuck) RETAIL(FUN_0023fa10);
     // A motion block's kind set (MotionBlock::Kind), and the block made plain (its values cleared, its mover its node's own
     // instance) or a cover search (its trajectory asking for frames)
     void SetMotionBlockKind(MotionBlock* block, u32 kind) RETAIL(FUN_0023fa70);
@@ -1223,21 +1685,21 @@ CHECK_OFFSET(Waypoints, keyCount, 0x41);
 CHECK_OFFSET(Waypoints, pathIndex, 0x43);
 CHECK_OFFSET(Waypoints, key, 0x44);
 CHECK_OFFSET(Waypoints, lastKey, 0x46);
-CHECK_OFFSET(ObjectNodeBase, unknown20, 0x20);
+CHECK_OFFSET(ObjectNodeBase, middle, 0x20);
 CHECK_OFFSET(ObjectNodeBase, information, 0x40);
 CHECK_OFFSET(ObjectNodeBase, ownInformation, 0x70);
 CHECK_OFFSET(ObjectNodeBase, informationPointer, 0x74);
 CHECK_OFFSET(ObjectNodeBase, ownObjectId, 0x7c);
 CHECK_OFFSET(ObjectNodeBase, properties, 0x80);
 CHECK_OFFSET(ObjectNodeBase, agent, 0x84);
-CHECK_OFFSET(ObjectNodeBase, unknown8C, 0x8c);
+CHECK_OFFSET(ObjectNodeBase, rank, 0x8c);
 CHECK_OFFSET(ObjectNodeBase, message, 0x8e);
 CHECK_OFFSET(ObjectNodeBase, messageSender, 0x90);
 CHECK_OFFSET(ObjectNodeBase, messageTime, 0x94);
 CHECK_OFFSET(ObjectNodeBase, sourceNode, 0x98);
 CHECK_OFFSET(ObjectNodeBase, tracked, 0xac);
-CHECK_OFFSET(ObjectNodeBase, unknownB0, 0xb0);
-CHECK_OFFSET(ObjectNodeBase, unknownC0, 0xc0);
+CHECK_OFFSET(ObjectNodeBase, frameStart, 0xb0);
+CHECK_OFFSET(ObjectNodeBase, frameMove, 0xc0);
 CHECK_OFFSET(ObjectNode, keyRotation, 0xd0);
 CHECK_OFFSET(ObjectNode, storedPosition, 0xe0);
 CHECK_OFFSET(ObjectNode, storedPlace, 0xf0);
@@ -1248,16 +1710,28 @@ CHECK_OFFSET(ObjectNode, particleTrails, 0x104);
 CHECK_OFFSET(ObjectNode, trajectory, 0x108);
 CHECK_OFFSET(ObjectNode, headTracking, 0x10c);
 CHECK_OFFSET(ObjectNode, perception, 0x110);
-CHECK_OFFSET(ObjectNode, unknown114, 0x114);
+CHECK_OFFSET(ObjectNode, controller, 0x114);
 CHECK_OFFSET(ObjectNode, agentRef1, 0x118);
 CHECK_OFFSET(ObjectNode, agentRef2, 0x11c);
 CHECK_OFFSET(ObjectNode, motionBlock, 0x120);
 CHECK_OFFSET(ObjectNode, rigidBody, 0x12c);
 CHECK_OFFSET(ObjectNode, surface, 0x130);
-CHECK_OFFSET(ObjectNode, unknown134, 0x134);
-CHECK_OFFSET(ObjectNode, unknown140, 0x140);
-CHECK_OFFSET(ObjectNode, unknown150, 0x150);
-CHECK_OFFSET(ObjectNode, unknown154, 0x154);
+CHECK_OFFSET(ObjectNode, waterSurface, 0x134);
+CHECK_OFFSET(ObjectNode, waterPoint, 0x140);
+CHECK_OFFSET(ObjectNode, reactions, 0x150);
+CHECK_OFFSET(ObjectNode, playingSound, 0x158);
+CHECK_OFFSET(ObjectNode, trackedSound, 0x160);
+CHECK_OFFSET(ObjectNode, unused164, 0x164);
+CHECK_OFFSET(ObjectNode, contactSoundFirst, 0x168);
+CHECK_OFFSET(ObjectNode, contactSoundLast, 0x169);
+CHECK_OFFSET(ObjectNode, contactSoundValue, 0x16C);
+CHECK_OFFSET(ObjectNode, lastContactTime, 0x170);
+CHECK_OFFSET(ObjectNode, countedValue, 0x174);
+
+// The gravity a launch (the object nodes' slot 26, LaunchNode) or a throw takes when it's given a negative one, and the gravity
+// the callers give for it
+constexpr f32 DefaultLaunchGravity = 30.0f;
+constexpr f32 LaunchWithDefaultGravity = -1.0f;
 
 extern "C"
 {
@@ -1328,6 +1802,8 @@ extern "C"
     u32 StepGroundChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner) RETAIL_N32(FUN_00231160);
     // A chase's speed slowed by the turn it made (by its turn drag, at most by 90%), kept as the motion's speed
     f32 TurnSlowedSpeed(f32 turn, Physics* physics, MotionState* motion) RETAIL_N32(FUN_0020f950);
+    // The lean's limit (degrees) the scripts' steering toward a target (SteerTowards, without a lean) is given
+    constexpr f32 SteerMostLean = 90.0f;
     // An instance's facing turned toward a target over the ground by a share of the way there (all of it at most), leaning into
     // the turn by a factor (in degrees) up to a limit; and turned toward a target in space, its up leaning toward the target by a
     // factor, or kept (or made from the facing alone when asked): how much it turned (1 - the cosine)
@@ -1340,7 +1816,7 @@ extern "C"
     void HoldRigidBodyMove(ObjectRigidBody* body, Vector4* move) RETAIL(FUN_00254940);
     u32 StepAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner) RETAIL_N32(FUN_00231580);
     u32 StepRiddenAirChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner) RETAIL_N32(FUN_00231840);
-    u32 StepLastChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner) RETAIL_N32(FUN_00231cc8);
+    u32 StepClimbingChase(f32 elapsed, ObjectNode* node, BehaviourRunner* runner) RETAIL_N32(FUN_00231cc8);
     // The node's parts' frames: its particle trails, trajectory controller (and its frame once the runners are done), head
     // tracking and perception (each sense stepped once its interval passed), and its movement
     void StepParticleTrails(ParticleTrails* trails, TimeClock* clock, ObjectNode* node) RETAIL(FUN_002403d8);
@@ -1421,7 +1897,7 @@ extern "C"
     void CollideRigidBodyWithWorld(ObjectRigidBody* body) RETAIL(FUN_00249510);
     u32 CollideRigidBodies(ObjectRigidBody* body, const Vector4* sphere, const Vector4* otherSphere, ObjectRigidBody* other)
         RETAIL(FUN_002498c8);
-    // Its rigid body let go once it nearly rests while its contact bit 52 is set (StepMovement clears that bit before it asks)
+    // Its rigid body let go once it nearly rests while it touches the world (StepMovement clears that before it asks)
     void ReleaseRigidBodyAtRest(ObjectNode* node) RETAIL(FUN_0023df20);
     // The parts' own releases and destructors
     void LetGoOfTrajectory(Trajectory* trajectory, ObjectNode* node) RETAIL(FUN_002409b0);
@@ -1443,13 +1919,13 @@ extern "C"
     void CollideChunkRigidBodies(ChunkRigidBodies* bodies) RETAIL(FUN_002433e8);
     void DestroyChunkRigidBodies(ChunkRigidBodies* bodies, u32 destroyFlags) RETAIL(FUN_00252be0);
     void ReleaseChunkRigidBodies(ChunkRigidBodies* bodies) RETAIL(FUN_00252d50);
-    void ReleaseAttachmentsNode(void* node, u32 first, u32 second, u32 third) RETAIL(FUN_00196ec8);
+    void ReleaseAttachmentsNode(void* attachments, u32 update, u32 remove, u32 clearsLeftOut) RETAIL(FUN_00196ec8);
     // The head tracking's target given with a weight (and remembered to come back to when asked), the tracking started
     void TrackHead(f32 weight, HeadTracking* tracking, InstanceContext* target, ObjectNode* node, u32 remembered)
         RETAIL_N32(FUN_00237db0);
-    // An object node's vtable slot 26 (the float first): launched with a velocity under a gravity (30 when it's negative): its
-    // rigid body made the first time (in both its chunk's lists, rolling with the reach of its instance's collision box), its
-    // motion's velocity the one it had before
+    // An object node's vtable slot 26 (the float first): launched with a velocity under a gravity (DefaultLaunchGravity when
+    // it's negative): its rigid body made the first time (in both its chunk's lists, rolling with the reach of its instance's
+    // collision box), its motion's velocity the one it had before
     void LaunchNode(f32 gravity, ObjectNode* node, const Vector4* velocity) RETAIL_N32(FUN_0022f440);
     // A node launched with a velocity, a motion block (its trajectory made to follow it) carrying it: its rigid body made again,
     // its physics body given the velocity, its instance set upright (facing along its own z axis) when the block's flag 10 asks,
@@ -1474,7 +1950,7 @@ extern "C"
     void StopRigidBody(ObjectRigidBody* body) RETAIL(FUN_002541b8);
     void StopRigidBodyCollisions(ObjectRigidBody* body) RETAIL(FUN_002544f8);
     void ReleasePhysicsBody(ObjectRigidBody* body) RETAIL(FUN_002545c8);
-    // A rigid body's values (the float first): no gravity (its node's FlagLevel cleared), its restitution, drag, length drag and
+    // A rigid body's values (the float first): no gravity (its node doesn't fall), its restitution, drag, length drag and
     // friction (its physics body's too when it has one), its physics body's spin and roll friction (both the value), mass (sized
     // by its instance's own box) and centre of mass; and its moving and stopping bits cleared
     void ClearRigidBodyGravity(ObjectRigidBody* body) RETAIL(FUN_00254260);

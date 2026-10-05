@@ -16,16 +16,14 @@ extern "C"
 
 namespace
 {
-constexpr u32 NamedItemType = 0x1B0E;
-
 // What the named items' constructors set of the base (an empty name, no ID)
 void ConstructNamedBase(NamedItem* item)
 {
     item->name.string = nullptr;
     item->name.length = 0;
     item->name.capacity = 0;
-    item->unknown0D = 0;
-    item->unknown10 = 0;
+    item->unused0D = 0;
+    item->unused10 = 0;
 }
 }
 
@@ -54,17 +52,17 @@ void* ObjectItemBuilder::Make(u32 type)
     {
         auto* item = static_cast<NamedItemA0*>(MemoryAllocate(sizeof(NamedItemA0)));
         item->id = -1;
-        item->unknown18 = 1;
+        item->unused18 = 1;
         item->vtable = g_NamedItemA0VTable;
         ConstructNamedBase(item);
         return item;
     }
-    case Type28:
+    case TypeNamed28:
         return NamedItem28::Construct(static_cast<NamedItem28*>(MemoryAllocate(sizeof(NamedItem28))));
     case TypeNamed50:
     {
         auto* item = static_cast<NamedItem50*>(MemoryAllocate(sizeof(NamedItem50)));
-        item->unknown18 = 1;
+        item->unused18 = 1;
         item->id = -1;
         item->vtable = g_NamedItem50VTable;
         item->otherId = -1;
@@ -88,7 +86,7 @@ void NamedItem::Destroy(u32 destroyFlags)
 
 u32 NamedItem::ItemType()
 {
-    return NamedItemType;
+    return ObjectItemBuilder::TypeNamed;
 }
 
 void NamedItemA0::Destroy(u32 destroyFlags)
@@ -114,13 +112,13 @@ u32 NamedItem50::ItemType()
 NamedItem28* NamedItem28::Construct(NamedItem28* item)
 {
     item->id = -1;
-    item->unknown18 = 1;
+    item->unused18 = 1;
     item->vtable = g_NamedItem28VTable;
     ConstructNamedBase(item);
-    item->unknown20 = 0;
-    item->unknown22 = 0;
-    item->unknown24 = 0;
-    item->unknown26 = 0;
+    item->unused20 = 0;
+    item->unused22 = 0;
+    item->unused24 = 0;
+    item->unused26 = 0;
     return item;
 }
 
@@ -131,5 +129,5 @@ void NamedItem28::Destroy(u32 destroyFlags)
 
 u32 NamedItem28::ItemType()
 {
-    return ObjectItemBuilder::Type28;
+    return ObjectItemBuilder::TypeNamed28;
 }

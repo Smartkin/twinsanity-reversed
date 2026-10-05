@@ -37,6 +37,26 @@ extern "C"
     extern const GccVTableEntry g_AttackEventBaseVTable[] RETAIL(D_002F2E98);
 }
 
+// The slots of its object's behaviours the events of every agent start (the AgentLab tool's names): spawned (and restarted),
+// triggered, damaged (a contact message, a hard collision), touched (a collision, an attack of no other kind), headbutted (hit
+// from below), landed on, spin, body slam (and the tied characters' slam) and slide attacked, and hit by a character thrown at
+// it (the tool's "unknown collision"); the crates' slots after them: a fall started (launched without speed) and landed
+enum AgentBehaviourSlot : u32
+{
+    OnSpawn = 0,
+    OnTrigger = 1,
+    OnDamage = 2,
+    OnTouch = 3,
+    OnHeadbutt = 4,
+    OnLand = 5,
+    OnSpinAttacked = 6,
+    OnBodyslamAttacked = 7,
+    OnSlideAttacked = 8,
+    OnThrownAttacked = 0xA,
+    OnCrateFalling = 0xB,
+    OnCrateLanded = 0xC,
+};
+
 // The agents of the object types (game/instances.h has their base). The basic agent is the base of every type's (the pickups' and
 // pay gates' constructors have its construction inline) and the projectiles' own, given their vtable by the factory. What its
 // functions do beyond the base's: 1 its instance's state flags applied, 9 a contact message kept and told its script, 20 an event
@@ -51,17 +71,18 @@ public:
     void Destroy(u32 destroyFlags) RETAIL(FUN_00141350);
     // Its instance asleep or awake and its flags (collision, visible, shadow, trigger signals) as the state says, its part made
     // again and given the state's damage and target bits
-    void ApplyState(u32 unknown) RETAIL(FUN_0013de20);
-    u32 Slot3() RETAIL(FUN_0013e8b0);
-    void Nothing4() RETAIL(FUN_0013e8b8);
-    void Nothing5() RETAIL(FUN_0013e8c0);
+    void ApplyState(u32 resetEntry) RETAIL(FUN_0013de20);
+    // Slots 3 to 5: whether it's a crate (no), a fall started and told it lost its support (nothing)
+    u32 IsCrate() RETAIL(FUN_0013e8b0);
+    void StartFall() RETAIL(FUN_0013e8b8);
+    void Unsupported() RETAIL(FUN_0013e8c0);
     // A physical contact hands the node of kind 1 the sender and the message's strength (while its instance has a physics body),
-    // a message with a reaction is kept and tells its script (event 2)
+    // a message with a reaction is kept and tells its script (OnDamage)
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_00141480);
     void Touched(InstanceContext* other, const Vector4* normal) RETAIL(FUN_001413d8);
-    // While triggers' signals reach its instance (and it can't always damage the character), an attack that reaches its part
-    // tells its script (events 3 to 10 by the kind) and is recorded; one that may damage the character is recorded and makes it
-    // hit back when it always may, or when the attacker's part's low byte and the attack's kind are both 3
+    // While triggers' signals reach its instance (and it isn't invulnerable), an attack that reaches its part tells its script
+    // (the slot of the kind, OnTouch to OnThrownAttacked) and is recorded; one that may damage the character is recorded and makes
+    // it hit back when it's invulnerable, or when the attacker walked into it (its part's attack kind and the attack's)
     void Attacked(const AttackEvent* event, InstanceContext* sender) RETAIL(FUN_0013e010);
     // The instance's agent sent a damaging contact (0x400, physical) at this one's position
     void HitBack(InstanceContext* target) RETAIL(FUN_0013e1c8);
@@ -70,7 +91,7 @@ public:
     // Callers pass a value and a float after the velocity, which only the playable characters' read
     void Launch(const Vector4* velocity) RETAIL(FUN_00141588);
     // A line of sight through its instance's chunk (LineOfSight in game/collision.h): whether something stopped it
-    u32 LineOfSight(const Vector4* from, Vector4* way, u32 mask, InstanceRayHit* hit, u32 instanceMask) RETAIL(FUN_00141290);
+    u32 LineOfSight(const Vector4* from, Vector4* way, u32 mask, InstanceQuery* hit, u32 instanceMask) RETAIL(FUN_00141290);
 };
 CHECK_SIZE(BasicAgent, 0x60);
 
@@ -80,7 +101,7 @@ public:
     static PickupAgent* Construct(PickupAgent* agent, InstanceCreator* creator, PropertyHolder* holder, AgentPart* part)
         RETAIL(FUN_001419b8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013ef10);
-    void ApplyState(u32 unknown) RETAIL(FUN_00141998);
+    void ApplyState(u32 resetEntry) RETAIL(FUN_00141998);
     void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_0013ef98);
     // Every message kept and told its script, physical or not
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_001419f0);
@@ -88,23 +109,28 @@ public:
     void Frame(TimeClock* clock) RETAIL(FUN_0013efa0);
 };
 
-// The crates': its bits (bit 0 broken, the state it's in at bits 1-4, the state it's asked to go to at bits 5-8 (3 none: the
-// frame takes the asked one), a count of frames bits 9-16 the resting crate waits before it checks its ground again; written as
-// the 64 bits from 0x60 in retail, its vertical speed's included), its vertical speed while launched. Its frame (slot 22):
-// resting (0) it checks what it stands on and settles (1), launched (2) it falls until it lands
+// A crate agent's state: broken, the state it's in, the state it's asked to go to (StateNone none: the frame takes the asked one)
+// and a count of frames the resting crate waits before it checks its ground again (retail writes them with the vertical speed
+// after them as 64 bits)
+union CrateAgentState
+{
+    u32 value;
+    struct
+    {
+        u32 broken : 1;
+        u32 current : 4;
+        u32 asked : 4;
+        u32 wait : 8;
+        u32 unused17 : 15;
+    };
+};
+CHECK_SIZE(CrateAgentState, 4);
+
+// The crates': its state and its vertical speed while launched. Its frame (slot 22): resting it checks what it stands on and
+// settles, launched it falls until it lands
 class CrateAgent : public BasicAgent
 {
 public:
-    enum Bits : u32
-    {
-        Broken = 0x1,
-        CurrentShift = 1,
-        StateShift = 5,
-        StateMask = 0xF,
-        WaitShift = 9,
-        WaitMask = 0xFF,
-    };
-
     enum States : u32
     {
         StateResting = 0,
@@ -113,18 +139,18 @@ public:
         StateNone = 3,
     };
 
-    u32 bits;
+    CrateAgentState state;
     f32 launchSpeed;
-    u8 unknown68[0x70 - 0x68];
+    u8 unused68[0x70 - 0x68];
 
     static CrateAgent* Construct(CrateAgent* agent, InstanceCreator* creator, PropertyHolder* holder, AgentPart* part)
         RETAIL(FUN_001405a0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013eb88);
-    u32 Slot3() RETAIL(FUN_0013ec10);
-    // Unless its part's value has bit 0 or 1, launched without speed and its script told event 11
-    void Slot4() RETAIL(FUN_00140648);
-    // Its script told event 11
-    void Slot5() RETAIL(FUN_001406b8);
+    u32 IsCrate() RETAIL(FUN_0013ec10);
+    // Unless it rests or is in the air, launched without speed and its script told (OnCrateFalling): StartFalling's code
+    void StartFall() RETAIL(FUN_00140648);
+    // Its script told (OnCrateFalling)
+    void Unsupported() RETAIL(FUN_001406b8);
     void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_0013ec18);
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_001406e0);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013ec20);
@@ -132,20 +158,20 @@ public:
 
     // Slot 1: the basic agent's state applied, its speed none, its states made resting; the first time, a shadow node of a 0.5
     // radius shadow
-    void ApplyState(u32 unknown) RETAIL(FUN_00140490);
-    // Slot 7: by the impulse's direction and size its script told event 5 (pushed down: landed on), 4 (pushed up: hit from
-    // below), 3 or 2 (its square over 25: it breaks unless its state has 0x800); whether it's intact
+    void ApplyState(u32 resetEntry) RETAIL(FUN_00140490);
+    // Slot 7: by the impulse's direction and size its script told OnLand (pushed down), OnHeadbutt (pushed up), OnTouch or
+    // OnDamage (its square over 25: it breaks unless its state makes it unbreakable); whether it's intact
     u32 Collided(void* other, const Vector4* point, const Vector4* impulse) RETAIL(FUN_0013d190);
     // Slot 22: the state asked for taken, the resting crate's ground checked, the launched crate's fall
     void Frame(TimeClock* clock) RETAIL(FUN_0013d058);
-    // The launched crate's fall for the frame: whether it still falls (landing on an agent runs its event 5 or 7)
+    // The launched crate's fall for the frame: whether it still falls (landing on an agent runs its OnLand or OnBodyslamAttacked)
     u32 Fall(TimeClock* clock) RETAIL(FUN_0013caf8);
-    // The resting crate's ground check (its part's flag 1 whether it stands on something), the state asked for given
+    // The resting crate's ground check (its part's resting flag whether it stands on something), the state asked for given
     void CheckGround(TimeClock* clock, u32* asked) RETAIL(FUN_0013ce58);
-    // TriggerBalancedCrateFalling: unless resting or in the air (its part's flags 0 and 1), launched without speed (event 11)
+    // TriggerBalancedCrateFalling: unless resting or in the air (its part's flags), launched without speed (OnCrateFalling)
     void StartFalling() RETAIL(FUN_001405d8);
 };
-CHECK_OFFSET(CrateAgent, bits, 0x60);
+CHECK_OFFSET(CrateAgent, state, 0x60);
 CHECK_OFFSET(CrateAgent, launchSpeed, 0x64);
 CHECK_SIZE(CrateAgent, 0x70);
 
@@ -155,6 +181,13 @@ CHECK_SIZE(CrateAgent, 0x70);
 class CreatureAgent : public BasicAgent
 {
 public:
+    enum Slot : u32
+    {
+        FallFrameSlot = 23,
+        StartFallingSlot = 24,
+        LandSlot = 25,
+    };
+
     Vector4 velocity;
 
     static CreatureAgent* Construct(CreatureAgent* agent, InstanceCreator* creator, PropertyHolder* holder, AgentPart* part)
@@ -168,15 +201,15 @@ public:
     u32 CanChangeChunk(ChunkData* from, ChunkLinkData* link) RETAIL(FUN_00140ca0);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013e908);
     void Attacked(const AttackEvent* event, InstanceContext* sender) RETAIL(FUN_00140ac0);
-    // Its function 25 when its part's flags have bit 2
+    // Its function 25 when its part is on the ground
     void FallFrame() RETAIL(FUN_00140908);
     void StartFalling(u32 tell) RETAIL(FUN_001409b0);
     void Land(u32 tell) RETAIL(FUN_001409c8);
 
-    // Slot 1: the basic agent's state applied, its part's snapping (the state's bit 18) and hit points (its third int property),
-    // snapped to the ground when it snaps; the first time, a shadow node of a shadow of its box's half sizes
-    void ApplyState(u32 unknown) RETAIL(FUN_0013d5f8);
-    // Slot 7 (the playable characters' too): an impulse over sqrt(200) runs events 3 and 2, over sqrt(10) event 3: yes
+    // Slot 1: the basic agent's state applied, its part's snapping (the state's SnapToGround) and hit points (its third int
+    // property), snapped to the ground when it snaps; the first time, a shadow node of a shadow of its box's half sizes
+    void ApplyState(u32 resetEntry) RETAIL(FUN_0013d5f8);
+    // Slot 7 (the playable characters' too): an impulse over sqrt(200) runs OnTouch and OnDamage, over sqrt(10) OnTouch: yes
     u32 Collided(void* other, const Vector4* point, const Vector4* impulse) RETAIL(FUN_00140b90);
     // Slot 22: its fall's frame, its snapping to the ground, a fall started
     void Frame(TimeClock* clock) RETAIL(FUN_001409e0);
@@ -187,26 +220,34 @@ public:
 CHECK_OFFSET(CreatureAgent, velocity, 0x60);
 CHECK_SIZE(CreatureAgent, 0x70);
 
-// What the controls give a playable character every frame (0xF0 bytes into its agent, zeroed when made): the inputs locked (a bit
-// each, made all ones when it dies: 0 the turn, 1 and 2 the move, 3 cross, 4 square, 5 circle, 6 the shoulder buttons), the
+// The inputs of a playable character locked, a bit each (made all ones when it dies: LockAll): the turn, the move along z and x,
+// cross, square, circle and the shoulder buttons
+union CharacterLocks
+{
+    u32 value;
+    struct
+    {
+        u32 turn : 1;
+        u32 moveZ : 1;
+        u32 moveX : 1;
+        u32 cross : 1;
+        u32 square : 1;
+        u32 circle : 1;
+        u32 shoulders : 1;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(CharacterLocks, 4);
+
+// What the controls give a playable character every frame (0xF0 bytes into its agent, zeroed when made): the inputs locked, the
 // stick's turn from the character's facing (-1 to 1, a half turn each way), the way it moves in the world (z and x: the move
 // input's, made no longer than 1; a vehicle's the stick turned by the camera; the walk's speed is their length), and how hard
 // the buttons are pressed (0 to 1; the shoulder buttons R less L)
 struct CharacterButtons
 {
-    enum Locks : u32
-    {
-        LockTurn = 0x1,
-        LockMoveZ = 0x2,
-        LockMoveX = 0x4,
-        LockCross = 0x8,
-        LockSquare = 0x10,
-        LockCircle = 0x20,
-        LockShoulders = 0x40,
-        LockAll = 0xFFFFFFFF,
-    };
+    static constexpr u32 LockAll = 0xFFFFFFFF;
 
-    u32 locked;
+    CharacterLocks locked;
     f32 turn;
     f32 moveZ;
     f32 moveX;
@@ -218,6 +259,27 @@ struct CharacterButtons
     void Clear() RETAIL(FUN_0013e910);
 };
 CHECK_SIZE(CharacterButtons, 0x20);
+
+// A playable character agent's state: the mode the current one took over from, its mode (CharacterAgent::Mode), what it stands on
+// (CharacterAgent::Standing), whether it found the ground under its ground point, whether it doesn't run fall events, dead, and
+// whether its exit points make its box only (the frame does nothing else). Retail writes it with the mode's start after it as 64
+// bits
+union CharacterState
+{
+    u32 value;
+    struct
+    {
+        u32 previousMode : 4;
+        u32 mode : 4;
+        u32 standing : 4;
+        u32 groundFound : 1;
+        u32 noFallEvents : 1;
+        u32 dead : 1;
+        u32 boxOnly : 1;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(CharacterState, 4);
 
 class CharacterLink;
 class GrapleRope;
@@ -243,22 +305,6 @@ struct WalkController;
 class CharacterAgent : public CreatureAgent
 {
 public:
-    // Its state: bits 0-3 the mode the current one took over from, 4-7 its mode, 8-11 what it stands on, 12 it found the ground
-    // under its ground point, 13 it doesn't run fall events, 14 dead, 15 its exit points make its box only (the frame does
-    // nothing else). Written as the 64 bits from 0x70 in retail, the mode's start included
-    enum State : u32
-    {
-        PreviousModeShift = 0,
-        ModeShift = 4,
-        ModeMask = 0xF,
-        StandingShift = 8,
-        StandingMask = 0xF,
-        StateGroundFound = 0x1000,
-        StateNoFallEvents = 0x2000,
-        StateDead = 0x4000,
-        StateBoxOnly = 0x8000,
-    };
-
     // Its modes: none, invincible after a hurt (blinking), and hurt
     enum Mode : u32
     {
@@ -290,7 +336,7 @@ public:
         MoveThrown = 14,
     };
 
-    u32 state;
+    CharacterState state;
     u32 modeStart;
     s32 modeTicks;
     // When it was tied to the other character (the clock's time)
@@ -328,12 +374,12 @@ public:
     // A sliding hit on a body is once a second, a spin's kick on the pushed body every 0.8 seconds
     f32 slideHitCooldown;
     f32 kickCooldown;
-    u8 unknown19C[4];
+    u8 unused19C[4];
     // Where the two tied characters are (the leader's)
     Vector4 linkedPoint;
     // The surface of the floor it last stood on
     CollisionSurface* floorSurface;
-    u8 unknown1B4[0xC];
+    u8 unused1B4[0xC];
     // The triangle it stands on (StandingGround)
     CollisionHit groundHit;
     // The instance whose hull it stands on, the hull's index (-1 none) and the instance's collision's stamp then (the hull is
@@ -341,7 +387,7 @@ public:
     Reference* standingOn;
     s32 standingHull;
     u32 standingStamp;
-    u8 unknown20C[4];
+    u8 unused20C[4];
     Vector4 ridePoint;
     Matrix4x4 rideMatrix;
     // The normal of the ground under it
@@ -359,33 +405,28 @@ public:
     f32 pushedDistance;
     // The instance its probes last hit, and the push they gave (pushed again each frame)
     Reference* probedInstance;
-    u8 unknown29C[4];
+    u8 unused29C[4];
     Vector4 probePush;
     // The collision's triangles near it (a box around it, Mecha-Bandicoot's larger)
     CollisionCache cache;
     // The turn the hull it rides gave it
     f32 rideTurn;
-    u8 unknown304[0xC];
-
-    // Its state's 64 bits (with the mode's start), as retail writes them
-    u64& StateBits()
-    {
-        return *reinterpret_cast<u64*>(&state);
-    }
+    u8 unused304[0xC];
 
     static CharacterAgent* Construct(CharacterAgent* agent, InstanceCreator* creator, PropertyHolder* holder, AgentPart* part)
         RETAIL(FUN_00136f70);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013f920);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013e998);
-    u32 Slot12() RETAIL(FUN_0013e938);
+    // Slot 12: whether it's a playable character (yes)
+    u32 IsCharacter() RETAIL(FUN_0013e938);
     AgentPart* Part() RETAIL(FUN_0013e960);
-    // Invincible (the part's bit 10, its mode 1) for 2 seconds (kind 0) or 8 (kind 1), unless it already is
+    // Invincible (its part invulnerable, its mode ModeInvincible) for 2 seconds (kind 0) or 8 (kind 1), unless it already is
     void StartInvincibility(u32 kind) RETAIL(FUN_0013f9a0);
     // Its center is its model's joint 1 (not in the world)
     void CollisionCenter(Vector4* center) RETAIL(FUN_0013fd98);
 
     // Its vtable's functions
-    void ApplyState(u32 unknown) RETAIL(FUN_00131ac8);
+    void ApplyState(u32 resetEntry) RETAIL(FUN_00131ac8);
     void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_001377c8);
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_00137510);
     u32 CanChangeChunk(ChunkData* from, ChunkLinkData* link) RETAIL(FUN_0013be10);
@@ -477,9 +518,9 @@ public:
     u32 KindOf(InstanceContext* other) RETAIL(FUN_00131e40);
     u32 ContactAttack(const Vector4* normal) RETAIL(FUN_00131f20);
     u32 MoveModeOf() RETAIL(FUN_00132fe8);
-    void TouchQuery(const InstanceRayHit* query) RETAIL(FUN_001413e0);
+    void TouchQuery(const InstanceQuery* query) RETAIL(FUN_001413e0);
     void TouchedNothing(InstanceContext* other) RETAIL(FUN_0013fd50);
-    void AttractPickups(TimeClock* clock, const InstanceRayHit* query) RETAIL(FUN_0013f4b0);
+    void AttractPickups(TimeClock* clock, const InstanceQuery* query) RETAIL(FUN_0013f4b0);
 
     // Hurt (knocked back from an instance), pushed back (PushCharacterBack: the gravity of the launch it queues on the jump, the
     // push, the event the jump runs for it, the instance whose space the push is in: its own, none the world's)
@@ -579,8 +620,8 @@ public:
                                          AgentPart* part) RETAIL(FUN_00141060);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013ed40);
     // The basic agent's state applied; the first time, a shadow node (kind 0xA) made with a plain shadow of its box's half sizes
-    void ApplyState(u32 unknown) RETAIL(FUN_0013dc68);
-    // A collision tells its script (event 3, the other its sender) when attacks of kind 3 reach it: whether it did
+    void ApplyState(u32 resetEntry) RETAIL(FUN_0013dc68);
+    // A collision tells its script (OnTouch, the other its sender) when walking into it reaches it: whether it did
     u32 Collided(void* other, const Vector4* point, const Vector4* impulse) RETAIL(FUN_001410c0);
     void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_0013edc8);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013edd0);
@@ -614,7 +655,7 @@ class GrapleAgent : public BasicAgent
 {
 public:
     GrapleRope* rope;
-    u8 unknown64[0xC];
+    u8 unused64[0xC];
     Vector4 target;
     Vector4 anchor;
 
@@ -622,7 +663,7 @@ public:
         RETAIL(FUN_00140e78);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00140eb0);
     // Its object made the first time instead (its state isn't applied)
-    void ApplyState(u32 unknown) RETAIL(FUN_00140e20);
+    void ApplyState(u32 resetEntry) RETAIL(FUN_00140e20);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013ecb0);
     void Frame(TimeClock* clock) RETAIL(FUN_00140f30);
     // Its frame while visible (GrapleFrame): the hook moved from the anchor toward the target through the collision (half a unit
@@ -634,14 +675,12 @@ CHECK_OFFSET(GrapleAgent, target, 0x70);
 CHECK_OFFSET(GrapleAgent, anchor, 0x80);
 CHECK_SIZE(GrapleAgent, 0x90);
 
-// The projectiles' (the basic agent given its vtable by the factory): its instance flagged 0x20000 when its state is applied
+// The projectiles' (the basic agent given its vtable by the factory): its instance flagged a projectile when its state is applied
 class ProjectileAgent : public BasicAgent
 {
 public:
-    static constexpr u32 InstanceFlag = 0x20000;
-
     void Destroy(u32 destroyFlags) RETAIL(FUN_0013f090);
-    void ApplyState(u32 unknown) RETAIL(FUN_00141b98);
+    void ApplyState(u32 resetEntry) RETAIL(FUN_00141b98);
     void Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal) RETAIL(FUN_0013f120);
     void Contact(const ContactMessage* message, InstanceContext* sender, u32 physical) RETAIL(FUN_0013f128);
     u32 Velocity(Vector4* velocity) RETAIL(FUN_0013f138);

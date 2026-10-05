@@ -1,8 +1,10 @@
 #include "renderer.h"
 
-// VU0's microcode sets (the game's maths helpers, which the asm's macro mode calls with vcallms): the set loaded and the DMA chain to
-// VIF0 that loads each (sets 1 to 3; nothing gives set 0 one), a set loaded, and the copier of the third set that puts quadwords
-// into VU0's memory
+#include "platform/graphics.h"
+
+// VU0's microcode sets (the game's maths helpers, which the asm's macro mode calls with vcallms): the set loaded and the DMA
+// chain to VIF0 that loads each (sets 1 to 3; nothing gives set 0 one), a set loaded, and the copier of the third set that puts
+// quadwords into VU0's memory
 
 namespace
 {
@@ -12,17 +14,16 @@ struct Vu0ProgramSets
     const void* chains[4];
 };
 
-constexpr s32 Vif0Channel = 0;
 // The pause between two looks at the busy channel
 constexpr s32 BusyPause = 0x1D;
 }
 
 extern "C"
 {
-    // The DMA chains to VIF0 of the three sets (in .vutext)
-    extern const u8 g_Vu0ProgramSet1[] RETAIL(D_002E6110);
-    extern const u8 g_Vu0ProgramSet2[] RETAIL(D_002E4EB0);
-    extern const u8 g_Vu0ProgramSet3[] RETAIL(D_002E5BD0);
+    // The DMA chains to VIF0 of the three sets (in .vutext): the standard one, the culling's and the decals'
+    extern const u8 g_StandardVu0Programs[] RETAIL(D_002E6110);
+    extern const u8 g_CullingVu0Programs[] RETAIL(D_002E4EB0);
+    extern const u8 g_DecalVu0Programs[] RETAIL(D_002E5BD0);
     // GCC 2.9x's initialisation function (for every priority: the sets' chains, set 1 loaded) and the module's global constructor
     void InitVu0Programs(s32 initialise, s32 priority) RETAIL(FUN_002b2070);
     void ConstructVu0ProgramsModule() RETAIL(FUN_002b2230);
@@ -52,9 +53,10 @@ void SelectVu0Programs(u8* programs, u32 set, bool wait)
     }
 }
 
-// The copier (VU0's microprogram 0 of the third set) started with vi01 set, then given eight quadwords at a time in vf01-vf08 with
-// the address in vi02 and how many blocks are left in vi03, clearing vi01 when it takes them (the interlocked move waits for it)
-void SendToVu0(u8*, const void* data, s32 quadwords, s32 address)
+// The copier (VU0's microprogram 0 of the third set) started with vi01 set, then given eight quadwords at a time in vf01-vf08
+// with the address in vi02 and how many blocks are left in vi03, clearing vi01 when it takes them (the interlocked move waits for
+// it)
+void SendToVu0(u8*, const void* source, s32 quadwords, s32 address)
 {
     s32 blocks = quadwords >> 3;
     if ((quadwords & 7) != 0)
@@ -103,28 +105,26 @@ void SendToVu0(u8*, const void* data, s32 quadwords, s32 address)
                  "nop\n\t"
                  ".set pop"
                  :
-                 : "r"(data), "r"(address), "r"(blocks)
+                 : "r"(source), "r"(address), "r"(blocks)
                  : "$8", "$9", "$10", "memory");
 }
 
 void InitVu0Programs(s32 initialise, s32 priority)
 {
-    constexpr s32 AllPriorities = 0xFFFF;
-    constexpr u32 StandardPrograms = 1;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != static_cast<s32>(DefaultInitPriority) || initialise == 0)
     {
         return;
     }
 
     auto* sets = reinterpret_cast<Vu0ProgramSets*>(g_Vu0Programs);
     sets->loaded = 0;
-    sets->chains[2] = g_Vu0ProgramSet2;
-    sets->chains[1] = g_Vu0ProgramSet1;
-    sets->chains[3] = g_Vu0ProgramSet3;
-    SelectVu0Programs(g_Vu0Programs, StandardPrograms, false);
+    sets->chains[Platform::Graphics::CullingPrograms] = g_CullingVu0Programs;
+    sets->chains[Platform::Graphics::StandardPrograms] = g_StandardVu0Programs;
+    sets->chains[Platform::Graphics::DecalPrograms] = g_DecalVu0Programs;
+    SelectVu0Programs(g_Vu0Programs, Platform::Graphics::StandardPrograms, false);
 }
 
 void ConstructVu0ProgramsModule()
 {
-    InitVu0Programs(1, 0xFFFF);
+    InitVu0Programs(1, DefaultInitPriority);
 }

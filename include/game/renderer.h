@@ -7,6 +7,10 @@ struct RenderTargetDescription;
 struct RenderView;
 struct Vector2;
 
+// The TV's shapes as the game has them: 4:3 (the one the game's places were made for) and 16:9
+constexpr f32 NarrowAspect = 0x1.555556p+0f;
+constexpr f32 WideAspect = 0x1.C71C72p+0f;
+
 // The renderer's frames: the render buckets (the PS2's DMA chains) linked into one chain the platform presents
 extern "C"
 {
@@ -33,7 +37,7 @@ extern "C"
     void FitPlaceToScreen(u32 inPixels, const Vector2* anchor, Vector2* place) RETAIL(FUN_001a0730);
     void FitSizeToScreen(u32 inPixels, Vector2* size) RETAIL(FUN_001a07c0);
 
-    // The game's colour table (RGBA bytes), and a colour of it
+    // The game's colour table (colour.h's ColourIndex), and a colour of it
     extern u32 g_Colours[] RETAIL(G_Colors);
     void GetColor(u32* color, s32 index);
     // The frame's start at the head of the first render bucket, for the target: drawing set up for it, and it cleared to its

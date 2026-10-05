@@ -27,6 +27,9 @@
 namespace Abi
 {
 constexpr u32 ArgumentRegisters = 8;
+// The registers of the first argument of each kind: $a0 ($4) and $f12
+constexpr u32 FirstIntegerArgumentRegister = 4;
+constexpr u32 FirstFloatArgumentRegister = 12;
 
 enum class Direction
 {
@@ -182,16 +185,16 @@ consteval AsmText Thunk(Direction direction, const char* name)
         if (Info::Floats[position])
         {
             text.Append("\tmov.s $f");
-            text.Append(12 + to);
+            text.Append(FirstFloatArgumentRegister + to);
             text.Append(", $f");
-            text.Append(12 + from);
+            text.Append(FirstFloatArgumentRegister + from);
         }
         else
         {
             text.Append("\tmove $");
-            text.Append(4 + to);
+            text.Append(FirstIntegerArgumentRegister + to);
             text.Append(", $");
-            text.Append(4 + from);
+            text.Append(FirstIntegerArgumentRegister + from);
         }
 
         text.Append("\n");

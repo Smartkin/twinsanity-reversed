@@ -10,7 +10,8 @@ GameNode* ConstructMovementNode(void* memory)
     GameNode::Construct(node);
     node->seconds = 0.0f;
     node->vtable = g_MovementNodeVTable;
-    node->bits = (node->bits | MovementNode::BitMade) & ~u32{MovementNode::BitCaptured};
+    node->bits.carries = 1;
+    node->bits.captured = 0;
     return node;
 }
 
@@ -22,7 +23,7 @@ void MovementNode::Destroy(u32 destroyFlags)
 
 u32 MovementNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) != 0 && (bits & BitCaptured) != 0)
+    if (clock->flags.running != 0 && bits.captured != 0)
     {
         previousMatrix = matrix;
         ObjectPlace* place = owner->place;
@@ -40,7 +41,7 @@ u32 MovementNode::Update(TimeClock* clock)
 
 u32 MovementNode::Kind()
 {
-    return NodeKind;
+    return NodeMovement;
 }
 
 u32 MovementNode::GetClassId()
@@ -50,7 +51,7 @@ u32 MovementNode::GetClassId()
 
 void MovementVelocity(MovementNode* node, Vector4* velocity)
 {
-    if ((node->bits & MovementNode::BitCaptured) == 0)
+    if (node->bits.captured == 0)
     {
         node->Capture();
     }

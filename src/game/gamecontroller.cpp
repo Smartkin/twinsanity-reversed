@@ -3,6 +3,7 @@
 #include "game/agentparts.h"
 #include "game/agents.h"
 #include "game/camerarig.h"
+#include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/chunkfiles.h"
 #include "game/chunkloading.h"
@@ -32,6 +33,7 @@
 #include "game/sound.h"
 #include "game/stream.h"
 #include "game/string.h"
+#include "game/vehicles.h"
 #include "game/widgets.h"
 #include "platform/graphics.h"
 #include "platform/stream.h"
@@ -42,26 +44,16 @@
 
 namespace
 {
-// The screens OLEG shows: the HUD's wumpa fruit and lives (the triangle button shows them while playing), the tiles' picture,
-// every screen but the first three
-constexpr u32 HudScreen = 0x20;
-constexpr u32 PictureScreen = 0x29;
-constexpr u32 AllButFirstScreens = 0x2B;
-// The tiles' picture: OLEG's third, none when its picture is 12, the legal screen 0; the second sprite's the Crash title
-constexpr u32 TilesPicture = 2;
-constexpr u32 NoTilesPicture = 12;
-constexpr u32 LegalPicture = 0;
-constexpr u32 TitlePicture = 0;
-constexpr u32 CrashTitle = 0;
-// OLEG's sprites 6 to 45: the icons (StartUp\Icons.psm), read through the sprites' vtable function
-constexpr u32 FirstIcon = 6;
-constexpr u32 EndIcons = 46;
-constexpr u32 ShapeReadSlot = 9;
-// A destructor's flags: a member destroyed
-constexpr u32 Member = 2;
-// The game controller's flags: "RB" (the front end's sounds read), OLEG's menus left alone (the context's bit 7)
-constexpr u32 FlagRb = 2;
-constexpr u32 FlagNoMenus = 4;
+// OLEG's pictures the game controller wants: the Crash title's only one, the game over screens of the characters (the tiles'
+// pictures from TilesGameOver: Cortex, Crash, Crash and Cortex, the Mecha-Bandicoot, Nina) and the loading screens (three from
+// TilesLoading)
+constexpr u32 CrashTitlePicture = 0;
+constexpr u32 GameOverCortex = OLEG::TilesGameOver;
+constexpr u32 GameOverCrash = OLEG::TilesGameOver + 1;
+constexpr u32 GameOverCrashAndCortex = OLEG::TilesGameOver + 2;
+constexpr u32 GameOverMecha = OLEG::TilesGameOver + 3;
+constexpr u32 GameOverNina = OLEG::TilesGameOver + 4;
+constexpr u32 LoadingPictures = 3;
 // The start-up's files: the language's voices' folder (the language's name after it), the music, the icons, the font, the front
 // end's sounds and the default chunk; the text files' folders (in the language folder) and extension
 constexpr const char* SoundFolder = "Crash6\\";
@@ -72,149 +64,75 @@ constexpr const char* FrontEndFile = "StartUp\\Frontend.bin";
 constexpr const char* DefaultChunk = "StartUp\\Default";
 constexpr const char* TextFolders[TextFiles] = {"Code", "AgentLab"};
 constexpr const char* TextExtension = ".txt";
-// The screens of the main menu, a missing controller, the fader (black) and the memory card's check
-constexpr u32 MainMenuScreen = 0xB;
-constexpr u32 BlackScreen = 0x28;
-// The HUD's screens for the play modes: the health bar and lives, the time, the slider, the counter at the bottom right
-constexpr u32 HealthScreen = 0x22;
-constexpr u32 TimeScreen = 0x21;
-constexpr u32 SliderScreen = 0x23;
-constexpr u32 CounterScreen = 0x27;
-constexpr u32 ModeHealth = 1;
-// The instances' vtable function the playing state steps the fifth character's with
-constexpr u32 InstanceStepSlot = 3;
-constexpr u32 FifthCharacter = 4;
-// The screens of a cutscene (its bars and text) and of the bottom text, which play goes back to, and the game over screen
-constexpr u32 WatchingScreen = 0;
-constexpr u32 BottomTextScreen = 2;
-// The game controller's flags: the bottom text's screen up, and bit 3 (cleared when cutscenes start and end)
-constexpr u32 FlagBottomText = 1;
-constexpr u32 FlagCutsceneCleared = 8;
-// The HUD's icons: the boss's, and whack-a-worm's
-constexpr u32 BossIcon = 0;
-constexpr u32 WhackawormIcon = 1;
-// The save code's operation for an autosave
-constexpr u32 SaveAutosave = 6;
-constexpr u32 GameOverScreen = 0x1B;
-// The intro movie and the attract movie
-constexpr u32 IntroMovie = 1;
-constexpr u32 AttractMovie = 13;
-// The loading screens (the tiles' pictures 1 to 3) and their screen
-constexpr u32 LoadingScreens = 3;
-constexpr u32 LoadingScreen = 0x2A;
-// The characters, and the one the title plays
-constexpr u32 Characters = 6;
-constexpr u32 TitleCharacter = 4;
-// The game over pictures (the tiles' pictures): Cortex, Crash, Crash and Cortex, Mecha-Bandicoot, Nina
-constexpr u32 GameOverCortex = 4;
-constexpr u32 GameOverCrash = 5;
-constexpr u32 GameOverCrashAndCortex = 6;
-constexpr u32 GameOverMecha = 7;
-constexpr u32 GameOverNina = 8;
-constexpr u32 NoControllerScreen = 15;
-constexpr u32 CardCheckScreen = 0x29;
-// The save code's operations the game controller asks for: the memory card checked, the game saved, a new game's, the game
-// saved from the pause menu, a load
-constexpr u32 SaveCheckCard = 1;
-constexpr u32 SaveSave = 2;
-constexpr u32 SaveNewGame = 3;
-constexpr u32 SavePauseSave = 4;
-constexpr u32 SaveLoad = 5;
-// The saving's steps (the state word's bits 60-63): none, waiting to save, then after a save, after a save its screens showed,
-// after a load, after a new game's load, after the pause menu's
-constexpr u32 SavingNone = 0;
-constexpr u32 SavingWait = 1;
-constexpr u32 SavingSaved = 2;
-constexpr u32 SavingSavedShown = 3;
-constexpr u32 SavingLoaded = 4;
-constexpr u32 SavingNewGameLoaded = 5;
-constexpr u32 SavingPaused = 6;
-// The screens the saving shows and hides: the pause menu, and the saving's
-constexpr u32 PauseMenuScreen = 12;
-constexpr u32 SavingScreen = 31;
-constexpr u32 SavingScreen2 = 3;
-// The movies the start-up plays: the Vivendi logo, Traveller's Tales' ident
-constexpr u32 VivendiLogo = 19;
-constexpr u32 TravellersTalesIdent = 0;
-// How a level is entered (the state word's bits 23-26): from the save controller's chunk and place (a save loaded, or the
-// start chunk given on the command line)
-constexpr u64 EntryMask = 0x7800000;
-constexpr u64 EntrySaved = 0x1000000;
-constexpr u64 EntryKeepChunks = 0x1800000;
-constexpr u32 EntryShift = 23;
-// The screens of the pause reasons 1 to 13 (none for quitting): the pause menu, no controller, the disc error, the notices,
-// the levels pages and the extras
-constexpr u32 PauseScreenCount = 13;
-constexpr s32 PauseScreens[PauseScreenCount] = {12, 15, 16, 17, 18, 19, 20, -1, 21, 22, 23, 24, 25};
-// The last areas of the levels pages but the last (the story's areas open: bits 26-30 of the progress), and the last page with
-// an area open
+// The screens' fades (seconds): most, the longer ones (to and from black, the pictures, the logos' wait), the shortest (a movie's
+// black and the missing controller's screen), and how long the HUD stays when it's shown for a while
+constexpr f32 FadeSeconds = 0.25f;
+constexpr f32 LongFadeSeconds = 0.5f;
+constexpr f32 ShortFadeSeconds = 0x1.99999Ap-4f;
+constexpr f32 HudShownSeconds = 3.0f;
+// Every widget slot of OLEG's
+constexpr u64 EveryWidget = ~u64{0};
+// The pause screens of the pause reasons from ReasonStart to ReasonExtras (none for quitting)
+constexpr s32 NoScreen = -1;
+constexpr u32 PauseScreenCount = GameController::ReasonExtras;
+constexpr s32 PauseScreens[PauseScreenCount] = {
+    OLEG::ScreenPauseMenu,      OLEG::ScreenNoController, OLEG::ScreenDiscError,  OLEG::ScreenAutosaveOff,
+    OLEG::ScreenAutosaveOn,     OLEG::ScreenAutosaveFailed, OLEG::ScreenFourthNotice, NoScreen,
+    OLEG::ScreenLevels,         OLEG::ScreenLevels + 1,   OLEG::ScreenLevels + 2, OLEG::ScreenLevels + 3,
+    OLEG::ScreenExtras,
+};
+// The last areas of the levels pages but the last (the progress's last area open), and the last page with an area open
 constexpr u32 LevelsPageAreas[3] = {6, 13, 20};
 
 u32 LastLevelsPage(u32 area)
 {
     if (area < LevelsPageAreas[0])
     {
-        return 9;
+        return GameController::ReasonFirstLevels;
     }
 
     if (area < LevelsPageAreas[1])
     {
-        return 10;
+        return GameController::ReasonFirstLevels + 1;
     }
 
-    return area < LevelsPageAreas[2] ? 11 : 12;
+    return area < LevelsPageAreas[2] ? GameController::ReasonFirstLevels + 2 : GameController::ReasonFirstLevels + 3;
 }
 
-// A new game's lives, and the volume groups of the sound effects and the music
-constexpr u32 StartLives = 5;
-constexpr s32 EffectsGroup = 0;
-constexpr s32 MusicGroup = 2;
-// The front end's sounds, the save's data's size, and a bit of the state word the constructor sets
+// The front end's sounds
 constexpr u32 FrontEndSounds = 3;
-constexpr u64 ConstructedBit = 0x10000;
-// The title's "press start": its text, and the frames the title waits before it
+// The title: its "press start" (the text, where it's drawn (fractions of the screen), centred, at three quarters of the breathing
+// scale; the frames the title waits before it) and the attract movie's wait (seconds)
 constexpr u32 PressStartText = 0x46;
+constexpr f32 PressStartX = 0.5f;
+constexpr f32 PressStartY = Rounded(0.9);
+constexpr f32 PressStartScale = 0.75f;
 constexpr s32 PressStartFrames = 50;
-// The credits: their picture (the tiles' 11), folder, music tracks (a new one 19 seconds after the one before: track, group 2,
-// started at once, looping) and the sprites (the fourth to the sixth) drawn flat again
-constexpr u32 CreditsPicture = 11;
+constexpr f32 AttractSeconds = 50.0f;
+// The credits: their folder, music tracks (a new one 19 seconds after the one before, faded in over 3 seconds but the first, in
+// the music group, started at once, looping)
 constexpr const char* CreditsFolder = "Language\\Credits\\";
 constexpr u32 CreditsTracks = 11;
 constexpr u16 CreditsMusic[CreditsTracks] = {0x3A, 0x1C, 0x88, 0x1E, 0x23, 0x25, 0x29, 0x36, 0x3C, 0x3D, 0x1B};
-constexpr u32 CreditsTrackBits = 0x1A0000;
 constexpr f32 CreditsTrackSeconds = 19.0f;
-constexpr u32 FirstHudSprite = 3;
-constexpr u32 EndHudSprites = 6;
-constexpr u32 SpriteSetMaterialSlot = 2;
-// The gallery: its screen, the controller's flags' bits of its first picture, its last and the one shown, and the first of
-// the two pictures named by OLEG's text
-constexpr u32 GalleryScreen = 0x1A;
-constexpr u32 GalleryFirstShift = 5;
-constexpr u32 GalleryLastShift = 13;
-constexpr u32 GalleryShownShift = 21;
-constexpr u32 GalleryPictureMask = 0xFF;
-constexpr u32 NamedPicture = 9;
-// The referenced objects' vtable functions what a follow node follows is told with: it's followed again, it isn't any more
-constexpr u32 FollowStartedSlot = 2;
-constexpr u32 FollowStoppedSlot = 3;
-// How the second character is paired with the first (the progress's bits 4-7): its vehicle of kind 3 or 1, or the two tied
-// together (the second sent event 0x39)
-constexpr u32 PairingVehicle3 = 2;
-constexpr u32 PairingVehicle1 = 3;
-constexpr u32 PairingLinked = 4;
-constexpr u32 LinkedEvent = 0x39;
-// The play modes (the progress's bits 0-3): normal, and timed
-constexpr u32 ModeNormal = 0;
-constexpr u32 ModeTimed = 2;
+constexpr f32 CreditsFadeSeconds = 3.0f;
+// The gallery's pictures' numbers: two digits at least
+constexpr u32 TwoDigits = 10;
+// The wait before OLEG adds the next wumpa fruit to the count, set again for the credits (seconds)
+constexpr f32 WumpaAddSeconds = Rounded(0.15);
+// The message the second character is sent when the two are tied together (to its object node)
+constexpr u32 TiedMessage = 0x39;
+// The instances the game's reset resets: every one with a node of a kind but the cameras' lens
+constexpr u32 ResetKinds = ~(1u << NodeCameraLens);
 
 // One of the loading screens, at random
 u32 RandomLoadingScreen()
 {
     f32 random = GetRandFloat();
-    u32 loading = LoadingScreens;
+    u32 loading = OLEG::TilesLoading + LoadingPictures - 1;
     if (random < 1.0f)
     {
-        loading = static_cast<s32>(random * 3.0f) + 1;
+        loading = static_cast<s32>(random * static_cast<f32>(LoadingPictures)) + OLEG::TilesLoading;
     }
 
     return loading;
@@ -227,7 +145,7 @@ void StopChunks()
     {
         if (chunk->clocks != nullptr)
         {
-            TimeClocksStop(static_cast<TimeClock*>(chunk->clocks));
+            TimeClocksStop(chunk->clocks);
         }
     }
 
@@ -241,7 +159,7 @@ void StartChunks()
     {
         if (chunk->clocks != nullptr)
         {
-            TimeClocksStart(static_cast<TimeClock*>(chunk->clocks));
+            TimeClocksStart(chunk->clocks);
         }
     }
 
@@ -251,24 +169,24 @@ void StartChunks()
 // The played character's instance, and the second character's
 InstanceContext* CharacterInstance(GameProgress* progress)
 {
-    return progress->Instance(progress->Field(GameProgress::CharacterShift));
+    return progress->Instance(progress->play.character);
 }
 
 InstanceContext* SecondCharacterInstance(GameProgress* progress)
 {
-    return progress->Instance(progress->Field(GameProgress::SecondShift));
+    return progress->Instance(progress->play.second);
 }
 }
 
-GameController* GameController::Construct(GameController* controller, GamePad* pad, s32 unknown40, Renderer* renderer,
-                                          ChunkManager* chunks, void* resourceManager, GameResources* resources)
+GameController* GameController::Construct(GameController* controller, GamePad* pad, s32 secondPad, Renderer* renderer,
+                                          ChunkManager* chunks, void* factory, GameResources* resources)
 {
     controller->pad = pad;
     controller->renderer = renderer;
     controller->chunkManager = chunks;
-    controller->resourceManager = resourceManager;
+    controller->unused34 = factory;
     controller->resources = resources;
-    controller->unknown40 = unknown40;
+    controller->secondPad = reinterpret_cast<GamePad*>(secondPad);
     SoundTable::Construct(&controller->frontEndSounds, FrontEndSounds);
     controller->gallery.string = nullptr;
     controller->gallery.capacity = 0;
@@ -282,15 +200,16 @@ GameController* GameController::Construct(GameController* controller, GamePad* p
     save.chunk.string = nullptr;
     save.chunk.capacity = 0;
     save.chunk.length = 0;
-    save.place = 0xFFFF;
-    RetailLibc::MemorySet(&save, 0, 8);
+    save.place = NoInstanceId;
+    RetailLibc::MemorySet(&save, 0, sizeof(save.summary) + sizeof(save.options));
     save.timePlayed = 0;
     save.data = static_cast<u8*>(MemoryAllocate2(SaveController::DataSize));
     save.progress = &controller->progress;
     OLEG::Construct(&controller->oleg, &controller->font, &controller->progress);
     controller->credits = nullptr;
-    RetailLibc::MemorySet(&controller->states, 0, 0xC);
-    controller->states = u64{NoState} << NextShift;
+    RetailLibc::MemorySet(&controller->states, 0, sizeof(controller->states) + sizeof(controller->flags));
+    controller->states.value = 0;
+    controller->states.nextState = NoState;
     controller->hudDelay = 0;
     controller->frame = 0;
     controller->movieFrame = 0;
@@ -300,22 +219,23 @@ GameController* GameController::Construct(GameController* controller, GamePad* p
     MakeFlatBoxHull();
     InitFreedMemory();
     controller->renderer->view = &controller->view;
-    controller->states |= ConstructedBit;
+    controller->states.unused16 = 1;
     return controller;
 }
 
 u32 GameController::Update(u32 keepFreed)
 {
-    bool start = GetButtonState(pad, PadStart, true);
-    states = (states & ~u64{StartPressed}) | static_cast<u64>(start) << 31;
+    states.startPressed = GetButtonState(pad, PadStart, true);
     frame++;
     UpdateSaving(&g_GlobalClock);
     if (NextState() != NoState)
     {
         stateFrame = frame;
-        u64 bits = (states & ~(u64{StateMask} << LastShift)) | static_cast<u64>(State()) << LastShift;
-        bits = (bits & ~(u64{StateMask} << CurrentShift)) | (bits >> NextShift & StateMask) << CurrentShift;
-        states = (bits & ~(u64{StateMask} << NextShift)) | u64{NoState} << NextShift;
+        GameControllerStates taken = states;
+        taken.lastState = taken.state;
+        taken.state = taken.nextState;
+        taken.nextState = NoState;
+        states = taken;
         stateTime = g_GlobalClock.time;
     }
 
@@ -323,7 +243,7 @@ u32 GameController::Update(u32 keepFreed)
     switch (State())
     {
     case StateWaitingForLoader:
-        if ((G_ChunkLoadingManager_->bits >> 24 & 0xF) == 1)
+        if (G_ChunkLoadingManager_->bits.mode == LoadingKnownAtOnce)
         {
             next = StateStartingPlay;
         }
@@ -349,19 +269,21 @@ u32 GameController::Update(u32 keepFreed)
         next = CheckingCard(&g_GlobalClock);
         break;
     case StateVivendiLogo:
-        next = PlayMovie(&g_GlobalClock, static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), VivendiLogo, 1, nullptr) != 0
+        next = PlayMovie(&g_GlobalClock, static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Vivendi, 1,
+                         nullptr) != 0
                    ? StateTravellersTalesLogo
                    : NoState;
         break;
     case StateTravellersTalesLogo:
-        if (PlayMovie(&g_GlobalClock, 0, TravellersTalesIdent, 1, nullptr) == 0)
+        if (PlayMovie(&g_GlobalClock, 0, GameMovie::TravellersTales, 1, nullptr) == 0)
         {
             break;
         }
 
         if (progress.startChunk.length > 0)
         {
-            states = (states & ~EntryMask) | EntrySaved;
+            // The start chunk given on the command line
+            states.entry = EntrySaved;
             saveController.Take(&progress, chunkManager, nullptr);
             next = StateLoadingLevel;
         }
@@ -417,9 +339,9 @@ u32 GameController::Update(u32 keepFreed)
         next = Gallery(&g_GlobalClock);
         break;
     case StateWaiting:
-        if (static_cast<s32>(g_GlobalClock.time - static_cast<u32>(stateTime)) >= static_cast<s32>(g_ClockUnitsPerSecond * 0.25f))
+        if (static_cast<s32>(g_GlobalClock.time - static_cast<u32>(stateTime)) >= static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds))
         {
-            next = static_cast<u32>(states >> ReturnShift & StateMask);
+            next = static_cast<u32>(states.returnState);
         }
 
         break;
@@ -431,13 +353,13 @@ u32 GameController::Update(u32 keepFreed)
         break;
     case StateRestartingTitle:
     {
-        oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         u32 hidden;
         u32 shown;
-        GetColor(&hidden, 0);
-        GetColor(&shown, 8);
-        oleg.sprite13B8.hiddenColour = hidden;
-        oleg.sprite13B8.shownColour = shown;
+        GetColor(&hidden, ColourTransparentBlack);
+        GetColor(&shown, ColourBlack);
+        oleg.fader.hiddenColour = hidden;
+        oleg.fader.shownColour = shown;
         next = StateLoadingTitle;
         break;
     }
@@ -457,20 +379,21 @@ u32 GameController::Update(u32 keepFreed)
     }
 
     InstanceContext* player = CharacterInstance(&progress);
-    auto* node = player != nullptr ? static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodePlayer)) : nullptr;
+    auto* node = player != nullptr ? static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodeCharacter)) : nullptr;
     PlayerCharacter* character = node != nullptr ? node->character : nullptr;
     if (State() == StatePlaying)
     {
-        u32 mode = progress.bits & 0xF;
-        if (mode == ModeTimed)
+        u32 mode = progress.play.mode;
+        if (mode == PlayTimed)
         {
-            progress.timeLeft -= G_GameClockController->clocks[1].advance;
+            progress.timeLeft -= G_GameClockController->clocks[ObjectClock].advance;
         }
 
-        if (mode == ModeNormal && GetButtonState(pad, PadTriangle, false))
+        // The triangle button shows the HUD
+        if (mode == PlayNormal && GetButtonState(pad, PadTriangle, false))
         {
-            oleg.Show(oleg.masks[HudScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f),
-                      static_cast<s32>(g_ClockUnitsPerSecond * 3.0f));
+            oleg.Show(oleg.screens[OLEG::ScreenHud], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds),
+                      static_cast<s32>(g_ClockUnitsPerSecond * HudShownSeconds));
         }
     }
 
@@ -480,11 +403,11 @@ u32 GameController::Update(u32 keepFreed)
         return 0;
     }
 
-    StepLoopFrame(&g_GlobalClock);
+    StepPickupSpin(&g_GlobalClock);
     if (player != nullptr)
     {
-        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
-        SetSoundListener(follow->object != nullptr ? follow->object->object : nullptr);
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, NodeFollow));
+        SetSoundListener(follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr);
     }
 
     if (keepFreed == 0)
@@ -499,11 +422,11 @@ u32 GameController::Starting(TimeClock*)
 {
     if (frame == stateFrame)
     {
-        oleg.WantPicture(TilesPicture, LegalPicture);
+        oleg.WantPicture(OLEG::PictureTiles, OLEG::TilesLegal);
         return NoState;
     }
 
-    if (ShowPictureScreen(PictureScreen) == 0)
+    if (ShowPictureScreen(OLEG::ScreenPicture) == 0)
     {
         return NoState;
     }
@@ -515,7 +438,7 @@ u32 GameController::Starting(TimeClock*)
 
     String voices;
     StringConstruct(&voices, SoundFolder);
-    G_UnkStruct_5C0 = SaveManager::Construct(static_cast<SaveManager*>(MemoryAllocate(sizeof(SaveManager))), this);
+    g_SaveManager = SaveManager::Construct(static_cast<SaveManager*>(MemoryAllocate(sizeof(SaveManager))), this);
     LoadTexts();
     StringAppend(&voices, g_LanguageNames[g_CurrentLanguage]);
     SetMusicBank(MusicBank);
@@ -524,17 +447,17 @@ u32 GameController::Starting(TimeClock*)
     StringConstruct(&icons, IconsFile);
     MemoryStream stream;
     MemoryStream::ConstructFromFile(&stream, icons.string, false);
-    for (u32 icon = FirstIcon; icon < EndIcons; icon++)
+    for (u32 icon = OLEG::SpriteIcons; icon < OLEG::SpriteCount; icon++)
     {
         Sprite& sprite = oleg.sprites[icon];
-        CallVirtual<void>(&sprite, sprite.vtable, ShapeReadSlot, &stream);
+        CallVirtual<void>(&sprite, sprite.vtable, Shape2D::ReadSlot, &stream);
     }
 
-    stream.Destroy(Member);
+    stream.Destroy(DestroyOnly);
     StringDestroy(&icons);
     LoadGlobalResources();
-    oleg.WantPicture(TitlePicture, CrashTitle);
-    oleg.LoadPicture(TitlePicture, 0);
+    oleg.WantPicture(OLEG::PictureCrashTitle, CrashTitlePicture);
+    oleg.LoadPicture(OLEG::PictureCrashTitle, 0);
     StringDestroy(&voices);
     return NoState;
 }
@@ -565,18 +488,18 @@ u32 GameController::LoadGlobalResources()
     SoundTableItem sounds;
     sounds.vtable = g_SoundTableItemVTable;
     sounds.table = &frontEndSounds;
-    sounds.unknown08 = 0;
+    sounds.objects = nullptr;
     font.Read(FontFile);
     renderer->font = &font;
     font.width = g_FontSize.x;
     font.height = g_FontSize.y;
-    if ((flags & FlagRb) != 0)
+    if (flags.queuesFiles != 0)
     {
         AddResourcePackageToLoadQueue(&sounds, FrontEndFile, 0);
     }
 
     LoadQueuedSectionsIntoMemory_();
-    if ((flags & FlagNoMenus) == 0)
+    if (flags.noMenus == 0)
     {
         oleg.StartUp(pad, &font, &font, &frontEndSounds);
     }
@@ -588,35 +511,35 @@ u32 GameController::LoadGlobalResources()
 
 u32 GameController::UpdateSaving(TimeClock* clock)
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
     if (saves == nullptr)
     {
         return 0;
     }
 
-    u32 step = static_cast<u32>(states >> SavingShift);
+    u32 step = static_cast<u32>(states.savingStep);
     if (step == SavingWait)
     {
         if (saveTime == 0)
         {
             saveTime = static_cast<s32>(clock->time);
         }
-        else if (static_cast<s32>(clock->time - static_cast<u32>(saveTime)) >= static_cast<s32>(g_ClockUnitsPerSecond * 0.25f))
+        else if (static_cast<s32>(clock->time - static_cast<u32>(saveTime)) >= static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds))
         {
-            SaveManagerRequest(saves, SaveSave, 0);
+            SaveManagerRequest(saves, SaveOperationCheckInserted, 0);
             SetSavingStep(SavingSaved);
         }
 
         return 0;
     }
 
-    if ((saves->bits & SaveCode::OperationMask) != 0)
+    if (saves->bits.operation != 0)
     {
         return 0;
     }
 
-    s32 quarter = static_cast<s32>(g_ClockUnitsPerSecond * 0.25f);
-    bool flagged = (saves->results & SaveCode::Flagged) != 0;
+    s32 fade = static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds);
+    bool flagged = saves->results.flagged != 0;
     switch (step)
     {
     case SavingNone:
@@ -629,43 +552,43 @@ u32 GameController::UpdateSaving(TimeClock* clock)
             return 0;
         }
 
-        states = (states & ~u64{Notices}) | Notice4;
+        states.notices = NoticeAutosaveOff;
         FinishSaveDue();
         return 1;
     case SavingSavedShown:
-        oleg.Hide(oleg.masks[SavingScreen], quarter, 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAutosaving], fade, 0);
         if (oleg.savingShown == 1)
         {
-            oleg.Hide(oleg.masks[SavingScreen2], quarter, 0);
+            oleg.Hide(oleg.screens[OLEG::ScreenDimmer], fade, 0);
             StartChunks();
         }
 
-        if ((saves->results & SaveCode::Flagged) != 0)
+        if (saves->results.flagged != 0)
         {
             SetSavingStep(SavingWait);
             saveTime = static_cast<s32>(clock->time);
             return 0;
         }
 
-        states = (states & ~u64{Notices}) | Notice6;
+        states.notices = NoticeAutosaveFailed;
         FinishSaveDue();
         return 1;
     case SavingLoaded:
         if (flagged)
         {
-            states = (states & ~u64{Notices}) | Notice5;
+            states.notices = NoticeAutosaveOn;
             RequestSavedLevel(1);
             return 0;
         }
 
-        if ((saves->bits & SaveCode::SavingDue) != 0)
+        if (saves->bits.savingDue != 0)
         {
-            states = (states & ~u64{Notices}) | Notice4;
+            states.notices = NoticeAutosaveOff;
         }
 
         FinishSaveDue();
-        oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-        oleg.Show(oleg.masks[State() == StateMainMenu ? MainMenuScreen : PauseMenuScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+        oleg.Show(oleg.screens[State() == StateMainMenu ? OLEG::ScreenMainMenu : OLEG::ScreenPauseMenu], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         return 0;
     case SavingNewGameLoaded:
         if (flagged)
@@ -674,31 +597,31 @@ u32 GameController::UpdateSaving(TimeClock* clock)
             return 0;
         }
 
-        oleg.Hide(oleg.masks[AllButFirstScreens], quarter, 0);
-        oleg.Show(oleg.masks[MainMenuScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], fade, 0);
+        oleg.Show(oleg.screens[OLEG::ScreenMainMenu], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         FinishSaveDue();
         return 0;
     case SavingPaused:
         if (flagged)
         {
-            states = (states & ~u64{Notices}) | Notice5;
-            if ((saves->bits & SaveCode::OperationMask) == 0)
+            states.notices = NoticeAutosaveOn;
+            if (saves->bits.operation == 0)
             {
                 StartSaveDue();
             }
         }
         else
         {
-            if ((saves->bits & SaveCode::SavingDue) != 0)
+            if (saves->bits.savingDue != 0)
             {
-                states = (states & ~u64{Notices}) | Notice4;
+                states.notices = NoticeAutosaveOff;
             }
 
             FinishSaveDue();
         }
 
-        oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-        oleg.Show(oleg.masks[PauseMenuScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenPauseMenu], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         return 0;
     default:
         return 1;
@@ -707,11 +630,11 @@ u32 GameController::UpdateSaving(TimeClock* clock)
 
 void GameController::FinishSaveDue()
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
-    if ((saves->bits & SaveCode::SavingDue) != 0)
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
+    if (saves->bits.savingDue != 0)
     {
         SetSavingStep(SavingNone);
-        saves->bits &= ~SaveCode::SavingDue;
+        saves->bits.savingDue = 0;
         return;
     }
 
@@ -720,11 +643,11 @@ void GameController::FinishSaveDue()
 
 void GameController::StartSaveDue()
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
-    if ((saves->bits & SaveCode::SaveDue) != 0)
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
+    if (saves->bits.saveDue != 0)
     {
         SetSavingStep(SavingWait);
-        saves->bits |= SaveCode::SavingDue;
+        saves->bits.savingDue = 1;
         saveTime = 0;
         return;
     }
@@ -734,15 +657,15 @@ void GameController::StartSaveDue()
 
 u32 GameController::FinishSaving()
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
-    if ((saves->bits & SaveCode::SavingDue) == 0)
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
+    if (saves->bits.savingDue == 0)
     {
         SetSavingStep(SavingNone);
         return 0;
     }
 
     SetSavingStep(SavingNone);
-    saves->bits &= ~SaveCode::SavingDue;
+    saves->bits.savingDue = 0;
     return 1;
 }
 
@@ -753,16 +676,16 @@ u32 GameController::RequestNewGame(u32 flagged)
         return 0;
     }
 
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
     if (flagged != 0)
     {
         bool started = false;
-        if ((saves->bits & SaveCode::OperationMask) == 0)
+        if (saves->bits.operation == 0)
         {
-            if ((saves->bits & SaveCode::SaveDue) != 0)
+            if (saves->bits.saveDue != 0)
             {
                 SetSavingStep(SavingWait);
-                saves->bits |= SaveCode::SavingDue;
+                saves->bits.savingDue = 1;
                 saveTime = 0;
                 started = true;
             }
@@ -775,16 +698,16 @@ u32 GameController::RequestNewGame(u32 flagged)
         if (started)
         {
             oleg.savingShown = 0;
-            states = (states & ~u64{Notices}) | Notice5;
+            states.notices = NoticeAutosaveOn;
         }
         else
         {
-            states = (states & ~u64{Notices}) | Notice4;
+            states.notices = NoticeAutosaveOff;
         }
     }
     else
     {
-        states = (states & ~u64{Notices}) | Notice4;
+        states.notices = NoticeAutosaveOff;
         FinishSaveDue();
     }
 
@@ -802,21 +725,21 @@ u32 GameController::RequestSavedLevel(u32 flagged)
     if (flagged != 0)
     {
         StringAssign(&progress.startChunk, saveController.chunk.string);
-        auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
-        if ((saves->bits & SaveCode::OperationMask) == 0)
+        auto* saves = static_cast<SaveManager*>(g_SaveManager);
+        if (saves->bits.operation == 0)
         {
             StartSaveDue();
         }
     }
     else
     {
-        Checkpoint* checkpoint = progress.Reset(0, chunkManager);
+        Checkpoint* checkpoint = progress.Reset(EntryNewGame, chunkManager);
         saveController.Take(&progress, chunkManager, checkpoint);
         FinishSaveDue();
     }
 
     SetNextState(StateLoadingLevel);
-    states = (states & ~EntryMask) | EntrySaved;
+    states.entry = EntrySaved;
     return 1;
 }
 
@@ -829,20 +752,20 @@ u32 GameController::DisableCharacter(u32 character, u32, u32 unfollow)
     }
 
     auto* controls = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-    PlayerCharacter* played = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodePlayer))->character;
+    PlayerCharacter* played = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodeCharacter))->character;
     controls->pad = nullptr;
-    played->input = {0.0f, 0.0f, 0.0f, 1.0f};
+    played->moveInput = {0.0f, 0.0f, 0.0f, 1.0f};
     if (unfollow == 0)
     {
         return 1;
     }
 
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, Node16));
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
     UnregisterNode(follow->owner, 0, follow);
-    ReferencedObject* object = follow->object != nullptr ? follow->object->object : nullptr;
+    ReferencedObject* object = follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
     if (object != nullptr)
     {
-        CallVirtual<void>(object, object->vtable, FollowStoppedSlot);
+        CallVirtual<void>(object, object->vtable, ReferencedObject::SleepSlot);
     }
 
     return 1;
@@ -856,25 +779,25 @@ u32 GameController::SwitchCharacter(u32 character, u32 played, u32 unfollow)
         return 0;
     }
 
-    u32 before = played != 0 ? progress.bits >> 8 & 0xF : progress.bits >> 12 & 0xF;
+    u32 before = played != 0 ? progress.play.character : progress.play.second;
     DisableCharacter(before, played, unfollow);
     if (played == 0)
     {
-        progress.bits = (progress.bits & ~0xF000u) | (character & 0xF) << 12;
+        progress.play.second = character;
         return 1;
     }
 
     ChunkData* chunk = instance->chunk;
     auto* controls = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, Node16));
-    ReferencedObject* followed = follow->object != nullptr ? follow->object->object : nullptr;
-    PlayerCharacter* playerCharacter = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodePlayer))->character;
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
+    ReferencedObject* followed = follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
+    PlayerCharacter* playerCharacter = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodeCharacter))->character;
     AssignReference(&follow->camera.rig.ownTarget.followed, instance);
     RegisterNode(follow->owner, 0, follow);
-    ReferencedObject* object = follow->object != nullptr ? follow->object->object : nullptr;
+    ReferencedObject* object = follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
     if (object != nullptr)
     {
-        CallVirtual<void>(object, object->vtable, FollowStartedSlot);
+        CallVirtual<void>(object, object->vtable, ReferencedObject::WakeSlot);
     }
 
     if (followed != nullptr)
@@ -886,11 +809,11 @@ u32 GameController::SwitchCharacter(u32 character, u32 played, u32 unfollow)
 
     controls->pad = pad;
     AssignReference(&g_PlayerInstance, instance);
-    void* data = playerCharacter->data;
+    auto* part = static_cast<CharacterPart*>(playerCharacter->part);
     g_PlayerCharacter2 = playerCharacter;
-    g_PlayerCharacterData2 = data;
+    g_PlayerPart2 = part;
     g_PlayerCharacter = playerCharacter;
-    g_PlayerCharacterData = data;
+    g_PlayerPart = part;
     if (chunk != nullptr)
     {
         u32 palette = chunk->colourFilterPalette;
@@ -901,17 +824,17 @@ u32 GameController::SwitchCharacter(u32 character, u32 played, u32 unfollow)
         g_ColourFilterPalette = palette;
     }
 
-    progress.bits = (progress.bits & ~0xF00u) | (character & 0xF) << 8;
+    progress.play.character = character;
     return 1;
 }
 
 void GameController::EnableCharacters(u32 unfollow)
 {
-    u32 character = progress.bits >> 8 & 0xF;
-    u32 second = progress.bits >> 12 & 0xF;
+    u32 character = progress.play.character;
+    u32 second = progress.play.second;
     if (progress.Instance(character) == nullptr && SwitchToCharacterInFocus() != 0)
     {
-        character = progress.bits >> 8 & 0xF;
+        character = progress.play.character;
     }
 
     SwitchCharacter(character, 1, unfollow);
@@ -921,9 +844,9 @@ void GameController::EnableCharacters(u32 unfollow)
 u32 GameController::SwitchToCharacterInFocus()
 {
     ChunkDataReference* focus = G_ChunkLoadingManager_->focusLoader->sm2->data;
-    ChunkData* chunk = focus != nullptr ? focus->data : nullptr;
-    u32 character = progress.bits >> 8 & 0xF;
-    for (u32 tried = 0; tried < Characters; tried++)
+    ChunkData* chunk = focus != nullptr ? focus->chunk : nullptr;
+    u32 character = progress.play.character;
+    for (u32 tried = 0; tried < GameProgress::Characters; tried++)
     {
         // From the one after the one played
         if (tried != 0)
@@ -936,7 +859,7 @@ u32 GameController::SwitchToCharacterInFocus()
         }
 
         character++;
-        if (character >= Characters)
+        if (character >= GameProgress::Characters)
         {
             character = 0;
         }
@@ -947,7 +870,7 @@ u32 GameController::SwitchToCharacterInFocus()
 
 void GameController::BeginFrame()
 {
-    oleg.Unknown3();
+    oleg.BeginFrame();
 }
 
 void GameController::SetView(u32 playingMovie)
@@ -960,7 +883,7 @@ void GameController::SetView(u32 playingMovie)
 
 void GameController::EndFrame()
 {
-    oleg.Unknown6();
+    oleg.EndFrame();
 }
 
 void GameController::Draw(u32 playingMovie)
@@ -975,27 +898,27 @@ void GameController::Draw(u32 playingMovie)
                 credits->Draw(renderer);
             }
         }
-        else if (state == StateTitle && (flags & 1) == 0 && static_cast<u32>(stateFrame + PressStartFrames) < static_cast<u32>(frame))
+        else if (state == StateTitle && flags.bottomText == 0 && static_cast<u32>(stateFrame + PressStartFrames) < static_cast<u32>(frame))
         {
             const char* text = GameText(PressStartText);
             renderer->font = &font;
             u32 colour;
-            GetColor(&colour, 0xF);
+            GetColor(&colour, ColourWhite);
             Renderer* target = renderer;
             target->colour = colour;
-            f32 size = g_OlegScaler.scale * 0.75f;
+            f32 size = g_BreathingScale.scale * PressStartScale;
             target->textScale.y = size;
             target->textScale.x = size;
-            target->textFlags = 0x22;
-            QueueText(target, text, 0.5f, Rounded(0.9));
+            target->textAlignment.value = TextAlignment::Centred;
+            QueueText(target, text, PressStartX, PressStartY);
         }
 
-        for (u32 index = 0; index < Characters; index++)
+        for (u32 index = 0; index < GameProgress::Characters; index++)
         {
             InstanceContext* instance = progress.Instance(index);
             if (instance != nullptr)
             {
-                DrawCharacterOverlay(static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodePlayer))->character);
+                DrawCharacterOverlay(static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodeCharacter))->character);
             }
         }
     }
@@ -1005,13 +928,13 @@ void GameController::Draw(u32 playingMovie)
 
 u32 GameController::ReturnToPauseMenu()
 {
-    if ((states >> PauseReasonShift & PauseReasonMask) == ReasonStart)
+    if (states.pauseReason == ReasonStart)
     {
         return 0;
     }
 
     SetNextState(StatePaused);
-    states &= ~(u64{PauseReasonMask} << PauseReasonShift);
+    states.pauseReason = ReasonNone;
     return 1;
 }
 
@@ -1023,7 +946,7 @@ u32 GameController::RequestRestart(u32 entry)
     }
 
     SetNextState(StateFadingOut);
-    states = (states & ~EntryMask) | static_cast<u64>(entry & 0xF) << EntryShift;
+    states.entry = entry;
     return 1;
 }
 
@@ -1040,23 +963,23 @@ u32 GameController::ShowBottomText(s32 duration)
         return 0;
     }
 
-    flags |= FlagBottomText;
+    flags.bottomText = 1;
     StringAssign(&oleg.textLine.text, "");
-    oleg.Hide(~u64{0}, duration, 0);
-    oleg.Show(oleg.masks[BottomTextScreen], duration, 0);
+    oleg.Hide(EveryWidget, duration, 0);
+    oleg.Show(oleg.screens[OLEG::ScreenBottomText], duration, 0);
     return 1;
 }
 
 u32 GameController::HideBottomText(s32 duration)
 {
-    if ((flags & FlagBottomText) == 0)
+    if (flags.bottomText == 0)
     {
         return 0;
     }
 
-    flags &= ~FlagBottomText;
+    flags.bottomText = 0;
     hudDelay = duration;
-    oleg.Hide(oleg.masks[BottomTextScreen], duration, 0);
+    oleg.Hide(oleg.screens[OLEG::ScreenBottomText], duration, 0);
     return 1;
 }
 
@@ -1066,12 +989,13 @@ u32 GameController::StartCutscene(s32 duration)
     if (state == StatePlaying)
     {
         SetNextState(StateWatching);
-        flags = (flags | FlagBottomText) & ~FlagCutsceneCleared;
+        flags.bottomText = 1;
+        flags.unused3 = 0;
         HoldPlayer();
         DisablePlayerControl(0);
         StringAssign(&oleg.textLine.text, "");
-        oleg.Hide(~u64{0}, duration, 0);
-        oleg.Show(oleg.masks[WatchingScreen], duration, 0);
+        oleg.Hide(EveryWidget, duration, 0);
+        oleg.Show(oleg.screens[OLEG::ScreenCutscene], duration, 0);
         FadeToCutsceneVolumes();
         return 1;
     }
@@ -1081,8 +1005,9 @@ u32 GameController::StartCutscene(s32 duration)
         return 0;
     }
 
-    flags = (flags | FlagBottomText) & ~FlagCutsceneCleared;
-    oleg.Show(oleg.masks[WatchingScreen], duration, 0);
+    flags.bottomText = 1;
+    flags.unused3 = 0;
+    oleg.Show(oleg.screens[OLEG::ScreenCutscene], duration, 0);
     return 1;
 }
 
@@ -1091,9 +1016,9 @@ u32 GameController::EndCutscene(s32 duration)
     u32 state = State();
     if (state == StateWatching)
     {
-        flags &= ~FlagCutsceneCleared;
+        flags.unused3 = 0;
         SetNextState(StateStartingPlay);
-        oleg.Hide(oleg.masks[WatchingScreen], duration, 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenCutscene], duration, 0);
         FadeFromCutsceneVolumes();
         ReleasePlayer(1);
         return 1;
@@ -1106,23 +1031,22 @@ u32 GameController::EndCutscene(s32 duration)
         return 0;
     }
 
-    flags &= ~FlagBottomText;
-    oleg.Hide(oleg.masks[WatchingScreen], duration, 0);
+    flags.bottomText = 0;
+    oleg.Hide(oleg.screens[OLEG::ScreenCutscene], duration, 0);
     return 1;
 }
 
 u32 GameController::EnableBossMode(f32 barLength, u32 health, const u16* icon)
 {
     progress.barLength = barLength;
-    progress.bits = (progress.bits & ~GameProgress::ModeMask) | ModeHealth;
-    u32 most = health & GameProgress::HealthMask;
-    progress.counts = (progress.counts & ~(GameProgress::HealthMask << GameProgress::MostHealthShift)) | most << GameProgress::MostHealthShift;
-    progress.counts = (progress.counts & ~(GameProgress::HealthMask << GameProgress::HealthShift)) | most << GameProgress::HealthShift;
+    progress.play.mode = PlayHealth;
+    progress.counts.mostHealth = health;
+    progress.counts.health = health;
     u16 object = *icon;
-    oleg.SetHudIcon(BossIcon, &object);
+    oleg.SetHudIcon(OLEG::HudIconBoss, &object);
     if (State() == StatePlaying)
     {
-        oleg.Show(oleg.masks[HealthScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenHealth], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
 
     return 1;
@@ -1132,29 +1056,28 @@ EABI_EXPORT(FUN_00176e60, &GameController::EnableBossMode);
 
 u32 GameController::ExitBossMode()
 {
-    if ((progress.bits & GameProgress::ModeMask) != ModeHealth)
+    if (progress.play.mode != PlayHealth)
     {
         return 0;
     }
 
-    progress.bits &= ~GameProgress::ModeMask;
-    oleg.Hide(oleg.masks[HealthScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+    progress.play.mode = PlayNormal;
+    oleg.Hide(oleg.screens[OLEG::ScreenHealth], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     return 1;
 }
 
 u32 GameController::StartWhackaworm(s32 time, u32 total, const u16* icon)
 {
-    progress.bits = (progress.bits & ~GameProgress::ModeMask) | ModeTimed;
+    progress.play.mode = PlayTimed;
     progress.timeLeft = time;
     progress.timeLimit = time;
-    progress.counts = (progress.counts & ~(GameProgress::CountMask << GameProgress::CountTotalShift)) |
-                      (total & GameProgress::CountMask) << GameProgress::CountTotalShift;
-    progress.counts = (progress.counts & ~(GameProgress::CountMask << GameProgress::CountShift)) | total << GameProgress::CountShift;
+    progress.counts.countTotal = total;
+    progress.counts.count = total;
     u16 object = *icon;
-    oleg.SetHudIcon(WhackawormIcon, &object);
+    oleg.SetHudIcon(OLEG::HudIconWhackaworm, &object);
     if (State() == StatePlaying)
     {
-        oleg.Show(oleg.masks[TimeScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenTime], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
 
     return 1;
@@ -1162,19 +1085,19 @@ u32 GameController::StartWhackaworm(s32 time, u32 total, const u16* icon)
 
 u32 GameController::EndWhackaworm()
 {
-    if ((progress.bits & GameProgress::ModeMask) != ModeTimed)
+    if (progress.play.mode != PlayTimed)
     {
         return 0;
     }
 
-    progress.bits &= ~GameProgress::ModeMask;
-    oleg.Hide(oleg.masks[TimeScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+    progress.play.mode = PlayNormal;
+    oleg.Hide(oleg.screens[OLEG::ScreenTime], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     return 1;
 }
 
 u32 GameController::RestartFromCheckpoint()
 {
-    if ((progress.counts >> GameProgress::LivesShift & GameProgress::LivesMask) == 0)
+    if (progress.counts.lives == 0)
     {
         return ForceGameOver();
     }
@@ -1185,7 +1108,7 @@ u32 GameController::RestartFromCheckpoint()
     }
 
     SetNextState(StateFadingOut);
-    states = (states & ~EntryMask) | EntryKeepChunks;
+    states.entry = EntryCheckpoint;
     return 1;
 }
 
@@ -1213,20 +1136,20 @@ u32 GameController::PlayCredits()
 
 u32 GameController::Autosave(Checkpoint* checkpoint)
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
     saveController.Take(&progress, chunkManager, checkpoint);
-    if ((saves->bits & SaveCode::SavingDue) == 0)
+    if (saves->bits.savingDue == 0)
     {
         return 0;
     }
 
     SetSavingStep(SavingSavedShown);
     oleg.savingShown++;
-    oleg.Show(oleg.masks[SavingScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-    SaveManagerRequest(saves, SaveAutosave, static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
+    oleg.Show(oleg.screens[OLEG::ScreenAutosaving], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+    SaveManagerRequest(saves, SaveOperationAutosave, static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
     if (oleg.savingShown == 1)
     {
-        oleg.Show(oleg.masks[SavingScreen2], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenDimmer], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         StopChunks();
     }
 
@@ -1235,28 +1158,28 @@ u32 GameController::Autosave(Checkpoint* checkpoint)
 
 void GameController::DisablePlayerControl(u32 unfollow)
 {
-    u32 bits = progress.bits;
-    DisableCharacter(bits >> GameProgress::CharacterShift & GameProgress::FieldMask, 1, unfollow);
-    DisableCharacter(bits >> GameProgress::SecondShift & GameProgress::FieldMask, 0, unfollow);
+    PlayState play = progress.play;
+    DisableCharacter(play.character, 1, unfollow);
+    DisableCharacter(play.second, 0, unfollow);
 }
 
 void GameController::UnlinkCharacter(InstanceContext* instance)
 {
-    auto* node = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodePlayer));
+    auto* node = static_cast<PlayerNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (node == nullptr)
     {
         return;
     }
 
     PlayerCharacter* character = node->character;
-    void* link = character->link;
+    CharacterLink* link = character->link;
     if (link == nullptr)
     {
         return;
     }
 
     // The first of the two unties them
-    if ((character->data->bits & CharacterData::BitLinkedSecond) != 0)
+    if (static_cast<CharacterPart*>(character->part)->moveBits.linkedSecond != 0)
     {
         UnlinkCharacters(LinkedCharacter(link));
     }
@@ -1268,40 +1191,40 @@ void GameController::UnlinkCharacter(InstanceContext* instance)
 
 u32 GameController::StopSaving()
 {
-    if ((states & u64{SavingMask} << SavingShift) == 0)
+    if (states.savingStep == SavingNone)
     {
         return 0;
     }
 
     SetNextState(StateWaiting);
-    states = (states & ~u64{Notices}) | Notice4;
+    states.notices = NoticeAutosaveOff;
     return FinishSaving();
 }
 
 u32 GameController::LoadForNewGame()
 {
-    states &= ~u64{Notices};
+    states.notices = 0;
     SetSavingStep(SavingNewGameLoaded);
-    SaveManagerRequest(static_cast<SaveManager*>(G_UnkStruct_5C0), SaveNewGame,
+    SaveManagerRequest(static_cast<SaveManager*>(g_SaveManager), SaveOperationNewGameSave,
                        static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
     return 1;
 }
 
 u32 GameController::LoadSavedGame()
 {
-    states &= ~u64{Notices};
+    states.notices = 0;
     SetSavingStep(SavingLoaded);
-    SaveManagerRequest(static_cast<SaveManager*>(G_UnkStruct_5C0), SaveLoad,
+    SaveManagerRequest(static_cast<SaveManager*>(g_SaveManager), SaveOperationLoad,
                        static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
     return 1;
 }
 
 u32 GameController::SaveFromPause()
 {
-    states &= ~u64{Notices};
+    states.notices = 0;
     SetSavingStep(SavingPaused);
     oleg.savingShown = 0;
-    SaveManagerRequest(static_cast<SaveManager*>(G_UnkStruct_5C0), SavePauseSave,
+    SaveManagerRequest(static_cast<SaveManager*>(g_SaveManager), SaveOperationPauseSave,
                        static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
     return 1;
 }
@@ -1315,8 +1238,8 @@ u32 GameController::WaitingForPad(TimeClock*)
 
     if (frame == stateFrame)
     {
-        oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0x1.99999Ap-4f), 0);
-        oleg.Show(oleg.masks[NoControllerScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * ShortFadeSeconds), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenNoController], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
 
     return NoState;
@@ -1324,28 +1247,28 @@ u32 GameController::WaitingForPad(TimeClock*)
 
 u32 GameController::CheckingCard(TimeClock*)
 {
-    auto* saves = static_cast<SaveManager*>(G_UnkStruct_5C0);
+    auto* saves = static_cast<SaveManager*>(g_SaveManager);
     if (frame == stateFrame)
     {
-        oleg.Hide(oleg.masks[CardCheckScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-        SaveManagerRequest(saves, SaveCheckCard, static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
+        oleg.Hide(oleg.screens[OLEG::ScreenPicture], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
+        SaveManagerRequest(saves, SaveOperationCheckRoom, static_cast<s32>(g_ClockUnitsPerSecond + g_ClockUnitsPerSecond));
     }
 
-    return saves->Step() == 0 ? StateVivendiLogo : NoState;
+    return saves->RunningOperation() == SaveOperationNone ? StateVivendiLogo : NoState;
 }
 
 u32 GameController::MainMenu(TimeClock* clock)
 {
     if (frame == stateFrame)
     {
-        oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-        oleg.Show(oleg.masks[MainMenuScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenMainMenu], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         StopChunks();
         return NoState;
     }
 
     MenuWidget* menu = oleg.ShownMenu();
-    if (menu != nullptr && (menu->menuFlags & MenuWidget::Leaves) != 0 && menu->current == &g_ResumePage)
+    if (menu != nullptr && menu->menuFlags.leaves != 0 && menu->current == &g_ResumePage)
     {
         return StateTitle;
     }
@@ -1383,17 +1306,17 @@ u32 GameController::FadingOut(TimeClock*)
         StopChunks();
         u32 hidden;
         u32 shown;
-        GetColor(&hidden, 0);
-        GetColor(&shown, 8);
-        oleg.sprite13B8.hiddenColour = hidden;
-        oleg.sprite13B8.shownColour = shown;
-        oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-        oleg.Show(oleg.masks[BlackScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-        FadeSoundGroups(0.5f);
+        GetColor(&hidden, ColourTransparentBlack);
+        GetColor(&shown, ColourBlack);
+        oleg.fader.hiddenColour = hidden;
+        oleg.fader.shownColour = shown;
+        oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
+        FadeSoundGroups(LongFadeSeconds);
         return NoState;
     }
 
-    return oleg.ScreenWidget(BlackScreen)->State() == Widget::StateShown ? StateRestarting : NoState;
+    return oleg.ScreenWidget(OLEG::ScreenBlack)->State() == Widget::StateShown ? StateRestarting : NoState;
 }
 
 u32 GameController::Paused(TimeClock* clock)
@@ -1404,23 +1327,23 @@ u32 GameController::Paused(TimeClock* clock)
     }
 
     MenuWidget* menu = oleg.ShownMenu();
-    if (menu == nullptr || (menu->menuFlags & MenuWidget::Leaves) == 0 || menu->current != &g_ResumePage)
+    if (menu == nullptr || menu->menuFlags.leaves == 0 || menu->current != &g_ResumePage)
     {
         return NoState;
     }
 
-    oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-    if ((states >> ReturnShift & StateMask) == StateWatching)
+    oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+    if (states.returnState == StateWatching)
     {
-        oleg.Show(oleg.masks[WatchingScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenCutscene], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
-    else if ((flags & FlagBottomText) != 0)
+    else if (flags.bottomText != 0)
     {
-        oleg.Show(oleg.masks[BottomTextScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenBottomText], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
     else
     {
-        hudDelay = static_cast<s32>(g_ClockUnitsPerSecond * 0.25f);
+        hudDelay = static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds);
     }
 
     return StateWaiting;
@@ -1430,23 +1353,23 @@ u32 GameController::GameOver(TimeClock*)
 {
     if (frame != stateFrame)
     {
-        ShowPictureScreen(GameOverScreen);
+        ShowPictureScreen(OLEG::ScreenGameOver);
         return NoState;
     }
 
     u32 picture = 0;
-    switch (progress.bits >> 8 & 0xF)
+    switch (progress.play.character)
     {
-    case 0:
-        picture = (progress.bits >> 12 & 0xF) == 1 ? GameOverCrashAndCortex : GameOverCrash;
+    case CharacterCrash:
+        picture = progress.play.second == CharacterCortex ? GameOverCrashAndCortex : GameOverCrash;
         break;
-    case 1:
+    case CharacterCortex:
         picture = GameOverCortex;
         break;
-    case 3:
+    case CharacterNina:
         picture = GameOverNina;
         break;
-    case 5:
+    case CharacterMecha:
         picture = GameOverMecha;
         break;
     default:
@@ -1455,7 +1378,7 @@ u32 GameController::GameOver(TimeClock*)
 
     if (picture != 0)
     {
-        oleg.WantPicture(TilesPicture, picture);
+        oleg.WantPicture(OLEG::PictureTiles, picture);
     }
 
     StopChunks();
@@ -1468,23 +1391,23 @@ u32 GameController::NewGame(TimeClock*)
     {
         u32 hidden;
         u32 shown;
-        GetColor(&hidden, 0);
-        GetColor(&shown, 8);
-        oleg.sprite13B8.hiddenColour = hidden;
-        oleg.sprite13B8.shownColour = shown;
-        oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-        oleg.Show(oleg.masks[BlackScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+        GetColor(&hidden, ColourTransparentBlack);
+        GetColor(&shown, ColourBlack);
+        oleg.fader.hiddenColour = hidden;
+        oleg.fader.shownColour = shown;
+        oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
+        oleg.Show(oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
         return NoState;
     }
 
-    if (oleg.ScreenWidget(BlackScreen)->State() != Widget::StateShown)
+    if (oleg.ScreenWidget(OLEG::ScreenBlack)->State() != Widget::StateShown)
     {
         return NoState;
     }
 
     saveController.Restore(0, &progress, chunkManager);
     ResetGame(0);
-    RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), IntroMovie);
+    RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Intro);
     return NextState();
 }
 
@@ -1505,13 +1428,13 @@ u32 GameController::PlayMovie(TimeClock* clock, s32 delay, u32 index, u32 skippa
 
     if (frame == stateFrame)
     {
-        oleg.Hide(oleg.masks[AllButFirstScreens], delay, 0);
-        oleg.Show(oleg.masks[BlackScreen], delay, 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], delay, 0);
+        oleg.Show(oleg.screens[OLEG::ScreenBlack], delay, 0);
         return 0;
     }
 
-    s32 tenth = static_cast<s32>(g_ClockUnitsPerSecond * 0x1.99999Ap-4f);
-    if (delay + tenth >= static_cast<s32>(clock->time - static_cast<u32>(stateTime)))
+    s32 shortFade = static_cast<s32>(g_ClockUnitsPerSecond * ShortFadeSeconds);
+    if (delay + shortFade >= static_cast<s32>(clock->time - static_cast<u32>(stateTime)))
     {
         return 0;
     }
@@ -1519,12 +1442,13 @@ u32 GameController::PlayMovie(TimeClock* clock, s32 delay, u32 index, u32 skippa
     if (started == 0)
     {
         const GameMovie& movie = g_Movies[index];
-        u32 language = (movie.bits >> GameMovie::KindShift & GameMovie::KindMask) == GameMovie::NoLanguage ? 0 : g_CurrentLanguage;
+        // The story's movies have an audio channel for each language
+        u32 channel = movie.bits.audioChannels == 1 ? 0 : g_CurrentLanguage;
         movieFrame = frame;
-        oleg.Hide(oleg.masks[BlackScreen], tenth, 0);
-        s32 width = movie.bits >> GameMovie::WidthShift & GameMovie::SizeMask;
-        s32 height = movie.bits >> GameMovie::HeightShift & GameMovie::SizeMask;
-        if (movies->Play(movie.file, language, movie.bits & GameMovie::Widescreen, width, height) != 0)
+        oleg.Hide(oleg.screens[OLEG::ScreenBlack], shortFade, 0);
+        s32 width = movie.bits.width;
+        s32 height = movie.bits.height;
+        if (movies->Play(movie.file, channel, movie.bits.widescreen, width, height) != 0)
         {
             return 0;
         }
@@ -1532,7 +1456,7 @@ u32 GameController::PlayMovie(TimeClock* clock, s32 delay, u32 index, u32 skippa
     else
     {
         movieFrame = started;
-        if ((movies->flags & GameMovieController::StateMask) == GameMovieController::StatePlaying)
+        if (movies->IsPlaying())
         {
             if (skippable == 0 || !GetButtonState(pad, PadCross, true))
             {
@@ -1544,7 +1468,7 @@ u32 GameController::PlayMovie(TimeClock* clock, s32 delay, u32 index, u32 skippa
                 *skipped = 1;
             }
 
-            oleg.Show(oleg.masks[BlackScreen], 0, 0);
+            oleg.Show(oleg.screens[OLEG::ScreenBlack], 0, 0);
             movies->RequestStop();
             return 1;
         }
@@ -1555,7 +1479,7 @@ u32 GameController::PlayMovie(TimeClock* clock, s32 delay, u32 index, u32 skippa
         *skipped = 0;
     }
 
-    oleg.Show(oleg.masks[BlackScreen], 0, 0);
+    oleg.Show(oleg.screens[OLEG::ScreenBlack], 0, 0);
     return 1;
 }
 
@@ -1563,31 +1487,31 @@ u32 GameController::ShowPictureScreen(u32 screen)
 {
     s32 shownSince = movieFrame;
     movieFrame = 0;
-    u32 picture = oleg.pictures[TilesPicture];
-    bool reading = (picture & 1) != 0;
-    u32 read = picture >> 1 & 0xFF;
-    if (reading || read == NoTilesPicture)
+    OlegPictureState picture = oleg.pictures[OLEG::PictureTiles];
+    bool reading = picture.reading != 0;
+    u32 read = picture.read;
+    if (reading || read == OLEG::TilesNone)
     {
         if (!reading)
         {
-            oleg.LoadPicture(TilesPicture, 0);
+            oleg.LoadPicture(OLEG::PictureTiles, 0);
         }
 
         return 0;
     }
 
-    s32 half = static_cast<s32>(g_ClockUnitsPerSecond * 0.5f);
-    if ((picture >> 9 & 0xFF) == read)
+    s32 longFade = static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds);
+    if (picture.wanted == read)
     {
-        if (oleg.ScreenWidget(PictureScreen)->State() < Widget::StateAppearing)
+        if (oleg.ScreenWidget(OLEG::ScreenPicture)->State() < Widget::StateAppearing)
         {
-            oleg.Hide(oleg.masks[AllButFirstScreens], half, 0);
-            oleg.Show(oleg.masks[BlackScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-            oleg.Show(oleg.masks[screen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+            oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], longFade, 0);
+            oleg.Show(oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
+            oleg.Show(oleg.screens[screen], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
             return 0;
         }
 
-        if (oleg.ScreenWidget(PictureScreen)->State() != Widget::StateShown)
+        if (oleg.ScreenWidget(OLEG::ScreenPicture)->State() != Widget::StateShown)
         {
             return 0;
         }
@@ -1597,16 +1521,16 @@ u32 GameController::ShowPictureScreen(u32 screen)
     }
 
     // Another picture is wanted: this one faded to black and let go first
-    if (oleg.ScreenWidget(PictureScreen)->State() == Widget::StateShown)
+    if (oleg.ScreenWidget(OLEG::ScreenPicture)->State() == Widget::StateShown)
     {
-        oleg.Hide(oleg.masks[AllButFirstScreens], half, 0);
-        oleg.Show(oleg.masks[BlackScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+        oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], longFade, 0);
+        oleg.Show(oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
         return 0;
     }
 
-    if (oleg.ScreenWidget(PictureScreen)->State() < Widget::StateAppearing)
+    if (oleg.ScreenWidget(OLEG::ScreenPicture)->State() < Widget::StateAppearing)
     {
-        oleg.ReleasePicture(TilesPicture);
+        oleg.ReleasePicture(OLEG::PictureTiles);
     }
 
     return 0;
@@ -1616,7 +1540,7 @@ u32 GameController::LoadingTitle(TimeClock*)
 {
     if (frame == stateFrame)
     {
-        u32 last = static_cast<u32>(states >> LastShift & StateMask);
+        u32 last = static_cast<u32>(states.lastState);
         StopChunks();
         if (last == StateMovie)
         {
@@ -1626,11 +1550,11 @@ u32 GameController::LoadingTitle(TimeClock*)
 
         StringAssign(&progress.startChunk, g_StartChunkPath.string);
         u32 loading = RandomLoadingScreen();
-        oleg.WantPicture(TilesPicture, loading);
+        oleg.WantPicture(OLEG::PictureTiles, loading);
         return NoState;
     }
 
-    if (ShowPictureScreen(LoadingScreen) == 0)
+    if (ShowPictureScreen(OLEG::ScreenLoading) == 0)
     {
         return NoState;
     }
@@ -1648,22 +1572,24 @@ u32 GameController::LoadingTitle(TimeClock*)
         return NoState;
     }
 
-    return progress.ChunkLoaded((flags & 2) != 0 ? 2 : 1, 0) != 0 ? StateTitle : NoState;
+    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 0) != 0
+               ? StateTitle
+               : NoState;
 }
 
 u32 GameController::Title(TimeClock* clock)
 {
     if (frame == stateFrame)
     {
-        for (u32 character = 0; character < Characters; character++)
+        for (u32 character = 0; character < GameProgress::Characters; character++)
         {
             DisableCharacter(character, 0, 1);
         }
 
-        oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+        oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), 0);
         Checkpoint* checkpoint = progress.Reset(0, nullptr);
         saveController.Take(&progress, chunkManager, checkpoint);
-        if (SwitchCharacter(TitleCharacter, 1, 1) == 0)
+        if (SwitchCharacter(CharacterNone, 1, 1) == 0)
         {
             EnableCharacters(1);
         }
@@ -1677,12 +1603,12 @@ u32 GameController::Title(TimeClock* clock)
         return StateMainMenu;
     }
 
-    if (static_cast<s32>(clock->time - static_cast<u32>(stateTime)) < static_cast<s32>(g_ClockUnitsPerSecond * 50.0f))
+    if (static_cast<s32>(clock->time - static_cast<u32>(stateTime)) < static_cast<s32>(g_ClockUnitsPerSecond * AttractSeconds))
     {
         return NoState;
     }
 
-    RequestRandomMovie(static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), AttractMovie, AttractMovie);
+    RequestRandomMovie(static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Attract, GameMovie::Attract);
     return NextState();
 }
 
@@ -1691,18 +1617,19 @@ u32 GameController::LoadingLevel(TimeClock*)
     if (frame == stateFrame)
     {
         u32 loading = RandomLoadingScreen();
-        oleg.WantPicture(TilesPicture, loading);
+        oleg.WantPicture(OLEG::PictureTiles, loading);
         return NoState;
     }
 
-    if (ShowPictureScreen(LoadingScreen) == 0)
+    if (ShowPictureScreen(OLEG::ScreenLoading) == 0)
     {
         return NoState;
     }
 
     if (frame == movieFrame)
     {
-        ChunkManager* kept = (states & EntryMask) != EntryKeepChunks ? chunkManager : nullptr;
+        // From a checkpoint the chunk manager keeps its chunks
+        ChunkManager* kept = states.entry != EntryCheckpoint ? chunkManager : nullptr;
         oleg.Reset();
         if (progress.startChunk.length != 0)
         {
@@ -1711,8 +1638,8 @@ u32 GameController::LoadingLevel(TimeClock*)
             QueueChunk(loading, &progress.startChunk, 0);
         }
 
-        progress.Reset(static_cast<u32>(states >> EntryShift & 0xF), chunkManager);
-        if ((states & EntryMask) == EntrySaved)
+        progress.Reset(static_cast<u32>(states.entry), chunkManager);
+        if (states.entry == EntrySaved)
         {
             saveController.Restore(1, &progress, chunkManager);
         }
@@ -1720,16 +1647,18 @@ u32 GameController::LoadingLevel(TimeClock*)
         return NoState;
     }
 
-    return progress.ChunkLoaded((flags & FlagRb) != 0 ? 2 : 1, 0) != 0 ? StateStartingPlay : NoState;
+    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 0) != 0
+               ? StateStartingPlay
+               : NoState;
 }
 
 u32 GameController::StartingPlay(TimeClock*)
 {
     VideoController* video = G_VideoController;
-    u32 last = static_cast<u32>(states >> LastShift & StateMask);
+    u32 last = static_cast<u32>(states.lastState);
     if (frame == stateFrame)
     {
-        for (u32 character = 0; character < Characters; character++)
+        for (u32 character = 0; character < GameProgress::Characters; character++)
         {
             DisableCharacter(character, 0, 1);
         }
@@ -1739,11 +1668,10 @@ u32 GameController::StartingPlay(TimeClock*)
         case StateWaitingForLoader:
         case StateLoadingLevel:
         {
-            progress.Enter(static_cast<u32>(states >> EntryShift & 0xF), &saveController.chunk, &saveController.place, &progress,
-                           chunkManager);
+            progress.Enter(static_cast<u32>(states.entry), &saveController.chunk, &saveController.place, &progress, chunkManager);
             EnableCharacters(1);
             InstanceContext* player = CharacterInstance(&progress);
-            auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
+            auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, NodeFollow));
             follow->camera.rig.Restart();
         }
             [[fallthrough]];
@@ -1754,24 +1682,24 @@ u32 GameController::StartingPlay(TimeClock*)
         case StateWatching:
         case StateMovie:
             EnableCharacters(1);
-            flags &= ~1u;
+            flags.bottomText = 0;
             break;
         default:
             break;
         }
 
-        g_InstancesWithValue174 = 0;
+        g_CountedInstances = 0;
         return NoState;
     }
 
-    u32 pairing = progress.bits >> 4 & 0xF;
+    u32 pairing = progress.play.pairing;
     InstanceContext* player = CharacterInstance(&progress);
-    PlayerCharacter* character = static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodePlayer))->character;
+    PlayerCharacter* character = static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodeCharacter))->character;
     InstanceContext* second = SecondCharacterInstance(&progress);
     PlayerCharacter* secondCharacter = nullptr;
     if (second != nullptr)
     {
-        auto* node = static_cast<PlayerNode*>(GetGameNode(&second->nodes, NodePlayer));
+        auto* node = static_cast<PlayerNode*>(GetGameNode(&second->nodes, NodeCharacter));
         if (node != nullptr)
         {
             secondCharacter = node->character;
@@ -1782,18 +1710,18 @@ u32 GameController::StartingPlay(TimeClock*)
     {
         switch (pairing)
         {
-        case PairingVehicle3:
-            SetPlayerVehicle(character, 3, secondCharacter, 0);
+        case PairingHumiliskate:
+            SetPlayerVehicle(character, Vehicle::KindHumiliskate, secondCharacter, 0);
             break;
-        case PairingVehicle1:
-            SetPlayerVehicle(character, 1, secondCharacter, 0);
+        case PairingRollerbrawl:
+            SetPlayerVehicle(character, Vehicle::KindRollerbrawl, secondCharacter, 0);
             break;
-        case PairingLinked:
+        case PairingTied:
         {
             LinkCharacters(character, secondCharacter);
             Reference* argument = second != nullptr ? AddReference(second) : nullptr;
-            GameEvent* event = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))), LinkedEvent, &argument,
-                                                    2);
+            GameEvent* event = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))), TiedMessage, &argument,
+                                                    1u << NodeObject);
             Reference* queued = event != nullptr ? AddEventReference(event) : nullptr;
             QueueEvent(second, &queued);
             break;
@@ -1806,11 +1734,11 @@ u32 GameController::StartingPlay(TimeClock*)
     ResumeSound();
     camera.Prepare(player);
     video->cameraTrack.camera = &cutsceneCamera;
-    oleg.Hide(~u64{0}, static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-    hudDelay = static_cast<s32>(g_ClockUnitsPerSecond * 0.25f);
+    oleg.Hide(EveryWidget, static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+    hudDelay = static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds);
     StringAssign(&progress.startChunk, "");
-    StringAssign(&progress.chunk1C, "");
-    StringAssign(&progress.chunk28, "");
+    StringAssign(&progress.unused1C, "");
+    StringAssign(&progress.unused28, "");
     return StatePlaying;
 }
 
@@ -1818,7 +1746,7 @@ u32 GameController::Gallery(TimeClock*)
 {
     if (frame != stateFrame)
     {
-        if (ShowPictureScreen(GalleryScreen) == 0)
+        if (ShowPictureScreen(OLEG::ScreenGallery) == 0)
         {
             return NoState;
         }
@@ -1830,14 +1758,14 @@ u32 GameController::Gallery(TimeClock*)
             return NoState;
         }
 
-        u32 shown = flags >> GalleryShownShift & GalleryPictureMask;
-        if (back || shown == (flags >> GalleryLastShift & GalleryPictureMask))
+        u32 shown = flags.galleryShown;
+        if (back || shown == flags.galleryLast)
         {
             BackToPauseMenu();
             return StatePaused;
         }
 
-        flags = (flags & ~(GalleryPictureMask << GalleryShownShift)) | ((shown + 1) & GalleryPictureMask) << GalleryShownShift;
+        flags.galleryShown = shown + 1;
     }
 
     String name;
@@ -1845,10 +1773,10 @@ u32 GameController::Gallery(TimeClock*)
     name.length = 0;
     name.capacity = 0;
     StringAssign(&name, gallery.string);
-    u32 shown = flags >> GalleryShownShift & GalleryPictureMask;
+    u32 shown = flags.galleryShown;
     // The other of the two named pictures, so it's read again
-    u32 picture = (oleg.pictures[TilesPicture] >> 1 & 0xFF) == NamedPicture ? NamedPicture + 1 : NamedPicture;
-    if (shown < 10)
+    u32 picture = oleg.pictures[OLEG::PictureTiles].read == OLEG::TilesNamed ? OLEG::TilesNamed + 1 : OLEG::TilesNamed;
+    if (shown < TwoDigits)
     {
         StringAppend(&name, "0");
     }
@@ -1857,8 +1785,8 @@ u32 GameController::Gallery(TimeClock*)
     StringConstructNumber(&number, shown);
     StringAppend(&name, number.string);
     StringDestroy(&number);
-    StringAssign(&oleg.text, name.string);
-    oleg.WantPicture(TilesPicture, picture);
+    StringAssign(&oleg.pictureName, name.string);
+    oleg.WantPicture(OLEG::PictureTiles, picture);
     StringDestroy(&name);
     return NoState;
 }
@@ -1870,9 +1798,9 @@ u32 GameController::RequestGallery(s32 delay, const char* name, u32 first, u32 l
         return 0;
     }
 
-    u32 bits = (flags & ~(GalleryPictureMask << GalleryShownShift)) | (first & GalleryPictureMask) << GalleryShownShift;
-    bits = (bits & ~(GalleryPictureMask << GalleryFirstShift)) | (first & GalleryPictureMask) << GalleryFirstShift;
-    flags = (bits & ~(GalleryPictureMask << GalleryLastShift)) | (last & GalleryPictureMask) << GalleryLastShift;
+    flags.galleryShown = first;
+    flags.unused5 = first;
+    flags.galleryLast = last;
     movieDelay = delay;
     StringAssign(&gallery, name);
     SetNextState(StateGallery);
@@ -1884,14 +1812,14 @@ u32 GameController::Credits(TimeClock* clock)
     UpdateSound(0, clock);
     if (frame == stateFrame)
     {
-        oleg.WantPicture(TilesPicture, CreditsPicture);
+        oleg.WantPicture(OLEG::PictureTiles, OLEG::TilesCredits);
         StopChunks();
         g_CreditsTrack = 0;
         g_CreditsTrackTime = CreditsTrackSeconds;
         return NoState;
     }
 
-    if (ShowPictureScreen(PictureScreen) == 0)
+    if (ShowPictureScreen(OLEG::ScreenPicture) == 0)
     {
         return NoState;
     }
@@ -1905,11 +1833,11 @@ u32 GameController::Credits(TimeClock* clock)
         credits = CreditsRoll::Construct(static_cast<CreditsRoll*>(MemoryAllocate(sizeof(CreditsRoll))), &font, path.string);
         StringAssign(&oleg.textLine.text, "");
         oleg.wumpaToAdd = 0;
-        oleg.wumpaDelay = static_cast<s32>(g_ClockUnitsPerSecond * Rounded(0.15));
-        for (u32 index = FirstHudSprite; index < EndHudSprites; index++)
+        oleg.wumpaDelay = static_cast<s32>(g_ClockUnitsPerSecond * WumpaAddSeconds);
+        for (u32 index = OLEG::SpriteHudIcons; index < OLEG::SpriteIcons; index++)
         {
             Sprite& sprite = oleg.sprites[index];
-            CallVirtual<void>(&sprite, sprite.vtable, SpriteSetMaterialSlot, Platform::Graphics::FlatMaterial());
+            CallVirtual<void>(&sprite, sprite.vtable, Shape2D::SetMaterialSlot, Platform::Graphics::FlatMaterial());
         }
 
         StringAssign(&progress.startChunk, g_PostCreditsChunkPath.string);
@@ -1935,26 +1863,30 @@ u32 GameController::Credits(TimeClock* clock)
         {
             // The retail request's bits 21-31 are what the stack held (the music doesn't read them)
             MusicRequest request;
-            request.bits = CreditsMusic[g_CreditsTrack] | CreditsTrackBits;
+            request.bits.value = 0;
+            request.bits.track = CreditsMusic[g_CreditsTrack];
+            request.bits.group = MusicGroup;
+            request.bits.startsAtOnce = 1;
+            request.bits.loops = 1;
             request.right = 1.0f;
             g_CreditsTrackTime = 0.0f;
             request.left = 1.0f;
-            request.fadeTime = g_CreditsTrack == 0 ? 0.0f : 3.0f;
-            PlayMusicRequest(0, &request);
+            request.fadeTime = g_CreditsTrack == 0 ? 0.0f : CreditsFadeSeconds;
+            PlayMusicRequest(MainMusicSlot, &request);
             g_CreditsTrack++;
         }
 
         return NoState;
     }
 
-    if (progress.ChunkLoaded((flags & FlagRb) != 0 ? 2 : 1, 0) == 0)
+    if (progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 0) == 0)
     {
         return NoState;
     }
 
     if (credits != nullptr)
     {
-        credits->Destroy(3);
+        credits->Destroy(DestroyAndFree);
     }
 
     credits = nullptr;
@@ -1963,24 +1895,21 @@ u32 GameController::Credits(TimeClock* clock)
 
 u32 GameController::Restarting(TimeClock*)
 {
-    Checkpoint* checkpoint = progress.Reset(static_cast<u32>(states >> EntryShift & 0xF), chunkManager);
+    Checkpoint* checkpoint = progress.Reset(static_cast<u32>(states.entry), chunkManager);
     if (checkpoint != nullptr)
     {
         StringAssign(&progress.startChunk, checkpoint->chunk.string);
     }
 
-    if ((states & EntryMask) == EntrySaved)
+    if (states.entry == EntrySaved)
     {
-        saveController.summary = (saveController.summary & ~0x7Fu) | StartLives;
+        saveController.summary.lives = GameProgress::StartLives;
         GameRendererController* renderer = G_GameRendererController;
-        u32 vibration = (static_cast<GamePadController*>(G_GamePadController)->flags << 6) & SaveController::OptionVibration;
-        saveController.options = (saveController.options & ~SaveController::OptionVibration) | vibration;
+        saveController.options.vibration = static_cast<GamePadController*>(G_GamePadController)->flags.vibration;
         saveController.effectsVolume = GroupVolumeLevel(EffectsGroup);
         saveController.musicVolume = GroupVolumeLevel(MusicGroup);
-        u32 options = (saveController.options & ~(SaveController::OptionMusicStereoMask << SaveController::OptionMusicStereoShift)) |
-                      (g_MusicStereo & SaveController::OptionMusicStereoMask) << SaveController::OptionMusicStereoShift;
-        saveController.options = options;
-        saveController.options = (options & ~SaveController::OptionWidescreen) | (g_WidescreenTv & 1u) << 16;
+        saveController.options.musicStereo = g_MusicStereo;
+        saveController.options.widescreen = g_WidescreenTv;
         saveController.screenOffset.x = renderer->screenOffset.x;
         saveController.screenOffset.y = renderer->screenOffset.y;
         StringAssign(&progress.startChunk, saveController.chunk.string);
@@ -1999,23 +1928,24 @@ u32 GameController::Restarting(TimeClock*)
         return StateLoadingLevel;
     }
 
-    ResetGame(static_cast<u32>(states >> EntryShift & 0xF));
+    ResetGame(static_cast<u32>(states.entry));
     return StateStartingPlay;
 }
 
 void GameController::BackToPauseMenu()
 {
-    u32 reason = static_cast<u32>(states >> PauseReasonShift & PauseReasonMask);
-    oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-    if (reason - 1 < PauseScreenCount && PauseScreens[reason - 1] >= 0)
+    u32 reason = static_cast<u32>(states.pauseReason);
+    oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+    u32 page = reason - ReasonStart;
+    if (page < PauseScreenCount && PauseScreens[page] != NoScreen)
     {
-        oleg.Show(oleg.masks[PauseScreens[reason - 1]], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+        oleg.Show(oleg.screens[PauseScreens[page]], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
     }
 }
 
 u32 GameController::PausePage()
 {
-    u32 reason = static_cast<u32>(states >> PauseReasonShift & PauseReasonMask);
+    u32 reason = static_cast<u32>(states.pauseReason);
     bool back = false;
     bool on = false;
     if (oleg.optionsMenu.State() < Widget::StateAppearing && oleg.screenPositionMenu.State() < Widget::StateAppearing)
@@ -2024,7 +1954,7 @@ u32 GameController::PausePage()
         on = GetButtonState(pad, PadR1, true) || GetButtonState(pad, PadR2, true);
     }
 
-    u32 area = progress.bits >> 26 & 0x1F;
+    u32 area = progress.play.open;
     if (back)
     {
         switch (reason)
@@ -2073,45 +2003,47 @@ u32 GameController::PausePage()
 
 u32 GameController::PauseReason(TimeClock*, u32 paused)
 {
-    u32 reason = static_cast<u32>(states >> PauseReasonShift & PauseReasonMask);
+    u32 reason = static_cast<u32>(states.pauseReason);
     if (reason == ReasonQuitting)
     {
         return ReasonQuitting;
     }
 
     u32 next = ReasonNone;
-    u64 saving = states & u64{SavingMask} << SavingShift;
-    if ((states & Notice6) != 0)
+    u32 saving = static_cast<u32>(states.savingStep);
+    if ((states.notices & NoticeAutosaveFailed) != 0)
     {
-        states &= ~u64{Notices};
-        next = ReasonNotice6;
+        states.notices = 0;
+        next = ReasonAutosaveFailed;
     }
     else if (State() == StatePaused || State() == StateGallery)
     {
-        if (saving == u64{4} << SavingShift || saving == u64{0xC} << SavingShift)
+        // A load's or the pause menu's save's result still to come
+        if (saving == SavingLoaded || saving == SavingPaused)
         {
             return reason;
         }
 
-        next = reason >= ReasonNotice4 && reason < ReasonQuitting ? reason : ReasonNone;
+        next = reason >= ReasonAutosaveOff && reason < ReasonQuitting ? reason : ReasonNone;
     }
-    else if ((states & Notice4) != 0)
+    else if ((states.notices & NoticeAutosaveOff) != 0)
     {
-        states &= ~u64{Notices};
-        next = ReasonNotice4;
+        states.notices = 0;
+        next = ReasonAutosaveOff;
     }
-    else if ((states & Notice7) != 0)
+    else if ((states.notices & NoticeFourth) != 0)
     {
-        states &= ~u64{Notices};
-        next = ReasonNotice7;
+        states.notices = 0;
+        next = ReasonFourthNotice;
     }
-    else if ((states & Notice5) != 0)
+    else if ((states.notices & NoticeAutosaveOn) != 0)
     {
-        states &= ~u64{Notices};
-        next = saving != 0 ? ReasonNotice5 : ReasonNone;
+        states.notices = 0;
+        next = saving != SavingNone ? ReasonAutosaveOn : ReasonNone;
     }
-    else if (saving == u64{6} << SavingShift)
+    else if (saving == SavingSavedShown)
     {
+        // An autosave's screens are up
         return ReasonNone;
     }
 
@@ -2131,11 +2063,11 @@ u32 GameController::PauseReason(TimeClock*, u32 paused)
         }
         else
         {
-            next = (states & StartPressed) != 0 ? ReasonStart : ReasonNone;
+            next = states.startPressed != 0 ? ReasonStart : ReasonNone;
         }
     }
 
-    states = (states & ~(u64{PauseReasonMask} << PauseReasonShift)) | static_cast<u64>(next & PauseReasonMask) << PauseReasonShift;
+    states.pauseReason = next;
     if (paused != 0 && next == reason)
     {
         return next;
@@ -2152,18 +2084,19 @@ u32 GameController::PauseReason(TimeClock*, u32 paused)
         return next;
     }
 
-    states = (states & ~(u64{StateMask} << ReturnShift)) | static_cast<u64>(State()) << ReturnShift;
+    states.returnState = State();
     StopChunks();
     return next;
 }
 
 u32 GameController::Playing(TimeClock* clock)
 {
-    Reference* reference = progress.characters[FifthCharacter];
-    ReferencedObject* fifth = reference != nullptr ? reference->object : nullptr;
-    if (fifth != nullptr)
+    // The title's character kept asleep
+    Reference* reference = progress.characters[CharacterNone];
+    ReferencedObject* title = reference != nullptr ? reference->object : nullptr;
+    if (title != nullptr)
     {
-        CallVirtual<void>(fifth, fifth->vtable, InstanceStepSlot);
+        CallVirtual<void>(title, title->vtable, ReferencedObject::SleepSlot);
     }
 
     if (frame == stateFrame)
@@ -2182,26 +2115,26 @@ u32 GameController::Playing(TimeClock* clock)
         return NoState;
     }
 
-    s32 quarter = static_cast<s32>(g_ClockUnitsPerSecond * 0.25f);
-    u32 mode = progress.bits & 0xF;
-    if (mode == ModeHealth)
+    s32 fade = static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds);
+    u32 mode = progress.play.mode;
+    if (mode == PlayHealth)
     {
-        oleg.Show(oleg.masks[HealthScreen], quarter, 0);
+        oleg.Show(oleg.screens[OLEG::ScreenHealth], fade, 0);
     }
-    else if (mode == ModeTimed)
+    else if (mode == PlayTimed)
     {
-        if ((flags & 1) == 0)
+        if (flags.bottomText == 0)
         {
-            oleg.Show(oleg.masks[TimeScreen], quarter, 0);
+            oleg.Show(oleg.screens[OLEG::ScreenTime], fade, 0);
         }
     }
     else
     {
-        oleg.Show(oleg.masks[HudScreen], quarter, static_cast<s32>(g_ClockUnitsPerSecond * 3.0f));
-        oleg.Show(oleg.masks[SliderScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
-        if ((flags & 1) == 0)
+        oleg.Show(oleg.screens[OLEG::ScreenHud], fade, static_cast<s32>(g_ClockUnitsPerSecond * HudShownSeconds));
+        oleg.Show(oleg.screens[OLEG::ScreenSlider], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
+        if (flags.bottomText == 0)
         {
-            oleg.Show(oleg.masks[CounterScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.25f), 0);
+            oleg.Show(oleg.screens[OLEG::ScreenAmmo], static_cast<s32>(g_ClockUnitsPerSecond * FadeSeconds), 0);
         }
     }
 
@@ -2239,7 +2172,7 @@ u32 GameController::MovieEnded()
         return 0;
     }
 
-    u32 last = static_cast<u32>(states >> LastShift & StateMask);
+    u32 last = static_cast<u32>(states.lastState);
     if (last == StateTitle)
     {
         SetNextState(StateLoadingTitle);
@@ -2260,9 +2193,9 @@ u32 GameController::MovieEnded()
 void GameController::ResetGame(u32 entry)
 {
     VideoController* video = G_VideoController;
-    // The instances kept: every flag but bit 9
-    const u32 filter[3] = {0xFFFFFDFF, 0, 0};
-    u32 dropInstances = entry < 2;
+    // The instances reset (InstanceFilterWord): of any kind but the cameras', whatever their flags
+    const u32 filter[3] = {ResetKinds, 0, 0};
+    u32 dropInstances = entry < EntrySaved;
     StopChunks();
     for (ChunkData* chunk = GetChunkList()->first; chunk != nullptr; chunk = chunk->next)
     {
@@ -2287,21 +2220,8 @@ void GameController::ResetGame(u32 entry)
 
 namespace
 {
-// The camera shown, the state word's bits 19-22 (0 the played character's follow camera, 3 the game's rig, 4 the cutscenes')
-constexpr u32 CameraShownShift = 19;
-constexpr u64 CameraShownMask = 0xF;
-constexpr u32 ShowsFollowCamera = 0;
-constexpr u32 ShowsGameRig = 3;
-constexpr u32 ShowsCutsceneRig = 4;
-// The camera's instance's bit 17 keeps it in its chunk (the follow node's CanChangeChunk)
-constexpr u32 CameraStaysFlag = 0x20000;
-// The player's held: the character's bit at 0x1C (its agent's), the instance's flag 0x80000 every character but the fifth loses
-// when it's let go
-constexpr u32 CharacterHeld = 0x1;
-constexpr u32 SolidModelFlag = 0x80000;
-// The character part's reset slot (its vtable's 2), the kind it's given when the player's let go
-constexpr u32 PartResetSlot = 2;
-constexpr u32 PartResetKind = 3;
+// The way into the game the character part's values are made again for when the player's let go
+constexpr u32 PartResetEntry = EntryCheckpoint;
 
 // An instance's place as the retail code reads it, also when there's no instance (the word at address 8 then)
 ObjectPlace* RetailPlaceOf(const InstanceContext* instance)
@@ -2326,7 +2246,7 @@ HeldCharacter PlayedCharacter(GameController* controller)
 {
     InstanceContext* player = CharacterInstance(&controller->progress);
     auto* controls = static_cast<ControlsNode*>(GetGameNode(&player->nodes, NodeControls));
-    auto* node = static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodePlayer));
+    auto* node = static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodeCharacter));
     return {controls, reinterpret_cast<CharacterAgent*>(node->character)};
 }
 
@@ -2338,22 +2258,22 @@ CharacterPart* PartOf(CharacterAgent* character)
 
 InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset)
 {
-    controller->states = (controller->states & ~(CameraShownMask << CameraShownShift)) |
-                         static_cast<u64>(camera & CameraShownMask) << CameraShownShift;
+    controller->states.camera = camera;
     switch (camera)
     {
-    case ShowsFollowCamera:
+    case GameController::CameraFollow:
     {
         InstanceContext* player = CharacterInstance(&controller->progress);
-        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
-        auto* followCamera = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, NodeFollow));
+        auto* followCamera =
+            follow->cameraInstance != nullptr ? static_cast<InstanceContext*>(follow->cameraInstance->object) : nullptr;
         ShowFollowCamera(&follow->camera, followCamera, player, reset);
         // Unchecked: the follow node always has a camera once it's given its instance
-        followCamera->flags &= ~CameraStaysFlag;
+        followCamera->flags.movesBetweenChunks = 0;
         AssignReference(&controller->view.cameraObject, followCamera);
         return followCamera;
     }
-    case ShowsGameRig:
+    case GameController::CameraGameRig:
     {
         InstanceContext* shown = ShownCamera(controller);
         auto* lens = static_cast<CameraLensNode*>(GetGameNode(&shown->nodes, NodeCameraLens));
@@ -2365,7 +2285,7 @@ InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset)
         controller->camera.ownTarget.end = position;
         return shown;
     }
-    case ShowsCutsceneRig:
+    case GameController::CameraCutsceneRig:
     {
         InstanceContext* shown = ShownCamera(controller);
         auto* lens = static_cast<CameraLensNode*>(GetGameNode(&shown->nodes, NodeCameraLens));
@@ -2373,14 +2293,15 @@ InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset)
         CutsceneCameraRig& rig = controller->cutsceneCamera;
         rig.DropCameraFollower();
         rig.cameraFollower = nullptr;
-        rig.bits = ((rig.bits & ~CameraRig::BitOwnsCameraFollower & ~CameraRig::BitIgnoresTrigger) | CameraRig::BitIgnoresTrigger) &
-                   ~CameraRig::BitSmoothed;
+        rig.bits.ownsCameraFollower = 0;
+        rig.bits.ignoresTrigger = 1;
+        rig.bits.smoothed = 0;
         rig.DropTargetFollower();
         rig.targetFollower = nullptr;
-        rig.bits &= ~CameraRig::BitOwnsTargetFollower;
+        rig.bits.ownsTargetFollower = 0;
         rig.DropTarget();
         rig.target = nullptr;
-        rig.bits &= ~CameraRig::BitOwnsTarget;
+        rig.bits.ownsTarget = 0;
         lens->SetRig(&rig, reset);
         return shown;
     }
@@ -2392,11 +2313,12 @@ InstanceContext* ShowCamera(GameController* controller, u32 camera, u32 reset)
 void BlendToCamera(GameController* controller, u32 camera, const s32* ticks, u32 reset, u32 curve)
 {
     u8 blendCurve = static_cast<u8>(curve);
-    if (camera == ShowsFollowCamera)
+    if (camera == GameController::CameraFollow)
     {
         InstanceContext* player = CharacterInstance(&controller->progress);
-        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, Node16));
-        auto* followCamera = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, NodeFollow));
+        auto* followCamera =
+            follow->cameraInstance != nullptr ? static_cast<InstanceContext*>(follow->cameraInstance->object) : nullptr;
         auto* lens = static_cast<CameraLensNode*>(GetGameNode(&followCamera->nodes, NodeCameraLens));
         CameraRig* rig = &follow->camera.rig;
         if (reset != 0)
@@ -2406,7 +2328,7 @@ void BlendToCamera(GameController* controller, u32 camera, const s32* ticks, u32
 
         lens->BlendTo(rig, *ticks, blendCurve);
     }
-    else if (camera == ShowsGameRig)
+    else if (camera == GameController::CameraGameRig)
     {
         auto* lens = static_cast<CameraLensNode*>(GetGameNode(&ShownCamera(controller)->nodes, NodeCameraLens));
         lens->BlendTo(&controller->camera, *ticks, blendCurve);
@@ -2417,14 +2339,14 @@ void GameController::HoldPlayer()
 {
     HeldCharacter held = PlayedCharacter(this);
     CharacterAgent* character = held.character;
-    character->unknown1C |= CharacterHeld;
-    held.controls->bits |= ControlsNode::BitMotionDriven;
+    character->eventFlags.eventsOff = 1;
+    held.controls->bits.motionDriven = 1;
     // What the reset loses of the part kept: being tied to the other character (only the leader isn't set back) and the hit
     // points
     CharacterPart* part = PartOf(character);
-    bool leader = (part->moveBits & CharacterPart::LinkedFirst) != 0;
-    bool second = (part->moveBits & CharacterPart::LinkedSecond) != 0;
-    u32 hitPoints = part->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+    bool leader = part->moveBits.linkedFirst != 0;
+    bool second = part->moveBits.linkedSecond != 0;
+    u32 hitPoints = part->flags.hitPoints;
     if (!leader)
     {
         character->Reset();
@@ -2432,39 +2354,38 @@ void GameController::HoldPlayer()
 
     if (second)
     {
-        PartOf(character)->moveBits |= CharacterPart::LinkedSecond;
+        PartOf(character)->moveBits.linkedSecond = 1;
     }
     else if (leader)
     {
-        PartOf(character)->moveBits |= CharacterPart::LinkedFirst;
+        PartOf(character)->moveBits.linkedFirst = 1;
     }
 
     part = PartOf(character);
-    part->flags = (part->flags & ~(CreaturePart::HitPointsMask << CreaturePart::HitPointsShift)) |
-                  hitPoints << CreaturePart::HitPointsShift;
+    part->flags.hitPoints = hitPoints;
 }
 
 void GameController::ReleasePlayer(u32 resume)
 {
     HeldCharacter held = PlayedCharacter(this);
     CharacterAgent* character = held.character;
-    character->unknown1C &= ~CharacterHeld;
-    held.controls->bits &= ~ControlsNode::BitMotionDriven;
+    character->eventFlags.eventsOff = 0;
+    held.controls->bits.motionDriven = 0;
     CharacterPart* part = PartOf(character);
-    bool leader = (part->moveBits & CharacterPart::LinkedFirst) != 0;
-    u32 hitPoints = part->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+    bool leader = part->moveBits.linkedFirst != 0;
+    u32 hitPoints = part->flags.hitPoints;
     if (!leader && resume != 0)
     {
-        CallVirtual<void>(part, part->vtable, PartResetSlot, PartResetKind);
+        CallVirtual<void>(part, part->vtable, AgentPart::ResetSlot, PartResetEntry);
         character->Reset();
     }
 
     part = PartOf(character);
-    part->flags = (part->flags & ~(CreaturePart::HitPointsMask << CreaturePart::HitPointsShift)) |
-                  hitPoints << CreaturePart::HitPointsShift;
+    part->flags.hitPoints = hitPoints;
+    // Every character but the title's (none) loses its solid model when the player's let go
     for (u32 index = 0; index < GameProgress::Characters; index++)
     {
-        if (index == FifthCharacter)
+        if (index == CharacterNone)
         {
             continue;
         }
@@ -2472,7 +2393,7 @@ void GameController::ReleasePlayer(u32 resume)
         InstanceContext* instance = progress.Instance(index);
         if (instance != nullptr)
         {
-            instance->flags &= ~SolidModelFlag;
+            instance->flags.solidModel = 0;
         }
     }
 }

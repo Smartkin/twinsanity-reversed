@@ -17,27 +17,19 @@ namespace
 {
 constexpr u32 AxisCount = 2;
 constexpr u32 ActionCount = 7;
-// The sticks' dead zone
-constexpr f32 DeadZone = Rounded(0.3);
-// A value below it is none
-constexpr f32 NoInput = Rounded(5e-5);
-constexpr f32 TinyLength = 0x1.5798ecp-29f;
-// 65536ths of a turn to radians, and radians to a share of half a turn
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 InversePi = 0x1.45f306p-2f;
 
 CharacterAgent* CharacterOf(InstanceContext* instance)
 {
-    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodePlayer))->agent);
+    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter))->agent);
 }
 
 // Whether the follow camera's rig isn't the lens's (the pad then drives nothing): its bits read as retail does, through a null
 // follow node too (the word at 0x30 then)
 bool RigAway(InstanceContext* instance)
 {
-    void* follow = GetGameNode(&instance->nodes, Node16);
+    void* follow = GetGameNode(&instance->nodes, NodeFollow);
     std::uintptr_t address = reinterpret_cast<std::uintptr_t>(follow) + offsetof(FollowNode, camera);
-    return (*reinterpret_cast<const u32*>(address) & FollowCamera::BitRigAway) != 0;
+    return reinterpret_cast<const FollowCameraBits*>(address + offsetof(FollowCamera, bits))->rigAway != 0;
 }
 
 // An instance's place as the retail code reads it, also when there's no instance (the word at address 8 then)
@@ -56,8 +48,8 @@ void ClearMove(CharacterAgent* character)
 
 bool IsNone(const Vector4* vector)
 {
-    return __builtin_fabsf(vector->x) <= NoInput && __builtin_fabsf(vector->y) <= NoInput &&
-           __builtin_fabsf(vector->z) <= NoInput;
+    return __builtin_fabsf(vector->x) <= Epsilon && __builtin_fabsf(vector->y) <= Epsilon &&
+           __builtin_fabsf(vector->z) <= Epsilon;
 }
 
 Vector4 Cross(const Vector4* a, const Vector4* b)
@@ -68,7 +60,7 @@ Vector4 Cross(const Vector4* a, const Vector4* b)
 // A rotation's inverse (InvertRotation inline)
 void Invert(Vector4* rotation)
 {
-    f32 inverse = InverseLength4(0.0f, Rounded(1e-10), rotation);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, rotation);
     rotation->w = rotation->w * inverse;
     rotation->x = rotation->x * -inverse;
     rotation->y = rotation->y * -inverse;
@@ -79,7 +71,7 @@ void Invert(Vector4* rotation)
 // direction
 void FrameRotation(Vector4* rotation, const Vector4* direction, const Vector4* up)
 {
-    f32 inverse = InverseLength(direction, TinyLength);
+    f32 inverse = InverseLength(direction, LengthEpsilon);
     Vector4 unit = {direction->x * inverse, direction->y * inverse, direction->z * inverse, 1.0f};
     Matrix4x4 frame;
     *RowOf(&frame, 0) = Cross(up, &unit);
@@ -108,7 +100,7 @@ ControlsHandler* ControlsHandler::Construct(ControlsHandler* handler, u32 axisCo
 void ControlsHandler::Destroy(u32 destroyFlags)
 {
     vtable = g_ControlsHandlerVTable;
-    bindings.Destroy(2);
+    bindings.Destroy(DestroyOnly);
     if ((destroyFlags & 1) != 0)
     {
         MemoryDeallocate2_(this);
@@ -163,16 +155,16 @@ void ControlsHandler::GiveTurn(Vector4* turn, const Vector4* move, AgentNode* no
         moveX = moveX / length;
     }
 
-    buttons.turn = (buttons.locked & CharacterButtons::LockTurn) != 0 ? 0.0f : share;
-    buttons.moveZ = (buttons.locked & CharacterButtons::LockMoveZ) != 0 ? 0.0f : moveZ;
-    buttons.moveX = (buttons.locked & CharacterButtons::LockMoveX) != 0 ? 0.0f : moveX;
+    buttons.turn = buttons.locked.turn != 0 ? 0.0f : share;
+    buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : moveZ;
+    buttons.moveX = buttons.locked.moveX != 0 ? 0.0f : moveX;
 }
 
 void ControlsHandler::Move(f32 length, InstanceContext* instance, const Vector4* direction)
 {
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
-    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodePlayer));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     auto* character = static_cast<CharacterAgent*>(node->agent);
     Vector4 turn;
     TurnToward(direction, RowOf(&place->matrix, 1), RowOf(&place->matrix, 2), &turn);
@@ -203,7 +195,7 @@ void ControlsHandler::MoveBy(TimeClock*, const Vector4* velocity, InstanceContex
     direction.y = direction.y * share;
     direction.z = direction.z * share;
     f32 length = __builtin_sqrtf(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
-    f32 inverse = InverseLength(&direction, TinyLength);
+    f32 inverse = InverseLength(&direction, LengthEpsilon);
     direction.x = direction.x * inverse;
     direction.y = direction.y * inverse;
     direction.z = direction.z * inverse;
@@ -223,20 +215,20 @@ void ControlsHandler::ReadButtons(GamePad* pad, InstanceContext* instance)
     f32 square = bindings.Pressure(pad, ActionSquare);
     f32 left = bindings.Pressure(pad, ActionL);
     f32 right = bindings.Pressure(pad, ActionR);
-    buttons.cross = (buttons.locked & CharacterButtons::LockCross) != 0 ? 0.0f : cross;
-    buttons.square = (buttons.locked & CharacterButtons::LockSquare) != 0 ? 0.0f : square;
-    buttons.circle = (buttons.locked & CharacterButtons::LockCircle) != 0 ? 0.0f : circle;
-    buttons.shoulders = (buttons.locked & CharacterButtons::LockShoulders) != 0 ? 0.0f : right - left;
+    buttons.cross = buttons.locked.cross != 0 ? 0.0f : cross;
+    buttons.square = buttons.locked.square != 0 ? 0.0f : square;
+    buttons.circle = buttons.locked.circle != 0 ? 0.0f : circle;
+    buttons.shoulders = buttons.locked.shoulders != 0 ? 0.0f : right - left;
 }
 
 CharacterControls* CharacterControls::Construct(CharacterControls* handler)
 {
     ControlsHandler::Construct(handler, AxisCount, ActionCount);
     handler->vtable = g_CharacterControlsVTable;
-    handler->bindings.AddAxis(DeadZone, AxisX, PadAxisLeftX);
-    handler->bindings.AddAxis(DeadZone, AxisX, PadAxisDirectionX);
-    handler->bindings.AddAxis(DeadZone, AxisY, PadAxisLeftY);
-    handler->bindings.AddAxis(DeadZone, AxisY, PadAxisDirectionY);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisX, PadAxisLeftX);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisX, PadAxisDirectionX);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisY, PadAxisLeftY);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisY, PadAxisDirectionY);
     handler->Reset();
     return handler;
 }
@@ -279,10 +271,10 @@ VehicleControls* VehicleControls::Construct(VehicleControls* handler, u32 stickI
     ControlsHandler::Construct(handler, AxisCount, ActionCount);
     handler->stickIsCross = stickIsCross;
     handler->vtable = g_VehicleControlsVTable;
-    handler->bindings.AddAxis(DeadZone, AxisX, PadAxisLeftX);
-    handler->bindings.AddAxis(DeadZone, AxisX, PadAxisDirectionX);
-    handler->bindings.AddAxis(DeadZone, AxisY, PadAxisLeftY);
-    handler->bindings.AddAxis(DeadZone, AxisY, PadAxisDirectionY);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisX, PadAxisLeftX);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisX, PadAxisDirectionX);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisY, PadAxisLeftY);
+    handler->bindings.AddAxis(ButtonBindings::AxisDeadZone, AxisY, PadAxisDirectionY);
     handler->Reset();
     return handler;
 }
@@ -308,25 +300,28 @@ void VehicleControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
     if (stickIsCross != 0)
     {
         // Retail bug: the stick's y as cross (the hoverboard's) is written over by ReadButtons, which runs right after
-        buttons.cross = (buttons.locked & CharacterButtons::LockCross) != 0 ? 0.0f : y;
+        buttons.cross = buttons.locked.cross != 0 ? 0.0f : y;
         y = 0.0f;
     }
     else
     {
-        buttons.cross = (buttons.locked & CharacterButtons::LockCross) != 0 ? 0.0f : cross;
+        buttons.cross = buttons.locked.cross != 0 ? 0.0f : cross;
     }
 
-    buttons.square = (buttons.locked & CharacterButtons::LockSquare) != 0 ? 0.0f : square;
-    buttons.circle = (buttons.locked & CharacterButtons::LockCircle) != 0 ? 0.0f : circle;
-    buttons.locked &= ~(CharacterButtons::LockCross | CharacterButtons::LockSquare | CharacterButtons::LockCircle);
+    buttons.square = buttons.locked.square != 0 ? 0.0f : square;
+    buttons.circle = buttons.locked.circle != 0 ? 0.0f : circle;
+    buttons.locked.cross = 0;
+    buttons.locked.square = 0;
+    buttons.locked.circle = 0;
     if (x == 0.0f && y == 0.0f)
     {
         // The move left as it was
         return;
     }
 
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, Node16));
-    InstanceContext* camera = follow->object != nullptr ? static_cast<InstanceContext*>(follow->object->object) : nullptr;
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
+    InstanceContext* camera =
+        follow->cameraInstance != nullptr ? static_cast<InstanceContext*>(follow->cameraInstance->object) : nullptr;
     ObjectPlace* cameraPlace = RetailPlaceOf(camera);
     ObjectPlace* place = instance->place;
     RotateAndTranslate(cameraPlace);
@@ -342,11 +337,11 @@ void VehicleControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
     Vector4 ahead = *RowOf(&cameraPlace->matrix, 2);
     side.y = 0.0f;
     ahead.y = 0.0f;
-    f32 inverse = InverseLength(&side, TinyLength);
+    f32 inverse = InverseLength(&side, LengthEpsilon);
     side.x = side.x * inverse;
     side.y = side.y * inverse;
     side.z = side.z * inverse;
-    inverse = InverseLength(&ahead, TinyLength);
+    inverse = InverseLength(&ahead, LengthEpsilon);
     ahead.x = ahead.x * inverse;
     ahead.y = ahead.y * inverse;
     ahead.z = ahead.z * inverse;
@@ -360,14 +355,14 @@ void VehicleControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
         moveX = moveX * scale;
     }
 
-    buttons.moveX = (buttons.locked & CharacterButtons::LockMoveX) != 0 ? 0.0f : moveX;
-    buttons.moveZ = (buttons.locked & CharacterButtons::LockMoveZ) != 0 ? 0.0f : moveZ;
+    buttons.moveX = buttons.locked.moveX != 0 ? 0.0f : moveX;
+    buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : moveZ;
 }
 
 void StickControls::Destroy(u32 destroyFlags)
 {
     vtable = g_ControlsHandlerVTable;
-    bindings.Destroy(2);
+    bindings.Destroy(DestroyOnly);
     if ((destroyFlags & 1) != 0)
     {
         MemoryDeallocate2_(this);
@@ -383,6 +378,6 @@ void StickControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
     CharacterButtons& buttons = CharacterOf(instance)->buttons;
     f32 x = bindings.AxisValue(pad, AxisX);
     f32 y = bindings.AxisValue(pad, AxisY);
-    buttons.turn = (buttons.locked & CharacterButtons::LockTurn) != 0 ? 0.0f : x;
-    buttons.moveZ = (buttons.locked & CharacterButtons::LockMoveZ) != 0 ? 0.0f : y;
+    buttons.turn = buttons.locked.turn != 0 ? 0.0f : x;
+    buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : y;
 }

@@ -11,22 +11,60 @@ struct ResourceTable;
 // The behaviour scripts (AgentLab) as the game keeps them: script resources of two kinds, starters (the assigners that make the
 // game run a graph on its own) and graphs (states of bodies of a condition and commands, and a jump to another state)
 
+// The class IDs of the AgentLab items (their item types, what the game context's AgentLab items' builder makes)
+enum AgentLabClassId : u32
+{
+    GraphStateClassId = 0x1800,
+    GraphDataClassId = 0x1801,
+    ScriptClassId = 0x1802,
+    StarterClassId = 0x1803,
+    GraphClassId = 0x1804,
+    StateBodyClassId = 0x1805,
+    CommandClassId = 0x1806,
+    ConditionClassId = 0x1807,
+    ControlPacketClassId = 0x1808,
+    CallConventionClassId = 0x1809,
+    // Two words of -1, two words of 0 and 16 bytes left as the heap had them, which nothing reads
+    UnusedNonesClassId = 0x180C,
+    UnusedZerosClassId = 0x180E,
+    AiPositionClassId = 0x180F,
+    AiPathClassId = 0x1810,
+    UnusedBlockClassId = 0x1811,
+};
+
+// A script's ID of none (a starter's, a graph's, a state's child behaviour)
+constexpr u16 NoScriptId = 0xFFFF;
+
+// A script resource's bits: its script's ID (NoScriptId none), its priority (50 when made) and whether its references are
+// resolved
+union ScriptResourceBits
+{
+    u32 value;
+    struct
+    {
+        u32 id : 16;
+        u32 priority : 8;
+        u32 resolved : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(ScriptResourceBits, 4);
+
 // A script resource's base (retail's GenericScriptInfo, 0x1C bytes; vtable 0x18 bytes in: 1 the destructor, 2 its script's ID, 3
 // its references resolved, 4 the read, 5 the write, 6 its section's item type, 7 whether it's a starter): its resource header, its
-// resource ID, its bits (its script's ID in the low half, 0xFFFF none; its priority in bits 16-23, 50 when made; bit 24 resolved)
-// and a name
+// resource ID, its bits and a name
 struct ScriptResource
 {
-    enum Bits : u32
+    enum Slot : u32
     {
-        IdMask = 0xFFFF,
-        PriorityShift = 16,
-        Resolved = 0x1000000,
+        DestroySlot = 1,
+        IdSlot = 2,
+        ResolveSlot = 3,
     };
 
     u32 header;
     s32 resourceId;
-    u32 bits;
+    ScriptResourceBits bits;
     String name;
     const GccVTableEntry* vtable;
 
@@ -42,10 +80,41 @@ struct ScriptResource
 CHECK_OFFSET(ScriptResource, vtable, 0x18);
 CHECK_SIZE(ScriptResource, 0x1C);
 
+// Whose instance a starter's assigner runs its graph on (the AgentLab tool's names): the agent's own, one its links node keeps
+// (by the argument), a global agent's (the instance registered under the argument), the player's, the originator's; none for
+// the tool's other types
+enum Assignee : u32
+{
+    AssignMe = 0,
+    AssignLinkedObject = 2,
+    AssignGlobalAgent = 3,
+    AssignHumanPlayer = 4,
+    AssignOriginator = 8,
+    AssignNone = 0xF,
+};
+
+// A call convention's bits: who's assigned (Assignee), the tool's locality (3 anywhere), status (2 any state) and preference (5
+// anyhow), which the game never reads, and the argument (the linked object's or global agent's index, 0xFFFF none)
+union CallConventionBits
+{
+    u32 value;
+    struct
+    {
+        u32 assignee : 4;
+        u32 unused4 : 4;
+        u32 unused8 : 4;
+        u32 unused12 : 4;
+        u32 argument : 16;
+    };
+};
+CHECK_SIZE(CallConventionBits, 4);
+
 // The way a starter's assigner calls its graph (4 bytes, retail's call convention, read whole)
 struct CallConvention
 {
-    u32 bits;
+    static constexpr u16 NoArgument = 0xFFFF;
+
+    CallConventionBits bits;
 
     // The AgentLab tool's defaults: no type, anywhere, any state, anyhow, no argument
     void SetDefaults() RETAIL(FUN_00220760);
@@ -69,11 +138,18 @@ struct Assigner
 };
 CHECK_SIZE(Assigner, 8);
 
-// A starter (retail's HeaderScript, 0x3C bytes): its assigners (the count read as a word)
+// A starter (retail's HeaderScript, 0x3C bytes): its assigners (the count read and cleared as a word)
 struct ScriptStarter : ScriptResource
 {
-    u8 assignerCount;
-    u8 unknown1D[3];
+    union
+    {
+        u32 assignerCountWord;
+        struct
+        {
+            u8 assignerCount;
+            u8 unused1D[3];
+        };
+    };
     Assigner* assigners[7];
 
     static ScriptStarter* Construct(ScriptStarter* starter) RETAIL(FUN_002095e8);
@@ -84,42 +160,66 @@ struct ScriptStarter : ScriptResource
     u32 ItemType() RETAIL(FUN_00208890);
     u32 IsStarter() RETAIL(IsHeader);
 };
+CHECK_OFFSET(ScriptStarter, assignerCount, 0x1C);
 CHECK_SIZE(ScriptStarter, 0x3C);
 
-// A state's control packet (0xC bytes): the counts of its data (bytes 0 and 1: the slots and the floats, a halfword the version),
-// its settings and its data: the floats, then a slot for each of its values (0xFF none, bit 7 an instance property's index, else a
-// float's). The AgentLab tool's names of the values, by index: 0 Selector, 1 KeyIndex, 2 MoveSpeed, 3 TurnSpeed, 4-6 RawPos,
-// 7-9 Pitch, Yaw, Roll, 10 Delay, 11 Duration, 12 TumbleData, 13 SpinData, 14 TwistData, 15 RandRange, 16 Power, 17 Damping,
-// 18 AcDist, 19 DecDist, 20 Bounce, 21 SyncUnit, 22 JointIndex
+// A control packet's settings (the AgentLab tool's names): where its target and offset are (ControlPacket::Space), its motion
+// (ControlPacket::Motion), the acceleration's curve (ControlPacket::SmoothCurve), whether it translates and rotates the instance,
+// tracks its destination (the target follows it), interpolates angles (a throw's end turns to the rotation's target), faces
+// with its yaw, orients by its velocity, the natural axes it rolls along (ControlPacket::Axes), and whether it stalls (its delay
+// and sync never end it). A projectile's motion reads bits 7 and 8 (the tool's continuous rotation, which nothing else reads):
+// it lands where its flight's time ends instead of on the target, and isn't turned at the end. The tool's translation continues
+// (bit 15), pitch faces (19), "valid data" (21, always set), key is local (22), uses rotator (23), uses interpolator (24), uses
+// physics (25) and continuously rotates in world space (26) are never read
+union ControlPacketSettings
+{
+    u32 value;
+    struct
+    {
+        u32 space : 3;
+        u32 motion : 4;
+        u32 landsWhereItIs : 1;
+        u32 skipsTurn : 1;
+        u32 unused9 : 2;
+        u32 acceleration : 2;
+        u32 translates : 1;
+        u32 rotates : 1;
+        u32 unused15 : 1;
+        u32 tracksDestination : 1;
+        u32 interpolatesAngles : 1;
+        u32 yawFaces : 1;
+        u32 unused19 : 1;
+        u32 orientsPredicts : 1;
+        u32 unused21 : 6;
+        u32 axes : 3;
+        u32 unused30 : 1;
+        u32 stalls : 1;
+    };
+};
+CHECK_SIZE(ControlPacketSettings, 4);
+
+// A state's control packet (0xC bytes): the counts of its data (read and cleared as a word: the slots, the floats and the tool's
+// version, which nothing reads), its settings and its data: the floats, then a slot for each of its values (0xFF none, bit 7 an
+// instance property's index, else a float's). The AgentLab tool's names of the values, by index: 0 Selector, 1 KeyIndex, 2
+// MoveSpeed, 3 TurnSpeed, 4-6 RawPos, 7-9 Pitch, Yaw, Roll, 10 Delay, 11 Duration, 12 TumbleData, 13 SpinData, 14 TwistData, 15
+// RandRange, 16 Power, 17 Damping, 18 AcDist, 19 DecDist, 20 Bounce, 21 SyncUnit, 22 JointIndex
 struct ControlPacket
 {
-    // The settings (the tool's names): the space (bits 0-2), the motion (3-6), the continuous rotation (7-10), the acceleration
-    // (11-12), then flags
-    enum Settings : u32
+    // Where its target and offset are taken from (the tool's names; SetTranslationTarget in game/motion.cpp says where each is)
+    enum Space : u32
     {
-        SpaceMask = 0x7,
-        MotionShift = 3,
-        MotionMask = 0xF,
-        ContinuousRotationShift = 7,
-        AccelerationShift = 11,
-        AccelerationMask = 0x3,
-        Translates = 0x2000,
-        Rotates = 0x4000,
-        TranslationContinues = 0x8000,
-        TracksDestination = 0x10000,
-        InterpolatesAngles = 0x20000,
-        YawFaces = 0x40000,
-        PitchFaces = 0x80000,
-        OrientsPredicts = 0x100000,
-        KeyIsLocal = 0x400000,
-        UsesRotator = 0x800000,
-        UsesInterpolator = 0x1000000,
-        UsesPhysics = 0x2000000,
-        RotatesInWorldSpace = 0x4000000,
-        AxesShift = 27,
-        AxesMask = 0x7,
-        Stalls = 0x80000000,
+        WorldSpace = 0,
+        InitialSpace = 1,
+        CurrentSpace = 2,
+        TargetSpace = 3,
+        ParentSpace = 4,
+        InitialPosition = 5,
+        CurrentPosition = 6,
+        StoredSpace = 7,
     };
+
+    // The acceleration's curves the motion tells apart (the others are linear)
+    static constexpr u32 SmoothCurve = 2;
 
     // The natural axes it rolls along (the tool's names)
     enum Axes : u32
@@ -168,15 +268,35 @@ struct ControlPacket
         Drive = 8,
         GroundChase = 9,
         AirChase = 10,
-        // 11 to 13 are chases as well, 13 sets bit 4 of the node's part 0x12C bytes in
-        LastChase = 13,
+        // 11 to 13 are chases as well, 13 a climbing one (its body keeps to what it touches:
+        // ObjectRigidBodyState::followsSurface)
+        ClimbingChase = 13,
+    };
+
+    // A value's slot: the index of a float of its data or of an instance property; NoSlot when it isn't given
+    union ValueSlot
+    {
+        u8 value;
+        struct
+        {
+            u8 index : 7;
+            u8 isProperty : 1;
+        };
     };
 
     static constexpr u32 NoSlot = 0xFF;
-    static constexpr u32 PropertySlot = 0x80;
 
-    u8 counts[4];
-    u32 settings;
+    union
+    {
+        u32 countsWord;
+        struct
+        {
+            u8 slotCount;
+            u8 floatCount;
+            u16 unused02;
+        };
+    };
+    ControlPacketSettings settings;
     u8* data;
 
     static ControlPacket* Construct(ControlPacket* packet) RETAIL(FUN_00209150);
@@ -201,45 +321,57 @@ struct ControlPacket
     u32 GetVector(u32 index, class PropertyHolder* properties, struct Vector4* vector) RETAIL(GetVector4FromByteIndexInScriptSupport1);
     u32 GetAngles(u32 index, class PropertyHolder* properties, s32* angles) RETAIL(FUN_00207530);
 
-    u32 SlotOf(u32 index) const
+    ValueSlot SlotOf(u32 index) const
     {
-        if (index >= counts[0])
+        if (index >= slotCount)
         {
-            return NoSlot;
+            return {NoSlot};
         }
 
         // Without data the slot is read at the index's address (the game's)
-        u32 slots = data != nullptr ? reinterpret_cast<u32>(data) + counts[1] * 4 : 0;
-        return *reinterpret_cast<const u8*>(slots + index);
+        u32 slots = data != nullptr ? reinterpret_cast<u32>(data) + floatCount * sizeof(f32) : 0;
+        return {*reinterpret_cast<const u8*>(slots + index)};
     }
 
-    u32 MotionKind() const
+    const f32* Floats() const
     {
-        return settings >> MotionShift & MotionMask;
-    }
-
-    u32 Acceleration() const
-    {
-        return settings >> AccelerationShift & AccelerationMask;
+        return reinterpret_cast<const f32*>(data);
     }
 };
+CHECK_OFFSET(ControlPacket, settings, 0x4);
 CHECK_SIZE(ControlPacket, 0xC);
 
-// A command of a body or of an object's script pack (game/commands.h, made by the object builder by its ID): its bits (bits 0-23
-// all set by the builder, bit 24 another follows), the next one, its vtable (1 the destructor, which destroys the commands after it
-// too, 2 the development tools' parser of its arguments, 3 its execution, 4 its execution on a node, 5 its size, 6 its class's
-// ID; the base's 2 and 4 do nothing, 3 and 5 are abstract), then its arguments
+// A command's bits: its ID (the builder leaves every bit set: NoId) and whether another command follows
+union ScriptCommandBits
+{
+    u32 value;
+    struct
+    {
+        u32 id : 24;
+        u32 hasNext : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(ScriptCommandBits, 4);
+
+// A command of a body or of an object's script pack (game/commands.h, made by the object builder by its ID): its bits, the next
+// one, its vtable (1 the destructor, which destroys the commands after it too, 2 the development tools' parser of its
+// arguments, 3 its execution, 4 its execution on a node, 5 its size, 6 its class's ID; the base's 2 and 4 do nothing, 3 and 5
+// are abstract), then its arguments
 struct ScriptCommand
 {
-    enum Bits : u32
+    enum Slot : u32
     {
-        IdMask = 0xFFFFFF,
-        HasNext = 0x1000000,
+        DestroySlot = 1,
+        ExecuteSlot = 3,
+        ExecuteOnSlot = 4,
+        SizeSlot = 5,
     };
 
-    static constexpr u32 ClassId = 0x1806;
+    static constexpr u32 ClassId = CommandClassId;
+    static constexpr u32 NoId = 0xFFFFFF;
 
-    u32 bits;
+    ScriptCommandBits bits;
     ScriptCommand* next;
     const GccVTableEntry* vtable;
 
@@ -250,42 +382,81 @@ struct ScriptCommand
 };
 CHECK_SIZE(ScriptCommand, 0xC);
 
-// A condition of a body (game/conditions.h, made by the object builder by its ID): its word (its ID in the low half), its three
-// floats and its vtable (1 the destructor, 2 its check (abstract), 3 its class's ID)
+// A condition's word: its ID, whether its result passes below the threshold instead of above it, and the parameter the script
+// gives its check
+union ScriptConditionBits
+{
+    u32 value;
+    struct
+    {
+        u32 id : 16;
+        u32 inverted : 1;
+        u32 parameter : 15;
+    };
+};
+CHECK_SIZE(ScriptConditionBits, 4);
+
+// A condition of a body (game/conditions.h, made by the object builder by its ID): its word, its three floats (the window in
+// seconds the event conditions look back over, the threshold its result passes and the weight of how far it passes) and its
+// vtable (1 the destructor, 2 its check (abstract), 3 its class's ID)
 struct ScriptCondition
 {
-    static constexpr u32 ClassId = 0x1807;
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        CheckSlot = 2,
+    };
 
-    u32 bits;
-    f32 values[3];
+    static constexpr u32 ClassId = ConditionClassId;
+
+    ScriptConditionBits bits;
+    union
+    {
+        f32 values[3];
+        struct
+        {
+            f32 window;
+            f32 threshold;
+            f32 weight;
+        };
+    };
     const GccVTableEntry* vtable;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00122f70);
     u32 GetClassId() RETAIL(FUN_0011e1d8);
 
-    // What the script gives the check (bits 17-31 of its word; bit 16 inverts its result)
     u32 Parameter() const
     {
-        return bits >> 17;
+        return bits.parameter;
     }
 };
+CHECK_OFFSET(ScriptCondition, threshold, 0x8);
 CHECK_SIZE(ScriptCondition, 0x14);
 
 struct GraphState;
 
-// A body of a state (0x14 bytes): its bits (bits 0-7 the commands' count, bit 9 a condition, 10 a jump, 11 another body), its
-// condition, the state it jumps to (its index until the graph is read), its commands, the next body
+// A body's bits: its commands' count, whether its jump re-enters the state it's in when that's where it goes (restart), and
+// whether it has a condition, a jump and another body after it
+union StateBodyBits
+{
+    u32 value;
+    struct
+    {
+        u32 commandCount : 8;
+        u32 restarts : 1;
+        u32 hasCondition : 1;
+        u32 hasJump : 1;
+        u32 hasNext : 1;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(StateBodyBits, 4);
+
+// A body of a state (0x14 bytes): its bits, its condition, the state it jumps to (its index until the graph is read), its
+// commands, the next body
 struct StateBody
 {
-    enum Bits : u32
-    {
-        CommandCountMask = 0xFF,
-        HasCondition = 0x200,
-        HasJump = 0x400,
-        HasNext = 0x800,
-    };
-
-    u32 bits;
+    StateBodyBits bits;
     ScriptCondition* condition;
     union
     {
@@ -302,23 +473,37 @@ struct StateBody
 };
 CHECK_SIZE(StateBody, 0x14);
 
-// A state of a graph (0x10 bytes): its bits (bits 0-4 its bodies, bit 14 a control packet, 15 another state), its control packet,
-// its bodies, the next state
+// A state's bits: its bodies' count, whether its first body is the completion body (run when its control packet or child
+// behaviour ends), whether it interrupts (its bodies are checked while its child behaviour runs), whether its child behaviour is a
+// slot of the object's behaviours rather than a graph's ID, whether it has a control packet and another state after it, and its
+// child behaviour (NoScriptId none). Bits 5-9 and 13 are the tools' and never read
+union GraphStateBits
+{
+    u32 value;
+    struct
+    {
+        u32 bodyCount : 5;
+        u32 unused5 : 5;
+        u32 hasCompletion : 1;
+        u32 interrupting : 1;
+        u32 childIsSlot : 1;
+        u32 unused13 : 1;
+        u32 hasPacket : 1;
+        u32 hasNext : 1;
+        u32 child : 16;
+    };
+};
+CHECK_SIZE(GraphStateBits, 4);
+
+// A state of a graph (0x10 bytes): its bits, its control packet, its bodies, the next state
 struct GraphState
 {
-    enum Bits : u32
-    {
-        BodyMask = 0x1F,
-        HasPacket = 0x4000,
-        HasNext = 0x8000,
-    };
-
-    u32 bits;
+    GraphStateBits bits;
     ControlPacket* packet;
     StateBody* bodies;
     GraphState* next;
 
-    // Made empty (its bits' high half 0xFFFF)
+    // Made empty (no child behaviour)
     static GraphState* Construct(GraphState* state) RETAIL(FUN_00208df0);
     // Read with the states after it (each put in the jump table), their bodies when asked
     void Read(Stream* stream, u32 readBodies) RETAIL(LoadScriptState);
@@ -329,16 +514,28 @@ struct GraphState
 };
 CHECK_SIZE(GraphState, 0x10);
 
-// A graph's data (0x18 bytes): its bits (its ID in the low half), its start state, its name and its states
+// A graph's bits: its ID (NoScriptId none)
+union GraphDataBits
+{
+    u32 value;
+    struct
+    {
+        u32 id : 16;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(GraphDataBits, 4);
+
+// A graph's data (0x18 bytes): its bits, its start state, its name and its states
 struct GraphData
 {
-    u32 bits;
+    GraphDataBits bits;
     GraphState* start;
     String name;
     GraphState* states;
 
     // Made empty: no name and states, its ID none and no start state (ClearHead)
-    static GraphData* Construct(GraphData* data) RETAIL(FUN_00208b58);
+    static GraphData* Construct(GraphData* graph) RETAIL(FUN_00208b58);
     void ClearHead() RETAIL(FUN_00208b98);
     // Its bits, name, states and their bodies (the start state the one of the index read)
     void Read(Stream* stream) RETAIL(ReadScriptData);
@@ -392,13 +589,15 @@ struct ObjectBuilder
 };
 CHECK_SIZE(ObjectBuilder, 0x10);
 
-// A script object of the builder's (game/commands.h, game/conditions.h): its header made (a command's bits all set and no next
-// one, a condition's word its ID) with its class's vtable. The builder's constructors set the arguments too,
-// which the reader always overwrites (only a few conditions keep values of their own)
+// A script object of the builder's (game/commands.h, game/conditions.h): its header made (a command's ID none and no next one, a
+// condition's word its ID) with its class's vtable. The builder's constructors set the arguments too, which the reader always
+// overwrites (only a few conditions keep values of their own)
 template <typename T>
 T* MakeCommand(T* command, const GccVTableEntry* vtable)
 {
-    command->bits = ScriptCommand::IdMask;
+    ScriptCommandBits made = {};
+    made.id = ScriptCommand::NoId;
+    command->bits = made;
     command->next = nullptr;
     command->vtable = vtable;
     return command;
@@ -407,7 +606,9 @@ T* MakeCommand(T* command, const GccVTableEntry* vtable)
 template <typename T>
 T* MakeCondition(T* condition, u16 id, const GccVTableEntry* vtable)
 {
-    condition->bits = id;
+    ScriptConditionBits made = {};
+    made.id = id;
+    condition->bits = made;
     condition->vtable = vtable;
     return condition;
 }
@@ -431,9 +632,8 @@ extern "C"
     // A command (with the ones after it) and a condition read
     ScriptCommand* ReadCommand(Stream* stream) RETAIL(ReadScriptCommand);
     ScriptCondition* ReadCondition(Stream* stream) RETAIL(ReadScriptCondition);
-    // The AgentLab items' builder's slot 2 (the game context's, vtable D_002FD2C0): an item of a class ID (0x1800 a graph's state,
-    // 0x1801 a graph's data, 0x1803 a starter, 0x1804 a graph, 0x1805 a state's body, 0x1808 a control packet, 0x1809 a call
-    // convention, 0x180F an AI position, 0x1810 an AI path; 0x180C, 0x180E and 0x1811 unknown items), none for another
+    // The AgentLab items' builder's slot 2 (the game context's, vtable D_002FD2C0): an item of a class ID (AgentLabClassId: not
+    // the script resources' base, the commands' and the conditions'), none for another
     void* MakeAgentLabItem(void* builder, u32 classId) RETAIL(FUN_00209ef8);
     // The game context's constructor's settings 0x60 bytes before the states' jump table, which nothing reads
     void InitUnusedAgentLabSettings() RETAIL(InitSomeUnkownGlobals);

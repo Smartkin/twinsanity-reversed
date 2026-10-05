@@ -5,14 +5,14 @@
 #include "game/stream.h"
 #include "game/string.h"
 #include "game/archive.h"
+#include "game/pools.h"
 
 struct FileStream;
 struct GameReadersStorage;
 
-// The file streams, in a pool of slots whose numbers are the streams' channels (Platform::Stream's). The slots in use are
-// chained apart from the free ones through the links (-1 in use, -2 the end), and the pool grows by growth slots when it's full.
-// The game's pools are copies of one template, each with only a destructor in its vtable. It also keeps the state of the disc
-// for the frame loop
+// The file streams, in a pool of slots whose numbers are the streams' channels (Platform::Stream's). The free slots are chained
+// through the links like an ItemPool's (game/pools.h), and the pool grows by growth slots when it's full. The game's pools are
+// copies of one template, each with only a destructor in its vtable. It also keeps the state of the disc for the frame loop
 class StreamSystem
 {
 public:
@@ -38,6 +38,22 @@ public:
 CHECK_SIZE(StreamSystem, 0x1C);
 CHECK_OFFSET(StreamSystem, vtable, 0x10);
 
+union FileStreamFlags
+{
+    u16 value;
+    struct
+    {
+        // A read was started and its bytes aren't handed over yet (FileStreamPoll)
+        u16 reading : 1;
+        // Its channel has a buffer (FileStreamAttachBuffer)
+        u16 hasBuffer : 1;
+        // The reader holds the file's bytes from readerStart on
+        u16 buffered : 1;
+        u16 unused3 : 13;
+    };
+};
+CHECK_SIZE(FileStreamFlags, 2);
+
 // A file read on a channel, through a reader of its own buffering what's read in parts: a file of the disc, or the files of an
 // archive (once the archive's table is read, the data file is opened and stays open)
 struct FileStream
@@ -52,17 +68,9 @@ struct FileStream
         ClosingArchive = 4,
     };
 
-    enum Flags : u16
-    {
-        FlagReading = 0x1,
-        FlagBuffer = 0x2,
-        // The reader holds the file's bytes from readerStart on
-        FlagBuffered = 0x4,
-    };
-
     u8 channel;
     u8 archiveState;
-    u16 flags;
+    FileStreamFlags flags;
     StreamSystem* system;
     u32 readerSize;
     u32 readerStart;
@@ -80,6 +88,7 @@ struct FileStream
     Archive* archive;
 };
 CHECK_SIZE(FileStream, 0x48);
+CHECK_OFFSET(FileStream, flags, 2);
 CHECK_OFFSET(FileStream, path, 0x1C);
 CHECK_OFFSET(FileStream, archive, 0x44);
 
@@ -89,6 +98,7 @@ struct SoundBankFiles
     u8* header;
     s32 samples;
 };
+CHECK_SIZE(SoundBankFiles, 8);
 
 extern "C"
 {
@@ -111,7 +121,7 @@ extern "C"
     bool FileStreamOpen(FileStream* stream, const char* path) RETAIL(FUN_002ab3a8);
     void FileStreamClose(FileStream* stream) RETAIL(FUN_002ad860);
     // Opens an archive: its table's file, read by the storage's readers
-    void FileStreamOpenArchive(FileStream* stream, const char* path, s32 unknown, GameReadersStorage* storage)
+    void FileStreamOpenArchive(FileStream* stream, const char* path, s32 readNow, GameReadersStorage* storage)
         RETAIL(FUN_002adc10);
 
     // Reads size bytes of the file from offset into the destination, through the reader when they fit in it. Without waiting

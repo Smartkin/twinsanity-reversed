@@ -11,25 +11,81 @@ struct ChunkData;
 // read from a chunk's particle section (300 at most across the loaded chunks, index 0 none), emitters placing them (0x300), and
 // the emitters' runtimes (384) the frames run. Times are frames of 1/60 s, angles 65536ths of a turn
 
-// A key of a curve over a particle's life: the share of the life and the value
+// The generators a system's genSort picks (TT Lab's GenSortType; the retail data uses 0, 6, 7, 8, 9 and 11)
+enum ParticleGenSort : u8
+{
+    GenSortBox = 0,
+    GenSortBox2 = 1,
+    GenSortRanges = 2,
+    GenSortLine = 3,
+    GenSortReuse = 4,
+    GenSortRangesRandomLife = 5,
+    GenSortRadial = 6,
+    GenSortRadialRotor = 7,
+    GenSortSpheroid = 8,
+    GenSortBounce = 9,
+    GenSortBounceXZ = 10,
+    GenSortSphere = 11,
+    GenSortStar = 12,
+};
+
+// A system's blend mode, the material of its page it draws with (TT Lab's ParticleBlendModes): additive, subtractive, the page
+// material's own first shader and cutout (4-6 take the next page's IDs for a material), and 7 the hexagons distorting the frame
+enum ParticleBlendMode : u8
+{
+    BlendAdditive = 0,
+    BlendSubtractive = 1,
+    BlendPageMaterial = 2,
+    BlendCutout = 3,
+    BlendDistortion = 7,
+};
+
+// A system's draw list: list 0 is drawn (its blend modes 3, 2, 1, 0 in turn), list 1 never, list 2 the distorting hexagons' (every
+// system of mode 7 goes there)
+enum ParticleDrawList : u8
+{
+    DrawListParticles = 0,
+    DrawListDistortion = 2,
+};
+constexpr u32 ParticleDrawListCount = 4;
+
+// The emitter runtimes a system has slots for (nothing ever puts one in them: they stay -1)
+constexpr u32 SystemEmitterSlots = 4;
+
+// A key of a curve over a particle's life: the share of the life and the value. A curve has 8
 struct ParticleKey
 {
     f32 time;
     f32 value;
 };
+constexpr u32 ParticleCurveKeys = 8;
 
-// A loaded system: its name, the section it came from (its kind and slot), its rate (particles a frame, negative one every that many
-// frames), the particles it keeps at most (worked out at load), its on/off cycle (frames, with random extras), its generator and
-// velocity rule, its blend mode (7 hexagons distorting the frame), the camera distances it runs and is drawn within, its
-// velocity and the random spreads of its starts and velocities (box: per axis; radial: radius/speed, yaw and tilt), the ranges'
-// scales and bases (generators 2-5), its gravity and life (seconds), a texture animation nothing reads, the jibber, its colour,
-// alpha, size and rotation curves, the distortion, its texture rectangle (pixels + 2^19), the table of 64 life steps the
-// renderer bakes, the collision spheres' radius curve and count, the draw list, the emitter runtimes playing it, its ghosts
-// (copies spawning later), the radial ramp, the star's points and ratio, its texture page, its scale and its culling box
+// A key of the colour curve: the share of the life and the colour (128 leaves the texture as it is)
+struct ParticleColourKey
+{
+    f32 time;
+    f32 red;
+    f32 green;
+    f32 blue;
+};
+CHECK_SIZE(ParticleColourKey, 0x10);
+
+// A particle system's ID of none (a trail's, a decal's, a controller's, a script's)
+constexpr u16 NoParticleSystem = 0xFFFF;
+
+// A loaded system: its name, the section it came from (its kind, which nothing reads, and its slot), its rate (particles a
+// frame, negative one every that many frames), the particles it keeps at most (worked out at load), its on/off cycle (frames,
+// with random extras), its generator (ParticleGenSort) and velocity rule, its blend mode (ParticleBlendMode), the camera
+// distances it runs and is drawn within, its velocity and the random spreads of its starts and velocities (box: per axis;
+// radial: radius/speed, yaw and tilt), the ranges' scales and bases (generators 2-5), its gravity and life (seconds), a texture
+// animation nothing reads, the jibber, its colour, alpha, size and rotation curves, the distortion, its texture rectangle (pixels
+// + 2^19), the table of 64 life steps the renderer bakes, the collision spheres' radius curve and count, the draw list
+// (ParticleDrawList), its emitter slots, its ghosts (copies spawning later), the radial ramp, the star's points and ratio, its
+// texture page, its scale and its culling box
 struct ParticleSystem
 {
     char name[16];
-    u8 sectionKind;
+    u8 unused10;
     u8 sectionSlot;
     s16 genRate;
     u16 maxParticles;
@@ -65,29 +121,28 @@ struct ParticleSystem
     f32 jibberXAmp;
     f32 jibberYFreq;
     f32 jibberYAmp;
-    // Time, red, green, blue (128 leaves the texture as it is)
-    f32 colourKeys[8][4];
-    ParticleKey alphaKeys[8];
+    ParticleColourKey colourKeys[ParticleCurveKeys];
+    ParticleKey alphaKeys[ParticleCurveKeys];
     f32 distortionX;
     f32 distortionY;
     f32 minSize;
     f32 maxSize;
-    ParticleKey widthKeys[8];
-    ParticleKey heightKeys[8];
+    ParticleKey widthKeys[ParticleCurveKeys];
+    ParticleKey heightKeys[ParticleCurveKeys];
     f32 minRotation;
     f32 maxRotation;
-    ParticleKey rotationKeys[8];
-    ParticleKey unusedKeys1[8];
-    ParticleKey unusedKeys2[8];
+    ParticleKey rotationKeys[ParticleCurveKeys];
+    ParticleKey unusedKeys1[ParticleCurveKeys];
+    ParticleKey unusedKeys2[ParticleCurveKeys];
     f32 textureStartX;
     f32 textureStartY;
     f32 textureEndX;
     f32 textureEndY;
     u8* renderTable;
-    ParticleKey collisionRadiusKeys[8];
+    ParticleKey collisionRadiusKeys[ParticleCurveKeys];
     u8 collisionSpheres;
     u8 drawList;
-    s16 emitterSlots[4];
+    s16 emitterSlots[SystemEmitterSlots];
     s16 ghosts;
     s16 starPoints;
     s16 pad322;
@@ -96,7 +151,7 @@ struct ParticleSystem
     f32 starRadiusRatio;
     s32 texturePage;
     f32 scaleFactor;
-    u8 unknown338[8];
+    u8 unused338[8];
     f32 boundingExtents[4];
 };
 CHECK_OFFSET(ParticleSystem, genSort, 0x20);
@@ -150,6 +205,10 @@ struct CollisionSphere
     f32 age;
 };
 
+// The blocks of particles a runtime can have, and the collision spheres it has room for
+constexpr s16 MaxEmitterBlocks = 32;
+constexpr u32 EmitterCollisionSpheres = 8;
+
 struct EmitterRuntime;
 struct ParticleRecord;
 
@@ -162,19 +221,36 @@ using ParticleVelocityRule = void (*)(EmitterRuntime* runtime, ParticleSystem* s
 // An emitter's runtime (0x200 bytes): its blocks of particles, its gravity's and emission's matrices, the blocks it has, its
 // system, whether it runs, the particles its blocks hold, the slot the next particle goes in, the blocks it wants and the particles
 // it keeps at most, where it is, its generator and velocity rule, the next and previous runtimes of its wheel slot, the rotor's
-// angles (generator 7), a value its starter gives, the frames left of its on time and until it's run, its collision spheres (the
-// next one and the frames until it), the bounce, its state, whether its draw entries are in a list, whether its emission keeps its
-// translation, its chunk, and the time it was made
+// yaw and tilt (generator 7), the on/off cycles its starter left it (0: it runs on), the frames left of its on time and until it's
+// run, its collision spheres (the next one and the frames until it), the bounce, its state, whether its draw entries are in a list,
+// whether its emission keeps its translation, its chunk, and the time it was made
 struct EmitterRuntime
 {
-    u8* blocks[32];
+    // Its states: free or the game's own (KillParticles lets those go, it keeps the states from 100 up), or a chunk's (a section's
+    // emitter, or one moved into another chunk)
+    enum State : s16
+    {
+        StateLoose = -1,
+        StateKeptFrom = 100,
+        StateOfChunk = 0x65,
+    };
+
+    // How the camera turns it on and off: never, by its distance (the only one retail sets) or always on
+    enum CameraSwitch : u8
+    {
+        CameraNeverOn = 0,
+        CameraByDistance = 1,
+        CameraAlwaysOn = 2,
+    };
+
+    u8* blocks[MaxEmitterBlocks];
     Matrix4x4 gravityMatrix;
     Matrix4x4 emitMatrix;
     s16 blockCount;
     s16 system;
     s16 enabled;
     s16 capacity;
-    s16 unknown108;
+    s16 unused108;
     s16 nextSlot;
     s16 blocksWanted;
     s16 maxParticles;
@@ -186,11 +262,12 @@ struct EmitterRuntime
     ParticleVelocityRule velocityRule;
     EmitterRuntime* next;
     EmitterRuntime* previous;
-    s16 rotorAngles[2];
-    u32 startValue;
+    s16 rotorYaw;
+    s16 rotorTilt;
+    u32 cyclesLeft;
     s16 onTimeLeft;
     s16 phase;
-    CollisionSphere spheres[8];
+    CollisionSphere spheres[EmitterCollisionSpheres];
     s16 nextSphere;
     s16 sphereCountdown;
     // The emitter's bounce: a short nothing reads, the vertical plane's turn about y, the plane's offset and the factor
@@ -198,18 +275,16 @@ struct EmitterRuntime
     s16 bouncePlaneAngle;
     f32 planeOffset;
     f32 bounceFactor;
-    // 0x65 while it's an emitter, -1 free
     s16 state;
-    // How the camera turns it on and off: by its distance (1, the only one retail sets), never (0) or always on (2)
     u8 cameraSwitch;
     u8 listsDraws;
     u8 keepsEmitTranslation;
-    u8 unknown1E5[3];
+    u8 unused1E5[3];
     ChunkData* chunk;
     // The camera's distance from it when it was last run (far away when its chunk wasn't drawn that frame)
     f32 cameraDistance;
     f32 creationTime;
-    u8 unknown1F4[0x200 - 0x1F4];
+    u8 unused1F4[0x200 - 0x1F4];
 };
 CHECK_OFFSET(EmitterRuntime, gravityMatrix, 0x80);
 CHECK_OFFSET(EmitterRuntime, blockCount, 0x100);
@@ -224,12 +299,29 @@ CHECK_OFFSET(EmitterRuntime, keepsEmitTranslation, 0x1E4);
 CHECK_OFFSET(EmitterRuntime, chunk, 0x1E8);
 CHECK_SIZE(EmitterRuntime, 0x200);
 
-// An event of a block, due on a frame of the 32 frame wheel: the block, the frames still to wait past that frame, its kind (0/7 the
-// block off its draw list, 1 a block taken from its runtime, 2/9 the block's chain ended, 3/8 the block made free, 5 a particle's
-// bounce off the plane, 6 off the vertical plane), the runtime (kind 1), the next event of its frame, and a bounce's particle, time
-// (seconds into its life), system, vertical plane's turn about y, plane offset and factor
+// The frames of the particles' wheels: the runtimes and the events due in each of the frames to come
+constexpr u32 ParticleWheelFrames = 32;
+
+// An event of a block, due on a frame of the wheel: the block, the frames still to wait past that frame, its kind, the runtime (a
+// block taken from it), the next event of its frame, and a bounce's particle, time (seconds into its life), system, vertical
+// plane's turn about y, plane offset and factor
 struct ParticleEvent
 {
+    // A block of particles or of hexagons off its draw list (then its chain ended, then made free), a block taken from its runtime
+    // (nothing queues it), a particle's bounce off the plane and off the vertical plane
+    enum Kind : s32
+    {
+        DropParticleDraw = 0,
+        BlockTaken = 1,
+        EndParticleChain = 2,
+        FreeParticleBlock = 3,
+        PlaneBounce = 5,
+        WallBounce = 6,
+        DropHexagonDraw = 7,
+        FreeHexagonBlock = 8,
+        EndHexagonChain = 9,
+    };
+
     u8* block;
     s32 delay;
     s32 kind;
@@ -238,7 +330,7 @@ struct ParticleEvent
     s32 record;
     f32 time;
     s16 system;
-    s16 pad1E;
+    s16 unused1E;
     s16 planeAngle;
     s16 pad22;
     f32 planeOffset;
@@ -256,7 +348,7 @@ struct ParticleDrawEntry
     u8* block;
     ParticleSystem* system;
     EmitterRuntime* owner;
-    u32 unknown0C;
+    u32 unused0C;
     Matrix4x4 matrix;
     f32 position[3];
     ParticleDrawEntry* previous;
@@ -264,7 +356,7 @@ struct ParticleDrawEntry
     ChunkData* chunk;
     s16 texturePage;
     u8 keepsEmitTranslation;
-    u8 unknown6B[5];
+    u8 unused6B[5];
 };
 CHECK_OFFSET(ParticleDrawEntry, matrix, 0x10);
 CHECK_OFFSET(ParticleDrawEntry, previous, 0x5C);
@@ -287,6 +379,15 @@ constexpr u32 MaxParticleSystems = 300;
 constexpr u32 MaxParticleEmitters = 0x300;
 constexpr u32 MaxEmitterRuntimes = 0x180;
 constexpr u32 ParticleSectionSlots = 16;
+// The sections' kinds: the default chunk's (its systems) and a level's (its systems and emitters)
+enum ParticleSectionKind : s8
+{
+    SectionDefault = 0,
+    SectionLevel = 1,
+};
+// The section slots: the default particles' and the levels' first (2-15)
+constexpr s8 DefaultParticleSlot = 0;
+constexpr s8 FirstLevelParticleSlot = 2;
 // An emitter read but not made yet
 constexpr s32 EmitterNotMade = 99999;
 
@@ -330,6 +431,7 @@ extern "C"
     u32 ReadParticleWord() RETAIL(ReadUIntFromGlobalBinReader);
     s32 ReadParticleHalf() RETAIL(ReadUShortFromGlobalBinReader);
     s32 ReadParticleByte() RETAIL(ReadByteFromGlobalBinReader);
+    // The stream the sections are read from set (returns 0x65, which nothing reads)
     u32 SetParticleReader(Stream* stream) RETAIL(SetParticleDataBinReader);
 
     // A system read from a section of a version and kind, its particles at most worked out (resizing its running emitters'
@@ -337,8 +439,8 @@ extern "C"
     void ReadParticleSystem(ParticleSystem* system, s32 version, s32 kind) RETAIL(ReadParticleSystem);
     void ComputeParticleMaxCount(ParticleSystem* system) RETAIL(ComputeParticleMaxCount);
     void ComputeParticleBoundingExtents(ParticleSystem* system) RETAIL(ComputeParticleBoundingExtents);
-    // A section of a kind (1 a level's: slot 2 or the first free from 3, -1 none; the others slot 0) read with its systems and,
-    // for kinds 1 and 2, its emitters, which are made. Returns the slot
+    // A section of a kind (ParticleSectionKind; a level's: slot 2 or the first free from 3, -1 none; the others slot 0) read with
+    // its systems and, for kinds 1 and 2, its emitters, which are made. Returns the slot
     s32 ReadParticleSection(s8 kind, ChunkData* chunk) RETAIL(ReadMainParticleSection);
     // The frames' particle time, count and length (0.02 s on PAL, 1/60 s on NTSC)
     extern f32 g_ParticleTime RETAIL(ParticleTime);
@@ -352,10 +454,10 @@ extern "C"
     extern ParticleEvent* g_ParticleEvents RETAIL(D_0030A858);
     extern ParticleEvent** g_ParticleEventPool RETAIL(D_0030A874);
     extern s32 g_ParticleEventPoolTop RETAIL(D_0030A878);
-    // The events due in each of the 32 frames to come, the wheel's place, and the draw lists' first entries
-    extern ParticleEvent* g_ParticleEventWheel[32] RETAIL(ParticleEventWheel);
+    // The events due in each of the wheel's frames to come, the wheel's place, and the draw lists' first entries
+    extern ParticleEvent* g_ParticleEventWheel[ParticleWheelFrames] RETAIL(ParticleEventWheel);
     extern s32 g_ParticleEventWheelIndex RETAIL(ParticleEventWheelIndex);
-    extern ParticleDrawEntry* g_ParticleDrawLists[4] RETAIL(ParticleDrawLists);
+    extern ParticleDrawEntry* g_ParticleDrawLists[ParticleDrawListCount] RETAIL(ParticleDrawLists);
     extern u8** g_ParticleBlocks RETAIL(D_0030A860);
     extern u8** g_HexagonBlocks RETAIL(D_0030A864);
     extern ParticleDrawEntry* g_ParticleDrawEntries RETAIL(D_0030A880);
@@ -365,8 +467,8 @@ extern "C"
     // The free runtimes (a stack of their indexes) and how many are taken
     extern s16 g_FreeEmitterRuntimes[MaxEmitterRuntimes] RETAIL(D_003A1110);
     extern s32 g_TakenEmitterRuntimes RETAIL(D_0030A870);
-    // The emitters due in each of the 32 frames to come, and the wheel's place
-    extern EmitterRuntime* g_ParticleEmitterWheel[32] RETAIL(ParticleEmitterWheel);
+    // The emitters due in each of the wheel's frames to come, and the wheel's place
+    extern EmitterRuntime* g_ParticleEmitterWheel[ParticleWheelFrames] RETAIL(ParticleEmitterWheel);
     extern s32 g_ParticleEmitterWheelIndex RETAIL(ParticleEmitterWheelIndex);
     // The distorting hexagons' material (the renderer's)
     extern struct Material g_DistortionMaterial RETAIL(D_00370758);
@@ -410,10 +512,10 @@ extern "C"
     void SetEmitterEmission(s32 runtime, const Matrix4x4* matrix) RETAIL(FUN_001b9ec0);
     // An event added at the end of a frame's list
     void AppendParticleEvent(ParticleEvent* event, ParticleEvent** list) RETAIL(FUN_001b9df8);
-    // An emitter made running at a place with a value (in the drawn chunk for none)
-    void StartParticleEmitter(s32* runtime, s32 system, const f32* position, u32 value, ChunkData* chunk) RETAIL(FUN_001ba018);
+    // An emitter made running at a place for a count of on/off cycles (0: on and on), in the drawn chunk for none
+    void StartParticleEmitter(s32* runtime, s32 system, const f32* position, u32 cycles, ChunkData* chunk) RETAIL(FUN_001ba018);
     // The runtimes due this frame: their on time counted down (a stopped one looked at again in 50-57 frames), the next on/off
-    // cycle when it's up, and the runtime let go of once its starter's count of cycles is done
+    // cycle when it's up, and the runtime let go of once its cycles are done
     void UpdateParticleEmitterTiming() RETAIL(UpdateParticleEmitterTiming);
     // The runtimes due this frame moved to the frame their phase says (the ones with collision spheres to the next frame), the
     // wheel turned on
@@ -442,9 +544,11 @@ extern "C"
     // room for on the retail stack) and the frame they're for
     struct ParticleViews
     {
+        static constexpr u32 MostChunks = 18;
+
         s32 count;
         u32 frame;
-        ChunkData* chunks[18];
+        ChunkData* chunks[MostChunks];
     };
     // Particles run (never off in retail)
     extern s32 g_ParticlesOn RETAIL(D_00309C58);
@@ -462,20 +566,19 @@ extern "C"
     extern const s32 g_ParticleModeOrder[4] RETAIL(D_002E78E8);
     extern s32 g_DistortionModeCount RETAIL(D_00309C94);
     extern const s32 g_DistortionModeOrder[1] RETAIL(D_00309C90);
-    // The default chunk's three particle texture pages (each made by the platform, ParticlePage) and the material of a page's blend
-    // mode 0
+    // The default chunk's three particle texture pages (each made by the platform, ParticlePage) and a page's additive material
     extern ParticlePage g_ParticlePages[ParticlePageCount] RETAIL(D_00370700);
     struct Material* ParticlePageMaterial(u32 page) RETAIL(FUN_001b9d38);
     // A page read from a chunk's stream
     void ReadParticlePageAt(u32 page, Stream* stream) RETAIL(FUN_001b9d00);
     // The pages loaded from their startup files (startup\<name><page>.ptc), then the systems' blocks made
     void LoadParticlePages(const char* name, s32 blocks) RETAIL(FUN_001b9d58);
-    // The pages (0x80 blocks a system) and the decals' page and types loaded at start-up. Returns 1
+    // The pages (and 0x80 blocks of particles) and the decals' page and types loaded at start-up. Returns 1
     s32 LoadParticles(const char* name) RETAIL(LoadParticles_);
-    // The systems' blocks made (0x80 a system) and the decals given their default types, when the default chunk's RM2 brings the
-    // pages (no startup files read). Returns 1
+    // The 0x80 blocks of particles made and the decals given their default types, when the default chunk's RM2 brings the pages
+    // (no startup files read). Returns 1
     s32 SetUpDefaultParticles() RETAIL(FUN_0025cf88);
-    // The particle section of an RM2: the default chunk's three pages, systems and emitters, decals' page and types (every
+    // The particle section of an RM2: the default chunk's three pages, systems (it has no emitters), decals' page and types (every
     // section unloaded first), or a level's systems and emitters, from the RM2's stream. A path of each page's file is made and
     // dropped
     void ReadParticleData(class Rm2Reader* reader, Stream* stream) RETAIL(ReadParticleData);

@@ -1,18 +1,9 @@
 #include "game/controllers.h"
 
 #include "game/memory.h"
+#include "game/pools.h"
 
 #include <string.h>
-
-namespace
-{
-constexpr s16 RendererPoolGrowth = 10;
-// A slot's link while it's in use, and the first free one of a pool without any
-constexpr s16 InUse = -1;
-constexpr s16 NoneFree = -1;
-// The last free slot's link a pool grows into
-constexpr s16 LastFree = -2;
-}
 
 extern "C"
 {
@@ -22,9 +13,9 @@ extern "C"
     {
         pool->vtable = g_RendererPoolVTable;
         pool->capacity = 0;
-        pool->growth = RendererPoolGrowth;
+        pool->growth = PoolGrowth;
         pool->used = 0;
-        pool->freeHead = NoneFree;
+        pool->freeHead = PoolNoFreeSlot;
         pool->links = nullptr;
         pool->items = nullptr;
         return pool;
@@ -43,7 +34,7 @@ extern "C"
             MemoryDeallocate_(pool->items);
         }
 
-        if ((destroyFlags & 1) != 0)
+        if ((destroyFlags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(pool);
         }
@@ -69,12 +60,13 @@ extern "C"
             pool->items = items;
             for (s32 index = 0; index < pool->capacity; index++)
             {
-                if (pool->links[index] == InUse)
+                if (pool->links[index] == PoolSlotUsed)
                 {
                     pool->items[index] = old[index];
                 }
             }
 
+            // Every old slot in use (PoolSlotUsed's bytes: the pool only grows when it's full)
             memset(links, 0xFF, pool->capacity * sizeof(s16));
             if (old != nullptr)
             {
@@ -94,7 +86,7 @@ extern "C"
             links[index] = static_cast<s16>(index + 1);
         }
 
-        links[index - 1] = LastFree;
+        links[index - 1] = PoolFreeListEnd;
         pool->links = links;
         pool->items = items;
         s16 capacity = pool->capacity;
@@ -113,7 +105,7 @@ extern "C"
         s16 index = pool->freeHead;
         s16* link = &pool->links[index];
         pool->freeHead = *link;
-        *link = InUse;
+        *link = PoolSlotUsed;
         pool->used++;
         return index;
     }
@@ -130,7 +122,7 @@ extern "C"
     {
         for (s32 index = 0; index < pool->capacity - 1; index++)
         {
-            if (pool->links[index] == InUse)
+            if (pool->links[index] == PoolSlotUsed)
             {
                 return &pool->items[index];
             }

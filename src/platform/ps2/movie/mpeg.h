@@ -1,7 +1,9 @@
 #pragma once
 
 #include "movie.h"
+#include "../renderer/renderer.h"
 
+#include <dma_tags.h>
 #include <ee_regs.h>
 #include <kernel.h>
 
@@ -10,23 +12,8 @@
 // out into the caller's buffer, as 32 bit pixels the IPU converts them to (sceMpegGetPicture) or as the IPU's 8 bit macroblocks
 // (sceMpegGetPictureRAW8). The pictures are decoded (mpegdecode.cpp) with the IPU reading the stream's bits (mpegbits.cpp) and
 // headers (mpegheaders.cpp) and decoding the macroblocks' blocks, the motion compensation's predictions made on the CPU from the
-// reference pictures' macroblocks fetched into the scratchpad (mpegmotion.cpp)
-
-// sceMpegCbType: what a callback is called for
-enum MpegCallbackType : s32
-{
-    MpegCallbackError = 0,
-    // The IPU needs more of the video
-    MpegCallbackNoData = 1,
-    MpegCallbackStopDma = 2,
-    MpegCallbackRestartDma = 3,
-    // While the IPU converts a picture
-    MpegCallbackBackground = 4,
-    MpegCallbackTimeStamp = 5,
-    // A stream's packet (sceMpegAddStrCallback's)
-    MpegCallbackStream = 6,
-    MpegCallbackTypes = 7,
-};
+// reference pictures' macroblocks fetched into the scratchpad (mpegmotion.cpp). The IPU's and the DMA's registers they drive are
+// the movie decoder's (decoder.cpp) too
 
 // What a callback gets: the type first (sceMpegCbData)
 struct MpegCallbackData
@@ -61,8 +48,41 @@ struct MpegCallbackEntry
 };
 CHECK_SIZE(MpegCallbackEntry, 0xC);
 
-// A stream's callback (sceMpegAddStrCallback): it gets the packets whose stream ID, masked, is id. The ID is the PES stream ID
-// << 32, with the first 4 bytes of a private stream's data below it (its sub-stream)
+// PES stream_ids: the private streams (a private stream 1's data starts with 4 bytes of its sub-stream) and the ones whose packets
+// have none of the usual header fields
+enum PesStreamId : u32
+{
+    ProgramStreamMap = 0xBC,
+    PrivateStream1 = 0xBD,
+    PaddingStream = 0xBE,
+    PrivateStream2 = 0xBF,
+    EcmStream = 0xF0,
+    EmmStream = 0xF1,
+    DsmccStream = 0xF2,
+    H2221TypeEStream = 0xF8,
+    ProgramStreamDirectory = 0xFF,
+};
+
+// A packet's stream as libmpeg matches it: a private stream's first 4 bytes (its sub-stream, 0 for the other streams) below the
+// PES stream_id
+union MpegStreamId
+{
+    u64 value;
+    struct
+    {
+        u64 subStream : 32;
+        u64 streamId : 8;
+        u64 unused40 : 24;
+    };
+};
+CHECK_SIZE(MpegStreamId, 8);
+
+constexpr u32 PesStreamIdShift = 32;
+// A sub-stream's first byte (Sony's own streams have 0xFF there, the DVD's the stream type and its channel)
+constexpr u32 SubStreamTypeShift = 24;
+constexpr u32 SubStreamBytes = 4;
+
+// A stream's callback (sceMpegAddStrCallback): it gets the packets whose stream ID (MpegStreamId's value), masked, is id
 struct MpegStreamCallback
 {
     u64 id;
@@ -74,7 +94,7 @@ struct MpegStreamCallback
 };
 CHECK_SIZE(MpegStreamCallback, 0x20);
 
-// The stream types sceMpegAddStrCallback takes (sceMpegStrType) and what they match: a stream ID and mask, the channel ORed in
+// The stream types sceMpegAddStrCallback takes (by MpegStreamKind) and what they match: a stream ID and mask, the channel ORed in
 // below the mask's top byte
 struct MpegStreamType
 {
@@ -82,10 +102,18 @@ struct MpegStreamType
     u64 mask;
 };
 CHECK_SIZE(MpegStreamType, 0x10);
-constexpr u32 MpegStreamTypes = 10;
+
+// The stream types' masks: the stream_id (the channel ORed into it: video, MPEG audio), with the sub-stream's first byte (the
+// channel ORed into that byte: the DVD's AC-3, LPCM, DTS and SDDS) or with the whole sub-stream (the channel its last byte: Sony's
+// IPU, PCM, ADPCM and DATA)
+constexpr u64 MatchStreamId = 0xFF00000000ull;
+constexpr u64 MatchSubStreamType = 0xFFFF000000ull;
+constexpr u64 MatchSubStream = 0xFFFFFFFFFFull;
+
 constexpr s32 MpegStreamCallbacks = 0x40;
-// The private stream callback of every sub-stream no other callback takes (the PSS's DATA streams' catch-all)
-constexpr u64 MpegAnyPrivateStream = 0xBDFF000000ull;
+// The private stream callback of every sub-stream no other callback takes, private stream 1's FF 00 00 00 (the PSS's DATA streams'
+// catch-all)
+constexpr u64 MpegAnyPrivateStream = u64{PrivateStream1} << PesStreamIdShift | 0xFFu << SubStreamTypeShift;
 
 // The work memory past the state the reference pictures are allocated from (_sceMpegAlalc): a sequence's allocations start at
 // the mark
@@ -98,8 +126,22 @@ struct MpegArena
 };
 CHECK_SIZE(MpegArena, 0x10);
 
-// A reference picture: a frame or one of its fields, its macroblocks (16x16 Y, then 8x8 Cb and Cr, 384 bytes) in columns from
-// the left, each from the top
+// A macroblock's pixels (16x16 Y, then 8x8 Cb and Cr: MacroblockBytes), the 16 bit values the IPU decodes them as, and a
+// reference's macroblocks fetched for a prediction (the column of two its block starts in, then the column to its right)
+constexpr s32 MacroblockPixels = 16 * 16;
+constexpr u32 MacroblockBytes = 0x180;
+constexpr u32 MacroblockQuadwords = MacroblockBytes >> 4;
+constexpr u32 DecodedMacroblockBytes = 2 * MacroblockBytes;
+constexpr s32 FetchedReferenceBytes = 4 * MacroblockBytes;
+// A macroblock's prediction takes 4 references at most (dual prime's)
+constexpr s32 MpegMaxReferences = 4;
+// A macroblock converted to pixels: 64 quadwords of 32 bit pixels, 32 of 16 bit ones. The fromIPU channel takes 1023 macroblocks
+// of them at most at once (its QWC is 16 bits)
+constexpr u32 Rgb32MacroblockQuadwords = 0x40;
+constexpr u32 Rgb16MacroblockQuadwords = 0x20;
+constexpr s32 ChunkMacroblocks = 0x3FF;
+
+// A reference picture: a frame or one of its fields, its macroblocks in columns from the left, each from the top
 struct MpegImage
 {
     u8* pixels;
@@ -107,7 +149,7 @@ struct MpegImage
     s32 height;
     s32 widthMacroblocks;
     s32 heightMacroblocks;
-    u32 unknown14;
+    u32 unused14;
     s64 pts;
     s64 dts;
     // 1 while it holds a picture
@@ -123,7 +165,7 @@ struct MpegImage
     s32 frameCentreVerticalOffsets[3];
     s32 displayHorizontalSize;
     s32 displayVerticalSize;
-    u32 unknown64;
+    u32 unused64;
 };
 CHECK_SIZE(MpegImage, 0x68);
 
@@ -155,25 +197,25 @@ using MpegPredictionRoutine = void (*)(const MpegPredictionBlock* block);
 // turns (bufferIndex): a macroblock is finished (its prediction made and stored with the blocks) while the next is decoded
 struct MpegMacroblockBuffers
 {
-    // Where the DMA fetches the references' macroblocks into, 0x600 bytes each: the two macroblocks a block's column starts in (one
-    // above the other, next to each other in a picture) and the two to their right (in the scratchpad; none in the state's
-    // buffers, where the routines read the pictures themselves)
+    // Where the DMA fetches the references' macroblocks into, FetchedReferenceBytes each: the two macroblocks a block's column
+    // starts in (one above the other, next to each other in a picture) and the two to their right (in the scratchpad; none in the
+    // state's buffers, where the routines read the pictures themselves)
     u8* references;
     // The macroblock the IPU decodes into: its 384 values as 16 bit (an intra macroblock's pixels, or what a prediction adds to)
     u8* macroblocks;
     // A reference's macroblock its block starts in, and the one to its right: the DMA's sources
-    u8* sources[4];
-    u8* rightSources[4];
-    MpegPredictionRoutine lumaRoutines[4];
-    MpegPredictionRoutine chromaRoutines[4];
-    MpegPredictionBlock luma[4];
-    MpegPredictionBlock chroma[4];
+    u8* sources[MpegMaxReferences];
+    u8* rightSources[MpegMaxReferences];
+    MpegPredictionRoutine lumaRoutines[MpegMaxReferences];
+    MpegPredictionRoutine chromaRoutines[MpegMaxReferences];
+    MpegPredictionBlock luma[MpegMaxReferences];
+    MpegPredictionBlock chroma[MpegMaxReferences];
     // Where the macroblock goes in the picture decoded
     u8* destination;
     s32 referenceCount;
     s32 intra;
-    // A coded macroblock with no addresses skipped before it (nothing reads it)
-    s32 unknown134;
+    // A coded macroblock with no addresses skipped before it
+    s32 unused134;
     // The references were fetched: the prediction is made
     s32 predicted;
     // The IPU decoded no blocks: the prediction alone is the macroblock
@@ -192,32 +234,70 @@ struct MpegVector
     s32 vertical;
 };
 
-// Where the decoder's buffers are: the scratchpad, or the state's own (bufferType)
-constexpr s32 MpegBuffersScratchpad = 0;
-constexpr s32 MpegBuffersOwn = 1;
+// A vector's component in half pixels, as a prediction takes it: whether it moves by half a pixel more than its whole pixels
+union HalfPixels
+{
+    s32 value;
+    struct
+    {
+        u32 half : 1;
+        s32 whole : 31;
+    };
+};
+CHECK_SIZE(HalfPixels, 4);
 
-// picture_coding_type and picture_structure
-constexpr s32 MpegPictureI = 1;
-constexpr s32 MpegPictureP = 2;
-constexpr s32 MpegPictureB = 3;
-constexpr s32 MpegPictureD = 4;
-constexpr s32 MpegTopField = 1;
-constexpr s32 MpegBottomField = 2;
-constexpr s32 MpegFrame = 3;
+// Where the decoder's buffers are (bufferType): the scratchpad, or the state's own
+enum MpegBufferType : s32
+{
+    MpegBuffersScratchpad = 0,
+    MpegBuffersOwn = 1,
+};
+
+// picture_coding_type
+enum MpegPictureCodingType : s32
+{
+    MpegPictureI = 1,
+    MpegPictureP = 2,
+    MpegPictureB = 3,
+    MpegPictureD = 4,
+};
+
+// picture_structure
+enum MpegPictureStructure : s32
+{
+    MpegTopField = 1,
+    MpegBottomField = 2,
+    MpegFrame = 3,
+};
 
 // frame_motion_type and field_motion_type: field prediction (one vector a field of a frame picture), frame prediction (16x8 in a
 // field picture: a vector for each half), dual prime
-constexpr s32 MpegMotionField = 1;
-constexpr s32 MpegMotionFrame = 2;
-constexpr s32 MpegMotion16x8 = 2;
-constexpr s32 MpegMotionDualPrime = 3;
+enum MpegMotionType : s32
+{
+    MpegMotionField = 1,
+    MpegMotionFrame = 2,
+    MpegMotion16x8 = 2,
+    MpegMotionDualPrime = 3,
+};
 
-// macroblock_type's bits, as the IPU decodes them
-constexpr s32 MacroblockIntra = 0x1;
-constexpr s32 MacroblockPattern = 0x2;
-constexpr s32 MacroblockBackward = 0x4;
-constexpr s32 MacroblockForward = 0x8;
-constexpr s32 MacroblockQuantiser = 0x10;
+// chroma_format: libmpeg decodes 4:2:0 only
+constexpr s32 MpegChroma420 = 1;
+
+// macroblock_type's flags, as the IPU's VDEC decodes them
+union MacroblockType
+{
+    u32 value;
+    struct
+    {
+        u32 intra : 1;
+        u32 pattern : 1;
+        u32 backward : 1;
+        u32 forward : 1;
+        u32 quantiser : 1;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(MacroblockType, 4);
 
 // The video's start codes
 constexpr u32 PictureStartCode = 0x100;
@@ -228,11 +308,78 @@ constexpr u32 SequenceHeaderCode = 0x1B3;
 constexpr u32 ExtensionStartCode = 0x1B5;
 constexpr u32 SequenceEndCode = 0x1B7;
 constexpr u32 GroupStartCode = 0x1B8;
+// The 23 zero bits a start code starts with
+constexpr s32 StartCodeZeros = 23;
 
-// sceMpeg's flags: the picture's coding type and structure, then (from bit 5) repeat_first_field, top_field_first,
-// progressive_frame, progressive_sequence: the fields the picture is shown for, by those 4 bits
-constexpr u32 MpegFlagsTimingShift = 5;
-constexpr u64 MpegFlagsTopFieldFirst = 0x40;
+// sceMpeg's flags of a picture (Mpeg::flags), by their first bit: picture_coding_type, picture_structure, then
+// repeat_first_field, top_field_first, progressive_frame and progressive_sequence, the 4 that tell the fields the picture is shown
+// for (the timing)
+enum MpegFlagsShift : u32
+{
+    MpegFlagsCodingTypeShift = 0,
+    MpegFlagsStructureShift = 3,
+    MpegFlagsTimingShift = 5,
+    MpegFlagsRepeatFirstFieldShift = 5,
+    MpegFlagsTopFieldFirstShift = 6,
+    MpegFlagsProgressiveFrameShift = 7,
+    MpegFlagsProgressiveSequenceShift = 8,
+};
+constexpr u64 MpegFlagsTiming = 0xF;
+constexpr u64 MpegFlagsTopFieldFirst = u64{1} << MpegFlagsTopFieldFirstShift;
+
+// The reference pictures' places in MpegSystem's frames and fields: the past reference, the future one, the image the picture is
+// decoded into (the future reference's, or the B pictures' own)
+enum MpegReferenceSlot : s32
+{
+    MpegPast = 0,
+    MpegFuture = 1,
+    MpegCurrent = 2,
+    MpegBImage = 3,
+    MpegReferenceSlots = 4,
+};
+
+// MpegSystem's counts and limits of the I, P and B pictures (D pictures with the B ones) after an I picture
+enum MpegPictureCount : s32
+{
+    MpegIPictures = 0,
+    MpegPPictures = 1,
+    MpegBPictures = 2,
+    MpegPictureCounts = 3,
+};
+
+// What a slice's decoding ends with: the picture's end, the slice given up for a VLC error, an error that gives the picture up, the
+// next start code, the decoding aborted. A slice's header read is 0 too
+enum SliceResult : s32
+{
+    SliceEnded = 0,
+    SliceGivenUp = 1,
+    PictureGivenUp = 2,
+    NextStartCodeFound = 3,
+    DecodingAborted = 4,
+};
+constexpr s32 SliceHeaderRead = 0;
+
+// NextHeader's results besides a picture_coding_type
+constexpr s32 MpegSequenceEnded = 0;
+constexpr s32 MpegHeaderAborted = -1;
+// DecodeOrSkip's result for a field picture without its second field
+constexpr s32 MpegSecondFieldMissing = -1;
+
+// MpegSystem::outputState
+enum MpegOutputState : s32
+{
+    MpegNothingDecoded = 0,
+    MpegPictureDecoded = 1,
+    MpegPicturePutOut = 2,
+};
+
+// MpegSystem::pendingPtsState: a PTS set, which the picture put out after the next one gets
+enum MpegPendingPts : s32
+{
+    MpegNoPendingPts = 0,
+    MpegPtsSet = 1,
+    MpegPtsForNextPicture = 2,
+};
 
 // libmpeg's state (Mpeg::sys), in the work memory sceMpegCreate gets, 0x19A0 bytes before the arena's memory
 struct MpegSystem
@@ -241,8 +388,7 @@ struct MpegSystem
     s32 ended;
     // Whether a decoded picture waits to be put out
     s32 pictureWaiting;
-    // 0 before the first picture, 1 once one was decoded, 2 once one was put out
-    s32 outputState;
+    MpegOutputState outputState;
     MpegCallbackEntry callbacks[MpegCallbackTypes];
     MpegStreamCallback* streamCallbacks;
     s32 streamCallbackCount;
@@ -258,8 +404,8 @@ struct MpegSystem
     s64 fields;
     // How many of the I, P and B pictures (D pictures with the B ones) after an I picture are decoded (-1: all of them), the rest
     // skipped, and how many came
-    s32 decodeLimits[3];
-    s32 pictureCounts[3];
+    s32 decodeLimits[MpegPictureCounts];
+    s32 pictureCounts[MpegPictureCounts];
     // pictureNumber when the first picture was put out
     s32 firstOutputPicture;
     // sceMpegGetPicture: 32 bit pixels (the IPU's colour conversion), sceMpegGetPictureRAW8: the IPU's macroblocks
@@ -279,10 +425,10 @@ struct MpegSystem
     s32 outputHeight;
     s32 outputMacroblocks;
     // Makes B pictures lose their past reference like a broken link (nothing sets it)
-    s32 unknownFC;
-    // A PTS the next picture put out gets once the state is 2 (nothing in the game sets one)
+    s32 forcedBrokenLink;
+    // A PTS a picture put out gets (nothing in the game sets one)
     s64 pendingPts;
-    s32 pendingPtsState;
+    MpegPendingPts pendingPtsState;
     u8* frameBuffers[3];
     MpegArena arena;
     // The pictures decoded
@@ -327,14 +473,14 @@ struct MpegSystem
     s32 quantiserScale;
     // The reference pictures: the past one, the future one, the one decoded into and the B picture's, of the frames and their
     // top and bottom fields
-    MpegImage* frames[4];
-    MpegImage* topFields[4];
-    MpegImage* bottomFields[4];
+    MpegImage* frames[MpegReferenceSlots];
+    MpegImage* topFields[MpegReferenceSlots];
+    MpegImage* bottomFields[MpegReferenceSlots];
     MpegImage images[9];
     MpegMacroblockBuffers buffers[2];
     s32 bufferIndex;
-    // Zeroed for each picture, never read
-    u32 unknown824;
+    // Zeroed for each picture
+    u32 unused824;
     // Whether the bits read ahead from the IPU (top, topBits) are stale: the last command wasn't one that reads bits
     s32 bitsStale;
     // The last IPU command's code (its top 4 bits)
@@ -356,12 +502,12 @@ struct MpegSystem
     s32 temporalReferenceLast;
     s32 gopStarted;
     Mpeg* mpeg;
-    u32 unknown86C[3];
+    u32 unused86C[3];
     // sceMpegGetPictureAbort: the decoding stops until sceMpegReset
     s32 aborted;
-    s32 bufferType;
+    MpegBufferType bufferType;
     // The buffers when they aren't in the scratchpad: two of macroblocks, and the prediction's
-    u8 ownMacroblocks[2][0x300];
+    u8 ownMacroblocks[2][DecodedMacroblockBytes];
     u8 ownPrediction[0xB20];
 };
 CHECK_OFFSET(MpegSystem, callbacks, 0xC);
@@ -371,7 +517,7 @@ CHECK_OFFSET(MpegSystem, fields, 0xA0);
 CHECK_OFFSET(MpegSystem, decodeLimits, 0xA8);
 CHECK_OFFSET(MpegSystem, pictureCounts, 0xB4);
 CHECK_OFFSET(MpegSystem, firstStructure, 0xE8);
-CHECK_OFFSET(MpegSystem, unknownFC, 0xFC);
+CHECK_OFFSET(MpegSystem, forcedBrokenLink, 0xFC);
 CHECK_OFFSET(MpegSystem, outputRgb32, 0xC4);
 CHECK_OFFSET(MpegSystem, output, 0xEC);
 CHECK_OFFSET(MpegSystem, pendingPts, 0x100);
@@ -424,7 +570,7 @@ CHECK_SIZE(PssReader, 0x28);
 // A PES packet's header, as the demultiplexer hands it on
 struct PesPacket
 {
-    u64 streamId;
+    MpegStreamId streamId;
     s32 length;
     s32 scramblingControl;
     s64 pts;
@@ -444,32 +590,27 @@ struct PssPack
     // Bit 32 of the SCR
     u32 scrHigh;
     s32 hasSystemHeader;
-    u32 unknown10[2];
+    u32 unused10[2];
     PesPacket packet;
 };
 CHECK_OFFSET(PssPack, packet, 0x18);
 
-// The start codes
+// The program stream's start codes
 constexpr u32 PackStartCode = 0x1BA;
 constexpr u32 SystemHeaderStartCode = 0x1BB;
 constexpr u32 ProgramEndCode = 0x1B9;
-// The stream IDs a PES packet's header has none of the usual fields for, << 32
-constexpr u64 ProgramStreamMap = 0xBCull << 32;
-constexpr u64 PrivateStream1 = 0xBDull << 32;
-constexpr u64 PaddingStream = 0xBEull << 32;
-constexpr u64 PrivateStream2 = 0xBFull << 32;
-constexpr u64 EcmStream = 0xF0ull << 32;
-constexpr u64 EmmStream = 0xF1ull << 32;
-constexpr u64 DsmccStream = 0xF2ull << 32;
-constexpr u64 H2221TypeEStream = 0xF8ull << 32;
-constexpr u64 ProgramStreamDirectory = 0xFFull << 32;
 
-// The IPU's registers and commands
+// The IPU's registers
 volatile u32* const IpuCommand = reinterpret_cast<volatile u32*>(A_EE_IPU_CMD);
 volatile u32* const IpuControl = reinterpret_cast<volatile u32*>(A_EE_IPU_CTRL);
 volatile u32* const IpuBitPosition = reinterpret_cast<volatile u32*>(A_EE_IPU_BP);
 
+// IPU_CMD's commands, their code in the top 4 bits (IpuCodeMask): BCLR (the input FIFO cleared, the bits given skipped), IDEC (an
+// intra picture of the IPU's own streams decoded and converted), BDEC (a macroblock's blocks decoded), VDEC (a VLC decoded by a
+// table), FDEC (the bits given read), SETIQ (the intra or the non-intra quantiser matrix from the input), SETVQ (the VQ colour
+// table), CSC (macroblocks of the input converted to pixels), SETTH (the thresholds of transparent pixels)
 constexpr u32 IpuClearInput = 0x00000000;
+constexpr u32 IpuIntraDecode = 0x10000000;
 constexpr u32 IpuDecodeBlock = 0x20000000;
 constexpr u32 IpuDecodeVariable = 0x30000000;
 constexpr u32 IpuDecodeFixed = 0x40000000;
@@ -478,24 +619,70 @@ constexpr u32 IpuSetNonIntraMatrix = 0x58000000;
 constexpr u32 IpuSetVqClut = 0x60000000;
 constexpr u32 IpuConvert = 0x70000000;
 constexpr u32 IpuSetThresholds = 0x90000000;
-constexpr u32 IpuCommandCode = 0xF0000000;
-// VDEC's tables: the macroblock address increment (0), the macroblock type, the motion code and the dual prime vector
+constexpr u32 IpuCodeMask = 0xF0000000;
+// VDEC's tables: the macroblock address increment, the macroblock type, the motion code and the dual prime vector
+constexpr u32 IpuAddressIncrementTable = 0x0;
 constexpr u32 IpuMacroblockTypeTable = 0x4000000;
 constexpr u32 IpuMotionCodeTable = 0x8000000;
 constexpr u32 IpuDmVectorTable = 0xC000000;
-// BDEC's fields: the quantiser scale, the DCT type, the DC reset and macroblock_intra
+// BDEC's fields: the quantiser scale, the DCT type, the DC reset and macroblock_intra (libmpeg ORs its values in unmasked)
 constexpr s32 IpuBlockQuantiserShift = 16;
 constexpr s32 IpuBlockDctTypeShift = 25;
 constexpr s32 IpuBlockDcResetShift = 26;
 constexpr s32 IpuBlockIntraShift = 27;
+// CSC's: dithered (DTE), 16 bit pixels (OFM); the macroblocks' count below them
+constexpr u32 IpuConvertDither = 0x4000000;
+constexpr u32 IpuConvertRgb16 = 0x8000000;
 
-constexpr u32 IpuControlBusy = 0x80000000;
+// IDEC's command word: the bits skipped first (FB), the quantiser scale (QSC), the macroblocks' DCT types read (DTD), signed
+// pixels (SGN), dithered (DTE), 16 bit pixels (OFM)
+union IpuIntraDecodeCommand
+{
+    u32 value;
+    struct
+    {
+        u32 skipBits : 6;
+        u32 unused6 : 10;
+        u32 quantiserScale : 5;
+        u32 unused21 : 3;
+        u32 decodesDctType : 1;
+        u32 signedPixels : 1;
+        u32 dither : 1;
+        u32 rgb16 : 1;
+        u32 code : 4;
+    };
+};
+CHECK_SIZE(IpuIntraDecodeCommand, 4);
+
+// IPU_CMD read and IPU_TOP: 32 bits (VDEC's or FDEC's result, the input's next bits) and BUSY while they're to come
+union IpuDataRegister
+{
+    u64 value;
+    struct
+    {
+        u64 data : 32;
+        u64 unused32 : 31;
+        u64 busy : 1;
+    };
+};
+CHECK_SIZE(IpuDataRegister, 8);
+
+// VDEC's result: the value the VLC decoded to and the code's length (all 0 when no code matched)
+union IpuVlcResult
+{
+    u32 value;
+    struct
+    {
+        s32 decoded : 16;
+        u32 codeLength : 16;
+    };
+};
+CHECK_SIZE(IpuVlcResult, 4);
+
+// IPU_CTRL written whole: the IPU reset
 constexpr u32 IpuControlReset = 0x40000000;
-constexpr u32 IpuControlMpeg1 = 0x800000;
-constexpr u32 IpuControlErrorCode = 0x4000;
-constexpr u32 IpuControlOutputCount = 0xF0;
-// The picture coding extension's values the IPU decodes with: intra_dc_precision, alternate_scan, intra_vlc_format and
-// q_scale_type, and the picture_coding_type
+// IPU_CTRL's settings the picture coding extension gives (libmpeg ORs the stream's values in unmasked): intra_dc_precision,
+// alternate_scan, intra_vlc_format and q_scale_type, and the picture_coding_type
 constexpr u32 IpuControlDcPrecision = 0x30000;
 constexpr s32 IpuControlDcPrecisionShift = 16;
 constexpr u32 IpuControlAlternateScan = 0x100000;
@@ -507,31 +694,31 @@ constexpr s32 IpuControlQuantiserTypeShift = 22;
 constexpr u32 IpuControlPictureType = 0x7000000;
 constexpr s32 IpuControlPictureTypeShift = 24;
 
-// The DMA controller's channel bits: CHCR's direction and start, D_ENABLEW's suspension of every channel
+// CHCR's bits libmpeg writes and tests: the direction, the chain mode and STR
 constexpr u32 ChcrFromMemory = 0x1;
 constexpr u32 ChcrChain = 0x4;
 constexpr u32 ChcrStart = 0x100;
-// A source chain's tag IDs: the data at the address, and the same ending the chain
-constexpr u64 DmaTagRefe = 0x00000000;
-constexpr u64 DmaTagRef = 0x30000000;
-// A DMA address in the scratchpad
-constexpr u32 DmaScratchpad = 0x80000000;
-constexpr u32 DmaSuspend = 0x10000;
-constexpr s32 IpuFromChannel = 3;
-constexpr s32 IpuToChannel = 4;
 
-constexpr u32 Scratchpad = 0x70000000;
-constexpr u32 PhysicalMask = 0x0FFFFFFF;
-constexpr u32 UncachedSegment = 0x20000000;
-constexpr u32 UncachedAcceleratedSegment = 0x30000000;
-constexpr u32 MacroblockBytes = 0x180;
-constexpr u32 MacroblockQuadwords = MacroblockBytes >> 4;
+// D_ENABLEW's suspension of every channel (CPND)
+constexpr u32 DmaSuspend = 0x10000;
+
+// The scratchpad's buffers: each macroblock buffer's references (MpegMaxReferences of FetchedReferenceBytes) and macroblock, then
+// the prediction
+constexpr u32 ScratchpadReferencesBytes = MpegMaxReferences * FetchedReferenceBytes;
+constexpr u32 ScratchpadBufferBytes = ScratchpadReferencesBytes + DecodedMacroblockBytes;
 
 inline void WaitIpu()
 {
-    while ((*IpuControl & IpuControlBusy) != 0)
+    while (IpuControlRegister{*IpuControl}.busy)
     {
     }
+}
+
+// The IPU still works on its command: busy, without an error found
+inline bool IpuWorking()
+{
+    IpuControlRegister control = {*IpuControl};
+    return control.busy && !control.errorFound;
 }
 
 // An IPU command, kept as the last (_sceMpegCscStoreRefImage's inlined copy of the decoder's macro): the bits read ahead are
@@ -539,7 +726,7 @@ inline void WaitIpu()
 inline void SetIpuCommand(MpegSystem* sys, u32 command)
 {
     *IpuCommand = command;
-    u32 code = command & IpuCommandCode;
+    u32 code = command & IpuCodeMask;
     sys->ipuCommand = code;
     if (code == IpuDecodeBlock || code == IpuDecodeVariable || code == IpuDecodeFixed)
     {
@@ -559,11 +746,11 @@ inline u32 GlobalPointer()
 }
 
 // Calls a callback with the global pointer it was set with in $gp (the C++ doesn't use it, the asm and Sony's code do)
-inline s32 CallWithGlobalPointer(u32 globalPointer, MpegCallback function, Mpeg* mpeg, void* data, void* user)
+inline s32 CallWithGlobalPointer(u32 globalPointer, MpegCallback function, Mpeg* mpeg, void* callbackData, void* user)
 {
     u32 saved;
     asm volatile("move %0, $gp\n\tmove $gp, %1" : "=&r"(saved) : "r"(globalPointer) : "memory");
-    s32 result = function(mpeg, data, user);
+    s32 result = function(mpeg, callbackData, user);
     asm volatile("move $gp, %0" : : "r"(saved) : "memory");
     return result;
 }
@@ -577,11 +764,11 @@ extern "C"
 // libmpeg's own functions (mpeg.cpp, mpegoutput.cpp, mpegdemux.cpp) by their retail names, which the asm calls
 namespace Libmpeg
 {
-// The buffers' places by bufferType, the IPU set to MPEG-2
+// The buffers' places by bufferType, the IPU set to MPEG-1 (until a sequence extension comes)
 void SetBuffers(MpegSystem* sys) RETAIL(gcc2_compiled_);
 // The IPU's and scratchpad's DMA stopped, the IPU reset
 void StopDecoding(MpegSystem* sys) RETAIL(_clearEach);
-s32 DispatchCallback(Mpeg* mpeg, MpegCallbackData* data) RETAIL(_sceMpegDispatchMpegCallback);
+s32 DispatchCallback(Mpeg* mpeg, MpegCallbackData* callbackData) RETAIL(_sceMpegDispatchMpegCallback);
 // The NoData callback; returns 1 whatever it returns
 s32 DispatchNoData(Mpeg* mpeg) RETAIL(_sceMpegDispatchMpegCbNodata);
 void ArenaInitialise(MpegArena* arena, u8* base, s32 size) RETAIL(FUN_002b88b0);
@@ -591,8 +778,8 @@ void ArenaRewind(MpegArena* arena) RETAIL(FUN_002b88d8);
 // Null (and an error) when the arena is too small
 u8* Allocate(MpegSystem* sys, MpegArena* arena, s32 size, s32 alignment) RETAIL(_sceMpegAlalcAlloc);
 // The StopDma and RestartDma callbacks sceMpegCreate sets: the IPU's DMA kept in the state's environment
-s32 StopDma(Mpeg* mpeg, void* data, void* user) RETAIL(FUN_002b8958);
-s32 RestartDma(Mpeg* mpeg, void* data, void* user) RETAIL(FUN_002b8980);
+s32 StopDma(Mpeg* mpeg, void* callbackData, void* user) RETAIL(FUN_002b8958);
+s32 RestartDma(Mpeg* mpeg, void* callbackData, void* user) RETAIL(FUN_002b8980);
 // A picture's macroblocks copied into the output through the scratchpad (RAW8)
 void CopyMacroblocks(MpegSystem* sys, MpegImage* image) RETAIL(gcc2_compiled__002B89A8);
 // A frame put out: its times and flags into the Mpeg, its picture into the output
@@ -628,7 +815,8 @@ s32 ErrorValue(MpegSystem* sys, const char* format, s32 value) RETAIL(_sceMpegEr
 // The next picture into the output. Returns -1 on an error or at the end, 1 otherwise
 s32 GetPicture(Mpeg* mpeg) RETAIL(_getpic);
 // The picture whose header was read decoded unless its type's limit is reached (count of limit; -1 has none), else passed over.
-// Returns whether it was decoded (0 when the decoding was aborted), -1 for a field picture without its second field
+// Returns whether it was decoded (0 when the decoding was aborted), MpegSecondFieldMissing for a field picture without its second
+// field
 s32 DecodeOrSkip(Mpeg* mpeg, s32 count, s32 limit) RETAIL(_decodeOrSkip);
 s32 DecodeOrSkipFrame(Mpeg* mpeg, s32 count, s32 limit) RETAIL(_decodeOrSkipFrame);
 s32 DecodeOrSkipFields(Mpeg* mpeg, s32 count, s32 limit) RETAIL(_decodeOrSkipField);
@@ -637,10 +825,9 @@ s32 DecodeOrSkipFields(Mpeg* mpeg, s32 count, s32 limit) RETAIL(_decodeOrSkipFie
 s32 UpdateReferences(MpegSystem* sys, s32 secondField) RETAIL(_updateRefImage);
 // Returns whether the picture was decoded
 s32 DecodePicture(MpegSystem* sys) RETAIL(_decPicture);
-// The picture's slices. Returns 1 when they were decoded, 0 when not, 4 when the decoding was aborted
+// The picture's slices. Returns 1 when they were decoded, 0 when not, DecodingAborted when the decoding was aborted
 s32 DecodePictureData(MpegSystem* sys) RETAIL(_sceMpegPictureData0);
-// A slice of the picture (macroblocks of it). Returns 0 at the picture's end, 1 for a slice given up for a VLC error, 3 at the
-// next start code, 2 for an error that gives the picture up, 4 when aborted
+// A slice of the picture (macroblocks of it). Returns a SliceResult
 s32 DecodeSlice(MpegSystem* sys, s32 macroblocks) RETAIL(_slice0);
 // The macroblock address increment (the macroblocks skipped, plus 1)
 s32 MacroblockAddressIncrement(MpegSystem* sys) RETAIL(_sceMpegMbAddressIncrement);
@@ -701,11 +888,11 @@ void SkipBits(MpegSystem* sys, s32 count) RETAIL(_sceMpegFlushBuf);
 void SkipMacroblockBits(MpegSystem* sys, s32 count) RETAIL(_sceMpegFlushBuf_002BF350);
 
 // The headers (mpegheaders.cpp)
-// The next picture's header read (and the sequence's and GOP's before it). Returns its picture_coding_type, 0 at the sequence's
-// end, -1 when aborted
+// The next picture's header read (and the sequence's and GOP's before it). Returns its picture_coding_type, MpegSequenceEnded at
+// the sequence's end, MpegHeaderAborted when aborted
 s32 NextHeader(MpegSystem* sys) RETAIL(_sceMpegNextHeader);
-// The slice's header (macroblocks unused): its first macroblock's address and the increment to it. Returns 0, 1 for an error in
-// the address increment, 2 for something not a slice
+// The slice's header (macroblocks unused): its first macroblock's address and the increment to it. Returns SliceHeaderRead,
+// SliceGivenUp for an error in the address increment, PictureGivenUp for something not a slice
 s32 ReadSliceHeader(MpegSystem* sys, s32 macroblocks, s32* address, s32* increment, MpegVector predictors[2][2])
     RETAIL(gcc2_compiled__002C04D8);
 // The picture size the sequence header gave the Mpeg and the reference pictures, their memory allocated anew when it changed

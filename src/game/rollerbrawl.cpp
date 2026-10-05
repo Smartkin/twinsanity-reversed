@@ -2,7 +2,9 @@
 
 #include "game/agents.h"
 #include "game/attachments.h"
+#include "game/behaviours.h"
 #include "game/camerarig.h"
+#include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/collision.h"
 #include "game/hull.h"
@@ -32,47 +34,30 @@ EABI_EXPORT(FUN_00160ce8, &RollerbrawlVehicle::WearSnow);
 
 namespace
 {
-// The character's nodes: its object node, its body and its attachments
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 BodyNodeKind = 5;
-constexpr u32 AttachmentsKind = 6;
-
-// The agent's bump, the object node's whether it takes packets and its collision
-constexpr u32 BumpedSlot = 8;
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 CollidedSlot = 28;
-
-// The script events both characters get: a hard fall (falling fast, or squashed for 3 seconds), the ball stopping (they stand
-// up out of it) and rolling again
-constexpr u32 EventFell = 11;
+// The script events both characters get: the ball stopping (they stand up out of it) and rolling again (characters.h's
+// EventLongDrop the character gets for a hard fall: falling fast, or squashed for 3 seconds)
 constexpr u32 EventStopped = 0x4C;
 constexpr u32 EventRolling = 0x4D;
 
-// Surfaces: sticky ground (collision mask bit 10) packs snow on, a contact of lava's (contact kind bit 3) melts it
-constexpr u32 StickySurface = 0x400;
-constexpr u32 LavaContact = 0x8;
-
-// The surfaces' bit its casts and its body's collision cache take (solid to the probes), and the kinds of nodes (a bit each) of the
-// instances it hits (kind 4's hulls, characters, crates, creatures, generic objects and pay gates) and of those that hold it up
-// (projectiles too)
-constexpr u32 SolidToProbes = 0x10;
-constexpr u32 HitNodeKinds = 0x5B010;
-constexpr u32 GroundNodeKinds = 0x15B010;
-
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 NoHit = Rounded(1e30);
-
-// The ball: its radius without snow (the snow past 0.4 adds to it), the box its mass is spread over, gravity (times the mass)
+// The ball: its radius without snow (the snow past 0.4 adds to it), the box its mass is spread over, gravity (times the mass);
+// how its body bounces (0.15), how soft it is (12) and rubs (1.5, 0.5 against spinning and 0.07 times the roll's share against
+// rolling), and its steps
 constexpr f32 BallRadius = Rounded(0.8);
 constexpr f32 SnowWithoutGrowth = Rounded(0.4);
 constexpr f32 BoxSize = Rounded(1.1);
 constexpr f32 Gravity = -35.0f;
+constexpr f32 BallRestitution = Rounded(0.15);
+constexpr f32 BallSoftness = 12.0f;
+constexpr f32 BallFriction = 1.5f;
+constexpr s32 BallSubsteps = 3;
 
-// Snow: the most, the mass a unit adds, the shell's scale without any, what a unit of rolling packs on (sticky ground) and
-// wears off (other ground), how fast lava melts it and the least time a lava contact melts it for
+// Snow: the most, the mass a unit adds, the shell's scale without any (with snow the ball's radius and the snow less 0.2), what
+// a unit of rolling packs on (sticky ground) and wears off (other ground), how fast lava melts it and the least time a lava
+// contact melts it for
 constexpr f32 MostSnow = 3.0f;
 constexpr f32 SnowMass = Rounded(0.55);
 constexpr f32 ShellScale = Rounded(0.6);
+constexpr f32 ShellInset = Rounded(0.2);
 constexpr f32 SnowGrowth = Rounded(0.01);
 constexpr f32 SnowWear = Rounded(0.02);
 constexpr f32 MeltRate = 0.5f;
@@ -85,8 +70,11 @@ constexpr f32 StillMotion = Rounded(0.4);
 constexpr f32 StillStick = 0x1.47ae16p-7f;
 constexpr f32 StillTime = Rounded(0.35);
 
-// Stopped: it turns upright over 0.5 seconds, and rolls again after 8 seconds, or once the stick passes 0.2 (retail's 0.2
-// squared) or its speed and spin squared pass 0.8
+// Stopping: it's turned upright and by a random yaw (a random number below 360 taken as radians, still a random yaw), both
+// characters' knock countdowns a random number below 255. Stopped: it turns upright over 0.5 seconds, and rolls again after 8
+// seconds, or once the stick passes 0.2 (retail's 0.2 squared) or its speed and spin squared pass 0.8
+constexpr f32 RandomYawRange = 360.0f;
+constexpr s32 KnockCountdownRange = 0xFF;
 constexpr f32 MostStopTime = 8.0f;
 constexpr f32 MovingStick = 0x1.47ae16p-5f;
 constexpr f32 MovingMotion = Rounded(0.8);
@@ -95,8 +83,23 @@ constexpr f32 MovingMotion = Rounded(0.8);
 // times 10, up to half again as hard against the motion)
 constexpr f32 AirPush = 8.0f;
 constexpr f32 GroundPush = 10.0f;
+constexpr f32 MostAgainstPush = 0.5f;
 constexpr f32 SpinFriction = 0.5f;
 constexpr f32 RollFriction = Rounded(0.07);
+// The roll's share of that friction: fast (past 4), 0.5 going with the motion or with the stick let go (under 0.1) and none past
+// 8, else 1 more 18 times the eighth power of the stick's part along the motion; slow (past 0.001), 1 going with it (past 0.01),
+// 5 with the stick let go, else 1 more 10 times that part squared; still, 1.2 over the stick's length and 0.2
+constexpr f32 FastRollSpeed = 4.0f;
+constexpr f32 FreeRollSpeed = 8.0f;
+constexpr f32 LetGoStick = Rounded(0.1);
+constexpr f32 FastRoll = 0.5f;
+constexpr f32 FastAgainstRoll = 18.0f;
+constexpr f32 StillRollSpeed = Rounded(0.001);
+constexpr f32 WithMotion = Rounded(0.01);
+constexpr f32 SlowLetGoRoll = 5.0f;
+constexpr f32 SlowAgainstRoll = 10.0f;
+constexpr f32 StillRoll = Rounded(1.2);
+constexpr f32 StillRollStick = Rounded(0.2);
 
 // Drags past a speed and a spin of 0.09
 constexpr f32 FreeSpeed = Rounded(0.09);
@@ -124,6 +127,7 @@ constexpr f32 ExitRaise = Rounded(0.05);
 // The skid marks: laid moving faster than 0.1 across, half the radius out either side of the ball's bottom (0.866 of the radius
 // down), 0.16 deep
 constexpr f32 SkidSpeed = Rounded(0.1);
+constexpr f32 SkidOffset = 0.5f;
 constexpr f32 SkidDrop = Rounded(0.866);
 constexpr f32 SkidDepth = Rounded(0.16);
 
@@ -136,7 +140,7 @@ constexpr u16 MostGroundHits = 8;
 
 SphereBody* BodyOf(CharacterAgent* agent)
 {
-    return static_cast<SphereBody*>(GetGameNode(&agent->instance->nodes, BodyNodeKind));
+    return static_cast<SphereBody*>(GetGameNode(&agent->instance->nodes, NodeRigidBody));
 }
 
 const Vector4* PositionOf(const SphereBody* body)
@@ -146,19 +150,19 @@ const Vector4* PositionOf(const SphereBody* body)
 
 ObjectNode* ObjectNodeOf(InstanceContext* instance)
 {
-    return static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    return static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
 }
 
 // A query of the awake instances with some flags (retail leaves the bits nothing reads as the stack had them)
-void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted)
+void StartQuery(InstanceQuery* query, void** results, u16 most, u32 wanted)
 {
     query->results = results;
     query->count = 0;
     query->most = most;
-    query->distance = NoHit;
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->distance = Infinite;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = wanted;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -168,8 +172,7 @@ void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted)
 InstanceContext* AwakeAgentRef2(ObjectNode* node)
 {
     InstanceContext* other = node->agentRef2;
-    if (other != nullptr && (other->flags & ReferencedObject::FlagAsleep) != 0
-        && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (other != nullptr && other->flags.asleep && !node->flags.keepsAgentRef2)
     {
         node->agentRef2 = nullptr;
     }
@@ -178,11 +181,11 @@ InstanceContext* AwakeAgentRef2(ObjectNode* node)
 }
 
 // The snow set (at most MostSnow): the ball's radius (the snow past 0.4 added) and the shell's scale (the snow and 0.6) follow
-// it, the body's mass and size are made again. The mass takes the value as it was given: uncapped the frame the snow passes the
+// it, the body's mass and size are made again. The mass takes the amount as it was given: uncapped the frame the snow passes the
 // most (retail)
-void SetSnow(RollerbrawlVehicle* vehicle, f32 value)
+void SetSnow(RollerbrawlVehicle* vehicle, f32 amount)
 {
-    vehicle->snow = value;
+    vehicle->snow = amount;
     SphereBody* body = BodyOf(vehicle->agent);
     if (MostSnow < vehicle->snow)
     {
@@ -196,8 +199,8 @@ void SetSnow(RollerbrawlVehicle* vehicle, f32 value)
     }
 
     vehicle->radius = growth + BallRadius;
-    vehicle->snowScale = vehicle->snow - Rounded(0.2) + Rounded(0.8);
-    body->SetMassAndSize(value * SnowMass + 1.0f, BoxSize, BoxSize, BoxSize);
+    vehicle->snowScale = vehicle->snow - ShellInset + BallRadius;
+    body->SetMassAndSize(amount * SnowMass + 1.0f, BoxSize, BoxSize, BoxSize);
     body->ellipsoid = 0;
     body->radius = vehicle->radius;
 }
@@ -250,12 +253,12 @@ void RollerbrawlVehicle::PlaceSnowShell(f32 seconds)
 {
     SphereBody* body = BodyOf(agent);
     ObjectNode* node = ObjectNodeOf(agent->instance);
-    if (node != nullptr && CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0)
+    if (node != nullptr && CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0)
     {
         InstanceContext* shell = AwakeAgentRef2(node);
         if (shell != nullptr)
         {
-            shell->flags &= ~ReferencedObject::FlagSphereContact;
+            shell->flags.collisionActive = 0;
             if (0.0f < snow)
             {
                 Matrix4x4 matrix = body->matrix;
@@ -267,7 +270,7 @@ void RollerbrawlVehicle::PlaceSnowShell(f32 seconds)
                     matrix.m[row][2] = matrix.m[row][2] * scale;
                 }
 
-                shell->flags |= ReferencedObject::FlagVisible;
+                shell->flags.visible = 1;
                 if (SetPlaceMatrix(shell->place, &matrix) != 0)
                 {
                     QueueObject(shell);
@@ -282,7 +285,7 @@ void RollerbrawlVehicle::PlaceSnowShell(f32 seconds)
             }
             else
             {
-                shell->flags &= ~ReferencedObject::FlagVisible;
+                shell->flags.visible = 0;
             }
         }
     }
@@ -339,7 +342,7 @@ void RollerbrawlVehicle::StickPush(u32 touching)
         against = 1.0f;
     }
 
-    f32 strength = against * 0.5f + 1.0f;
+    f32 strength = against * MostAgainstPush + 1.0f;
     force.x = force.x * strength;
     force.y = force.y * strength;
     force.z = force.z * strength;
@@ -357,37 +360,37 @@ void RollerbrawlVehicle::StickPush(u32 touching)
     }
 
     f32 roll;
-    if (4.0f < speed)
+    if (FastRollSpeed < speed)
     {
-        if (0.0f < along || length < Rounded(0.1))
+        if (0.0f < along || length < LetGoStick)
         {
-            roll = 8.0f < speed ? 0.0f : 0.5f;
+            roll = FreeRollSpeed < speed ? 0.0f : FastRoll;
         }
         else
         {
             f32 alongSquared = along * along;
             f32 alongFourth = alongSquared * alongSquared;
-            roll = alongFourth * alongFourth * 18.0f + 1.0f;
+            roll = alongFourth * alongFourth * FastAgainstRoll + 1.0f;
         }
     }
-    else if (Rounded(0.001) < speed)
+    else if (StillRollSpeed < speed)
     {
-        if (Rounded(0.01) < along)
+        if (WithMotion < along)
         {
             roll = 1.0f;
         }
-        else if (length < Rounded(0.1))
+        else if (length < LetGoStick)
         {
-            roll = 5.0f;
+            roll = SlowLetGoRoll;
         }
         else
         {
-            roll = along * (along * 10.0f) + 1.0f;
+            roll = along * (along * SlowAgainstRoll) + 1.0f;
         }
     }
     else
     {
-        roll = Rounded(1.2) / (length + Rounded(0.2));
+        roll = StillRoll / (length + StillRollStick);
     }
 
     body->SetSpinAndRollFriction(SpinFriction, roll * RollFriction);
@@ -488,7 +491,7 @@ void RollerbrawlVehicle::Wobble(f32 seconds)
 void RollerbrawlVehicle::RollFrame(f32 seconds)
 {
     SphereBody* body = BodyOf(agent);
-    u32 touching = (body->bodyFlags & RigidBody::FlagTouchedBody) != 0 || (body->bodyFlags & RigidBody::FlagTouched) != 0;
+    u32 touching = body->bodyFlags.touchedBody != 0 || body->bodyFlags.touchedWorld != 0;
     AddGravity(body);
     StickPush(touching);
     Drag();
@@ -496,7 +499,7 @@ void RollerbrawlVehicle::RollFrame(f32 seconds)
     Wobble(seconds);
     if (body->velocity.y < FallSpeed)
     {
-        RunAgentEvent(agent, EventFell, reinterpret_cast<u32>(agent->instance), 0, 0);
+        RunAgentEvent(agent, EventLongDrop, reinterpret_cast<u32>(agent->instance), 0, 0);
     }
 
     // Left still long enough without snow, on the ground, it stops
@@ -508,8 +511,8 @@ void RollerbrawlVehicle::RollFrame(f32 seconds)
     f32 spinSpeed = spin.x * spin.x + spin.y * spin.y + spin.z * spin.z;
     if (flatSpeed + spinSpeed < StillMotion && stickX * stickX + stickZ * stickZ < StillStick)
     {
-        timer = timer + seconds;
-        if (StillTime < timer)
+        stateTime = stateTime + seconds;
+        if (StillTime < stateTime)
         {
             if (snow == 0.0f && OnGround() != 0)
             {
@@ -517,13 +520,13 @@ void RollerbrawlVehicle::RollFrame(f32 seconds)
             }
             else
             {
-                timer = 0.0f;
+                stateTime = 0.0f;
             }
         }
     }
     else
     {
-        timer = 0.0f;
+        stateTime = 0.0f;
     }
 
     Vehicle::Frame(seconds);
@@ -551,14 +554,14 @@ void RollerbrawlVehicle::StoppedFrame(f32 seconds)
                  + (spin.x * spin.x + spin.y * spin.y + spin.z * spin.z);
 
     // Turned from its rotation then to the upright one (smoothstep over half a second)
-    f32 t = timer + timer;
-    if (1.0f < t)
+    f32 share = stateTime + stateTime;
+    if (1.0f < share)
     {
-        t = 1.0f;
+        share = 1.0f;
     }
 
     Vector4 rotation;
-    SlerpRotations(t * (t * 3.0f) - (t + t) * t * t, &rotation, &stopRotation, &uprightRotation);
+    SlerpRotations(share * (share * 3.0f) - (share + share) * share * share, &rotation, &stopRotation, &uprightRotation);
     Matrix4x4 matrix;
     MatrixFromRotation(&matrix, &rotation);
     *RowOf(&matrix, 3) = *PositionOf(body);
@@ -566,8 +569,8 @@ void RollerbrawlVehicle::StoppedFrame(f32 seconds)
     // Placed twice (retail drops the first)
     Vehicle::Place();
     Vehicle::Frame(seconds);
-    timer = timer + seconds;
-    if (MostStopTime < timer || MovingStick < stick.x * stick.x + stick.y * stick.y + stick.z * stick.z
+    stateTime = stateTime + seconds;
+    if (MostStopTime < stateTime || MovingStick < stick.x * stick.x + stick.y * stick.y + stick.z * stick.z
         || MovingMotion < motion)
     {
         Roll();
@@ -580,7 +583,7 @@ void RollerbrawlVehicle::SquashedFrame(f32 seconds)
     SphereBody* body = BodyOf(agent);
     AddGravity(body);
     wobbleAxis = {0.0f, 1.0f, 0.0f, 1.0f};
-    f32 flat = 1.0f - timer * Third * SquashSpeed;
+    f32 flat = 1.0f - stateTime * Third * SquashSpeed;
     if (flat < Flattest)
     {
         flat = Flattest;
@@ -607,10 +610,10 @@ void RollerbrawlVehicle::SquashedFrame(f32 seconds)
     // Placed twice (retail drops the first)
     Vehicle::Place();
     Vehicle::Frame(seconds);
-    timer = timer + seconds;
-    if (SquashTime < timer)
+    stateTime = stateTime + seconds;
+    if (SquashTime < stateTime)
     {
-        RunAgentEvent(agent, EventFell, reinterpret_cast<u32>(agent->instance), 0, 0);
+        RunAgentEvent(agent, EventLongDrop, reinterpret_cast<u32>(agent->instance), 0, 0);
     }
 }
 
@@ -623,8 +626,7 @@ void RollerbrawlVehicle::Stop()
     stopPosition = *RowOf(&place->matrix, 3);
     GetRotationVec(&stopRotation, &place->matrix);
 
-    // The rotation that stands the character's place upright, and a random turn about y (360 taken as radians: still a
-    // random yaw)
+    // The rotation that stands the character's place upright, and a random turn about y
     Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
     Vector4 worldUp = {0.0f, 1.0f, 0.0f, 1.0f};
     Vector4 placeUp;
@@ -635,7 +637,7 @@ void RollerbrawlVehicle::Stop()
     placeUp.z = placeUp.z * inverse;
     Vector4 axis = {placeUp.y * worldUp.z - placeUp.z * worldUp.y, placeUp.z * worldUp.x - placeUp.x * worldUp.z,
                     placeUp.x * worldUp.y - placeUp.y * worldUp.x, 1.0f};
-    if (Rounded(5e-5) < axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
+    if (Epsilon < axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
     {
         inverse = InverseLength(&axis, LengthEpsilon);
         f32 cosine = placeUp.x * worldUp.x + placeUp.y * worldUp.y + placeUp.z * worldUp.z;
@@ -649,7 +651,7 @@ void RollerbrawlVehicle::Stop()
         RotationAboutAxis(&upright, &axis, &angle, 0);
         uprightRotation = upright;
         MultiplyRotations(&uprightRotation, &uprightRotation, &stopRotation);
-        AngleFrom(&angle, RandomBelowFloat(360.0f), AngleRadians);
+        AngleFrom(&angle, RandomBelowFloat(RandomYawRange), AngleRadians);
         Vector4 yaw;
         RotationFromYaw(&yaw, &angle);
         MultiplyRotations(&uprightRotation, &uprightRotation, &yaw);
@@ -661,29 +663,29 @@ void RollerbrawlVehicle::Stop()
 
     ObjectNode* node = ObjectNodeOf(instance);
     ObjectNode* partnerNode = ObjectNodeOf(partnerInstance);
-    u8 countdown = static_cast<u8>(RandomBelow(0xFF));
-    node->unknown154 = countdown;
-    partnerNode->unknown154 = countdown;
+    u8 countdown = static_cast<u8>(RandomBelow(KnockCountdownRange));
+    node->reactions.knockCountdown = countdown;
+    partnerNode->reactions.knockCountdown = countdown;
     RunAgentEvent(agent, EventStopped, 0, 0, 0);
     RunAgentEvent(partner, EventStopped, 0, 0, 0);
     wobble = 0.0f;
     state = StateStopped;
-    timer = 0.0f;
+    stateTime = 0.0f;
     meltTime = 0.0f;
 }
 
 u32 RollerbrawlVehicle::OnGround()
 {
     void* results[MostGroundHits];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostGroundHits, ReferencedObject::FlagSphereContact);
+    InstanceQuery query;
+    StartQuery(&query, results, MostGroundHits, ReferencedObjectFlags::CollisionActive);
     SphereBody* body = BodyOf(agent);
     SkipInQuery(&query, agent->instance);
     query.skipped[1] = partner->instance;
     Vector4 from = *PositionOf(body);
     from.y = from.y - radius + GroundRayStart;
     Vector4 way = {0.0f, GroundRayLength, 0.0f, 1.0f};
-    return agent->LineOfSight(&from, &way, SolidToProbes, &query, GroundNodeKinds) != 0;
+    return agent->LineOfSight(&from, &way, SurfaceFlags::SolidToPlayerProbes, &query, SolidOrProjectileNodeKinds) != 0;
 }
 
 void RollerbrawlVehicle::LaySkidMarks(u32 touching)
@@ -710,7 +712,7 @@ void RollerbrawlVehicle::LaySkidMarks(u32 touching)
             side.x = side.x * inverse;
             side.y = side.y * inverse;
             side.z = side.z * inverse;
-            f32 offset = radius * 0.5f;
+            f32 offset = radius * SkidOffset;
             Vector4 otherSide = side;
             otherSide.x = -otherSide.x;
             otherSide.y = -otherSide.y;
@@ -737,23 +739,23 @@ void RollerbrawlVehicle::HitInstances()
     Box box = {*PositionOf(body), *PositionOf(body)};
     GrowBox(radius, &box);
     void* results[MostHits];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostHits, ReferencedObject::FlagTriggerSignals);
+    InstanceQuery query;
+    StartQuery(&query, results, MostHits, ReferencedObjectFlags::ReceivesTriggerSignals);
     InstanceContext* instance = agent->instance;
     ChunkData* chunk = instance->chunk;
     SkipInQuery(&query, instance);
-    QueryChunkInstances(chunk, &box, HitNodeKinds, &query);
+    QueryChunkInstances(chunk, &box, SolidNodeKinds, &query);
 
     // Left out: what either character has attached, and the other character (more than 19 attached overflow the list: retail)
     InstanceContext* leftOut[MostLeftOut];
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, AttachmentsKind));
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, NodeAttachments));
     if (attachments != nullptr && attachments->path != nullptr)
     {
         leftOutCount = AttachedInstances(attachments->path, leftOut, MostLeftOut - 1);
     }
 
     s32 otherCount = 0;
-    attachments = static_cast<AttachmentsNode*>(GetGameNode(&other->instance->nodes, AttachmentsKind));
+    attachments = static_cast<AttachmentsNode*>(GetGameNode(&other->instance->nodes, NodeAttachments));
     if (attachments != nullptr && attachments->path != nullptr)
     {
         otherCount = AttachedInstances(attachments->path, &leftOut[leftOutCount], MostLeftOut - 1 - leftOutCount);
@@ -764,7 +766,7 @@ void RollerbrawlVehicle::HitInstances()
     for (s32 i = 0; i < query.count; i++)
     {
         auto* hit = static_cast<InstanceContext*>(query.results[i]);
-        if ((hit->flags & ReferencedObject::FlagSphereContact) != 0 || Contains(leftOut, leftOutCount, hit))
+        if (hit->flags.collisionActive || Contains(leftOut, leftOutCount, hit))
         {
             continue;
         }
@@ -789,14 +791,14 @@ void RollerbrawlVehicle::HitInstances()
 
             agent->SendSurfaceMessage(&g_CollisionSurfaces.surfaces[HullSurfaceIndex(collision, static_cast<u8>(index))]);
             Vector4 back = {-body->velocity.x, -body->velocity.y, -body->velocity.z, 1.0f};
-            CallVirtual<void>(agent, agent->vtable, BumpedSlot, hit, &body->velocity, &back);
+            CallVirtual<void>(agent, agent->vtable, Agent::BumpedSlot, hit, &body->velocity, &back);
             // (retail looks up the hit instance's object node and drops it)
             ObjectNodeOf(hit);
             ObjectNode* node = ObjectNodeOf(agent->instance);
-            if ((agent->instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+            if (agent->instance->flags.physicsBody)
             {
                 back = {-body->velocity.x, -body->velocity.y, -body->velocity.z, 1.0f};
-                CallVirtual<u32>(node, node->vtable, CollidedSlot, hit, PositionOf(body), &back);
+                CallVirtual<u32>(node, node->vtable, ObjectNode::CollidedSlot, hit, PositionOf(body), &back);
             }
         }
     }
@@ -805,11 +807,12 @@ void RollerbrawlVehicle::HitInstances()
 RollerbrawlVehicle* RollerbrawlVehicle::Construct(RollerbrawlVehicle* vehicle, CharacterAgent* agent, CharacterAgent* partner)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->partner = partner;
     vehicle->vtable = g_RollerbrawlVehicleVTable;
     vehicle->other = partner;
-    vehicle->bits = (vehicle->bits | BitDrives) & ~BitHeld;
+    vehicle->bits.drives = 1;
+    vehicle->bits.held = 0;
     ConstructSkidMarks(&vehicle->leftMarks);
     ConstructSkidMarks(&vehicle->rightMarks);
     vehicle->Start();
@@ -823,7 +826,7 @@ void RollerbrawlVehicle::Start()
     state = StateRolling;
     heading = *RowOf(&place->matrix, 2);
     radius = BallRadius;
-    unknown110 = 0;
+    unused110 = 0;
     ClearSkidMarks(&leftMarks);
     ClearSkidMarks(&rightMarks);
     wobbleAxis = g_DefaultBox.min;
@@ -833,27 +836,27 @@ void RollerbrawlVehicle::Start()
     squashOffset = g_DefaultBox.min;
     squashOffset.w = 1.0f;
     wobblePhase = 0.0f;
-    timer = 0.0f;
+    stateTime = 0.0f;
     meltTime = 0.0f;
     Vehicle::Start();
     ClearSnow(this);
 
-    // The ball: bouncy, rubbing, its own callbacks and no drag; the other character's sphere contact off while it's in the ball
+    // The ball: bouncy, rubbing, its own callbacks and no drag; the other character's collision off while it's in the ball
     SphereBody* body = BodyOf(agent);
-    body->SetRestitution(Rounded(0.15));
-    body->SetSoftness(12.0f);
-    body->SetFriction(1.5f);
+    body->SetRestitution(BallRestitution);
+    body->SetSoftness(BallSoftness);
+    body->SetFriction(BallFriction);
     body->SetSpinAndRollFriction(SpinFriction, RollFriction);
-    body->bits &= ~DynamicBody::BitPlacesInstance;
+    body->bits.placesInstance = 0;
     body->contactArgument = this;
     body->touchArgument = this;
     body->touchCallback = TouchCallback;
     body->contactCallback = ContactCallback;
-    body->substeps = 3;
-    body->SetCacheMask(SolidToProbes);
+    body->substeps = BallSubsteps;
+    body->SetCacheMask(SurfaceFlags::SolidToPlayerProbes);
     body->lengthDrag = 0.0f;
     body->drag = 0.0f;
-    other->instance->flags &= ~ReferencedObject::FlagSphereContact;
+    other->instance->flags.collisionActive = 0;
     lastVelocity = body->velocity;
     ClearSnow(this);
     onSticky = 0;
@@ -862,7 +865,7 @@ void RollerbrawlVehicle::Start()
 void RollerbrawlVehicle::Frame(f32 seconds)
 {
     SphereBody* body = BodyOf(agent);
-    u32 touching = (body->bodyFlags & RigidBody::FlagTouchedBody) != 0 || (body->bodyFlags & RigidBody::FlagTouched) != 0;
+    u32 touching = body->bodyFlags.touchedBody != 0 || body->bodyFlags.touchedWorld != 0;
     if (state == StateRolling || state == StateStopped)
     {
         if (state == StateRolling)
@@ -904,7 +907,7 @@ void RollerbrawlVehicle::Frame(f32 seconds)
     }
 
     PlaceSnowShell(seconds);
-    LaySkidMarks((body->bodyFlags & RigidBody::FlagTouched) != 0);
+    LaySkidMarks(body->bodyFlags.touchedWorld != 0);
     HitInstances();
 }
 
@@ -967,7 +970,7 @@ void RollerbrawlVehicle::Roll()
 {
     RunAgentEvent(agent, EventRolling, 0, 0, 0);
     RunAgentEvent(partner, EventRolling, 0, 0, 0);
-    timer = 0.0f;
+    stateTime = 0.0f;
     state = StateRolling;
 }
 
@@ -993,7 +996,7 @@ void RollerbrawlVehicle::Destroy(u32 destroyFlags)
     vtable = g_RollerbrawlVehicleVTable;
     if (other != nullptr)
     {
-        other->instance->flags |= ReferencedObject::FlagSphereContact;
+        other->instance->flags.collisionActive = 1;
     }
 
     DestroySkidMarks(&rightMarks, DestroyOnly);
@@ -1008,7 +1011,7 @@ void RollerbrawlVehicle::SetVelocity(const Vector4* velocity)
 
 u32 RollerbrawlVehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -1025,13 +1028,13 @@ void RollerbrawlVehicle::ContactCallback(const CollisionHit* triangle, void* veh
 void RollerbrawlVehicle::ApplyStickySurface(const CollisionHit* triangle)
 {
     CharacterAgent* character = agent;
-    if ((GetTriangleSurface(triangle)->collisionMask & StickySurface) != 0)
+    if (GetTriangleSurface(triangle)->flags.sticky != 0)
     {
         onSticky = 1;
     }
 
     // Lava melts the snow instead of hurting while there's snow
-    if ((GetTriangleSurface(triangle)->contact.word & LavaContact) != 0 && 0.0f < snow)
+    if ((GetTriangleSurface(triangle)->contact.hitKinds & HitBurning) != 0 && 0.0f < snow)
     {
         if (meltTime < MeltTime)
         {

@@ -14,14 +14,13 @@ ScriptPack* ConstructScriptPack(ScriptPack* pack)
 
 void DestroyScriptPack(ScriptPack* pack, u32 destroyFlags)
 {
-    constexpr u32 DestroySlot = 1;
     ScriptCommand* commands = pack->commands;
     if (commands != nullptr)
     {
-        CallVirtual<void>(commands, commands->vtable, DestroySlot, u32{DestroyAndFree});
+        CallVirtual<void>(commands, commands->vtable, ScriptCommand::DestroySlot, u32{DestroyAndFree});
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(pack);
     }

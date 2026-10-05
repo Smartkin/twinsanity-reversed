@@ -6,32 +6,27 @@
 #include "gcc2.h"
 #include "platform/graphics.h"
 
+#include <libgs.h>
+
 namespace
 {
 // A material's key of 1 never loads programs
 constexpr u64 NoProgramsKey = 1;
 // Shaders' programs from 15 on are loaded when a material needs them
 constexpr s32 FirstLoadedShaderProgram = 0xF;
-// The shaders' vtable functions the materials use: the VU1 program the shader draws with, its packet
-constexpr u32 ShaderProgramSlot = 2;
-constexpr u32 ShaderPacketSlot = 6;
-// The shaders' GS registers (a single shader's are sent to the GIF directly): their size in quadwords, where they are
-constexpr u32 ShaderRegistersSizeSlot = 4;
-constexpr u32 ShaderRegistersSlot = 7;
-// Programs whose entries the material's packets hand VU1
-constexpr u32 MaterialEndProgram = 2;
+// The program whose entry the material's packets hand VU1 for the second parameter
 constexpr u32 SecondParameterProgram = 11;
 
 // The entries VU1 goes on to, by UNPACK at the counter's places (it counts them): the program's (and with it a place past it),
-// and program 11's in mode 2. The elements' fourth words aren't written: VU1 gets what the buffer had there
+// and program 11's when clipped. The elements' fourth words aren't written: VU1 gets what the buffer had there
 u8* WriteParameterEntries(u8* packet, u32* counter, u32 mode, u32 program, s16 offset)
 {
-    u32 count = mode == 2 ? 2 : 1;
+    u32 count = mode == DrawClipped ? 2 : 1;
     auto* at = reinterpret_cast<u32*>(packet);
     at[0] = CountTag | count;
     at[1] = 0;
     at[2] = 0;
-    at[3] = *counter | count << 16 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, *counter, count);
     at += 4;
     u32 place = ++*counter;
     u32 address = g_VuPrograms[program].address;
@@ -39,7 +34,7 @@ u8* WriteParameterEntries(u8* packet, u32* counter, u32 mode, u32 program, s16 o
     at[2] = place;
     at[1] = address + offset;
     at += 4;
-    if (mode == 2)
+    if (mode == DrawClipped)
     {
         place = ++*counter;
         at[0] = g_VuPrograms[SecondParameterProgram].address;
@@ -80,7 +75,7 @@ u8* LoadPrograms(const Material* material, u8* packet)
         s32 program = CallVirtual<s32>(shader, shader->vtable, ShaderProgramSlot);
         if (program >= FirstLoadedShaderProgram)
         {
-            packet = FUN_001da880(packet, static_cast<u32>(program));
+            packet = LoadProgramForMaterial(packet, static_cast<u32>(program));
         }
     }
 
@@ -103,7 +98,7 @@ u8* WriteShaders(const Material* material, u8* packet, u32* counter)
         Shader* shader = material->shaders[i];
         if (shader->texture != nullptr)
         {
-            packet = FUN_001bc9e0(&D_0030A820, packet, reinterpret_cast<Texture*>(shader->texture + 0xC), material->bucket);
+            packet = UploadTexture(&g_TextureUploadContext, packet, TextureOf(shader), material->bucket);
         }
 
         packet = CallVirtual<u8*>(shader, shader->vtable, ShaderPacketSlot, packet, counter, 1u);
@@ -112,7 +107,7 @@ u8* WriteShaders(const Material* material, u8* packet, u32* counter)
     return packet;
 }
 
-// Program 2's entry at the counter (VIF1's code before the UNPACK given)
+// EndProgram's entry at the counter (VIF1's code before the UNPACK given)
 u8* WriteEndEntry(u8* packet, u32 counter, u32 vif)
 {
     auto* at = reinterpret_cast<u32*>(packet);
@@ -120,7 +115,7 @@ u8* WriteEndEntry(u8* packet, u32 counter, u32 vif)
     at[1] = 0;
     at[2] = vif;
     at[3] = counter | VifUnpackV4;
-    at[4] = g_VuPrograms[MaterialEndProgram].address;
+    at[4] = g_VuPrograms[EndProgram].address;
     at[5] = 0;
     at[6] = 0;
     at[7] = 0;
@@ -139,7 +134,7 @@ u8* WriteNextBuffer(u8* packet, const RenderBucket& bucket)
 }
 
 // The CALL the material's drawing shares, unless the bucket's last material's was the same
-u8* WriteCall(const Material* material, RenderBucket& bucket, u8* packet)
+u8* WriteCallUnlessRepeated(const Material* material, RenderBucket& bucket, u8* packet)
 {
     if (bucket.lastCall == material->call)
     {
@@ -147,7 +142,7 @@ u8* WriteCall(const Material* material, RenderBucket& bucket, u8* packet)
     }
 
     bucket.lastCall = material->call;
-    return FUN_001c09e0(material, packet);
+    return WriteMaterialCall(material, packet);
 }
 
 // The writer's draws follow the bucket's packet
@@ -158,13 +153,13 @@ void Splice(RenderBucket& bucket, const RenderBucket& writer)
 }
 
 // A single shader's set-up: its program loaded whatever it is (the material's of several shaders skip the ones always loaded),
-// its packet, program 2's entry, its texture uploaded and its registers, its GS registers sent to the GIF directly, the CALL
+// its packet, EndProgram's entry, its texture uploaded and its registers, its GS registers sent to the GIF directly, the CALL
 u8* WriteSingleShader(const Material* material, RenderBucket& bucket, u8* packet)
 {
     Shader* shader = material->shaders[0];
     if (StartsPrograms(material, bucket))
     {
-        packet = FUN_001da880(packet, CallVirtual<u32>(shader, shader->vtable, ShaderProgramSlot));
+        packet = LoadProgramForMaterial(packet, CallVirtual<u32>(shader, shader->vtable, ShaderProgramSlot));
     }
 
     u32 counter = TakeBuffer(bucket);
@@ -172,9 +167,9 @@ u8* WriteSingleShader(const Material* material, RenderBucket& bucket, u8* packet
     packet = WriteEndEntry(packet, counter, 0);
     if (shader->texture != nullptr)
     {
-        auto* texture = reinterpret_cast<Texture*>(shader->texture + 0xC);
-        packet = FUN_001bc9e0(&D_0030A820, packet, texture, material->bucket);
-        packet = WriteTextureRegisters(&D_0030A820, packet, texture);
+        Texture* texture = TextureOf(shader);
+        packet = UploadTexture(&g_TextureUploadContext, packet, texture, material->bucket);
+        packet = WriteTextureRegisters(&g_TextureUploadContext, packet, texture);
     }
 
     // A REF tag of the registers (VIF1's FLUSHA and DIRECT of them); the asm asks their size twice
@@ -184,26 +179,25 @@ u8* WriteSingleShader(const Material* material, RenderBucket& bucket, u8* packet
     at[1] = registers;
     at[2] = VifFlushA;
     at[3] = CallVirtual<u32>(shader, shader->vtable, ShaderRegistersSizeSlot, 0u) | VifDirect;
-    return WriteCall(material, bucket, packet + 0x10);
+    return WriteCallUnlessRepeated(material, bucket, packet + 0x10);
 }
 }
 
 extern "C"
 {
-    // A CALL of a packet the material's drawing shares: none (0), the render target's (1), the shared GIF tag's (2)
-    u8* FUN_001a0dd0(u8* packet, u32 call)
+    u8* WriteSharedCall(u8* packet, u32 call)
     {
         u32 target;
-        if (call == 0)
+        if (call == CallNone)
         {
             return packet;
         }
 
-        if (call == 2)
+        if (call == CallSharedGifTag)
         {
             target = g_SharedGifPacket;
         }
-        else if (call == 1)
+        else if (call == CallRenderTarget)
         {
             target = Address(g_RenderTarget->packet);
         }
@@ -220,17 +214,17 @@ extern "C"
         return packet + 0x10;
     }
 
-    u8* FUN_001c09e0(const Material* material, u8* packet)
+    u8* WriteMaterialCall(const Material* material, u8* packet)
     {
-        return FUN_001a0dd0(packet, material->call);
+        return WriteSharedCall(packet, material->call);
     }
 
-    u8* FUN_001dcf40(u8* packet, u32* counter, u32 mode)
+    u8* WriteMaterialEntries(u8* packet, u32* counter, u32 mode)
     {
         return WriteParameterEntries(packet, counter, mode, g_ParameterProgram, g_ParameterProgramOffset);
     }
 
-    u8* FUN_001dca48(u8* packet, u32* counter, u32 mode)
+    u8* WriteBlendSkinEntries(u8* packet, u32* counter, u32 mode)
     {
         return WriteParameterEntries(packet, counter, mode, g_BlendParameterProgram, g_BlendParameterProgramOffset);
     }
@@ -244,14 +238,14 @@ extern "C"
         }
 
         u32 counter = TakeBuffer(bucket);
-        packet = FUN_001c09e0(material, packet);
-        packet = FUN_001dcf40(packet, &counter, mode);
+        packet = WriteMaterialCall(material, packet);
+        packet = WriteMaterialEntries(packet, &counter, mode);
         packet = WriteShaders(material, packet, &counter);
         packet = WriteEndEntry(packet, counter, 0);
         return WriteNextBuffer(packet, bucket);
     }
 
-    u8* FUN_001bbc08(Material* material, u8* packet, u32* counter, u32 mode)
+    u8* RenderBlendSkinMaterial(Material* material, u8* packet, u32* counter, u32 mode)
     {
         RenderBucket& bucket = g_FrameBuckets.buckets[material->bucket];
         if (StartsPrograms(material, bucket))
@@ -259,15 +253,14 @@ extern "C"
             packet = LoadPrograms(material, packet);
         }
 
-        packet = FUN_001c09e0(material, packet);
-        packet = FUN_001dca48(packet, counter, mode);
+        packet = WriteMaterialCall(material, packet);
+        packet = WriteBlendSkinEntries(packet, counter, mode);
         // The asm uploads the first shader's texture for every shader
         for (u32 i = 0; i < material->shaderCount; i++)
         {
-            u8* texture = material->shaders[0]->texture;
-            if (texture != nullptr)
+            if (material->shaders[0]->texture != nullptr)
             {
-                packet = FUN_001bc9e0(&D_0030A820, packet, reinterpret_cast<Texture*>(texture + 0xC), material->bucket);
+                packet = UploadTexture(&g_TextureUploadContext, packet, TextureOf(material->shaders[0]), material->bucket);
             }
 
             Shader* shader = material->shaders[i];
@@ -296,7 +289,7 @@ extern "C"
         packet = WriteShaders(material, packet, &counter);
         packet = WriteEndEntry(packet, counter, 0);
         packet = WriteNextBuffer(packet, bucket);
-        bucket.lastCall = 0;
+        bucket.lastCall = CallNone;
         return packet;
     }
 
@@ -310,7 +303,7 @@ extern "C"
         }
         else
         {
-            packet = WriteCall(material, bucket, packet);
+            packet = WriteCallUnlessRepeated(material, bucket, packet);
             if (StartsPrograms(material, bucket))
             {
                 packet = LoadPrograms(material, packet);
@@ -334,7 +327,7 @@ extern "C"
         Shader* shader = material->shaders[0];
         if (StartsPrograms(material, bucket))
         {
-            packet = FUN_001da880(packet, CallVirtual<u32>(shader, shader->vtable, ShaderProgramSlot));
+            packet = LoadProgramForMaterial(packet, CallVirtual<u32>(shader, shader->vtable, ShaderProgramSlot));
         }
 
         u32 counter = TakeBuffer(bucket);
@@ -344,7 +337,7 @@ extern "C"
         EndPacket(bucket, packet);
         Splice(bucket, material->writer);
         // Nothing of it was a CALL: the bucket's next material makes its own
-        bucket.lastCall = 0;
+        bucket.lastCall = CallNone;
     }
 
     u32 FlushMaterials()
@@ -368,27 +361,27 @@ extern "C"
             Material* material = g_RenderedMaterials[i];
             RenderBucket& writer = material->writer;
             writer.first = nullptr;
-            writer.unknown34 = 0;
+            writer.lastSlotAddress = 0;
             writer.vuBuffer = 0;
-            writer.unknown0D = 0;
+            writer.unused0D = 0;
             writer.programRegion = 0;
             writer.last = nullptr;
             writer.insertion = nullptr;
             writer.chain = 0;
             writer.lastKey = 0;
             writer.last2DMaterial = nullptr;
-            writer.unknown28 = 0;
+            writer.unused28 = 0;
             writer.lastJoints = 0;
-            writer.lastCall = 0;
+            writer.lastCall = CallNone;
             material->drawnDirectly = 0;
             material->listed = 0;
-            material->unknown65 = 0;
+            material->unused65 = 0;
         }
 
         g_RenderedMaterialCount = 0;
     }
 
-    void InitShadersRenderedAmt()
+    void ClearRenderedMaterials()
     {
         g_RenderedMaterialCount = 0;
     }
@@ -410,29 +403,22 @@ void Platform::Graphics::FinishScene(bool effects)
 {
     if (effects)
     {
-        FUN_001b9a68();
+        DrawScreenEffects();
     }
 
     CloseInstanceBlocks();
     FlushMaterials();
     ForgetMaterials();
-    FUN_001c0f08(&D_0030A820, 0);
-}
-
-namespace
-{
-// The shaders' destructor
-constexpr u32 ShaderDestroySlot = 1;
-constexpr u32 DeleteShader = 3;
+    FreeTextureSlots(&g_TextureUploadContext, 0);
 }
 
 extern "C" Material* MaterialConstruct(Material* material)
 {
     material->shaderCount = 0;
     RenderBucketConstruct(&material->writer);
-    material->call = 1;
+    material->call = CallRenderTarget;
     material->listed = 0;
-    material->unknown65 = 0;
+    material->unused65 = 0;
     material->drawnDirectly = 0;
     return material;
 }
@@ -444,11 +430,11 @@ extern "C" void MaterialDestroy(Material* material, u32 flags)
         Shader* shader = material->shaders[index];
         if (shader != nullptr)
         {
-            CallVirtual<void>(shader, shader->vtable, ShaderDestroySlot, DeleteShader);
+            CallVirtual<void>(shader, shader->vtable, ShaderDestroySlot, DestroyAndFree);
         }
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(material);
     }
@@ -466,18 +452,28 @@ extern "C"
 namespace
 {
 constexpr u32 FlatShaderSize = 0x70;
-constexpr u32 UiBucket = 0x18;
 // Its key: shader type 0xE's program bit
 constexpr u64 FlatShaderKey = 2;
-// The settings the UI's shapes draw with (bits 0-5, 19, 23-27, 29, 30, 32-37, 56, 57 and 59 replaced)
-constexpr u64 FlatSettingsKept = 0xF4FFFFC09077FFC0;
-constexpr u64 FlatSettings = 0x0800000004000001;
-// The shader's vtable function that makes its packets
-constexpr u32 ShaderPrepareSlot = 5;
-// The UI's 2D particles' settings: the flat ones, blended (bits 1 and 27), and textured (bit 28)
-constexpr u64 ParticleSettings = FlatSettings | 0x08000002;
-constexpr u64 TexturedShader = 0x10000000;
-constexpr u32 MaxShaders = 4;
+
+// The settings the UI's shapes draw with: blended with the mix preset without the alpha or destination tests, Gouraud shaded and
+// untextured without fog or scrolls, in the first context with the FBA and no depth writes
+void SetFlatSettings(ShaderSettings& settings)
+{
+    settings.blends = 1;
+    settings.preset = PresetMix;
+    settings.alphaTest = 0;
+    settings.destinationTest = 0;
+    settings.unused23 = 0;
+    settings.gouraud = 1;
+    settings.textured = 0;
+    settings.fog = 0;
+    settings.secondContext = 0;
+    settings.uScroll = ScrollNone;
+    settings.vScroll = ScrollNone;
+    settings.noFba = 0;
+    settings.unused57 = 0;
+    settings.noDepthWrites = 1;
+}
 }
 
 namespace Platform::Graphics
@@ -493,14 +489,15 @@ Material* MakeFlatMaterial()
         value = 1.0f;
     }
 
-    u64 settings = shader->settings;
+    ShaderSettings settings = shader->settings;
     g_FlatMaterial.shaderCount = 1;
-    g_FlatMaterial.bucket = UiBucket;
+    g_FlatMaterial.bucket = BucketUi;
     g_FlatMaterial.activatedShaders = FlatShaderKey;
     g_FlatMaterial.shaders[0] = shader;
     g_FlatShader = shader;
-    shader->settings = (settings & FlatSettingsKept) | FlatSettings;
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    SetFlatSettings(settings);
+    shader->settings = settings;
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
     return &g_FlatMaterial;
 }
 
@@ -509,15 +506,16 @@ Material* FlatMaterial()
     return &g_FlatMaterial;
 }
 
+// The UI's 2D particles' shader: the flat settings, additive, textured with STQ coordinates
 void* MakeParticleMaterial(Material* material)
 {
     material->shaderCount = 0;
-    material->bucket = UiBucket;
+    material->bucket = BucketUi;
     auto* shader = static_cast<Shader*>(MemoryAllocate(FlatShaderSize));
     ShaderConstruct(shader);
     shader->vtable = g_FlatShaderVTable;
     ShaderType0ESetUp(shader);
-    if (material->shaderCount < MaxShaders)
+    if (material->shaderCount < MaxMaterialShaders)
     {
         material->shaders[material->shaderCount++] = shader;
     }
@@ -527,33 +525,35 @@ void* MakeParticleMaterial(Material* material)
         value = 1.0f;
     }
 
-    shader->settings = (shader->settings & FlatSettingsKept) | ParticleSettings;
+    SetFlatSettings(shader->settings);
+    shader->settings.preset = PresetAdd;
+    shader->settings.textured = 1;
     // The first page's texture: its additive mode's shader's
     Material* page = ParticlePageMaterial(0);
     Shader* pageShader = page != nullptr ? page->shaders[0] : nullptr;
-    shader->settings = (shader->settings & ~TexturedShader) | TexturedShader;
+    shader->settings.stq = 1;
     SetShaderTexture(shader, HeaderOf(pageShader->texture)->id);
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
     return shader;
 }
 
-// The distortion's: shader type 0x18 in bucket 23 with its key, grey, blended with preset 0, depth tested GREATER and not written,
-// Gouraud, no scrolls; its LOD and linear filtering set after its GS settings are made (they don't get into them)
+// The distortion's: shader type 0x18 in its bucket with its key, grey, blended with the mix preset, depth tested GREATER and not
+// written, Gouraud, no scrolls; its LOD and linear filtering set after its GS settings are made (they don't get into them)
 void MakeDistortionMaterial(Material* material)
 {
-    constexpr u32 DistortionBucket = 0x17;
     constexpr u64 DistortionKey = 2;
     constexpr u32 DistortionShaderSize = 0x80;
-    constexpr u64 DistortionKept = 0xF7FFFFC0FB9FFFE0;
-    constexpr u64 DistortionSettings = 0x800000004600001;
-    material->bucket = DistortionBucket;
+    // TEX1's L and K (-12.5 in K's 16ths)
+    constexpr s16 DistortionLodL = 1;
+    constexpr s16 DistortionLodK = -200;
+    material->bucket = BucketDistortion;
     material->activatedShaders = DistortionKey;
     material->shaderCount = 0;
     auto* shader = static_cast<ScreenCopyShader*>(MemoryAllocate(DistortionShaderSize));
     ShaderConstruct(shader);
     shader->vtable = g_DistortionShaderVTable;
     ShaderType18SetUp(shader);
-    if (material->shaderCount < MaxShaders)
+    if (material->shaderCount < MaxMaterialShaders)
     {
         material->shaders[material->shaderCount++] = shader;
     }
@@ -562,41 +562,45 @@ void MakeDistortionMaterial(Material* material)
     shader->shaderColour[3] = 1.0f;
     shader->shaderColour[2] = 0.5f;
     shader->shaderColour[1] = 0.5f;
-    shader->settings = (shader->settings & DistortionKept) | DistortionSettings;
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
-    shader->settings = (shader->settings & ~(1ull << SettingLinear)) | 1ull << SettingLinear;
-    shader->lodL = 1;
-    shader->lodK = -200;
+    ShaderSettings& settings = shader->settings;
+    settings.blends = 1;
+    settings.preset = PresetMix;
+    settings.depthTest = GS_ZBUFF_GREATER;
+    settings.gouraud = 1;
+    settings.uScroll = ScrollNone;
+    settings.vScroll = ScrollNone;
+    settings.noDepthWrites = 1;
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
+    shader->settings.linear = 1;
+    shader->lodL = DistortionLodL;
+    shader->lodK = DistortionLodK;
 }
 
-// The skid marks' (InitFreedMemory makes both): shader type 1 (no texture, the vertexes' colours) in bucket 3 with its key,
-// blended with preset 1 (adding) or 2 (taking away) where the destination alpha test passes (DATE, DATM 0), depth not written
+// The skid marks' (InitFreedMemory makes both): shader type 1 (no texture, the vertexes' colours) in the global objects' bucket
+// with its key, blended with the add or subtract preset where the destination alpha test passes (DATE, DATM 0), depth not written
 Material* MakeSkidMaterial(bool subtracting)
 {
-    constexpr u32 SkidBucket = 3;
     constexpr u64 SkidKey = 8;
-    constexpr u64 AddingPreset = 1;
-    constexpr u64 SubtractingPreset = 2;
-    constexpr u64 PresetMask = 0xF;
     auto* material = MaterialConstruct(static_cast<Material*>(MemoryAllocate(MaterialStorage)));
     material->activatedShaders = SkidKey;
-    material->bucket = SkidBucket;
+    material->bucket = BucketGlobalOpaque;
     auto* shader = static_cast<Shader*>(MemoryAllocate(sizeof(Shader)));
     ShaderConstruct(shader);
     shader->vtable = g_ShaderType01VTable;
     ShaderType01SetUp(shader);
-    u64 preset = subtracting ? SubtractingPreset : AddingPreset;
-    u64 settings = shader->settings | 1ull << SettingBlends;
-    settings &= ~(1ull << SettingOwnAlpha);
-    settings = (settings & ~(PresetMask << SettingPreset)) | preset << SettingPreset;
-    settings |= 1ull << SettingNoDepthWrites | 1ull << SettingDestinationTest;
-    shader->settings = settings & ~(1ull << SettingDestinationMode);
-    if (material->shaderCount < MaxShaders)
+    ShaderSettings& settings = shader->settings;
+    settings.blends = 1;
+    settings.ownAlpha = 0;
+    settings.preset = subtracting ? PresetSubtract : PresetAdd;
+    settings.noDepthWrites = 1;
+    settings.destinationTest = 1;
+    settings.destinationMode = 0;
+    if (material->shaderCount < MaxMaterialShaders)
     {
         material->shaders[material->shaderCount++] = shader;
     }
 
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
     return material;
 }
 
@@ -607,7 +611,7 @@ void ConstructMaterial(Material* material)
 
 void DestroyMaterial(Material* material)
 {
-    MaterialDestroy(material, 2);
+    MaterialDestroy(material, DestroyOnly);
 }
 }
 
@@ -619,13 +623,12 @@ extern "C"
 
 namespace
 {
-constexpr u32 DefaultBucket = 2;
 constexpr u64 DefaultKey = 8;
 
 Material* MakeKeyedMaterial()
 {
     auto* material = MaterialConstruct(static_cast<Material*>(MemoryAllocate(Platform::Graphics::MaterialStorage)));
-    material->bucket = DefaultBucket;
+    material->bucket = BucketOpaque;
     material->activatedShaders = DefaultKey;
     return material;
 }
@@ -641,25 +644,25 @@ Shader* MakeShader(const GccVTableEntry* vtable, void (*setUp)(Shader*))
 
 void AddShader(Material* material, Shader* shader)
 {
-    if (material->shaderCount < MaxShaders)
+    if (material->shaderCount < MaxMaterialShaders)
     {
         material->shaders[material->shaderCount++] = shader;
     }
 }
 }
 
-// The type 0 shader's settings bits 23-25 (read from files and never used) are made 4 before its packets are
+// The type 0 shader's settings bits 23-25 (read from files and never used) are made 4 before its packets are, what the retail
+// files have there
 extern "C" void MakeDefaultMaterials()
 {
-    constexpr u64 UnusedBits = 7ull << 23;
-    constexpr u64 UnusedValue = 4ull << 23;
+    constexpr u64 RetailUnused23 = 4;
     g_UnusedDefaultMaterial = MakeKeyedMaterial();
     Shader* shader = MakeShader(g_ShaderType00VTable, ShaderType00SetUp);
     AddShader(g_UnusedDefaultMaterial, shader);
-    shader->settings = (shader->settings & ~UnusedBits) | UnusedValue;
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    shader->settings.unused23 = RetailUnused23;
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
     g_ScreenModelMaterial = MakeKeyedMaterial();
     shader = MakeShader(g_ShaderType01VTable, ShaderType01SetUp);
     AddShader(g_ScreenModelMaterial, shader);
-    CallVirtual<void>(shader, shader->vtable, ShaderPrepareSlot);
+    CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
 }

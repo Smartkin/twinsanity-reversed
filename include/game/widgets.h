@@ -4,24 +4,65 @@
 #include "common.h"
 #include "gcc2.h"
 #include "game/clock.h"
+#include "game/font.h"
 #include "game/math.h"
 #include "game/particles2d.h"
 #include "game/stream.h"
 #include "game/string.h"
 
-class Font;
 struct Renderer;
 class WidgetEffect;
+// A scale going round values (game/oleg.h): what a widget's sizes and a menu's selected item are scaled by
+struct CyclingScale;
+
+// The anchor in the middle of the screen (the x of Widget::anchor a constructor takes)
+constexpr f32 AnchorMiddle = 0.5f;
+
+// A widget's state (Widget::State) and the state asked for once one is, whether it's drawn, whether it's fitted to a 16:9 TV
+// (its places closing in on its anchor, its sizes shrinking) and the overlay layer its shapes are queued in
+union WidgetFlags
+{
+    u32 value;
+    struct
+    {
+        u32 state : 4;
+        u32 nextState : 4;
+        u32 stateAsked : 1;
+        u32 invisible : 1;
+        u32 widescreen : 1;
+        u32 layer : 4;
+        u32 unused15 : 17;
+    };
+};
+CHECK_SIZE(WidgetFlags, 4);
 
 // The UI's widgets (their vtables the retail ones). A widget is hidden, appears over its duration, is shown and disappears over
 // its duration, in turn: it holds hidden or shown for its hold time when it has one, and a state asked for takes effect at its
 // next update. Widgets are chained: what a widget is told is passed on to the next one after it. The vtable's functions: what
 // happens when it becomes hidden, starts appearing, becomes shown and starts disappearing, then every update in each of those
-// states (given the time since the state began), the destructor, hidden at its next update, 11 and 13 (passed down the chain,
-// what they're for is still unknown), the update and the draw
+// states (given the time since the state began), the destructor, hidden at its next update, the game's frame begun (before the
+// update), the update, the frame ended (once it's drawn) and the draw
 class Widget
 {
 public:
+    enum Slot : u32
+    {
+        EnterHiddenSlot = 1,
+        StartAppearingSlot = 2,
+        EnterShownSlot = 3,
+        StartDisappearingSlot = 4,
+        WhileHiddenSlot = 5,
+        WhileAppearingSlot = 6,
+        WhileShownSlot = 7,
+        WhileDisappearingSlot = 8,
+        DestroySlot = 9,
+        HideSlot = 10,
+        BeginFrameSlot = 11,
+        UpdateSlot = 12,
+        EndFrameSlot = 13,
+        DrawSlot = 14,
+    };
+
     enum State : u32
     {
         StateHidden = 1,
@@ -30,30 +71,7 @@ public:
         StateDisappearing = 4,
     };
 
-    enum Flags : u32
-    {
-        StateMask = 0xF,
-        NextStateMask = 0xF0,
-        NextStateShift = 4,
-        // A state was asked for
-        StateAsked = 0x100,
-        // Not drawn
-        Invisible = 0x200,
-        // Its places close in on its anchor on a 16:9 TV, as its sizes shrink
-        Widescreen = 0x400,
-        // Bits 11-14: the overlay layer its shapes are queued in
-        LayerShift = 11,
-        LayerMask = 0x7800,
-    };
-
-    // Something whose scale (0x10 bytes in) the widget's sizes are multiplied by
-    struct Scaler
-    {
-        u8 unknown00[0x10];
-        f32 scale;
-    };
-
-    u32 flags;
+    WidgetFlags flags;
     // The point its places close in on (x the constructor's, y the middle)
     Vector2 anchor;
     // When its state began (clock units), how long it appears and disappears, how long it holds (0: until it's told), how far it
@@ -63,9 +81,9 @@ public:
     s32 hold;
     f32 progress;
     Widget* next;
-    // An effect it plays (the sprite widgets' 2D particles)
+    // An effect it plays (the sprite widgets' 2D particles), and the scale its sizes are multiplied by
     WidgetEffect* effect;
-    Scaler* scaler;
+    const CyclingScale* scaler;
     // Its drop shadow: the colour it's tinted with and its offset (fractions of the screen, none when both are about 0)
     u32 shadowColour;
     Vector2 shadowOffset;
@@ -75,9 +93,9 @@ public:
     static Widget* Construct(Widget* widget) RETAIL(FUN_00255690);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025a760);
     void Hide() RETAIL(FUN_0025a830);
-    void Unknown11() RETAIL(FUN_0025a858);
+    void BeginFrame() RETAIL(FUN_0025a858);
     void Update(TimeClock* clock) RETAIL(FUN_002559e0);
-    void Unknown13() RETAIL(FUN_0025a8c8);
+    void EndFrame() RETAIL(FUN_0025a8c8);
     void Draw(Renderer* renderer) RETAIL(FUN_0025a890);
     // A place made fit for the TV when the widget is (pixels of the frame when inPixels), and a size, multiplied by the scaler's
     // scale too
@@ -92,13 +110,14 @@ public:
 
     u32 State() const
     {
-        return flags & StateMask;
+        return flags.state;
     }
 
     // Asks for a state, which begins at the next update
     void Ask(u32 state)
     {
-        flags = (flags & ~NextStateMask) | StateAsked | state << NextStateShift;
+        flags.nextState = state;
+        flags.stateAsked = 1;
     }
 };
 CHECK_SIZE(Widget, 0x38);
@@ -163,29 +182,29 @@ public:
 };
 CHECK_SIZE(ItemWidget, 0x90);
 
-// A text of the game's text table drawn in a font (its alignment flags the font's)
+// A text of the game's text table drawn in a font, in an alignment
 class Label : public AnimatedWidget
 {
 public:
     Font* font;
-    u32 textFlags;
+    TextAlignment alignment;
     u32 text;
 
-    static Label* Construct(Label* label, f32 anchor, Font* font, u32 text, u32 textFlags) RETAIL_N32(FUN_0025a9a0);
+    static Label* Construct(Label* label, f32 anchor, Font* font, u32 text, u32 alignment) RETAIL_N32(FUN_0025a9a0);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025a978);
     void Draw(Renderer* renderer) RETAIL(FUN_00255d08);
 };
 CHECK_SIZE(Label, 0x94);
 
-// A text of its own drawn in a font
+// A text of its own drawn in a font, in an alignment
 class StringLabel : public AnimatedWidget
 {
 public:
     Font* font;
-    u32 textFlags;
+    TextAlignment alignment;
     String text;
 
-    static StringLabel* Construct(StringLabel* label, f32 anchor, Font* font, u32 textFlags) RETAIL_N32(FUN_0025b670);
+    static StringLabel* Construct(StringLabel* label, f32 anchor, Font* font, u32 alignment) RETAIL_N32(FUN_0025b670);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025b538);
     void Draw(Renderer* renderer) RETAIL(FUN_00257088);
 };
@@ -199,7 +218,7 @@ class StringLabel;
 struct TextLine
 {
     Font* font;
-    u32 flags;
+    TextAlignment alignment;
     String text;
     u32 colour;
     Vector2 place;
@@ -210,18 +229,25 @@ struct TextLine
 };
 CHECK_SIZE(TextLine, 0x34);
 
-// The credits rolling up the screen (Language\Credits\<language>.txt in the game's font): bits 0-11 how many lines, 12-23 the
-// first line still shown; the font, the text file in memory, its lines, the speed (screens a second) and a scale of it, a line's
-// height, the text's size and where the first line shown is (a fraction of the screen from its top)
+// The credits' count of lines and the first line still shown
+union CreditsRollBits
+{
+    u32 value;
+    struct
+    {
+        u32 count : 12;
+        u32 first : 12;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(CreditsRollBits, 4);
+
+// The credits rolling up the screen (Language\Credits\<language>.txt in the game's font): its lines' count and the first still
+// shown; the font, the text file in memory, its lines, the speed (screens a second) and a scale of it, a line's height, the
+// text's size and where the first line shown is (a fraction of the screen from its top)
 struct CreditsRoll
 {
-    enum Bits : u32
-    {
-        CountMask = 0xFFF,
-        FirstShift = 12,
-    };
-
-    u32 bits;
+    CreditsRollBits bits;
     Font* font;
     MemoryStream text;
     const char** lines;
@@ -251,21 +277,27 @@ struct MenuSounds;
 struct PadButtons;
 struct MenuDrawer;
 
+// How a menu widget's menu goes: the leave action leaves it (its resume page isn't drawn), and a page left (but the resume page)
+// is where it starts again
+union MenuWidgetFlags
+{
+    u32 value;
+    struct
+    {
+        u32 leaves : 1;
+        u32 remembersPage : 1;
+        u32 unused2 : 30;
+    };
+};
+CHECK_SIZE(MenuWidgetFlags, 4);
+
 // A widget showing a menu: while it's shown it polls the input from its pad (cleared otherwise), steps the current page for
 // player 0 (from its home page when it has none), goes where the page leads, and draws the page shown with its drawer; hidden,
-// it leaves its page
+// it leaves its page. The game's frame's beginning and end are passed on to its page
 class MenuWidget : public AnimatedWidget
 {
 public:
-    enum MenuFlags : u32
-    {
-        // The leave action leaves the menu, and its resume page isn't drawn
-        Leaves = 1,
-        // A page left (but the resume page) is where the menu starts again
-        RemembersPage = 2,
-    };
-
-    u32 menuFlags;
+    MenuWidgetFlags menuFlags;
     // The page it was given to start from, and the one it starts from
     MenuPage* firstPage;
     MenuPage* home;
@@ -279,9 +311,9 @@ public:
     static MenuWidget* Construct(MenuWidget* widget, f32 anchor, MenuInput* input, MenuDrawer* drawer, MenuSounds* sounds)
         RETAIL_N32(FUN_0025ab38);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0025aaf8);
-    void Unknown11() RETAIL(FUN_0025abe0);
+    void BeginFrame() RETAIL(FUN_0025abe0);
     void Update(TimeClock* clock) RETAIL(FUN_00255e50);
-    void Unknown13() RETAIL(FUN_0025ac40);
+    void EndFrame() RETAIL(FUN_0025ac40);
     void Draw(Renderer* renderer) RETAIL(FUN_00256018);
 };
 CHECK_OFFSET(MenuWidget, firstPage, 0x8C);
@@ -354,24 +386,27 @@ class Shape2D;
 struct Material;
 
 // The UI's controllers' base (its vtable the retail one, after 0x308 bytes: 1 the destructor, 2 every widget hidden at its next
-// update, 3 and 6 the widgets' 11 and 13, 4 every widget updated, 5 every widget drawn): 64 widget slots that 64 bit masks pick,
-// which the locked ones are kept out of, and a mask of each slot's (still unknown)
+// update, 3 and 6 the game's frame begun and ended for every widget, 4 every widget updated, 5 every widget drawn): 64 widget
+// slots that 64 bit masks pick, which the locked ones are kept out of, and the screens' masks (OLEG::Screen: the widgets each
+// shows)
 class WidgetController
 {
 public:
+    static constexpr u32 Slots = 64;
+
     u64 locked;
-    u64 masks[64];
-    Widget* widgets[64];
+    u64 screens[Slots];
+    Widget* widgets[Slots];
     const GccVTableEntry* vtable;
 
     static WidgetController* Construct(WidgetController* controller) RETAIL(FUN_0025a4b8);
     void Destroy(u32 flags) RETAIL(FUN_0025a510);
     void SetWidget(u32 index, Widget* widget) RETAIL(FUN_0025a540);
     void HideAll() RETAIL(FUN_0025a550);
-    void Unknown3() RETAIL(FUN_0025a5b0);
+    void BeginFrame() RETAIL(FUN_0025a5b0);
     void Update(TimeClock* clock) RETAIL(FUN_0025a610);
     void Draw(Renderer* renderer) RETAIL(FUN_0025a680);
-    void Unknown6() RETAIL(FUN_0025a6f0);
+    void EndFrame() RETAIL(FUN_0025a6f0);
     // The widgets of the bits (but the locked ones) appear or disappear over the duration (clock units) and hold for the hold
     void Show(u64 bits, s32 duration, s32 hold) RETAIL(FUN_0025a378);
     void Hide(u64 bits, s32 duration, s32 hold) RETAIL(FUN_0025a418);
@@ -382,22 +417,28 @@ public:
 };
 CHECK_SIZE(WidgetController, 0x310);
 
+// A ring widget's rings stand apart: every one is inside nothing but its middle
+union RingWidgetFlags
+{
+    u8 value;
+    struct
+    {
+        u8 standApart : 1;
+        u8 unused1 : 7;
+    };
+};
+CHECK_SIZE(RingWidgetFlags, 1);
+
 // A widget of rings (made by AddRing, its own), each inside the next unless they stand apart: the first inside the last ring of
 // the widget it's inside, when it has one. They're drawn round its place, their radii its scale (fractions of the screen), in
 // their own colours (the widget's colour tints them), with a drop shadow one layer below
 class RingWidget : public AnimatedWidget
 {
 public:
-    enum RingFlags : u8
-    {
-        // Every ring is inside nothing but its middle
-        StandApart = 1,
-    };
-
     u8 count;
     u8 segments;
     u8 steps;
-    u8 ringFlags;
+    RingWidgetFlags ringFlags;
     RingWidget* inside;
     Ring** rings;
 

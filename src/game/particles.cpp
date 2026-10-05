@@ -21,12 +21,47 @@
 
 namespace
 {
-constexpr s32 LegacyVersion = 0x20;
-constexpr u8 RadialSort = 6;
-constexpr u8 DistortionBlend = 7;
-constexpr u8 DistortionList = 2;
+// The versions the systems' and emitters' fields came in (older files get their defaults), and the legacy version, whose files
+// have a layout of their own
+enum ParticleVersion : s32
+{
+    VersionCollisionSpheres = 3,
+    OldestVersion = 5,
+    VersionCutRadiuses = 6,
+    // Systems lose two words before their velocity, emitters get the gravity's turns (and their turns in halfwords)
+    VersionWithoutOldWords = 7,
+    VersionGravityTurns = 7,
+    VersionTimingOffset = 8,
+    VersionSwitches = 9,
+    VersionDrawCutOff = 10,
+    VersionBouncePlane = 0xC,
+    VersionBounceFactor = 0xD,
+    VersionGroup = 0xF,
+    VersionGhosts = 0x10,
+    VersionDrawList = 0x11,
+    // The random emit and start once (they were there twice, the second dropped), the radial tilts halved until 0x14
+    VersionSingleRandoms = 0x12,
+    VersionHalvedTilts = 0x12,
+    VersionWholeTilts = 0x14,
+    VersionDistortion = 0x15,
+    VersionEmitRoll = 0x16,
+    // Records of 0x10 bytes and two words after the draw list, dropped (until 0x1D)
+    VersionUnusedFloat5 = 0x17,
+    VersionRecords = 0x17,
+    VersionUnusedFloat6 = 0x18,
+    VersionStar = 0x19,
+    VersionRamp = 0x1A,
+    VersionTexturePage = 0x1B,
+    VersionScaleFactor = 0x1C,
+    VersionWithoutRecords = 0x1D,
+    VersionBoundingExtents = 0x1E,
+    NewestVersion = 0x1E,
+    LegacyVersion = 0x20,
+};
 // The blend modes past 3 a legacy file has are 4 more than they are now
 constexpr s8 LegacyBlendShift = 4;
+// The legacy files' records at the end of a system
+constexpr s32 LegacyRecords = 4;
 constexpr f32 DefaultCutOffRadius = 25.0f;
 // A draw distance of 2 or less is none
 constexpr f32 NoDrawCutOff = 2.0f;
@@ -40,45 +75,58 @@ constexpr f32 DefaultStarRadiusRatio = 0.5f;
 constexpr f32 TenThousandth = 0x1.A36E2Ep-14f;
 constexpr f32 ExtentShare = 0.75f;
 constexpr f32 OtherExtent = 10.0f;
-constexpr u32 KeyCount = 8;
-constexpr f32 FramesPerSecond = 60.0f;
-// A runtime's blocks hold 32 particles (12 hexagons), 32 blocks at most
+// A runtime's blocks hold 32 particles (12 hexagons)
 constexpr s32 BlockParticles = 32;
 constexpr s32 HexagonBlockParticles = 12;
-constexpr s16 MaxBlocks = 32;
-constexpr s16 MaxBlockParticles = 0x400;
-constexpr s16 MaxHexagonParticles = 0x180;
-constexpr s32 LevelKind = 1;
-constexpr s32 FirstLevelSlot = 2;
-constexpr s32 OldestVersion = 5;
-constexpr s32 NewestVersion = 0x1E;
+constexpr s16 MaxBlockParticles = MaxEmitterBlocks * BlockParticles;
+constexpr s16 MaxHexagonParticles = MaxEmitterBlocks * HexagonBlockParticles;
 constexpr s16 NoSwitch = -1;
 constexpr f32 DefaultBounceFactor = 0x1.CCCCCCp-1f;
-constexpr s16 SectionEmitter = 0x65;
-constexpr u32 EventSize = 0x2C;
-constexpr u32 DrawEntrySize = 0x70;
+// Two events a block
+constexpr s32 EventsPerBlock = 2;
 constexpr f32 PalFrame = 0x1.47AE14p-6f;
 constexpr f32 NtscFrame = 0x1.111112p-6f;
 // The texture rectangles' pixels get 2^19 more, so only their low 10 bits survive the GS's fixed point
 constexpr f32 TexturePixelBias = 0x1.0p+19f;
-constexpr u32 FrameRateFraction = 0x3FF;
-constexpr u32 FrameRateKept = 0xFFFFF800;
-constexpr u32 WheelFrames = 32;
-// A block's release is due four frames on: the chain's end, of hexagons or particles
+// A block's release is due four frames on
 constexpr u32 ReleaseDelay = 4;
-constexpr s32 EndHexagonChain = 9;
-constexpr s32 EndParticleChain = 2;
-constexpr u8 RotorSort = 7;
 constexpr f32 NoSphere = -1.0f;
-constexpr f32 FarTime = 0x1.E847E0p+19f;
-constexpr s16 NoState = -1;
-// The runtime's camera switch: never on, by the camera's distance, always on
-constexpr s8 CameraNeverOn = 0;
-constexpr u8 CameraDistanceSwitch = 1;
-constexpr s8 CameraAlwaysOn = 2;
+// A new runtime's camera distance until it's run: far away
+constexpr f32 NotRunDistance = 0x1.E847E0p+19f;
 // The distance of a chunk not drawn this frame
 constexpr f32 NoViewDistance = 0x1.312D00p+23f;
-constexpr u32 ParticlePrograms = 2;
+// What the reader's set-up returns (nothing reads it)
+constexpr u32 ReaderSet = 0x65;
+
+// The random spreads' and starts' axes for the radial generators: the radius (the emit's: the speed), the yaw and the tilt
+enum RadialAxis : u32
+{
+    RadialRadius = 0,
+    RadialSpeed = 0,
+    RadialYaw = 1,
+    RadialTilt = 2,
+};
+
+// The texture animation's frame rate as the set-up that never runs leaves it: the float with its low 11 bits made the frame count
+// times the start frame less one (its low 10 bits)
+union PackedFrameRate
+{
+    f32 rate;
+    u32 value;
+    struct
+    {
+        u32 startOffset : 10;
+        u32 unused10 : 1;
+        u32 rateBits : 21;
+    };
+};
+CHECK_SIZE(PackedFrameRate, 4);
+
+// A system of distorting hexagons
+bool DrawsHexagons(const ParticleSystem* system)
+{
+    return static_cast<s8>(system->blendMode) == BlendDistortion;
+}
 
 ParticleDrawEntry* EndOfDrawEntries()
 {
@@ -88,7 +136,7 @@ ParticleDrawEntry* EndOfDrawEntries()
 // A block's pending events back in the pool
 void DropBlockEvents(const u8* block)
 {
-    for (u32 frame = 0; frame < WheelFrames; frame++)
+    for (u32 frame = 0; frame < ParticleWheelFrames; frame++)
     {
         ParticleEvent* event = g_ParticleEventWheel[frame];
         if (event == nullptr)
@@ -144,9 +192,9 @@ void QueueBlockRelease(u8* block, const ParticleSystem* system)
     ParticleEvent* event = g_ParticleEventPool[g_ParticleEventPoolTop];
     event->block = block;
     event->delay = 0;
-    event->kind = static_cast<s8>(system->blendMode) == DistortionBlend ? EndHexagonChain : EndParticleChain;
+    event->kind = DrawsHexagons(system) ? ParticleEvent::EndHexagonChain : ParticleEvent::EndParticleChain;
     event->runtime = nullptr;
-    ParticleEvent** link = &g_ParticleEventWheel[(g_ParticleEventWheelIndex + ReleaseDelay) & (WheelFrames - 1)];
+    ParticleEvent** link = &g_ParticleEventWheel[(g_ParticleEventWheelIndex + ReleaseDelay) & (ParticleWheelFrames - 1)];
     while (*link != nullptr)
     {
         link = &(*link)->next;
@@ -157,10 +205,8 @@ void QueueBlockRelease(u8* block, const ParticleSystem* system)
     g_ParticleEventPoolTop++;
 }
 
+// A dead particle's life scale: its life is over at once
 constexpr f32 DeadParticle = 32768.0f;
-// A block let go of draws until its particles are gone, then it's released: off its draw list, of hexagons or particles
-constexpr s32 DropHexagonDraw = 7;
-constexpr s32 DropParticleDraw = 0;
 
 // The block's particles made none
 void ClearBlock(u8* block, s32 particles)
@@ -200,7 +246,9 @@ void ListDrawEntry(ParticleDrawEntry* entry, const ParticleSystem* system)
     list = entry;
 }
 
+// A stopped runtime is looked at again in 50 frames and up to 7 more, a released one past a turn of the wheel
 constexpr s16 RestPhaseBase = 0x32;
+constexpr s32 RestPhaseSpread = 8;
 constexpr s16 ReleasedPhase = 0x21;
 
 // The runtime put first in a wheel slot's list
@@ -215,13 +263,6 @@ void PushEmitter(EmitterRuntime* runtime, EmitterRuntime** slot)
     *slot = runtime;
 }
 
-// The other events: a block taken from its runtime, a block made free, a particle's bounce off the plane and off the vertical
-// plane
-constexpr s32 BlockTaken = 1;
-constexpr s32 FreeParticleBlock = 3;
-constexpr s32 FreeHexagonBlock = 8;
-constexpr s32 PlaneBounce = 5;
-constexpr s32 WallBounce = 6;
 // A free block's particles are born far in the future
 constexpr f32 FreeSpawnTime = 0x1.2A05F2p+33f;
 constexpr f32 FreeLifeScale = 128.0f;
@@ -255,7 +296,7 @@ void TakeOutOfFrame(ParticleEvent* event)
 void MoveToFrame(ParticleEvent* event, s32 frames)
 {
     event->next = nullptr;
-    AppendParticleEvent(event, &g_ParticleEventWheel[(g_ParticleEventWheelIndex + frames) & (WheelFrames - 1)]);
+    AppendParticleEvent(event, &g_ParticleEventWheel[(g_ParticleEventWheelIndex + frames) & (ParticleWheelFrames - 1)]);
     event->delay = 0;
 }
 
@@ -291,7 +332,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void MoveBlocksDow
 // A curve's value at a share of the life: between the first pair of keys around it, 0 outside them
 f32 SampleCurve(const ParticleKey* keys, f32 fraction)
 {
-    for (u32 key = 0; key < KeyCount - 1; key++)
+    for (u32 key = 0; key < ParticleCurveKeys - 1; key++)
     {
         if (keys[key].time <= fraction && fraction <= keys[key + 1].time)
         {
@@ -302,12 +343,9 @@ f32 SampleCurve(const ParticleKey* keys, f32 fraction)
     return 0.0f;
 }
 
-// A life's 64ths of a second, a ghost a separation later, and the turn's 65536ths to radians and back (the sphere generators)
-constexpr f32 LifeSteps = 64.0f;
-constexpr f32 RadiansPerUnit = 0x1.921FB6p-14f;
-constexpr f32 UnitsPerRadian = 0x1.45F306p+13f;
-constexpr f32 UnitsPerTurn = 65536.0f;
-constexpr s32 HalfTurn = 0x8000;
+// A particle's life is the render table's 64 steps; a turn's 65536ths as a float
+constexpr f32 LifeSteps = Platform::Graphics::ParticleRenderSteps;
+constexpr f32 UnitsPerTurn = FullTurnAngle;
 
 // The runtime's slot past its blocks' particles: the first again
 void WrapSlot(EmitterRuntime* runtime)
@@ -321,7 +359,7 @@ void WrapSlot(EmitterRuntime* runtime)
 // A block's particles: 12 hexagons for the distorting systems, 32 otherwise
 s32 BlockSize(const ParticleSystem* system)
 {
-    return static_cast<s8>(system->blendMode) == DistortionBlend ? HexagonBlockParticles : BlockParticles;
+    return DrawsHexagons(system) ? HexagonBlockParticles : BlockParticles;
 }
 
 // The particle at a slot of the runtime's blocks of a size (the generators without hexagons go by 32 whatever the system's)
@@ -369,7 +407,7 @@ f32 RandomRange(f32 scale, f32 base)
 // A radial generator's radius: grown from 0 over the ramp's time since the runtime was made
 f32 RampedRadius(const EmitterRuntime* runtime, const ParticleSystem* system)
 {
-    f32 radius = system->randomStart[0];
+    f32 radius = system->randomStart[RadialRadius];
     if (system->rampTime != 0.0f)
     {
         f32 age = g_ParticleTime - runtime->creationTime;
@@ -427,7 +465,7 @@ void RadialStart(EmitterRuntime* runtime, const ParticleSystem* system, Particle
     RotateVectorY(&point, &point, yaw);
     TransformPoint(&point, &point, &runtime->emitMatrix);
     StoreVector(record->start, point);
-    Vector4 velocity = {0.0f, RandomSpread(system->randomEmit[0]) + system->velocity, 0.0f, 0.0f};
+    Vector4 velocity = {0.0f, RandomSpread(system->randomEmit[RadialSpeed]) + system->velocity, 0.0f, 0.0f};
     RotateVectorZ(&velocity, &velocity, tilt);
     RotateVectorY(&velocity, &velocity, yaw);
     TransformVector(&velocity, &velocity, &runtime->emitMatrix);
@@ -437,7 +475,7 @@ void RadialStart(EmitterRuntime* runtime, const ParticleSystem* system, Particle
 // A turn's 65536ths through radians and back, as the sphere generators round them
 s16 ThroughRadians(s32 angle)
 {
-    return static_cast<s16>(static_cast<s32>(static_cast<f32>(angle) * RadiansPerUnit * UnitsPerRadian));
+    return static_cast<s16>(static_cast<s32>(static_cast<f32>(angle) * AngleToRadians * RadiansToAngle));
 }
 
 // The runtime's velocity rule, and its offsets
@@ -522,7 +560,7 @@ bool PlaneTimes(f32 above, f32 velocity, f32 gravity, f32* first, f32* second)
 // time, 0 outside them
 f32 SampleRenderCurve(const ParticleKey* keys, f32 life)
 {
-    for (u32 key = 0; key < KeyCount - 1; key++)
+    for (u32 key = 0; key < ParticleCurveKeys - 1; key++)
     {
         if (keys[key].time <= life && life <= keys[key + 1].time)
         {
@@ -540,25 +578,27 @@ f32 SampleRenderCurve(const ParticleKey* keys, f32 life)
 }
 
 // The colour curve the same way (black outside its keys)
-void SampleRenderColour(const f32 (*keys)[4], f32 life, f32* colour)
+void SampleRenderColour(const ParticleColourKey* keys, f32 life, f32* colour)
 {
-    for (u32 key = 0; key < KeyCount - 1; key++)
+    for (u32 key = 0; key < ParticleCurveKeys - 1; key++)
     {
-        if (keys[key][0] <= life && life <= keys[key + 1][0])
+        const ParticleColourKey& from = keys[key];
+        const ParticleColourKey& to = keys[key + 1];
+        if (from.time <= life && life <= to.time)
         {
-            f32 into = life - keys[key][0];
+            f32 into = life - from.time;
             if (into == 0.0f)
             {
-                colour[0] = keys[key][1];
-                colour[1] = keys[key][2];
-                colour[2] = keys[key][3];
+                colour[0] = from.red;
+                colour[1] = from.green;
+                colour[2] = from.blue;
                 return;
             }
 
-            f32 share = into / (keys[key + 1][0] - keys[key][0]);
-            colour[0] = keys[key][1] + share * (keys[key + 1][1] - keys[key][1]);
-            colour[1] = keys[key][2] + share * (keys[key + 1][2] - keys[key][2]);
-            colour[2] = keys[key][3] + share * (keys[key + 1][3] - keys[key][3]);
+            f32 share = into / (to.time - from.time);
+            colour[0] = from.red + share * (to.red - from.red);
+            colour[1] = from.green + share * (to.green - from.green);
+            colour[2] = from.blue + share * (to.blue - from.blue);
             return;
         }
     }
@@ -654,7 +694,7 @@ extern "C"
     {
         g_ParticleReader = stream;
         g_ParticleReaderSet = 1;
-        return 0x65;
+        return ReaderSet;
     }
 
     void AbandonParticleSection()
@@ -668,12 +708,12 @@ extern "C"
 
         if (g_ParticleCopyStream != nullptr)
         {
-            g_ParticleCopyStream->Destroy(3);
+            g_ParticleCopyStream->Destroy(DestroyAndFree);
         }
 
         if (g_ParticleOtherStream != nullptr)
         {
-            g_ParticleOtherStream->Destroy(3);
+            g_ParticleOtherStream->Destroy(DestroyAndFree);
         }
 
         if (g_ParticleSectionFile >= 0)
@@ -701,7 +741,7 @@ extern "C"
         for (s32 index = 1; index < static_cast<s32>(MaxParticleSystems); index++)
         {
             const ParticleSystem* system = g_LoadedParticleSystems[index];
-            if (system != nullptr && static_cast<s8>(system->sectionSlot) == 0 && RetailLibc::StringCompare(system->name, name) == 0)
+            if (system != nullptr && static_cast<s8>(system->sectionSlot) == DefaultParticleSlot && RetailLibc::StringCompare(system->name, name) == 0)
             {
                 return index;
             }
@@ -752,7 +792,7 @@ extern "C"
             system->texturePage = ReadParticleByte();
         }
 
-        system->sectionKind = static_cast<u8>(kind);
+        system->unused10 = static_cast<u8>(kind);
         system->genRate = static_cast<s16>(ReadParticleHalf());
         system->maxParticles = static_cast<u16>(ReadParticleHalf());
         system->timingOffset = static_cast<u16>(ReadParticleHalf());
@@ -774,7 +814,7 @@ extern "C"
             }
         }
 
-        if (version < 6)
+        if (version < VersionCutRadiuses)
         {
             system->cutOnRadius = 0.0f;
             system->cutOffRadius = DefaultCutOffRadius;
@@ -785,7 +825,7 @@ extern "C"
             system->cutOffRadius = ReadParticleFloat();
         }
 
-        if (version < 10)
+        if (version < VersionDrawCutOff)
         {
             system->drawCutOff = 0.0f;
         }
@@ -798,9 +838,9 @@ extern "C"
             }
         }
 
-        system->unusedFloat5 = version < 0x17 || version == LegacyVersion ? 0.0f : ReadParticleFloat();
-        system->unusedFloat6 = version < 0x18 || version == LegacyVersion ? DefaultUnusedFloat6 : ReadParticleFloat();
-        if (version < 7)
+        system->unusedFloat5 = version < VersionUnusedFloat5 || version == LegacyVersion ? 0.0f : ReadParticleFloat();
+        system->unusedFloat6 = version < VersionUnusedFloat6 || version == LegacyVersion ? DefaultUnusedFloat6 : ReadParticleFloat();
+        if (version < VersionWithoutOldWords)
         {
             ReadParticleWord();
             ReadParticleWord();
@@ -808,22 +848,23 @@ extern "C"
 
         system->velocity = ReadParticleFloat();
         ReadParticleBytes(system->randomEmit, sizeof(system->randomEmit));
-        if (version < 0x12)
+        if (version < VersionSingleRandoms)
         {
             ReadParticleBytes(skipped, sizeof(system->randomEmit));
         }
 
         ReadParticleBytes(system->randomStart, sizeof(system->randomStart));
-        if (version < 0x12)
+        if (version < VersionSingleRandoms)
         {
             ReadParticleBytes(skipped, sizeof(system->randomStart));
         }
 
         // Versions 0x12 and 0x13 kept the radial generator's tilts halved
-        if (static_cast<u32>(version - 0x12) < 2 && static_cast<s8>(system->genSort) == RadialSort)
+        if (static_cast<u32>(version - VersionHalvedTilts) < VersionWholeTilts - VersionHalvedTilts &&
+            static_cast<s8>(system->genSort) == GenSortRadial)
         {
-            system->randomEmit[2] = system->randomEmit[2] + system->randomEmit[2];
-            system->randomStart[2] = system->randomStart[2] + system->randomStart[2];
+            system->randomEmit[RadialTilt] = system->randomEmit[RadialTilt] + system->randomEmit[RadialTilt];
+            system->randomStart[RadialTilt] = system->randomStart[RadialTilt] + system->randomStart[RadialTilt];
         }
 
         for (f32& value : system->startRandomScale)
@@ -856,9 +897,9 @@ extern "C"
         system->jibberXAmp = ReadParticleFloat();
         system->jibberYFreq = ReadParticleFloat();
         system->jibberYAmp = ReadParticleFloat();
-        for (auto& key : system->colourKeys)
+        for (ParticleColourKey& key : system->colourKeys)
         {
-            ReadParticleBytes(key, sizeof(key));
+            ReadParticleBytes(&key, sizeof(key));
         }
 
         for (ParticleKey& key : system->alphaKeys)
@@ -866,7 +907,7 @@ extern "C"
             ReadParticleBytes(&key, sizeof(key));
         }
 
-        if (version < 0x15)
+        if (version < VersionDistortion)
         {
             system->distortionY = DefaultDistortion;
             system->distortionX = DefaultDistortion;
@@ -915,7 +956,7 @@ extern "C"
             ReadParticleWord();
         }
 
-        if (version < 3)
+        if (version < VersionCollisionSpheres)
         {
             system->collisionSpheres = 0;
         }
@@ -929,13 +970,13 @@ extern "C"
             system->collisionSpheres = static_cast<u8>(ReadParticleByte());
         }
 
-        system->drawList = version < 0x11 ? 0 : static_cast<u8>(ReadParticleByte());
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        system->drawList = version < VersionDrawList ? DrawListParticles : static_cast<u8>(ReadParticleByte());
+        if (DrawsHexagons(system))
         {
-            system->drawList = DistortionList;
+            system->drawList = DrawListDistortion;
         }
 
-        for (s32 slot = 3; slot >= 0; slot--)
+        for (s32 slot = SystemEmitterSlots - 1; slot >= 0; slot--)
         {
             system->emitterSlots[slot] = -1;
         }
@@ -947,10 +988,10 @@ extern "C"
             ReadParticleWord();
         }
 
-        if (version >= 0x17 && version != LegacyVersion)
+        if (version >= VersionRecords && version != LegacyVersion)
         {
             // Records of 0x10 bytes and two words, dropped
-            if (version < 0x1D)
+            if (version < VersionWithoutRecords)
             {
                 s32 count = static_cast<s32>(ReadParticleWord());
                 for (s32 left = count; left > 0; left--)
@@ -963,8 +1004,8 @@ extern "C"
         }
         else if (version == LegacyVersion)
         {
-            // Four records: the first's float is the scale
-            for (s32 record = 0; record < 4; record++)
+            // Its records: the first's float is the scale
+            for (s32 record = 0; record < LegacyRecords; record++)
             {
                 if (record == 0)
                 {
@@ -981,7 +1022,7 @@ extern "C"
             }
         }
 
-        if (version < 0x10)
+        if (version < VersionGhosts)
         {
             system->ghosts = 0;
             system->ghostSeparation = 0.0f;
@@ -1002,7 +1043,7 @@ extern "C"
             system->ghostSeparation = ReadParticleFloat();
         }
 
-        if (version >= 0x19 && version != LegacyVersion)
+        if (version >= VersionStar && version != LegacyVersion)
         {
             system->starPoints = static_cast<s16>(ReadParticleWord());
             system->starRadiusRatio = ReadParticleFloat();
@@ -1013,21 +1054,21 @@ extern "C"
             system->starRadiusRatio = DefaultStarRadiusRatio;
         }
 
-        system->rampTime = version < 0x1A || version == LegacyVersion ? 0.0f : ReadParticleFloat();
+        system->rampTime = version < VersionRamp || version == LegacyVersion ? 0.0f : ReadParticleFloat();
         if (version != LegacyVersion)
         {
-            if (version >= 0x1B)
+            if (version >= VersionTexturePage)
             {
                 system->texturePage = static_cast<s32>(ReadParticleWord());
             }
 
-            if (version >= 0x1C)
+            if (version >= VersionScaleFactor)
             {
                 system->scaleFactor = ReadParticleFloat();
             }
         }
 
-        if (version < 0x1E)
+        if (version < VersionBoundingExtents)
         {
             ComputeParticleBoundingExtents(system);
         }
@@ -1108,7 +1149,7 @@ extern "C"
 
             s32 particles = static_cast<s16>(system->maxParticles);
             runtime.maxParticles = static_cast<s16>(particles);
-            bool hexagons = static_cast<s8>(system->blendMode) == DistortionBlend;
+            bool hexagons = DrawsHexagons(system);
             if (hexagons)
             {
                 runtime.blocksWanted = static_cast<s16>((particles + HexagonBlockParticles - 1) / HexagonBlockParticles);
@@ -1118,9 +1159,9 @@ extern "C"
                 runtime.blocksWanted = static_cast<s16>((particles + BlockParticles - 1) / BlockParticles);
             }
 
-            if (runtime.blocksWanted > MaxBlocks)
+            if (runtime.blocksWanted > MaxEmitterBlocks)
             {
-                runtime.blocksWanted = MaxBlocks;
+                runtime.blocksWanted = MaxEmitterBlocks;
                 runtime.maxParticles = hexagons ? MaxHexagonParticles : MaxBlockParticles;
             }
 
@@ -1138,15 +1179,15 @@ extern "C"
     s32 ReadParticleSection(s8 kind, ChunkData* chunk)
     {
         s32 slot = -1;
-        if (kind == LevelKind)
+        if (kind == SectionLevel)
         {
-            if (g_ParticleSlotsUsed[FirstLevelSlot] == 0)
+            if (g_ParticleSlotsUsed[FirstLevelParticleSlot] == 0)
             {
-                slot = FirstLevelSlot;
+                slot = FirstLevelParticleSlot;
             }
             else
             {
-                for (s32 candidate = FirstLevelSlot + 1; candidate < static_cast<s32>(ParticleSectionSlots); candidate++)
+                for (s32 candidate = FirstLevelParticleSlot + 1; candidate < static_cast<s32>(ParticleSectionSlots); candidate++)
                 {
                     if (g_ParticleSlotsUsed[candidate] == 0)
                     {
@@ -1198,13 +1239,14 @@ extern "C"
             g_LoadedParticleSystemCount++;
         }
 
-        ParticleSystem unused;
+        ParticleSystem droppedSystem;
         for (s32 left = dropped; left > 0; left--)
         {
-            ReadParticleSystem(&unused, version, kind);
+            ReadParticleSystem(&droppedSystem, version, kind);
         }
 
-        if (static_cast<u8>(kind - 1) < 2)
+        // Kinds 1 and 2 have emitters
+        if (static_cast<u8>(kind - SectionLevel) < 2)
         {
             s32 emitters = static_cast<s32>(ReadParticleWord());
             if (version != LegacyVersion)
@@ -1226,7 +1268,7 @@ extern "C"
                     ParticleEmitter& emitter = g_ParticleEmitters[place];
                     emitter.sectionSlot = static_cast<u8>(slot);
                     ReadParticleBytes(emitter.position, sizeof(emitter.position));
-                    if (version < 7)
+                    if (version < VersionGravityTurns)
                     {
                         emitter.gravityTilt = 0;
                         emitter.gravityYaw = 0;
@@ -1241,8 +1283,8 @@ extern "C"
                         emitter.emitYaw = static_cast<s16>(ReadParticleHalf());
                     }
 
-                    emitter.emitRoll = version < 0x16 ? 0 : static_cast<s16>(ReadParticleHalf());
-                    emitter.timingOffset = version < 8 ? 0 : static_cast<s32>(ReadParticleWord());
+                    emitter.emitRoll = version < VersionEmitRoll ? 0 : static_cast<s16>(ReadParticleHalf());
+                    emitter.timingOffset = version < VersionTimingOffset ? 0 : static_cast<s32>(ReadParticleWord());
                     ReadParticleBytes(emitter.name, sizeof(emitter.name));
                     emitter.runtime = EmitterNotMade;
                     emitter.system = FindParticleSystem(emitter.name, static_cast<s8>(slot));
@@ -1251,7 +1293,7 @@ extern "C"
                         g_UnfoundParticleSystems++;
                     }
 
-                    if (version < 9)
+                    if (version < VersionSwitches)
                     {
                         emitter.switchType = 0;
                         emitter.switchId = NoSwitch;
@@ -1264,7 +1306,7 @@ extern "C"
                         emitter.switchValue = ReadParticleFloat();
                     }
 
-                    if (version < 0xC)
+                    if (version < VersionBouncePlane)
                     {
                         emitter.unusedShort = 0;
                         emitter.bouncePlaneAngle = 0;
@@ -1277,8 +1319,8 @@ extern "C"
                         emitter.planeOffset = ReadParticleFloat();
                     }
 
-                    emitter.bounceFactor = version < 0xD ? DefaultBounceFactor : ReadParticleFloat();
-                    emitter.groupId = version < 0xF ? 0 : static_cast<s16>(ReadParticleHalf());
+                    emitter.bounceFactor = version < VersionBounceFactor ? DefaultBounceFactor : ReadParticleFloat();
+                    emitter.groupId = version < VersionGroup ? 0 : static_cast<s16>(ReadParticleHalf());
                     g_ParticleEmitterCount++;
                 }
             }
@@ -1334,7 +1376,7 @@ extern "C"
             runtime.bouncePlaneAngle = emitter.bouncePlaneAngle;
             runtime.planeOffset = emitter.planeOffset;
             ChunkData* emitterChunk = g_ParticleSlotChunks[static_cast<s8>(emitter.sectionSlot)];
-            runtime.state = SectionEmitter;
+            runtime.state = EmitterRuntime::StateOfChunk;
             runtime.chunk = emitterChunk != nullptr ? emitterChunk : g_DrawnChunk;
         }
 
@@ -1403,11 +1445,14 @@ extern "C"
     {
         g_ParticlesSetUp = 1;
         g_ParticleBlockCount = blocks;
-        g_ParticleEvents = static_cast<ParticleEvent*>(MemoryAllocate2((g_HexagonBlockCount + blocks) * 2 * EventSize));
-        g_ParticleEventPool = static_cast<ParticleEvent**>(MemoryAllocate2((g_ParticleBlockCount + g_HexagonBlockCount) << 3));
-        g_ParticleBlocks = static_cast<u8**>(MemoryAllocate2(g_ParticleBlockCount << 2));
-        g_HexagonBlocks = static_cast<u8**>(MemoryAllocate2(g_HexagonBlockCount << 2));
-        g_ParticleDrawEntries = static_cast<ParticleDrawEntry*>(MemoryAllocate2((g_ParticleBlockCount + g_HexagonBlockCount) * DrawEntrySize));
+        g_ParticleEvents =
+            static_cast<ParticleEvent*>(MemoryAllocate2((g_HexagonBlockCount + blocks) * EventsPerBlock * sizeof(ParticleEvent)));
+        g_ParticleEventPool = static_cast<ParticleEvent**>(
+            MemoryAllocate2((g_ParticleBlockCount + g_HexagonBlockCount) * EventsPerBlock * sizeof(ParticleEvent*)));
+        g_ParticleBlocks = static_cast<u8**>(MemoryAllocate2(g_ParticleBlockCount * sizeof(u8*)));
+        g_HexagonBlocks = static_cast<u8**>(MemoryAllocate2(g_HexagonBlockCount * sizeof(u8*)));
+        g_ParticleDrawEntries = static_cast<ParticleDrawEntry*>(
+            MemoryAllocate2((g_ParticleBlockCount + g_HexagonBlockCount) * sizeof(ParticleDrawEntry)));
         RetailLibc::MemorySet(g_FreeEmitterRuntimes, 0, sizeof(g_FreeEmitterRuntimes));
         RetailLibc::MemorySet(g_EmitterRuntimes, 0, sizeof(g_EmitterRuntimes));
         g_ParticleFrameDelta = g_Pal ? PalFrame : NtscFrame;
@@ -1424,10 +1469,9 @@ extern "C"
 
                 system->textureFrameRate = static_cast<f32>(static_cast<s16>(system->textureFrameCount)) * FramesPerSecond /
                                            static_cast<f32>(static_cast<s8>(system->textureFrameHold));
-                auto& rateBits = *reinterpret_cast<u32*>(&system->textureFrameRate);
-                rateBits = (rateBits & FrameRateKept) +
-                           ((static_cast<s16>(system->textureFrameCount) * (static_cast<s8>(system->textureFrameStart) - 1)) &
-                            FrameRateFraction);
+                auto& packed = *reinterpret_cast<PackedFrameRate*>(&system->textureFrameRate);
+                packed.unused10 = 0;
+                packed.startOffset = static_cast<s16>(system->textureFrameCount) * (static_cast<s8>(system->textureFrameStart) - 1);
                 system->alphaKeys[0].value /= system->lifeTime;
                 system->textureStartX += TexturePixelBias;
                 system->textureEndX += TexturePixelBias;
@@ -1452,9 +1496,9 @@ extern "C"
         {
             runtime.enabled = 0;
             runtime.nextSlot = 0;
-            runtime.rotorAngles[0] = 0;
-            runtime.rotorAngles[1] = 0;
-            runtime.startValue = 0;
+            runtime.rotorYaw = 0;
+            runtime.rotorTilt = 0;
+            runtime.cyclesLeft = 0;
             runtime.system = 0;
         }
 
@@ -1477,21 +1521,21 @@ extern "C"
         s16 index = g_FreeEmitterRuntimes[g_TakenEmitterRuntimes];
         g_TakenEmitterRuntimes++;
         EmitterRuntime& runtime = g_EmitterRuntimes[index];
-        for (s32 block = 31; block >= 0; block--)
+        for (s32 block = MaxEmitterBlocks - 1; block >= 0; block--)
         {
             runtime.blocks[block] = nullptr;
         }
 
         runtime.listsDraws = 1;
-        runtime.state = NoState;
+        runtime.state = EmitterRuntime::StateLoose;
         runtime.blockCount = 0;
         runtime.nextSlot = 0;
         runtime.capacity = 0;
         runtime.blocksWanted = 0;
         runtime.maxParticles = 0;
-        runtime.unknown108 = 0;
+        runtime.unused108 = 0;
         runtime.chunk = nullptr;
-        runtime.cameraSwitch = CameraDistanceSwitch;
+        runtime.cameraSwitch = EmitterRuntime::CameraByDistance;
         return index;
     }
 
@@ -1511,11 +1555,11 @@ extern "C"
             return;
         }
 
-        if (static_cast<s8>(system->genSort) == RotorSort)
+        if (static_cast<s8>(system->genSort) == GenSortRadialRotor)
         {
             runtime.phase = 0;
-            runtime.rotorAngles[0] = static_cast<s16>(static_cast<s32>(static_cast<f32>(timingOffset) * system->randomEmit[1]));
-            runtime.rotorAngles[1] = static_cast<s16>(static_cast<s32>(static_cast<f32>(timingOffset) * system->randomEmit[2]));
+            runtime.rotorYaw = static_cast<s16>(static_cast<s32>(static_cast<f32>(timingOffset) * system->randomEmit[RadialYaw]));
+            runtime.rotorTilt = static_cast<s16>(static_cast<s32>(static_cast<f32>(timingOffset) * system->randomEmit[RadialTilt]));
         }
 
         s32 period = static_cast<s16>(system->onTime) + static_cast<s16>(system->offTime);
@@ -1598,9 +1642,9 @@ extern "C"
         }
 
         // Already free: only the handle goes
-        for (s32 free = g_TakenEmitterRuntimes; free < static_cast<s32>(MaxEmitterRuntimes); free++)
+        for (s32 freeSlot = g_TakenEmitterRuntimes; freeSlot < static_cast<s32>(MaxEmitterRuntimes); freeSlot++)
         {
-            if (g_FreeEmitterRuntimes[free] == *runtimeIndex)
+            if (g_FreeEmitterRuntimes[freeSlot] == *runtimeIndex)
             {
                 *runtimeIndex = -1;
                 return;
@@ -1625,7 +1669,7 @@ extern "C"
 
         g_TakenEmitterRuntimes--;
         g_EmitterRuntimes[*runtimeIndex].system = 0;
-        g_EmitterRuntimes[*runtimeIndex].state = NoState;
+        g_EmitterRuntimes[*runtimeIndex].state = EmitterRuntime::StateLoose;
         g_FreeEmitterRuntimes[g_TakenEmitterRuntimes] = static_cast<s16>(*runtimeIndex);
         *runtimeIndex = -1;
     }
@@ -1674,7 +1718,7 @@ extern "C"
     {
         EmitterRuntime& runtime = g_EmitterRuntimes[runtimeIndex];
         runtime.chunk = chunk != nullptr ? chunk : g_DrawnChunk;
-        runtime.state = SectionEmitter;
+        runtime.state = EmitterRuntime::StateOfChunk;
     }
 
     void SetEmitterGravity(s32 runtimeIndex, const Matrix4x4* matrix)
@@ -1726,7 +1770,7 @@ extern "C"
         event->next = nullptr;
     }
 
-    void StartParticleEmitter(s32* runtimeIndex, s32 system, const f32* position, u32 value, ChunkData* chunk)
+    void StartParticleEmitter(s32* runtimeIndex, s32 system, const f32* position, u32 cycles, ChunkData* chunk)
     {
         if (chunk == nullptr)
         {
@@ -1740,7 +1784,7 @@ extern "C"
         }
 
         EmitterRuntime& runtime = g_EmitterRuntimes[*runtimeIndex];
-        runtime.startValue = value;
+        runtime.cyclesLeft = cycles;
         runtime.phase = 0;
         runtime.enabled = 1;
     }
@@ -1778,9 +1822,9 @@ extern "C"
         runtime->onTimeLeft = static_cast<s16>(g_LoadedParticleSystems[systemIndex]->onTime);
         runtime->generator = g_ParticleGenerators[static_cast<s8>(system->genSort)];
         runtime->velocityRule = g_ParticleVelocityRules[static_cast<s8>(system->genCode)];
-        runtime->startValue = 0;
-        runtime->rotorAngles[0] = 0;
-        runtime->rotorAngles[1] = 0;
+        runtime->cyclesLeft = 0;
+        runtime->rotorYaw = 0;
+        runtime->rotorTilt = 0;
         runtime->nextSphere = 0;
         runtime->sphereCountdown = 1;
         const ParticleSystem* current = g_LoadedParticleSystems[systemIndex];
@@ -1796,9 +1840,9 @@ extern "C"
             runtime->velocityOffset[axis] = 0.0f;
         }
 
-        runtime->state = NoState;
+        runtime->state = EmitterRuntime::StateLoose;
         runtime->chunk = chunk;
-        runtime->cameraDistance = FarTime;
+        runtime->cameraDistance = NotRunDistance;
         runtime->creationTime = g_ParticleTime;
         runtime->position[2] = z;
         runtime->position[0] = x;
@@ -1845,18 +1889,18 @@ extern "C"
 
         if (grow > 0)
         {
-            bool hexagons = static_cast<s8>(system->blendMode) == DistortionBlend;
+            bool hexagons = DrawsHexagons(system);
             s32& used = hexagons ? g_UsedHexagonBlocks : g_UsedParticleBlocks;
             if (grow + used >= (hexagons ? g_HexagonBlockCount : g_ParticleBlockCount))
             {
                 return;
             }
 
-            u8** free = hexagons ? g_HexagonBlocks : g_ParticleBlocks;
+            u8** freeBlocks = hexagons ? g_HexagonBlocks : g_ParticleBlocks;
             s32 firstFree = used;
             for (s32 block = 0; block < grow; block++)
             {
-                runtime->blocks[block + runtime->blockCount] = free[block + firstFree];
+                runtime->blocks[block + runtime->blockCount] = freeBlocks[block + firstFree];
                 ClearBlock(runtime->blocks[block + runtime->blockCount], hexagons ? HexagonBlockParticles : BlockParticles);
             }
 
@@ -1889,7 +1933,7 @@ extern "C"
             return;
         }
 
-        if ((g_ParticleBlockCount + g_HexagonBlockCount) * 2 < g_ParticleEventPoolTop - grow)
+        if ((g_ParticleBlockCount + g_HexagonBlockCount) * EventsPerBlock < g_ParticleEventPoolTop - grow)
         {
             return;
         }
@@ -1902,7 +1946,7 @@ extern "C"
             const ParticleSystem* current = g_LoadedParticleSystems[runtime->system];
             f32 life = current->lifeTime + static_cast<f32>(current->ghosts) * current->ghostSeparation;
             event->delay = static_cast<s32>(life * FramesPerSecond);
-            event->kind = static_cast<s8>(system->blendMode) == DistortionBlend ? DropHexagonDraw : DropParticleDraw;
+            event->kind = DrawsHexagons(system) ? ParticleEvent::DropHexagonDraw : ParticleEvent::DropParticleDraw;
             AppendParticleEvent(g_ParticleEventPool[g_ParticleEventPoolTop], &g_ParticleEventWheel[g_ParticleEventWheelIndex]);
             g_ParticleEventPoolTop++;
             if (block == -runtime->blockCount)
@@ -1959,9 +2003,9 @@ extern "C"
             return;
         }
 
-        for (s32 free = g_TakenEmitterRuntimes; free < static_cast<s32>(MaxEmitterRuntimes); free++)
+        for (s32 freeSlot = g_TakenEmitterRuntimes; freeSlot < static_cast<s32>(MaxEmitterRuntimes); freeSlot++)
         {
-            if (g_FreeEmitterRuntimes[free] == *runtimeIndex)
+            if (g_FreeEmitterRuntimes[freeSlot] == *runtimeIndex)
             {
                 *runtimeIndex = -1;
                 return;
@@ -1983,7 +2027,7 @@ extern "C"
                     const ParticleSystem* current = g_LoadedParticleSystems[g_EmitterRuntimes[*runtimeIndex].system];
                     f32 life = current->lifeTime + static_cast<f32>(current->ghosts) * current->ghostSeparation;
                     event->delay = static_cast<s32>(life * FramesPerSecond);
-                    event->kind = static_cast<s8>(system->blendMode) == DistortionBlend ? DropHexagonDraw : DropParticleDraw;
+                    event->kind = DrawsHexagons(system) ? ParticleEvent::DropHexagonDraw : ParticleEvent::DropParticleDraw;
                     event->runtime = nullptr;
                     AppendParticleEvent(event, &g_ParticleEventWheel[g_ParticleEventWheelIndex]);
                     g_ParticleEventPoolTop++;
@@ -2035,11 +2079,11 @@ extern "C"
     void InitParticleBlocks(s32 blocks)
     {
         g_ParticleBlockCount = blocks;
-        RetailLibc::MemorySet(g_ParticleEvents, 0, (blocks + g_HexagonBlockCount) * 2 * EventSize);
-        RetailLibc::MemorySet(g_ParticleEventPool, 0, (g_ParticleBlockCount + g_HexagonBlockCount) << 3);
-        RetailLibc::MemorySet(g_ParticleBlocks, 0, g_ParticleBlockCount << 2);
-        RetailLibc::MemorySet(g_HexagonBlocks, 0, g_HexagonBlockCount << 2);
-        RetailLibc::MemorySet(g_ParticleDrawEntries, 0, (g_ParticleBlockCount + g_HexagonBlockCount) * DrawEntrySize);
+        RetailLibc::MemorySet(g_ParticleEvents, 0, (blocks + g_HexagonBlockCount) * EventsPerBlock * sizeof(ParticleEvent));
+        RetailLibc::MemorySet(g_ParticleEventPool, 0, (g_ParticleBlockCount + g_HexagonBlockCount) * EventsPerBlock * sizeof(ParticleEvent*));
+        RetailLibc::MemorySet(g_ParticleBlocks, 0, g_ParticleBlockCount * sizeof(u8*));
+        RetailLibc::MemorySet(g_HexagonBlocks, 0, g_HexagonBlockCount * sizeof(u8*));
+        RetailLibc::MemorySet(g_ParticleDrawEntries, 0, (g_ParticleBlockCount + g_HexagonBlockCount) * sizeof(ParticleDrawEntry));
         auto* block = static_cast<u8*>(MemoryAllocate2(g_ParticleBlockCount * Platform::Graphics::ParticleBlockBytes));
         for (s32 index = 0; index < g_ParticleBlockCount; index++)
         {
@@ -2066,13 +2110,13 @@ extern "C"
             table += Platform::Graphics::ParticleRenderTableBytes;
         }
 
-        for (s32 frame = WheelFrames - 1; frame >= 0; frame--)
+        for (s32 frame = ParticleWheelFrames - 1; frame >= 0; frame--)
         {
             g_ParticleEventWheel[frame] = nullptr;
         }
 
         g_ParticleEventWheelIndex = 0;
-        for (s32 index = 0; index < (g_ParticleBlockCount + g_HexagonBlockCount) * 2; index++)
+        for (s32 index = 0; index < (g_ParticleBlockCount + g_HexagonBlockCount) * EventsPerBlock; index++)
         {
             g_ParticleEventPool[index] = &g_ParticleEvents[index];
         }
@@ -2087,7 +2131,7 @@ extern "C"
             entry->next = nullptr;
         }
 
-        for (s32 list = 3; list >= 0; list--)
+        for (s32 list = ParticleDrawListCount - 1; list >= 0; list--)
         {
             g_ParticleDrawLists[list] = nullptr;
         }
@@ -2110,7 +2154,7 @@ extern "C"
             if (runtime->enabled == 0 && (static_cast<s16>(system->offTime) == 0 || static_cast<s16>(system->offTimeRandom) != 0))
             {
                 s32 random = RandomNext(nullptr);
-                runtime->phase = static_cast<s16>(random % 8 + RestPhaseBase);
+                runtime->phase = static_cast<s16>(random % RestPhaseSpread + RestPhaseBase);
             }
             else
             {
@@ -2137,10 +2181,10 @@ extern "C"
                 runtime->onTimeLeft = static_cast<s16>(runtime->onTimeLeft + 1 + random % static_cast<s16>(system->onTimeRandom));
             }
 
-            u32 cycles = runtime->startValue;
+            u32 cycles = runtime->cyclesLeft;
             if (cycles != 0)
             {
-                runtime->startValue = cycles - 1;
+                runtime->cyclesLeft = cycles - 1;
                 if (cycles - 1 == 0)
                 {
                     for (s32 index = 0; index < static_cast<s32>(MaxEmitterRuntimes); index++)
@@ -2171,24 +2215,24 @@ extern "C"
             if (static_cast<s8>(g_LoadedParticleSystems[runtime->system]->collisionSpheres) != 0)
             {
                 UnlinkEmitter(runtime, &g_ParticleEmitterWheel[current]);
-                PushEmitter(runtime, &g_ParticleEmitterWheel[(current + 1) & (WheelFrames - 1)]);
+                PushEmitter(runtime, &g_ParticleEmitterWheel[(current + 1) & (ParticleWheelFrames - 1)]);
                 runtime->phase = static_cast<s16>(runtime->phase - 1);
             }
-            else if (runtime->phase >= static_cast<s16>(WheelFrames))
+            else if (runtime->phase >= static_cast<s16>(ParticleWheelFrames))
             {
-                runtime->phase = static_cast<s16>(runtime->phase - WheelFrames);
+                runtime->phase = static_cast<s16>(runtime->phase - ParticleWheelFrames);
             }
             else
             {
                 UnlinkEmitter(runtime, &g_ParticleEmitterWheel[current]);
-                PushEmitter(runtime, &g_ParticleEmitterWheel[(current + runtime->phase) & (WheelFrames - 1)]);
+                PushEmitter(runtime, &g_ParticleEmitterWheel[(current + runtime->phase) & (ParticleWheelFrames - 1)]);
                 runtime->phase = 0;
             }
 
             runtime = next;
         }
 
-        g_ParticleEmitterWheelIndex = (g_ParticleEmitterWheelIndex + 1) & (WheelFrames - 1);
+        g_ParticleEmitterWheelIndex = (g_ParticleEmitterWheelIndex + 1) & (ParticleWheelFrames - 1);
     }
 
     void ProcessParticleBlockEvents()
@@ -2200,9 +2244,9 @@ extern "C"
             // Due in a later turn of the wheel, or in a frame of this one
             if (event->delay != 0)
             {
-                if (event->delay >= static_cast<s32>(WheelFrames))
+                if (event->delay >= static_cast<s32>(ParticleWheelFrames))
                 {
-                    event->delay -= WheelFrames;
+                    event->delay -= ParticleWheelFrames;
                 }
                 else
                 {
@@ -2216,7 +2260,7 @@ extern "C"
 
             switch (event->kind)
             {
-                case PlaneBounce:
+                case ParticleEvent::PlaneBounce:
                 {
                     // The particle bounced at the event's time: its height and upward velocity made the bounce's, and the time it
                     // comes down onto the plane again worked out
@@ -2239,9 +2283,9 @@ extern "C"
                             f32 before = event->time;
                             event->time = latest;
                             event->delay = static_cast<s32>((latest - before) * FramesPerSecond);
-                            if (event->delay >= static_cast<s32>(WheelFrames))
+                            if (event->delay >= static_cast<s32>(ParticleWheelFrames))
                             {
-                                event->delay -= WheelFrames;
+                                event->delay -= ParticleWheelFrames;
                                 break;
                             }
 
@@ -2265,7 +2309,7 @@ extern "C"
                     ReleaseEvent(event);
                     break;
                 }
-                case WallBounce:
+                case ParticleEvent::WallBounce:
                 {
                     // The particle's flat velocity bounced off the vertical plane, its start moved so it's where it was at the
                     // event's time
@@ -2287,29 +2331,29 @@ extern "C"
                     ReleaseEvent(event);
                     break;
                 }
-                case FreeParticleBlock:
+                case ParticleEvent::FreeParticleBlock:
                     g_UsedParticleBlocks--;
                     g_ParticleBlocks[g_UsedParticleBlocks] = event->block;
                     FreeBlock(event->block, BlockParticles);
                     TakeOutOfFrame(event);
                     ReleaseEvent(event);
                     break;
-                case FreeHexagonBlock:
+                case ParticleEvent::FreeHexagonBlock:
                     g_UsedHexagonBlocks--;
                     g_HexagonBlocks[g_UsedHexagonBlocks] = event->block;
                     FreeBlock(event->block, HexagonBlockParticles);
                     TakeOutOfFrame(event);
                     ReleaseEvent(event);
                     break;
-                case EndParticleChain:
-                case EndHexagonChain:
+                case ParticleEvent::EndParticleChain:
+                case ParticleEvent::EndHexagonChain:
                     Platform::Graphics::EndParticleBlock(event->block);
                     TakeOutOfFrame(event);
                     MoveToFrame(event, ReleaseDelay);
-                    event->kind = event->kind == EndParticleChain ? FreeParticleBlock : FreeHexagonBlock;
+                    event->kind = event->kind == ParticleEvent::EndParticleChain ? ParticleEvent::FreeParticleBlock : ParticleEvent::FreeHexagonBlock;
                     break;
-                case DropParticleDraw:
-                case DropHexagonDraw:
+                case ParticleEvent::DropParticleDraw:
+                case ParticleEvent::DropHexagonDraw:
                     for (ParticleDrawEntry* entry = g_ParticleDrawEntries; entry != EndOfDrawEntries(); entry++)
                     {
                         if (entry->block != event->block)
@@ -2326,9 +2370,9 @@ extern "C"
 
                     TakeOutOfFrame(event);
                     MoveToFrame(event, ReleaseDelay);
-                    event->kind = event->kind == DropParticleDraw ? EndParticleChain : EndHexagonChain;
+                    event->kind = event->kind == ParticleEvent::DropParticleDraw ? ParticleEvent::EndParticleChain : ParticleEvent::EndHexagonChain;
                     break;
-                case BlockTaken:
+                case ParticleEvent::BlockTaken:
                 {
                     // The block out of its runtime's: the ones after it moved down, the runtime's particles fewer (its next slot
                     // too when it was past the block)
@@ -2348,7 +2392,7 @@ extern "C"
                     runtime->blocks[runtime->blockCount - 1] = nullptr;
                     runtime->blockCount--;
                     runtime->blocksWanted--;
-                    runtime->unknown108--;
+                    runtime->unused108--;
                     if (runtime->blockCount <= 0)
                     {
                         runtime->capacity = 0;
@@ -2356,7 +2400,7 @@ extern "C"
                     }
                     else
                     {
-                        s32 particles = static_cast<s8>(system->blendMode) == DistortionBlend ? HexagonBlockParticles : BlockParticles;
+                        s32 particles = DrawsHexagons(system) ? HexagonBlockParticles : BlockParticles;
                         runtime->capacity = static_cast<s16>(runtime->capacity - particles);
                         runtime->maxParticles = static_cast<s16>(runtime->maxParticles - particles);
                         if ((taken + 1) * particles < runtime->nextSlot)
@@ -2410,7 +2454,7 @@ extern "C"
 
                     TakeOutOfFrame(event);
                     MoveToFrame(event, ReleaseDelay);
-                    event->kind = static_cast<s8>(system->blendMode) == DistortionBlend ? EndHexagonChain : EndParticleChain;
+                    event->kind = DrawsHexagons(system) ? ParticleEvent::EndHexagonChain : ParticleEvent::EndParticleChain;
                     break;
                 }
                 default:
@@ -2420,7 +2464,7 @@ extern "C"
             event = next;
         }
 
-        g_ParticleEventWheelIndex = (g_ParticleEventWheelIndex + 1) & (WheelFrames - 1);
+        g_ParticleEventWheelIndex = (g_ParticleEventWheelIndex + 1) & (ParticleWheelFrames - 1);
     }
 
     void UpdateParticleCollisionSpheres()
@@ -2557,15 +2601,15 @@ extern "C"
     ParticleRecord* GenParticle_Radial(EmitterRuntime* runtime, ParticleSystem* system)
     {
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
 
         ParticleRecord* record = TakeRecord(runtime, BlockSize(system));
         StartRecord(record, system);
-        s32 yaw = static_cast<s32>(RandomSpread(system->randomEmit[1]) + system->randomStart[1]);
-        s32 tilt = static_cast<s32>(RandomSpread(system->randomEmit[2]) + system->randomStart[2]);
+        s32 yaw = static_cast<s32>(RandomSpread(system->randomEmit[RadialYaw]) + system->randomStart[RadialYaw]);
+        s32 tilt = static_cast<s32>(RandomSpread(system->randomEmit[RadialTilt]) + system->randomStart[RadialTilt]);
         RadialStart(runtime, system, record, RampedRadius(runtime, system), tilt, yaw);
         ApplyVelocityRule(runtime, system, record);
         AddOffsets(runtime, record);
@@ -2576,37 +2620,37 @@ extern "C"
     ParticleRecord* GenParticle_RadialRotor(EmitterRuntime* runtime, ParticleSystem* system)
     {
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
 
         ParticleRecord* record = TakeRecord(runtime, BlockSize(system));
         StartRecord(record, system);
-        s32 tilt = static_cast<s32>(static_cast<f32>(runtime->rotorAngles[1]) + system->randomStart[2]);
-        s32 yaw = static_cast<s32>(static_cast<f32>(runtime->rotorAngles[0]) + system->randomStart[1]);
-        RadialStart(runtime, system, record, system->randomStart[0], tilt, yaw);
+        s32 tilt = static_cast<s32>(static_cast<f32>(runtime->rotorTilt) + system->randomStart[RadialTilt]);
+        s32 yaw = static_cast<s32>(static_cast<f32>(runtime->rotorYaw) + system->randomStart[RadialYaw]);
+        RadialStart(runtime, system, record, system->randomStart[RadialRadius], tilt, yaw);
         ApplyVelocityRule(runtime, system, record);
         AddOffsets(runtime, record);
         AddGhosts(runtime, system, record);
         EndRecord(system, record);
         // The rotor turns on by the yaw's and tilt's spreads (none: back to 0)
-        if (system->randomEmit[1] == 0.0f)
+        if (system->randomEmit[RadialYaw] == 0.0f)
         {
-            runtime->rotorAngles[0] = 0;
+            runtime->rotorYaw = 0;
         }
         else
         {
-            runtime->rotorAngles[0] = static_cast<s16>(runtime->rotorAngles[0] + static_cast<s32>(system->randomEmit[1]));
+            runtime->rotorYaw = static_cast<s16>(runtime->rotorYaw + static_cast<s32>(system->randomEmit[RadialYaw]));
         }
 
-        if (system->randomEmit[2] == 0.0f)
+        if (system->randomEmit[RadialTilt] == 0.0f)
         {
-            runtime->rotorAngles[1] = 0;
+            runtime->rotorTilt = 0;
         }
         else
         {
-            runtime->rotorAngles[1] = static_cast<s16>(runtime->rotorAngles[1] + static_cast<s32>(system->randomEmit[2]));
+            runtime->rotorTilt = static_cast<s16>(runtime->rotorTilt + static_cast<s32>(system->randomEmit[RadialTilt]));
         }
 
         return record;
@@ -2619,7 +2663,7 @@ extern "C"
         StartRecord(record, system);
         Vector4 point = {__builtin_sqrtf(RandomFloat01(&g_ParticleRandom)), 0.0f, 0.0f, 0.0f};
         // The yaw it picks: the random number's whole part, always 0, in turns
-        s32 yaw = static_cast<s32>(RandomFloat01(&g_ParticleRandom)) << 16;
+        s32 yaw = static_cast<s32>(RandomFloat01(&g_ParticleRandom)) * FullTurnAngle;
         f32 random = RandomFloat01(&g_ParticleRandom);
         s32 angle;
         AngleOfSine(random + random - 1.0f, &angle);
@@ -2643,7 +2687,7 @@ extern "C"
     ParticleRecord* GenParticle_Bounce(EmitterRuntime* runtime, ParticleSystem* system)
     {
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
@@ -2665,11 +2709,11 @@ extern "C"
                 ParticleEvent* event = g_ParticleEventPool[g_ParticleEventPoolTop];
                 event->block = block;
                 event->delay = static_cast<s32>(latest * FramesPerSecond);
-                event->kind = PlaneBounce;
+                event->kind = ParticleEvent::PlaneBounce;
                 event->runtime = nullptr;
                 event->system = runtime->system;
                 event->planeAngle = 0;
-                event->pad1E = 0;
+                event->unused1E = 0;
                 event->planeOffset = runtime->planeOffset;
                 event->bounceFactor = runtime->bounceFactor;
                 event->record = slot % BlockParticles;
@@ -2688,31 +2732,32 @@ extern "C"
     ParticleRecord* GenParticle_Sphere(EmitterRuntime* runtime, ParticleSystem* system)
     {
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
 
         ParticleRecord* record = TakeRecord(runtime, BlockSize(system));
         StartRecord(record, system);
-        s32 yawRandom = static_cast<s32>(RandomFloat01(&g_ParticleRandom) * UnitsPerTurn) - HalfTurn;
+        s32 yawRandom = static_cast<s32>(RandomFloat01(&g_ParticleRandom) * UnitsPerTurn) - HalfTurnAngle;
         // Even over the area: the sine of the tilt picked between the two tilts' sines
         f32 sines[4];
-        SinCos16Pair(static_cast<s32>(system->randomStart[2] - system->randomEmit[2]),
-                     static_cast<s32>(system->randomStart[2] + system->randomEmit[2]), sines);
+        SinCos16Pair(static_cast<s32>(system->randomStart[RadialTilt] - system->randomEmit[RadialTilt]),
+                     static_cast<s32>(system->randomStart[RadialTilt] + system->randomEmit[RadialTilt]), sines);
         f32 low = sines[0];
         f32 high = sines[2];
         f32 random = RandomFloat01(&g_ParticleRandom);
         s32 angle;
         AngleOfSine(low + random * (high - low), &angle);
         s32 tilt = ThroughRadians(angle);
-        s32 yaw = static_cast<s32>(static_cast<f32>(yawRandom) * system->randomEmit[1]) / HalfTurn + static_cast<s32>(system->randomStart[1]);
-        Vector4 point = {system->randomStart[0], 0.0f, 0.0f, 0.0f};
+        s32 yaw = static_cast<s32>(static_cast<f32>(yawRandom) * system->randomEmit[RadialYaw]) / HalfTurnAngle +
+                  static_cast<s32>(system->randomStart[RadialYaw]);
+        Vector4 point = {system->randomStart[RadialRadius], 0.0f, 0.0f, 0.0f};
         RotateVectorZ(&point, &point, tilt);
         RotateVectorY(&point, &point, yaw);
         TransformPoint(&point, &point, &runtime->emitMatrix);
         StoreVector(record->start, point);
-        Vector4 velocity = {RandomSpread(system->randomEmit[0]) + system->velocity, 0.0f, 0.0f, 0.0f};
+        Vector4 velocity = {RandomSpread(system->randomEmit[RadialSpeed]) + system->velocity, 0.0f, 0.0f, 0.0f};
         RotateVectorZ(&velocity, &velocity, tilt);
         RotateVectorY(&velocity, &velocity, yaw);
         TransformVector(&velocity, &velocity, &runtime->emitMatrix);
@@ -2800,7 +2845,7 @@ extern "C"
     {
         Vector4 normal = {1.0f, 0.0f, 0.0f, 0.0f};
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
@@ -2827,11 +2872,11 @@ extern "C"
                 ParticleEvent* event = g_ParticleEventPool[g_ParticleEventPoolTop];
                 event->block = block;
                 event->delay = static_cast<s32>(time * FramesPerSecond);
-                event->kind = WallBounce;
+                event->kind = ParticleEvent::WallBounce;
                 event->runtime = nullptr;
                 event->system = runtime->system;
                 event->planeAngle = runtime->bouncePlaneAngle;
-                event->pad1E = 0;
+                event->unused1E = 0;
                 event->planeOffset = runtime->planeOffset;
                 event->bounceFactor = runtime->bounceFactor;
                 event->record = slot % BlockParticles;
@@ -2849,22 +2894,21 @@ extern "C"
 
     ParticleRecord* GenParticle_Star(EmitterRuntime* runtime, ParticleSystem* system)
     {
-        constexpr s32 Turn = 0x10000;
-        constexpr f32 HalfTurnUnits = 32768.0f;
+        constexpr f32 HalfTurnUnits = HalfTurnAngle;
         WrapSlot(runtime);
-        if (static_cast<s8>(system->blendMode) == DistortionBlend)
+        if (DrawsHexagons(system))
         {
             return nullptr;
         }
 
         ParticleRecord* record = TakeRecord(runtime, BlockParticles);
         StartRecord(record, system);
-        s32 yaw = static_cast<s32>(RandomSpread(system->randomEmit[1]) + system->randomStart[1]);
-        s32 tilt = static_cast<s32>(RandomSpread(system->randomEmit[2]) + system->randomStart[2]);
+        s32 yaw = static_cast<s32>(RandomSpread(system->randomEmit[RadialYaw]) + system->randomStart[RadialYaw]);
+        s32 tilt = static_cast<s32>(RandomSpread(system->randomEmit[RadialTilt]) + system->randomStart[RadialTilt]);
         f32 radius = RampedRadius(runtime, system);
         // Where the yaw is between two points: half a turn of a sine from one to the next, the radius at the ratio between them
-        s32 spoke = Turn / system->starPoints;
-        f32 between = Sin16(static_cast<s32>(static_cast<f32>((yaw + Turn) % spoke) / static_cast<f32>(spoke) * HalfTurnUnits));
+        s32 spoke = FullTurnAngle / system->starPoints;
+        f32 between = Sin16(static_cast<s32>(static_cast<f32>((yaw + FullTurnAngle) % spoke) / static_cast<f32>(spoke) * HalfTurnUnits));
         radius = radius * (system->starRadiusRatio + (1.0f - system->starRadiusRatio) * (1.0f - between));
         RadialStart(runtime, system, record, radius, tilt, yaw);
         ApplyVelocityRule(runtime, system, record);
@@ -2880,11 +2924,11 @@ extern "C"
             return 0;
         }
 
-        s32 modes = list == DistortionList ? g_DistortionModeCount : g_ParticleModeCount;
+        s32 modes = list == DrawListDistortion ? g_DistortionModeCount : g_ParticleModeCount;
         s32 order[4];
         for (s32 mode = 0; mode < modes; mode++)
         {
-            order[mode] = list != DistortionList ? g_ParticleModeOrder[mode] : g_DistortionModeOrder[mode];
+            order[mode] = list != DrawListDistortion ? g_ParticleModeOrder[mode] : g_DistortionModeOrder[mode];
         }
 
         s32 visited = 0;
@@ -2947,7 +2991,7 @@ extern "C"
                     continue;
                 }
 
-                if (static_cast<s8>(system->blendMode) == DistortionBlend)
+                if (DrawsHexagons(system))
                 {
                     Platform::Graphics::DrawDistortionBlock(entry->block, entry->system->renderTable, &matrix, &g_DistortionMaterial,
                                                             g_ParticleTime, system->distortionX, system->distortionY);
@@ -2964,8 +3008,7 @@ extern "C"
 
     void InitParticles(s32 initialise, s32 priority)
     {
-        constexpr s32 StartUpPriority = 0xFFFF;
-        if (priority != StartUpPriority || initialise == 0)
+        if (priority != DefaultInitPriority || initialise == 0)
         {
             return;
         }
@@ -2973,6 +3016,13 @@ extern "C"
         InitDecalPool(&g_DecalData);
         Platform::Graphics::InitParticleGraphics();
         // System 0: one particle a frame of a second's life, 500 big, grey, half alpha, on the first 256 pixels square
+        constexpr u16 NullMaxParticles = 100;
+        constexpr f32 NullUnusedFloat1 = 40000.0f;
+        constexpr f32 NullGrey = 64.0f;
+        constexpr f32 NullAlpha = 64.0f;
+        constexpr f32 NullSize = 500.0f;
+        constexpr f32 NullRotationRange = 360.0f;
+        constexpr f32 NullTextureEnd = 256.0f;
         ParticleSystem& none = g_ParticleSystems[0];
         RetailLibc::MemorySet(&none, 0, sizeof(none));
         constexpr char NullName[] = "null";
@@ -2982,36 +3032,36 @@ extern "C"
         }
 
         RetailLibc::MemorySet(none.name + sizeof(NullName), 0, sizeof(none.name) - sizeof(NullName));
-        none.maxParticles = 100;
+        none.maxParticles = NullMaxParticles;
         none.onTime = 1;
-        none.unusedFloat1 = 40000.0f;
-        none.cutOffRadius = 25.0f;
-        none.unusedFloat6 = 0.5f;
-        none.alphaKeys[0].value = 64.0f;
-        none.distortionY = 0.125f;
-        none.heightKeys[1].value = 500.0f;
-        none.minRotation = -360.0f;
-        none.maxRotation = 360.0f;
+        none.unusedFloat1 = NullUnusedFloat1;
+        none.cutOffRadius = DefaultCutOffRadius;
+        none.unusedFloat6 = DefaultUnusedFloat6;
+        none.alphaKeys[0].value = NullAlpha;
+        none.distortionY = DefaultDistortion;
+        none.heightKeys[1].value = NullSize;
+        none.minRotation = -NullRotationRange;
+        none.maxRotation = NullRotationRange;
         none.unusedKeys2[1].time = 1.0f;
-        none.textureEndY = 256.0f;
+        none.textureEndY = NullTextureEnd;
         none.genRate = 1;
         none.velocity = 1.0f;
         none.lifeTime = 1.0f;
-        none.colourKeys[0][1] = 64.0f;
-        none.colourKeys[0][2] = 64.0f;
-        none.colourKeys[0][3] = 64.0f;
-        none.colourKeys[1][0] = 1.0f;
+        none.colourKeys[0].red = NullGrey;
+        none.colourKeys[0].green = NullGrey;
+        none.colourKeys[0].blue = NullGrey;
+        none.colourKeys[1].time = 1.0f;
         none.alphaKeys[1].time = 1.0f;
-        none.distortionX = 0.125f;
-        none.maxSize = 500.0f;
-        none.widthKeys[0].value = 500.0f;
+        none.distortionX = DefaultDistortion;
+        none.maxSize = NullSize;
+        none.widthKeys[0].value = NullSize;
         none.widthKeys[1].time = 1.0f;
-        none.widthKeys[1].value = 500.0f;
-        none.heightKeys[0].value = 500.0f;
+        none.widthKeys[1].value = NullSize;
+        none.heightKeys[0].value = NullSize;
         none.heightKeys[1].time = 1.0f;
         none.rotationKeys[1].time = 1.0f;
         none.unusedKeys1[1].time = 1.0f;
-        none.textureEndX = 256.0f;
+        none.textureEndX = NullTextureEnd;
         for (s16& slot : none.emitterSlots)
         {
             slot = -1;
@@ -3020,13 +3070,11 @@ extern "C"
 
     void KillParticles()
     {
-        // The sections' emitters' state is above this
-        constexpr s16 GameEmitters = 100;
         constexpr f32 TimeMoved = 10.0f;
         for (s32 index = 0; index < static_cast<s32>(MaxEmitterRuntimes); index++)
         {
             EmitterRuntime& runtime = g_EmitterRuntimes[index];
-            if (runtime.system == 0 || runtime.state >= GameEmitters)
+            if (runtime.system == 0 || runtime.state >= EmitterRuntime::StateKeptFrom)
             {
                 continue;
             }
@@ -3083,7 +3131,8 @@ extern "C"
         constexpr f32 Half = 0.5f;
         constexpr f32 HexagonReach = 0.25f;
         // The hexagons' six corners, a sixth of a turn apart
-        constexpr s32 HexagonAngles[6] = {0, 0x2AAA, 0x5555, 0x8000, 0xAAAA, 0xD555};
+        constexpr u32 HexagonCorners = 6;
+        constexpr s32 HexagonAngles[HexagonCorners] = {0, 0x2AAA, 0x5555, 0x8000, 0xAAAA, 0xD555};
         if (system->renderTable == nullptr)
         {
             system->renderTable = g_RenderTablePool[g_RenderTablePoolTop];
@@ -3138,10 +3187,10 @@ extern "C"
             look.steps[step].colour[3] = static_cast<u8>(static_cast<s32>(alpha));
         }
 
-        look.hexagons = static_cast<s8>(system->blendMode) == DistortionBlend;
+        look.hexagons = DrawsHexagons(system);
         if (look.hexagons)
         {
-            for (u32 corner = 0; corner < 6; corner += 2)
+            for (u32 corner = 0; corner < HexagonCorners; corner += 2)
             {
                 f32 sines[4];
                 SinCos16Pair(HexagonAngles[corner], HexagonAngles[corner + 1], sines);
@@ -3225,12 +3274,12 @@ extern "C"
                 }
             }
 
-            if (static_cast<s8>(runtime->cameraSwitch) == CameraNeverOn)
+            if (static_cast<s8>(runtime->cameraSwitch) == EmitterRuntime::CameraNeverOn)
             {
                 runtime->enabled = 0;
             }
 
-            if (static_cast<s8>(runtime->cameraSwitch) == CameraAlwaysOn)
+            if (static_cast<s8>(runtime->cameraSwitch) == EmitterRuntime::CameraAlwaysOn)
             {
                 runtime->enabled = 1;
             }
@@ -3269,13 +3318,13 @@ extern "C"
                 const ParticleSystem* current = g_LoadedParticleSystems[runtime->system];
                 s32 particles = static_cast<s16>(system->maxParticles);
                 runtime->maxParticles = static_cast<s16>(particles);
-                bool hexagons = static_cast<s8>(current->blendMode) == DistortionBlend;
+                bool hexagons = DrawsHexagons(current);
                 runtime->blocksWanted = static_cast<s16>(hexagons ? (particles + HexagonBlockParticles - 1) / HexagonBlockParticles
                                                                   : (particles + BlockParticles - 1) / BlockParticles);
-                if (runtime->blocksWanted > MaxBlocks)
+                if (runtime->blocksWanted > MaxEmitterBlocks)
                 {
-                    runtime->blocksWanted = MaxBlocks;
-                    runtime->maxParticles = static_cast<s8>(current->blendMode) == DistortionBlend ? MaxHexagonParticles : MaxBlockParticles;
+                    runtime->blocksWanted = MaxEmitterBlocks;
+                    runtime->maxParticles = DrawsHexagons(current) ? MaxHexagonParticles : MaxBlockParticles;
                 }
 
                 if (runtime->blocksWanted == runtime->blockCount)
@@ -3317,7 +3366,7 @@ extern "C"
     void UpdateAndDrawParticles(s32 frozen, f32 delta)
     {
         g_CollidingCount = 0;
-        Platform::Graphics::UseHelperPrograms(ParticlePrograms, false);
+        Platform::Graphics::UseHelperPrograms(Platform::Graphics::CullingPrograms, false);
         s32 active = 1;
         ParticleViews views;
         views.frame = g_RenderedFrames;
@@ -3356,7 +3405,7 @@ extern "C"
             }
 
             active += DrawParticleList(frozen, 0, &views);
-            active += DrawParticleList(frozen, DistortionList, &views);
+            active += DrawParticleList(frozen, DrawListDistortion, &views);
         }
 
         if (active == 0)
@@ -3378,18 +3427,15 @@ constexpr const char* PageFile = "startup\\%s%d.ptc";
 constexpr const char* PageExtension = ".ptl";
 // The default particle data's decals' startup file
 constexpr const char* DecalFile = "Startup\\decal.ptc";
-// The blocks the systems get at start-up
+// The blocks of particles made at start-up
 constexpr s32 StartupBlocks = 0x80;
-// The sections: the default chunk's, a level's
-constexpr s8 DefaultSection = 0;
-constexpr s8 LevelSection = 1;
 }
 
 extern "C"
 {
     Material* ParticlePageMaterial(u32 page)
     {
-        return g_ParticlePages[page].materials[0];
+        return g_ParticlePages[page].materials[BlendAdditive];
     }
 
     void ReadParticlePageAt(u32 page, Stream* stream)
@@ -3429,7 +3475,7 @@ extern "C"
         path.string = nullptr;
         path.length = 0;
         path.capacity = 0;
-        if ((reader->bits & 1) != 0)
+        if (reader->bits.defaultChunk != 0)
         {
             UnloadAllParticleSections();
             for (u32 page = 0; page < ParticlePageCount; page++)
@@ -3444,18 +3490,18 @@ extern "C"
             }
 
             SetParticleReader(stream);
-            ReadParticleSection(DefaultSection, nullptr);
+            ReadParticleSection(SectionDefault, nullptr);
             ReadDecalPage(&g_DecalData, stream);
             ReadDecalData(&g_DecalData, stream);
         }
         else
         {
-            Reference* data = reader->entry->data;
-            auto* chunk = reinterpret_cast<ChunkData*>(data != nullptr ? data->object : nullptr);
+            ChunkDataReference* reference = reader->entry->data;
+            ChunkData* chunk = reference != nullptr ? reference->chunk : nullptr;
             StringAssign(&path, reader->path.string);
             StringAppend(&path, PageExtension);
             SetParticleReader(stream);
-            ReadParticleSection(LevelSection, chunk);
+            ReadParticleSection(SectionLevel, chunk);
         }
 
         StringDestroy(&path);
@@ -3463,7 +3509,7 @@ extern "C"
 
     void ParticlesStaticInit()
     {
-        InitParticles(1, 0xFFFF);
+        InitParticles(1, DefaultInitPriority);
     }
 }
 

@@ -1,6 +1,9 @@
 #include "game/objects.h"
 
+#include "game/layout.h"
 #include "game/memory.h"
+#include "game/resources.h"
+#include "game/sound.h"
 #include "game/stream.h"
 
 extern "C"
@@ -13,14 +16,8 @@ extern "C"
 
 namespace
 {
-constexpr u16 NoId = 0xFFFF;
-// The header bits a game object made empty has (12-27)
-constexpr u32 EmptyHeaderBits = 0xFF000 | 0xFF00000;
-// The property list's destructor
-constexpr u32 PropertyListDestroySlot = 1;
-
-// The game object's flags its constructors clear
-constexpr u32 FlagsCleared = 0x10000 | 0x20000;
+// A game object made empty has no subtype or type
+constexpr u32 NoType = 0xFF;
 
 // An array of IDs read: the old one let go, the count, the IDs (made undefined first)
 void ReadIds(ObjectArray<u16>* array, Stream* stream)
@@ -37,7 +34,7 @@ void ReadIds(ObjectArray<u16>* array, Stream* stream)
         items = NewArray<u16>(array->count);
         for (u32 index = 0; index < array->count; index++)
         {
-            items[index] = NoId;
+            items[index] = UndefinedId;
         }
     }
 
@@ -51,9 +48,10 @@ void ReadIds(ObjectArray<u16>* array, Stream* stream)
 // The members both constructors make
 void ConstructMembers(GameObject* object)
 {
-    *reinterpret_cast<u16*>(&object->flags) = 0;
+    HeaderOf(object)->bits.references = 0;
     object->id = -1;
-    object->flags &= ~FlagsCleared;
+    HeaderOf(object)->bits.unused16 = 0;
+    HeaderOf(object)->bits.kept = 0;
     object->name.string = nullptr;
     object->name.capacity = 0;
     object->name.length = 0;
@@ -66,7 +64,7 @@ void ConstructMembers(GameObject* object)
     object->behaviours = {nullptr, 0};
     object->objects = {nullptr, 0};
     object->sounds = {nullptr, 0};
-    for (u32& word : object->header)
+    for (u32& word : object->header.words)
     {
         word = 0;
     }
@@ -83,13 +81,14 @@ GameObject* GameObject::Construct(GameObject* object, Stream* stream)
 GameObject* GameObject::ConstructEmpty(GameObject* object)
 {
     ConstructMembers(object);
-    object->header[0] |= EmptyHeaderBits;
+    object->header.subtype = NoType;
+    object->header.type = NoType;
     return object;
 }
 
 void GameObject::Read(Stream* stream)
 {
-    stream->Read(header, sizeof(header), 1);
+    stream->Read(&header, sizeof(header), 1);
     StringRead(&name, stream);
     if (triggerBehaviours.items != nullptr)
     {
@@ -97,10 +96,10 @@ void GameObject::Read(Stream* stream)
     }
 
     stream->ReadS32(reinterpret_cast<s32*>(&triggerBehaviours.count));
-    triggerBehaviours.items = triggerBehaviours.count != 0 ? NewArray<u32>(triggerBehaviours.count) : nullptr;
+    triggerBehaviours.items = triggerBehaviours.count != 0 ? NewArray<TriggerBehaviour>(triggerBehaviours.count) : nullptr;
     for (u32 index = 0; index < triggerBehaviours.count; index++)
     {
-        ReadObjectWord(&triggerBehaviours.items[index], stream);
+        ReadObjectWord(&triggerBehaviours.items[index].value, stream);
     }
 
     ReadIds(&models, stream);
@@ -108,35 +107,35 @@ void GameObject::Read(Stream* stream)
     ReadIds(&behaviours, stream);
     ReadIds(&objects, stream);
     ReadIds(&sounds, stream);
-    if ((header[0] & HeaderHasProperties) != 0 && properties != nullptr)
+    if (header.hasProperties != 0 && properties != nullptr)
     {
-        CallVirtual<void>(properties, properties->vtable, PropertyListDestroySlot, u32{DestroyAndFree});
+        CallVirtual<void>(properties, properties->vtable, PropertyList::DestroySlot, u32{DestroyAndFree});
     }
 
     PropertyList* list = nullptr;
-    if ((header[0] & HeaderReadsProperties) != 0)
+    if (header.readsProperties != 0)
     {
         list = PropertyList::Construct(static_cast<PropertyList*>(MemoryAllocate(sizeof(PropertyList))), stream);
     }
 
     properties = list;
     ResourceReferences* read = nullptr;
-    if ((header[0] & HeaderReadsReferences) != 0)
+    if (header.readsReferences != 0)
     {
         read = static_cast<ResourceReferences*>(MemoryAllocate(sizeof(ResourceReferences)));
         ResourceReferences::Construct(read, stream);
     }
 
     references = read;
-    header[0] = (header[0] & ~HeaderHasProperties) | (properties != nullptr ? HeaderHasProperties : 0);
+    header.hasProperties = properties != nullptr ? 1 : 0;
     ReadScriptPack(&scripts, stream);
 }
 
 void GameObject::Destroy(u32 destroyFlags)
 {
-    if ((header[0] & HeaderHasProperties) != 0 && properties != nullptr)
+    if (header.hasProperties != 0 && properties != nullptr)
     {
-        CallVirtual<void>(properties, properties->vtable, PropertyListDestroySlot, u32{DestroyAndFree});
+        CallVirtual<void>(properties, properties->vtable, PropertyList::DestroySlot, u32{DestroyAndFree});
     }
 
     if (references != nullptr)
@@ -186,8 +185,8 @@ u16* GetObjectBehaviourId(u16* id, const GameObject* object, u32 slot)
 
 u16* GetObjectSoundId(u16* id, const GameObject* object, u32 slot)
 {
-    u16 sound = NoId;
-    if (slot < static_cast<u8>(object->header[2]))
+    u16 sound = NoSoundId;
+    if (slot < object->header.soundSlots)
     {
         sound = object->sounds.items[slot];
     }
@@ -203,12 +202,12 @@ void ReadObjectWord(u32* word, Stream* stream)
 
 const u32* GetObjectTriggerBehaviour(const GameObject* object, u32 index)
 {
-    return &object->triggerBehaviours.items[index];
+    return &object->triggerBehaviours.items[index].value;
 }
 
 void InitObjectStatics(s32 initialise, s32 priority)
 {
-    if (priority == 0xFFFF && initialise != 0)
+    if (priority == DefaultInitPriority && initialise != 0)
     {
         g_ObjectsUnused = 0;
     }
@@ -216,14 +215,13 @@ void InitObjectStatics(s32 initialise, s32 priority)
 
 void ObjectsStaticInit()
 {
-    InitObjectStatics(1, 0xFFFF);
+    InitObjectStatics(1, DefaultInitPriority);
 }
 
-void ScriptPack::Run(void* agent)
+void ScriptPack::Run(void* node)
 {
-    // Each command's vtable function 4
     for (ScriptCommand* command = commands; command != nullptr; command = command->next)
     {
-        CallVirtual<void>(command, command->vtable, 4, agent);
+        CallVirtual<void>(command, command->vtable, ScriptCommand::ExecuteOnSlot, node);
     }
 }

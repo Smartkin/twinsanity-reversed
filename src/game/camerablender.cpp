@@ -9,11 +9,6 @@ EABI_EXPORT(FUN_00271520, &DistanceBlender::Step);
 
 namespace
 {
-constexpr f32 NoInput = Rounded(5e-5);
-// 65536ths of a turn to radians and back
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-
 f32 StepSeconds(const TimeClock* clock)
 {
     return static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit;
@@ -85,7 +80,7 @@ AngleBlender* AngleBlender::Construct(AngleBlender* blender, const s32* value)
     AngleFrom(&blender->speed, Speed, AngleDegrees);
     AngleFrom(&blender->inputSpeed, Speed, AngleDegrees);
     blender->low = *value;
-    blender->bits &= ~BitSineSpeed;
+    blender->bits.sineSpeed = 0;
     blender->high = *value;
     blender->secondLow = *value;
     blender->secondHigh = *value;
@@ -99,7 +94,10 @@ void AngleBlender::Reset()
     previousSpeed = speed;
     delta = 0;
     share = ShareBetween(initial, low, high);
-    bits = (bits & BitHolds) | (bits & BitSineSpeed);
+    BlenderBits kept = {};
+    kept.holds = bits.holds;
+    kept.sineSpeed = bits.sineSpeed;
+    bits = kept;
     holdStart = 0;
     start = current;
     rateScale = 0.0f;
@@ -109,16 +107,16 @@ void AngleBlender::Reset()
 void AngleBlender::KeepWithin(const s32* toLow, const s32* toHigh)
 {
     s32 next = current + delta;
-    bits = (bits & ~BitAtLow) | (!(*toLow < next) ? BitAtLow : 0);
-    bits = (bits & ~BitAtHigh) | (!(next < *toHigh) ? BitAtHigh : 0);
-    if ((bits & BitAtLow) != 0)
+    bits.atLow = !(*toLow < next);
+    bits.atHigh = !(next < *toHigh);
+    if (bits.atLow != 0)
     {
         if (*toLow <= current)
         {
             delta = *toLow - current;
         }
     }
-    else if ((bits & BitAtHigh) != 0)
+    else if (bits.atHigh != 0)
     {
         if (current <= *toHigh)
         {
@@ -130,11 +128,11 @@ void AngleBlender::KeepWithin(const s32* toLow, const s32* toHigh)
     {
         share = 0.5f;
     }
-    else if ((bits & BitAtLow) != 0)
+    else if (bits.atLow != 0)
     {
         share = 0.0f;
     }
-    else if ((bits & BitAtHigh) != 0)
+    else if (bits.atHigh != 0)
     {
         share = 1.0f;
     }
@@ -158,7 +156,7 @@ u32 AngleBlender::MoveToward(f32 seconds, const s32* toLow, const s32* toHigh, u
         else
         {
             delta = static_cast<s32>(static_cast<f32>(speed) * seconds);
-            if ((bits & (BitSineSpeed | BitAtOwnSpeed)) == BitSineSpeed)
+            if (bits.sineSpeed != 0 && bits.atOwnSpeed == 0)
             {
                 delta = static_cast<s32>(static_cast<f32>(delta) * __builtin_fabsf(SinOfAngle(&gap)));
             }
@@ -184,7 +182,7 @@ u32 AngleBlender::MoveToward(f32 seconds, const s32* toLow, const s32* toHigh, u
         else
         {
             delta = static_cast<s32>(static_cast<f32>(-speed) * seconds);
-            if ((bits & (BitSineSpeed | BitAtOwnSpeed)) == BitSineSpeed)
+            if (bits.sineSpeed != 0 && bits.atOwnSpeed == 0)
             {
                 delta = static_cast<s32>(static_cast<f32>(delta) * __builtin_fabsf(SinOfAngle(&gap)));
             }
@@ -202,9 +200,9 @@ u32 AngleBlender::MoveToward(f32 seconds, const s32* toLow, const s32* toHigh, u
 
 u32 AngleBlender::Push(f32 seconds, const s32* rate, u32 clamp)
 {
-    if ((bits & BitEnabled) == 0)
+    if (bits.enabled == 0)
     {
-        return bits >> 4 & 1;
+        return bits.pushed;
     }
 
     delta = static_cast<s32>(static_cast<f32>(*rate) * seconds);
@@ -212,7 +210,7 @@ u32 AngleBlender::Push(f32 seconds, const s32* rate, u32 clamp)
     {
         s32 toLow = low;
         s32 toHigh = high;
-        if ((bits & BitSecondRange) != 0)
+        if (bits.secondRange != 0)
         {
             toLow = secondLow;
             toHigh = secondHigh;
@@ -221,33 +219,33 @@ u32 AngleBlender::Push(f32 seconds, const s32* rate, u32 clamp)
         KeepWithin(&toLow, &toHigh);
     }
 
-    bits |= BitPushed;
-    return bits >> 4 & 1;
+    bits.pushed = 1;
+    return bits.pushed;
 }
 
 u32 AngleBlender::Step(TimeClock* clock, const s32* value, u32 clamp, u32 jump)
 {
     f32 seconds = StepSeconds(clock);
-    if ((bits & BitEnabled) == 0)
+    if (bits.enabled == 0)
     {
         return 0;
     }
 
-    if ((bits & BitPushed) != 0)
+    if (bits.pushed != 0)
     {
-        bits = bits & ~BitMoving & ~BitAtOwnSpeed;
+        bits.moving = 0;
+        bits.atOwnSpeed = 0;
         return 0;
     }
 
-    if ((bits & BitSecondRange) != 0)
+    if (bits.secondRange != 0)
     {
         s32 toLow = secondLow;
         s32 toHigh = secondHigh;
-        u32 moving = MoveToward(seconds, &toLow, &toHigh, jump);
-        bits = (bits & ~BitMoving) | (moving & 1) << 1;
-        if ((bits & BitMoving) != 0)
+        bits.moving = MoveToward(seconds, &toLow, &toHigh, jump);
+        if (bits.moving != 0)
         {
-            bits |= BitAtOwnSpeed;
+            bits.atOwnSpeed = 1;
             return 1;
         }
 
@@ -255,37 +253,37 @@ u32 AngleBlender::Step(TimeClock* clock, const s32* value, u32 clamp, u32 jump)
         s32 rate = inputSpeed;
         rate = *MultiplyAngle(&rate, input);
         s32 move = *MultiplyAngle(&rate, seconds);
-        bits &= ~BitAtOwnSpeed;
+        bits.atOwnSpeed = 0;
         delta = move;
         return 1;
     }
 
-    if ((bits & BitBlendedGoal) != 0)
+    if (bits.blendedGoal != 0)
     {
         f32 lowRadians = static_cast<f32>(low) * AngleToRadians;
         f32 highRadians = static_cast<f32>(high) * AngleToRadians;
         s32 goal = static_cast<s32>((highRadians * goalShare + lowRadians * (1.0f - goalShare)) * RadiansToAngle);
         s32 toLow = goal;
         s32 toHigh = goal;
-        u32 moving = MoveToward(seconds, &toLow, &toHigh, jump);
-        bits = (bits & ~BitMoving) | (moving & 1) << 1 | BitAtOwnSpeed;
+        bits.moving = MoveToward(seconds, &toLow, &toHigh, jump);
+        bits.atOwnSpeed = 1;
         return 1;
     }
 
     f32 step = seconds;
-    u32 scaled = 0.0f < rateScale;
-    bits = (bits & ~BitMoving) | scaled << 1;
-    if ((bits & BitMoving) != 0)
+    bits.moving = 0.0f < rateScale;
+    if (bits.moving != 0)
     {
-        bits |= BitAtOwnSpeed;
+        bits.atOwnSpeed = 1;
         step = seconds * rateScale;
     }
-    else if ((bits & BitHolds) != 0 && !(static_cast<s32>(clock->time - holdStart) < holdTicks))
+    else if (bits.holds != 0 && !(static_cast<s32>(clock->time - holdStart) < holdTicks))
     {
-        bits = (bits | BitMoving) & ~BitAtOwnSpeed;
+        bits.moving = 1;
+        bits.atOwnSpeed = 0;
     }
 
-    if ((bits & BitMoving) != 0)
+    if (bits.moving != 0)
     {
         s32 toLow = *value;
         s32 toHigh = *value;
@@ -293,12 +291,13 @@ u32 AngleBlender::Step(TimeClock* clock, const s32* value, u32 clamp, u32 jump)
         return 1;
     }
 
-    if (__builtin_fabsf(input) <= NoInput)
+    if (__builtin_fabsf(input) <= Epsilon)
     {
         return 0;
     }
 
-    bits = bits & ~BitMoving & ~BitAtOwnSpeed;
+    bits.moving = 0;
+    bits.atOwnSpeed = 0;
     s32 rate = static_cast<s32>(static_cast<f32>(inputSpeed) * input);
     return Push(seconds, &rate, clamp);
 }
@@ -327,68 +326,69 @@ void AngleBlender::TimeToward(const s32* ticks, const s32* toLow, const s32* toH
 u32 DistanceBlender::Step(f32 value, TimeClock* clock, u32 clamp, u32 jump)
 {
     f32 seconds = StepSeconds(clock);
-    if ((bits & AngleBlender::BitEnabled) == 0)
+    if (bits.enabled == 0)
     {
         return 0;
     }
 
-    if ((bits & AngleBlender::BitPushed) != 0)
+    if (bits.pushed != 0)
     {
-        bits = bits & ~AngleBlender::BitMoving & ~AngleBlender::BitAtOwnSpeed;
+        bits.moving = 0;
+        bits.atOwnSpeed = 0;
         return 0;
     }
 
-    if ((bits & AngleBlender::BitSecondRange) != 0)
+    if (bits.secondRange != 0)
     {
-        u32 moving = MoveDistance(this, secondLow - current, secondHigh - current, seconds, jump);
-        bits = (bits & ~AngleBlender::BitMoving) | moving << 1;
-        if ((bits & AngleBlender::BitMoving) != 0)
+        bits.moving = MoveDistance(this, secondLow - current, secondHigh - current, seconds, jump);
+        if (bits.moving != 0)
         {
-            bits |= AngleBlender::BitAtOwnSpeed;
+            bits.atOwnSpeed = 1;
             return 1;
         }
 
-        bits &= ~AngleBlender::BitAtOwnSpeed;
+        bits.atOwnSpeed = 0;
         delta = inputSpeed * input * seconds;
         return 1;
     }
 
-    if ((bits & AngleBlender::BitBlendedGoal) != 0)
+    if (bits.blendedGoal != 0)
     {
         f32 goal = high * goalShare + low * (1.0f - goalShare);
-        u32 moving = MoveDistance(this, goal - current, goal - current, seconds, jump);
-        bits = (bits & ~AngleBlender::BitMoving) | moving << 1 | AngleBlender::BitAtOwnSpeed;
+        bits.moving = MoveDistance(this, goal - current, goal - current, seconds, jump);
+        bits.atOwnSpeed = 1;
         return 1;
     }
 
     f32 step = seconds;
-    u32 scaled = 0.0f < rateScale;
-    bits = (bits & ~AngleBlender::BitMoving) | scaled << 1;
-    if ((bits & AngleBlender::BitMoving) != 0)
+    bits.moving = 0.0f < rateScale;
+    if (bits.moving != 0)
     {
-        bits |= AngleBlender::BitAtOwnSpeed;
+        bits.atOwnSpeed = 1;
         step = seconds * rateScale;
     }
-    else if ((bits & AngleBlender::BitHolds) != 0 && !(static_cast<s32>(clock->time - holdStart) < holdTicks))
+    else if (bits.holds != 0 && !(static_cast<s32>(clock->time - holdStart) < holdTicks))
     {
-        bits = (bits | AngleBlender::BitMoving) & ~AngleBlender::BitAtOwnSpeed;
+        bits.moving = 1;
+        bits.atOwnSpeed = 0;
     }
 
-    if ((bits & AngleBlender::BitMoving) != 0)
+    if (bits.moving != 0)
     {
         MoveDistance(this, value - current, value - current, step, jump);
         return 1;
     }
 
-    if (__builtin_fabsf(input) <= NoInput)
+    if (__builtin_fabsf(input) <= Epsilon)
     {
         return 0;
     }
 
-    bits = bits & ~AngleBlender::BitMoving & ~AngleBlender::BitAtOwnSpeed;
-    if ((bits & AngleBlender::BitEnabled) == 0)
+    bits.moving = 0;
+    bits.atOwnSpeed = 0;
+    if (bits.enabled == 0)
     {
-        return bits >> 4 & 1;
+        return bits.pushed;
     }
 
     delta = inputSpeed * input * seconds;
@@ -396,7 +396,7 @@ u32 DistanceBlender::Step(f32 value, TimeClock* clock, u32 clamp, u32 jump)
     {
         f32 toLow = low;
         f32 toHigh = high;
-        if ((bits & AngleBlender::BitSecondRange) != 0)
+        if (bits.secondRange != 0)
         {
             toLow = secondLow;
             toHigh = secondHigh;
@@ -405,23 +405,23 @@ u32 DistanceBlender::Step(f32 value, TimeClock* clock, u32 clamp, u32 jump)
         KeepWithin(toLow, toHigh);
     }
 
-    bits |= AngleBlender::BitPushed;
-    return bits >> 4 & 1;
+    bits.pushed = 1;
+    return bits.pushed;
 }
 
 void DistanceBlender::KeepWithin(f32 toLow, f32 toHigh)
 {
     f32 next = current + delta;
-    bits = (bits & ~AngleBlender::BitAtLow) | (next <= toLow ? AngleBlender::BitAtLow : 0);
-    bits = (bits & ~AngleBlender::BitAtHigh) | (toHigh <= next ? AngleBlender::BitAtHigh : 0);
-    if ((bits & AngleBlender::BitAtLow) != 0)
+    bits.atLow = next <= toLow;
+    bits.atHigh = toHigh <= next;
+    if (bits.atLow != 0)
     {
         if (toLow <= current)
         {
             delta = toLow - current;
         }
     }
-    else if ((bits & AngleBlender::BitAtHigh) != 0)
+    else if (bits.atHigh != 0)
     {
         if (current <= toHigh)
         {
@@ -433,11 +433,11 @@ void DistanceBlender::KeepWithin(f32 toLow, f32 toHigh)
     {
         share = 0.5f;
     }
-    else if ((bits & AngleBlender::BitAtLow) != 0)
+    else if (bits.atLow != 0)
     {
         share = 0.0f;
     }
-    else if ((bits & AngleBlender::BitAtHigh) != 0)
+    else if (bits.atHigh != 0)
     {
         share = 1.0f;
     }
@@ -449,16 +449,17 @@ void DistanceBlender::KeepWithin(f32 toLow, f32 toHigh)
 
 void DistanceBlender::Reset()
 {
-    constexpr f32 NoRange = Rounded(5e-5);
-    constexpr f32 Far = 0x1.93e594p+99f;
+    constexpr f32 NoRange = Epsilon;
     f32 range = high - low;
     delta = 0.0f;
     current = initial;
-    share = __builtin_fabsf(range) <= NoRange ? Far : (initial - low) / range;
+    share = __builtin_fabsf(range) <= NoRange ? Infinite : (initial - low) / range;
     previousSpeed = speed;
-    bits &= AngleBlender::BitHolds;
+    BlenderBits kept = {};
+    kept.holds = bits.holds;
+    bits = kept;
     start = current;
     input = 0.0f;
-    unknown48 = 0.0f;
+    unused48 = 0.0f;
     rateScale = 0.0f;
 }

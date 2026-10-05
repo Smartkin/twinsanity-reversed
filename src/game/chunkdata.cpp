@@ -2,6 +2,7 @@
 #include "game/dynamicscenery.h"
 
 #include "game/archive.h"
+#include "game/clock.h"
 #include "game/collision.h"
 #include "game/graphicstables.h"
 #include "game/instances.h"
@@ -9,6 +10,8 @@
 #include "game/lights.h"
 #include "game/memory.h"
 #include "game/objectnode.h"
+#include "game/particles.h"
+#include "game/reference.h"
 #include "game/scenery.h"
 #include "game/shadows.h"
 #include "platform/graphics.h"
@@ -19,7 +22,7 @@
 class ChunkPartRelease : public SectionReader
 {
 public:
-    ChunkDataReference* data;
+    ChunkDataReference* reference;
     u32 part;
 
     void Destroy(u32 flags) RETAIL(FUN_001ef0c0);
@@ -33,210 +36,206 @@ extern "C"
     extern const char g_ReleasedChunkPath[] RETAIL(D_00309FF8);
     // A reader's job releasing a part of a chunk's data (a reference to it and the part's number)
     extern const GccVTableEntry g_ChunkPartReleaseVTable[] RETAIL(D_002FBC00);
-
-    // The parts' constructors and destructors
-    void DestroyClocks(void* clocks, u32 flags) RETAIL(FUN_00191ea8);
-    void UnloadParticleSection(s8 section);
-
-    // A shown chunk's frame
-    void AdvanceClocks(void* clocks, GameTimeController* clock);
 }
 
 namespace
 {
-constexpr u32 CountMask = 0xFFFFFF;
+// GCC's pointers to the lists' members, passed along and unused
+constexpr s32 ChunkPrevious = GCC2_MEMBER_POINTER(ChunkData, previous);
+constexpr s32 ChunkNext = GCC2_MEMBER_POINTER(ChunkData, next);
+constexpr s32 LinkPrevious = GCC2_MEMBER_POINTER(ChunkLinkData, previous);
+constexpr s32 LinkNext = GCC2_MEMBER_POINTER(ChunkLinkData, next);
+// A frame a new chunk was never drawn in
+constexpr u32 NeverDrawnFrame = 0x10101015;
 
-void ConstructSetting(ReverbSettings* setting)
+void ConstructReverb(ReverbSettings* reverb)
 {
-    *reinterpret_cast<u8*>(&setting->bits) = 0xFF;
-    setting->bits &= ~0x100u;
-    setting->bits &= ~0x200u;
-    setting->depth = 1.0f;
-    setting->delay = 0.0f;
-    setting->feedback = 0.0f;
+    reverb->bits.type = ReverbSettings::NoReverb;
+    reverb->bits.unused8 = 0;
+    reverb->bits.unused9 = 0;
+    reverb->depth = 1.0f;
+    reverb->delay = 0.0f;
+    reverb->feedback = 0.0f;
 }
 }
 
-ChunkDataReference* AddChunkDataReference(ChunkData* data)
+ChunkDataReference* AddChunkDataReference(ChunkData* chunk)
 {
-    if (data->self == nullptr)
+    if (chunk->self == nullptr)
     {
         auto* block = static_cast<ChunkDataReference*>(MemoryAllocate(sizeof(ChunkDataReference)));
-        data->self = block;
-        // The new block's top bits are kept
-        block->value &= 0xFE000000;
-        block->data = data;
+        chunk->self = block;
+        // The new block's bits above the count and the owning bit are kept
+        ReferenceBits leftover = block->bits;
+        leftover.count = 0;
+        leftover.owns = 0;
+        block->bits = leftover;
+        block->chunk = chunk;
     }
 
-    ChunkDataReference* reference = data->self;
-    reference->value = (reference->value & ~CountMask) | (((reference->value & CountMask) + 1) & CountMask);
+    ChunkDataReference* reference = chunk->self;
+    reference->bits.count++;
     return reference;
 }
 
 namespace
 {
-void QueueParts(ChunkData* data, const u32* parts, u32 count)
+void QueueParts(ChunkData* chunk, const u32* parts, u32 count)
 {
     for (u32 i = 0; i < count; i++)
     {
-        QueueChunkPartRelease(data, parts[i]);
+        QueueChunkPartRelease(chunk, parts[i]);
     }
-}
-
-void SetState(ChunkData* data, u32 state)
-{
-    data->bits = (data->bits & ~ChunkData::StateMask) | state;
 }
 }
 
 extern "C"
 {
-    ChunkData* ConstructChunkData(ChunkData* data, ChunkList* list, const char* path)
+    ChunkData* ConstructChunkData(ChunkData* chunk, ChunkList* list, const char* path)
     {
-        data->self = nullptr;
-        // A frame it was never drawn in
-        data->drawnFrame = 0x10101015;
-        data->particleView = -1;
-        InitIdentityMatrix(&data->matrix);
-        data->list = list;
-        data->rm2Loads = 0;
-        StringConstruct(&data->name, path);
-        data->path.string = nullptr;
-        data->path.length = 0;
-        data->path.capacity = 0;
-        data->detail = -1;
-        data->scenery = nullptr;
-        data->previous = nullptr;
-        data->next = nullptr;
-        data->links = nullptr;
-        data->clocks = nullptr;
-        data->instances = nullptr;
-        data->instanceCells = nullptr;
-        data->unknown164 = nullptr;
-        ConstructSetting(&data->reverb);
-        ConstructSetting(&data->boxReverb);
-        data->soundBoxCount = 0;
-        data->collision = nullptr;
-        data->lights = nullptr;
-        data->unknown1C4.string = nullptr;
-        data->unknown1C4.length = 0;
-        data->unknown1C4.capacity = 0;
-        data->skyId = 0;
-        data->sky = nullptr;
-        data->wind = nullptr;
-        data->shadows = nullptr;
-        data->particles = -1;
-        data->dynamicScenery = nullptr;
-        data->unusedByte = 0;
-        data->colourFilterPalette = 1;
-        data->bits = 0;
-        data->bits &= ~ChunkData::StateMask;
-        StringAssign(&data->path, path);
-        return data;
+        chunk->self = nullptr;
+        chunk->drawnFrame = NeverDrawnFrame;
+        chunk->particleView = ChunkData::NoParticleView;
+        InitIdentityMatrix(&chunk->matrix);
+        chunk->list = list;
+        chunk->holds = 0;
+        StringConstruct(&chunk->name, path);
+        chunk->path.string = nullptr;
+        chunk->path.length = 0;
+        chunk->path.capacity = 0;
+        chunk->steppedKinds = ChunkData::EveryKindStepped;
+        chunk->scenery = nullptr;
+        chunk->previous = nullptr;
+        chunk->next = nullptr;
+        chunk->links = nullptr;
+        chunk->clocks = nullptr;
+        chunk->instances = nullptr;
+        chunk->instanceCells = nullptr;
+        chunk->rigidBodies = nullptr;
+        ConstructReverb(&chunk->reverb);
+        ConstructReverb(&chunk->boxReverb);
+        chunk->soundBoxCount = 0;
+        chunk->collision = nullptr;
+        chunk->lights = nullptr;
+        chunk->unused1C4.string = nullptr;
+        chunk->unused1C4.length = 0;
+        chunk->unused1C4.capacity = 0;
+        chunk->skyId = 0;
+        chunk->sky = nullptr;
+        chunk->wind = nullptr;
+        chunk->shadows = nullptr;
+        chunk->particles = ChunkData::NoParticles;
+        chunk->dynamicScenery = nullptr;
+        chunk->unusedByte = 0;
+        chunk->colourFilterPalette = 1;
+        chunk->flags.value = 0;
+        chunk->flags.state = ChunkHidden;
+        StringAssign(&chunk->path, path);
+        return chunk;
     }
 
-    void DestroyChunkData(ChunkData* data, u32 flags)
+    void DestroyChunkData(ChunkData* chunk, u32 destroyFlags)
     {
-        if ((data->bits & ChunkData::UpdateDetail) != 0)
+        if (chunk->flags.hasSky != 0)
         {
-            ReleaseSky(data->sky);
+            ReleaseSky(chunk->sky);
         }
 
-        for (u32 i = 0; i < data->soundBoxCount; i++)
+        for (u32 i = 0; i < chunk->soundBoxCount; i++)
         {
-            if (data->soundBoxes[i] != nullptr)
+            if (chunk->soundBoxes[i] != nullptr)
             {
-                MemoryDeallocate2_(data->soundBoxes[i]);
+                MemoryDeallocate2_(chunk->soundBoxes[i]);
             }
         }
 
-        if (data->scenery != nullptr)
+        if (chunk->scenery != nullptr)
         {
-            data->scenery->VirtualDestroy(3);
+            chunk->scenery->VirtualDestroy(DestroyAndFree);
         }
 
-        if (data->clocks != nullptr)
+        if (chunk->clocks != nullptr)
         {
-            DestroyClocks(data->clocks, 3);
+            TimeClocksDestroy(chunk->clocks, DestroyAndFree);
         }
 
-        if (data->instances != nullptr)
+        if (chunk->instances != nullptr)
         {
-            data->instances->Destroy(DestroyAndFree);
+            chunk->instances->Destroy(DestroyAndFree);
         }
 
-        if (data->instanceCells != nullptr)
+        if (chunk->instanceCells != nullptr)
         {
-            MemoryDeallocate2_(data->instanceCells);
+            MemoryDeallocate2_(chunk->instanceCells);
         }
 
-        if (data->unknown164 != nullptr)
+        if (chunk->rigidBodies != nullptr)
         {
-            DestroyChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164), 3);
+            DestroyChunkRigidBodies(chunk->rigidBodies, DestroyAndFree);
         }
 
-        if (data->collision != nullptr)
+        if (chunk->collision != nullptr)
         {
-            DestroyCollisionData(static_cast<CollisionData*>(data->collision), 3);
+            DestroyCollisionData(chunk->collision, DestroyAndFree);
         }
 
-        if (data->lights != nullptr)
+        if (chunk->lights != nullptr)
         {
-            DestroyLights(data->lights, 3);
+            DestroyLights(chunk->lights, DestroyAndFree);
         }
 
-        if (data->wind != nullptr)
+        if (chunk->wind != nullptr)
         {
-            DestroyChunkWind(data->wind, 3);
+            DestroyChunkWind(chunk->wind, DestroyAndFree);
         }
 
-        if (data->shadows != nullptr)
+        if (chunk->shadows != nullptr)
         {
-            data->shadows->Destroy(DestroyAndFree);
+            chunk->shadows->Destroy(DestroyAndFree);
         }
 
-        UnloadParticleSection(static_cast<s8>(data->particles));
-        if (data->dynamicScenery != nullptr)
+        UnloadParticleSection(static_cast<s8>(chunk->particles));
+        if (chunk->dynamicScenery != nullptr)
         {
-            DestroyDynamicScenery(data->dynamicScenery, 3);
+            DestroyDynamicScenery(chunk->dynamicScenery, DestroyAndFree);
         }
 
-        StringDestroy(&data->unknown1C4);
-        StringDestroy(&data->path);
-        StringDestroy(&data->name);
-        if (data->self != nullptr)
+        StringDestroy(&chunk->unused1C4);
+        StringDestroy(&chunk->path);
+        StringDestroy(&chunk->name);
+        if (chunk->self != nullptr)
         {
-            data->self->data = nullptr;
+            chunk->self->chunk = nullptr;
         }
 
-        if ((flags & 1) != 0)
+        if ((destroyFlags & 1) != 0)
         {
-            MemoryDeallocate2_(data);
+            MemoryDeallocate2_(chunk);
         }
     }
 
-    u32 ReleaseChunkData(ChunkData* data, bool unload, bool start, bool inSteps)
+    u32 ReleaseChunkData(ChunkData* chunk, bool unload, bool start, bool inSteps)
     {
         bool destroyScenery;
         if (start)
         {
-            if (inSteps && data->rm2Loads != 0)
+            if (inSteps && chunk->holds != 0)
             {
                 return 0;
             }
 
-            SetState(data, ChunkData::Releasing);
-            data->bits = (data->bits & ~ChunkData::ReleaseInSteps) | static_cast<u32>(inSteps) << 24;
+            chunk->flags.state = ChunkReleasing;
+            chunk->flags.releasesInSteps = inSteps;
             if (inSteps)
             {
                 return 1;
             }
 
-            data->rm2Loads++;
-            DestroyChunkShadows(data);
-            DestroyChunkParticles(data);
-            DestroyChunkLights(data);
-            DestroyChunkDynamicScenery(data);
+            chunk->holds++;
+            DestroyChunkShadows(chunk);
+            DestroyChunkParticles(chunk);
+            DestroyChunkLights(chunk);
+            DestroyChunkDynamicScenery(chunk);
             destroyScenery = true;
         }
         else
@@ -248,129 +247,134 @@ extern "C"
 
             if (inSteps)
             {
-                constexpr u32 Parts[] = {1, 3, 10, 8, 6, 5, 0};
-                QueueParts(data, Parts, sizeof(Parts) / sizeof(Parts[0]));
+                constexpr u32 Parts[] = {ChunkData::PartDropHold,         ChunkData::PartCollision, ChunkData::PartClocks,
+                                         ChunkData::PartSceneryInstances, ChunkData::PartParticles, ChunkData::PartShadows,
+                                         ChunkData::PartAddHold};
+                QueueParts(chunk, Parts, sizeof(Parts) / sizeof(Parts[0]));
                 return 1;
             }
 
-            data->rm2Loads++;
-            DestroyChunkShadows(data);
-            DestroyChunkParticles(data);
+            chunk->holds++;
+            DestroyChunkShadows(chunk);
+            DestroyChunkParticles(chunk);
             destroyScenery = false;
         }
 
-        ReleaseChunkScenery(data, true, destroyScenery, false);
-        DestroyChunkClocks(data);
-        DestroyChunkCollision(data);
-        data->rm2Loads--;
+        ReleaseChunkScenery(chunk, true, destroyScenery, false);
+        DestroyChunkClocks(chunk);
+        DestroyChunkCollision(chunk);
+        chunk->holds--;
         return 1;
     }
 
-    u32 ChunkDataReleasing(ChunkData* data, bool paused, GameTimeController* clock)
+    u32 StepChunkData(ChunkData* chunk, bool paused, GameTimeController* clock)
     {
-        switch (data->bits >> 18 & 0xF)
+        switch (chunk->flags.state)
         {
-        case ChunkData::Shown >> 18:
-            if (data->clocks != nullptr)
+        case ChunkShown:
+            if (chunk->clocks != nullptr)
             {
-                AdvanceClocks(data->clocks, clock);
+                AdvanceClocks(chunk->clocks, clock);
             }
 
-            if (data->instances != nullptr && data->detail != 0)
+            if (chunk->instances != nullptr && chunk->steppedKinds != 0)
             {
-                data->instances->Update(clock, data->clocks, data->detail);
+                chunk->instances->Update(clock, chunk->clocks, chunk->steppedKinds);
             }
 
-            if (!paused && data->unknown164 != nullptr)
+            if (!paused && chunk->rigidBodies != nullptr)
             {
-                CollideChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164));
+                CollideChunkRigidBodies(chunk->rigidBodies);
             }
 
-            if ((data->bits & ChunkData::UpdateWind) != 0 && data->wind != nullptr)
+            if (chunk->flags.hasRoot != 0 && chunk->wind != nullptr)
             {
-                UpdateChunkWind(data->wind, clock);
+                UpdateChunkWind(chunk->wind, clock);
             }
 
             return 1;
-        case ChunkData::Releasing >> 18:
-            if (data->rm2Loads != 0)
+        case ChunkReleasing:
+            if (chunk->holds != 0)
             {
                 return 1;
             }
 
-            if ((data->bits & ChunkData::ReleaseInSteps) != 0)
+            if (chunk->flags.releasesInSteps != 0)
             {
-                constexpr u32 Parts[] = {1, 3, 10, 9, 4, 6, 5, 0};
-                QueueParts(data, Parts, sizeof(Parts) / sizeof(Parts[0]));
+                constexpr u32 Parts[] = {ChunkData::PartDropHold, ChunkData::PartCollision, ChunkData::PartClocks,
+                                         ChunkData::PartScenery,  ChunkData::PartLights,    ChunkData::PartParticles,
+                                         ChunkData::PartShadows,  ChunkData::PartAddHold};
+                QueueParts(chunk, Parts, sizeof(Parts) / sizeof(Parts[0]));
             }
 
-            if (data->instances != nullptr)
+            if (chunk->instances != nullptr)
             {
-                data->instances->Release();
+                chunk->instances->Release();
             }
 
-            StringAssign(&data->path, g_ReleasedChunkPath);
-            SetState(data, ChunkData::Released);
+            StringAssign(&chunk->path, g_ReleasedChunkPath);
+            chunk->flags.state = ChunkReleased;
             return 1;
-        case ChunkData::Released >> 18:
-            if (data->collision != nullptr || data->lights != nullptr || data->shadows != nullptr || data->particles != -1 ||
-                data->scenery != nullptr || data->clocks != nullptr)
+        case ChunkReleased:
+            if (chunk->collision != nullptr || chunk->lights != nullptr || chunk->shadows != nullptr ||
+                chunk->particles != ChunkData::NoParticles || chunk->scenery != nullptr || chunk->clocks != nullptr)
             {
                 return 1;
             }
 
-            if (data->instances == nullptr)
+            if (chunk->instances == nullptr)
             {
-                return data->rm2Loads != 0;
+                return chunk->holds != 0;
             }
 
-            if (data->instances->IsEmpty() == 0)
+            if (chunk->instances->IsEmpty() == 0)
             {
                 return 1;
             }
 
-            if (data->instances != nullptr)
+            if (chunk->instances != nullptr)
             {
-                data->instances->Destroy(DestroyAndFree);
+                chunk->instances->Destroy(DestroyAndFree);
             }
 
-            data->instances = nullptr;
-            DestroyChunkUnknown164(data);
+            chunk->instances = nullptr;
+            DestroyChunkDataRigidBodies(chunk);
             return 1;
         default:
             return 1;
         }
     }
 
-    void QueueChunkPartRelease(ChunkData* data, u32 part)
+    void QueueChunkPartRelease(ChunkData* chunk, u32 part)
     {
-        GameReadersStorage* storage = g_ReadersStorages[0];
+        GameReadersStorage* storage = g_ReadersStorages[MainReaders];
         auto* job = static_cast<ChunkPartRelease*>(MemoryAllocate(sizeof(ChunkPartRelease)));
         job->vtable = g_ChunkPartReleaseVTable;
-        job->data = data != nullptr ? AddChunkDataReference(data) : nullptr;
+        job->reference = chunk != nullptr ? AddChunkDataReference(chunk) : nullptr;
         job->part = part;
         MemoryReader* reader = MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), job,
                                                        nullptr, 0);
-        AddItemReaderToReaderStorage(storage, reader, 1);
+        AddItemReaderToReaderStorage(storage, reader, QueueFront);
     }
 
-    void ReleaseChunkScenery(ChunkData* data, bool unknown, bool destroy, bool tell)
+    void ReleaseChunkScenery(ChunkData* chunk, bool releaseInstances, bool destroy, bool inSteps)
     {
-        SceneryCell* scenery = data->scenery;
+        SceneryCell* scenery = chunk->scenery;
         if (scenery == nullptr)
         {
             return;
         }
 
         const GccVTableEntry* vtable = scenery->vtable;
-        if (tell)
+        if (inSteps)
         {
-            // The asm hands the scenery its own arguments: its release (FUN_001efb40) queues its destruction through the readers
-            // when destroy is set, so leaving that out let a stale register destroy a scenery its chunk still had
-            CallVirtual<void>(scenery, vtable, 2, static_cast<u32>(unknown), static_cast<u32>(destroy), static_cast<u32>(tell));
+            // The asm hands the scenery its own arguments: its release (SceneryCell::Release) queues its destruction through the
+            // readers when destroy is set, so leaving that out let a stale register destroy a scenery its chunk still had
+            CallVirtual<void>(scenery, vtable, SceneryCell::SlotRelease, static_cast<u32>(releaseInstances),
+                              static_cast<u32>(destroy), static_cast<u32>(inSteps));
             if (destroy)
             {
-                data->scenery = nullptr;
+                chunk->scenery = nullptr;
             }
 
             return;
@@ -378,150 +382,152 @@ extern "C"
 
         if (destroy)
         {
-            CallVirtual<void>(scenery, vtable, 1, 3u);
-            data->scenery = nullptr;
+            scenery->VirtualDestroy(DestroyAndFree);
+            chunk->scenery = nullptr;
             return;
         }
 
-        if (unknown)
+        if (releaseInstances)
         {
-            s32 range[3] = {-1, 0, 0};
-            CallVirtual<void>(scenery, vtable, 23, range);
-            if (data->instances != nullptr)
+            // A filter of every instance: any node kind, no flags it has to have or not
+            u32 everyInstance[3] = {~0u, 0, 0};
+            CallVirtual<void>(scenery, vtable, SceneryCell::SlotReleaseInstances, everyInstance);
+            if (chunk->instances != nullptr)
             {
-                data->instances->Release();
+                chunk->instances->Release();
             }
         }
     }
 
-    ChunkLights* ChunkDataLights(ChunkData* data)
+    ChunkLights* ChunkDataLights(ChunkData* chunk)
     {
-        if ((data->bits & ChunkData::HasLights) != 0)
+        if (chunk->flags.hasLights != 0)
         {
-            return data->lights;
+            return chunk->lights;
         }
 
-        ChunkLights* lights = ConstructChunkLights(static_cast<ChunkLights*>(MemoryAllocate(sizeof(ChunkLights))), data);
-        data->lights = lights;
-        data->bits |= ChunkData::HasLights;
-        return data->lights;
+        ChunkLights* lights = ConstructChunkLights(static_cast<ChunkLights*>(MemoryAllocate(sizeof(ChunkLights))), chunk);
+        chunk->lights = lights;
+        chunk->flags.hasLights = 1;
+        return chunk->lights;
     }
 
-    ChunkDynamicScenery* ChunkDataDynamicScenery(ChunkData* data)
+    ChunkDynamicScenery* ChunkDataDynamicScenery(ChunkData* chunk)
     {
-        if (data->dynamicScenery == nullptr)
+        if (chunk->dynamicScenery == nullptr)
         {
-            data->dynamicScenery = ConstructDynamicScenery(static_cast<ChunkDynamicScenery*>(MemoryAllocate(0x14)), data);
+            auto* scenery = static_cast<ChunkDynamicScenery*>(MemoryAllocate(sizeof(ChunkDynamicScenery)));
+            chunk->dynamicScenery = ConstructDynamicScenery(scenery, chunk);
         }
 
-        return data->dynamicScenery;
+        return chunk->dynamicScenery;
     }
 
-    ChunkInstances* ChunkDataContext(ChunkData* data)
+    ChunkInstances* ChunkDataInstances(ChunkData* chunk)
     {
-        if (data->instances == nullptr)
+        if (chunk->instances == nullptr)
         {
-            data->instances = ChunkInstances::Construct(static_cast<ChunkInstances*>(MemoryAllocate(sizeof(ChunkInstances))));
+            chunk->instances = ChunkInstances::Construct(static_cast<ChunkInstances*>(MemoryAllocate(sizeof(ChunkInstances))));
         }
 
-        return data->instances;
+        return chunk->instances;
     }
 
-    ChunkShadows* ChunkShadowsOf(ChunkData* data, s32 count)
+    ChunkShadows* ChunkShadowsOf(ChunkData* chunk, s32 count)
     {
-        if (data->shadows == nullptr)
+        if (chunk->shadows == nullptr)
         {
-            data->shadows = ChunkShadows::Construct(static_cast<ChunkShadows*>(MemoryAllocate(sizeof(ChunkShadows))), count);
+            chunk->shadows = ChunkShadows::Construct(static_cast<ChunkShadows*>(MemoryAllocate(sizeof(ChunkShadows))), count);
         }
 
-        return data->shadows;
+        return chunk->shadows;
     }
 
-    void* ChunkDataCollision(ChunkData* data)
+    void* ChunkDataCollision(ChunkData* chunk)
     {
-        if (data->collision == nullptr)
+        if (chunk->collision == nullptr)
         {
-            data->collision = ConstructCollisionData(static_cast<CollisionData*>(MemoryAllocate(sizeof(CollisionData))));
+            chunk->collision = ConstructCollisionData(static_cast<CollisionData*>(MemoryAllocate(sizeof(CollisionData))));
         }
 
-        return data->collision;
+        return chunk->collision;
     }
 
-    void DestroyChunkClocks(ChunkData* data)
+    void DestroyChunkClocks(ChunkData* chunk)
     {
-        if (data->clocks != nullptr)
+        if (chunk->clocks != nullptr)
         {
-            DestroyClocks(data->clocks, 3);
+            TimeClocksDestroy(chunk->clocks, DestroyAndFree);
         }
 
-        data->clocks = nullptr;
+        chunk->clocks = nullptr;
     }
 
-    void DestroyChunkLights(ChunkData* data)
+    void DestroyChunkLights(ChunkData* chunk)
     {
-        if ((data->bits & ChunkData::HasLights) == 0)
+        if (chunk->flags.hasLights == 0)
         {
             return;
         }
 
-        if (data->lights != nullptr)
+        if (chunk->lights != nullptr)
         {
-            DestroyLights(data->lights, 3);
+            DestroyLights(chunk->lights, DestroyAndFree);
         }
 
-        data->lights = nullptr;
-        data->bits &= ~ChunkData::HasLights;
+        chunk->lights = nullptr;
+        chunk->flags.hasLights = 0;
     }
 
-    void DestroyChunkDynamicScenery(ChunkData* data)
+    void DestroyChunkDynamicScenery(ChunkData* chunk)
     {
-        if (data->dynamicScenery != nullptr)
+        if (chunk->dynamicScenery != nullptr)
         {
-            DestroyDynamicScenery(data->dynamicScenery, 3);
+            DestroyDynamicScenery(chunk->dynamicScenery, DestroyAndFree);
         }
 
-        data->dynamicScenery = nullptr;
+        chunk->dynamicScenery = nullptr;
     }
 
-    void DestroyChunkShadows(ChunkData* data)
+    void DestroyChunkShadows(ChunkData* chunk)
     {
-        if (data->shadows != nullptr)
+        if (chunk->shadows != nullptr)
         {
-            data->shadows->Destroy(DestroyAndFree);
+            chunk->shadows->Destroy(DestroyAndFree);
         }
 
-        data->shadows = nullptr;
+        chunk->shadows = nullptr;
     }
 
-    void DestroyChunkParticles(ChunkData* data)
+    void DestroyChunkParticles(ChunkData* chunk)
     {
-        if (data->particles == -1)
+        if (chunk->particles == ChunkData::NoParticles)
         {
             return;
         }
 
-        UnloadParticleSection(static_cast<s8>(data->particles));
-        data->particles = -1;
+        UnloadParticleSection(static_cast<s8>(chunk->particles));
+        chunk->particles = ChunkData::NoParticles;
     }
 
-    void DestroyChunkCollision(ChunkData* data)
+    void DestroyChunkCollision(ChunkData* chunk)
     {
-        if (data->collision != nullptr)
+        if (chunk->collision != nullptr)
         {
-            DestroyCollisionData(static_cast<CollisionData*>(data->collision), 3);
+            DestroyCollisionData(chunk->collision, DestroyAndFree);
         }
 
-        data->collision = nullptr;
+        chunk->collision = nullptr;
     }
 
-    void DestroyChunkUnknown164(ChunkData* data)
+    void DestroyChunkDataRigidBodies(ChunkData* chunk)
     {
-        if (data->unknown164 != nullptr)
+        if (chunk->rigidBodies != nullptr)
         {
-            DestroyChunkRigidBodies(static_cast<ChunkRigidBodies*>(data->unknown164), 3);
+            DestroyChunkRigidBodies(chunk->rigidBodies, DestroyAndFree);
         }
 
-        data->unknown164 = nullptr;
+        chunk->rigidBodies = nullptr;
     }
 }
 
@@ -536,7 +542,7 @@ extern "C"
 
     void DestroyChunkListAtExit()
     {
-        DestroyChunkList(&g_ChunkList, 2);
+        DestroyChunkList(&g_ChunkList, DestroyOnly);
     }
 
     ChunkList* GetChunkList()
@@ -558,17 +564,17 @@ extern "C"
         return list;
     }
 
-    void ChunkListAdd(ChunkList* list, ChunkData* data)
+    void ChunkListAdd(ChunkList* list, ChunkData* chunk)
     {
-        ChunkListPushFront(data, &list->first, 0x14D, 0x149);
+        ChunkListPushFront(chunk, &list->first, ChunkPrevious, ChunkNext);
     }
 
-    void ChunkListRemove(ChunkList* list, ChunkData* data)
+    void ChunkListRemove(ChunkList* list, ChunkData* removed)
     {
-        ChunkListTakeOut(data, &list->first, 0x14D, 0x149);
+        ChunkListTakeOut(removed, &list->first, ChunkPrevious, ChunkNext);
         for (ChunkData* chunk = list->first; chunk != nullptr; chunk = chunk->next)
         {
-            ChunkDataForgetLinksTo(chunk, data);
+            ChunkDataForgetLinksTo(chunk, removed);
         }
     }
 
@@ -585,88 +591,88 @@ extern "C"
         return nullptr;
     }
 
-    void ChunkDataLink(ChunkData* data, ChunkLinkData* link)
+    void ChunkDataLink(ChunkData* chunk, ChunkLinkData* link)
     {
-        if ((link->flags & ChunkLinkData::InList) != 0)
+        if (link->flags.inList != 0)
         {
             return;
         }
 
-        link->linkedData = data;
-        link->flags |= ChunkLinkData::InList;
-        LinkListPushFrontData(link, &data->links, 0xD, 0x9);
+        link->linkedData = chunk;
+        link->flags.inList = 1;
+        LinkListPushFrontData(link, &chunk->links, LinkPrevious, LinkNext);
     }
 
-    void ChunkDataUnlink(ChunkData* data, ChunkLinkData* link)
+    void ChunkDataUnlink(ChunkData* chunk, ChunkLinkData* link)
     {
-        if ((link->flags & ChunkLinkData::InList) == 0)
+        if (link->flags.inList == 0)
         {
             return;
         }
 
         link->linkedData = nullptr;
-        link->flags &= ~ChunkLinkData::InList;
-        LinkListRemoveData(link, &data->links, 0xD, 0x9);
+        link->flags.inList = 0;
+        LinkListRemoveData(link, &chunk->links, LinkPrevious, LinkNext);
     }
 
-    void ChunkDataForgetLinksTo(ChunkData* data, ChunkData* gone)
+    void ChunkDataForgetLinksTo(ChunkData* chunk, ChunkData* gone)
     {
-        ChunkLinkData* link = data->links;
+        ChunkLinkData* link = chunk->links;
         while (link != nullptr)
         {
             ChunkLinkData* next = link->next;
-            if (link->linkedData == gone && (link->flags & ChunkLinkData::InList) != 0)
+            if (link->linkedData == gone && link->flags.inList != 0)
             {
                 link->linkedData = nullptr;
-                link->flags &= ~ChunkLinkData::InList;
-                LinkListRemoveData(link, &data->links, 0xD, 0x9);
+                link->flags.inList = 0;
+                LinkListRemoveData(link, &chunk->links, LinkPrevious, LinkNext);
             }
 
             link = next;
         }
     }
 
-    void ChunkListPushFront(ChunkData* data, ChunkData** head, s32, s32)
+    void ChunkListPushFront(ChunkData* chunk, ChunkData** head, s32, s32)
     {
         if (*head == nullptr)
         {
-            *head = data;
-            data->previous = nullptr;
-            data->next = nullptr;
+            *head = chunk;
+            chunk->previous = nullptr;
+            chunk->next = nullptr;
             return;
         }
 
-        (*head)->previous = data;
-        data->next = *head;
-        *head = data;
+        (*head)->previous = chunk;
+        chunk->next = *head;
+        *head = chunk;
     }
 
-    void ChunkListTakeOut(ChunkData* data, ChunkData** head, s32, s32)
+    void ChunkListTakeOut(ChunkData* chunk, ChunkData** head, s32, s32)
     {
-        if (data->previous == nullptr)
+        if (chunk->previous == nullptr)
         {
-            if (data->next == nullptr)
+            if (chunk->next == nullptr)
             {
                 *head = nullptr;
             }
             else
             {
-                data->next->previous = nullptr;
-                *head = data->next;
+                chunk->next->previous = nullptr;
+                *head = chunk->next;
             }
         }
-        else if (data->next == nullptr)
+        else if (chunk->next == nullptr)
         {
-            data->previous->next = nullptr;
+            chunk->previous->next = nullptr;
         }
         else
         {
-            data->previous->next = data->next;
-            data->next->previous = data->previous;
+            chunk->previous->next = chunk->next;
+            chunk->next->previous = chunk->previous;
         }
 
-        data->next = nullptr;
-        data->previous = nullptr;
+        chunk->next = nullptr;
+        chunk->previous = nullptr;
     }
 
     void LinkListPushFrontData(ChunkLinkData* link, ChunkLinkData** head, s32, s32)
@@ -718,31 +724,31 @@ extern "C"
     void ReleaseChunkDataReference(ChunkDataReference** handle)
     {
         ChunkDataReference* reference = *handle;
-        u32 value = reference->value;
-        u32 count = ((value & CountMask) - 1) & CountMask;
-        reference->value = (value & ~CountMask) | count;
-        if (count == 0 && (value & 0x1000000) != 0)
+        ReferenceBits bits = reference->bits;
+        bits.count--;
+        reference->bits = bits;
+        if (bits.count == 0 && bits.owns)
         {
-            if (reference->data != nullptr)
+            if (reference->chunk != nullptr)
             {
-                DestroyChunkData(reference->data, 3);
+                DestroyChunkData(reference->chunk, DestroyAndFree);
             }
 
-            reference->data = nullptr;
+            reference->chunk = nullptr;
         }
 
-        if ((reference->value & CountMask) != 0)
+        if (reference->bits.count != 0)
         {
             return;
         }
 
         reference = *handle;
-        ChunkData* data = reference->data;
-        if (data == nullptr)
+        ChunkData* chunk = reference->chunk;
+        if (chunk == nullptr)
         {
-            if ((reference->value & 0x1000000) != 0)
+            if (reference->bits.owns)
             {
-                reference->data = nullptr;
+                reference->chunk = nullptr;
             }
 
             MemoryDeallocate2_(reference);
@@ -751,30 +757,30 @@ extern "C"
         }
 
         // The data's own block goes (with the data when it owns it), not this one
-        ChunkDataReference* own = data->self;
+        ChunkDataReference* own = chunk->self;
         if (own != nullptr)
         {
-            if ((own->value & 0x1000000) != 0)
+            if (own->bits.owns)
             {
-                if (own->data != nullptr)
+                if (own->chunk != nullptr)
                 {
-                    DestroyChunkData(own->data, 3);
+                    DestroyChunkData(own->chunk, DestroyAndFree);
                 }
 
-                own->data = nullptr;
+                own->chunk = nullptr;
             }
 
             MemoryDeallocate2_(own);
-            data->self = nullptr;
+            chunk->self = nullptr;
         }
 
         *handle = nullptr;
     }
 
-    ChunkDataReference** AssignChunkData(ChunkDataReference** reference, ChunkData* data)
+    ChunkDataReference** AssignChunkData(ChunkDataReference** reference, ChunkData* chunk)
     {
-        ChunkData* current = *reference != nullptr ? (*reference)->data : nullptr;
-        if (current == data)
+        ChunkData* current = *reference != nullptr ? (*reference)->chunk : nullptr;
+        if (current == chunk)
         {
             return reference;
         }
@@ -784,17 +790,17 @@ extern "C"
             ReleaseChunkDataReference(reference);
         }
 
-        *reference = data != nullptr ? AddChunkDataReference(data) : nullptr;
+        *reference = chunk != nullptr ? AddChunkDataReference(chunk) : nullptr;
         return reference;
     }
 
-    void DestroyChunkList(ChunkList* list, u32 flags)
+    void DestroyChunkList(ChunkList* list, u32 destroyFlags)
     {
         ChunkData* chunk = list->first;
         while (chunk != nullptr)
         {
             ChunkData* next = chunk->next;
-            ChunkListTakeOut(chunk, &list->first, 0x14D, 0x149);
+            ChunkListTakeOut(chunk, &list->first, ChunkPrevious, ChunkNext);
             chunk = next;
         }
 
@@ -803,7 +809,7 @@ extern "C"
             ReleaseChunkDataReference(&list->current);
         }
 
-        if ((flags & 1) != 0)
+        if ((destroyFlags & 1) != 0)
         {
             MemoryDeallocate2_(list);
         }
@@ -812,12 +818,12 @@ extern "C"
     void UpdateChunks(ChunkList* list, bool paused, GameTimeController* clock)
     {
         // The asm the chunks' frame still runs on takes the VU0's standard programs
-        Platform::Graphics::UseHelperPrograms(1, false);
-        ChunkData* current = list->current != nullptr ? list->current->data : nullptr;
-        if (current != nullptr && ChunkDataReleasing(current, paused, clock) == 0)
+        Platform::Graphics::UseHelperPrograms(Platform::Graphics::StandardPrograms, false);
+        ChunkData* current = list->current != nullptr ? list->current->chunk : nullptr;
+        if (current != nullptr && StepChunkData(current, paused, clock) == 0)
         {
             ChunkListRemove(list, current);
-            DestroyChunkData(current, 3);
+            DestroyChunkData(current, DestroyAndFree);
             AssignChunkData(&list->current, nullptr);
         }
 
@@ -825,13 +831,13 @@ extern "C"
         while (chunk != nullptr)
         {
             ChunkData* next = chunk->next;
-            ChunkData* first = list->current != nullptr ? list->current->data : nullptr;
-            if (chunk != first && ChunkDataReleasing(chunk, paused, clock) == 0)
+            ChunkData* steppedFirst = list->current != nullptr ? list->current->chunk : nullptr;
+            if (chunk != steppedFirst && StepChunkData(chunk, paused, clock) == 0)
             {
                 ChunkListRemove(list, chunk);
                 if (chunk != nullptr)
                 {
-                    DestroyChunkData(chunk, 3);
+                    DestroyChunkData(chunk, DestroyAndFree);
                 }
             }
 
@@ -842,9 +848,9 @@ extern "C"
 
 void ChunkPartRelease::Destroy(u32 flags)
 {
-    if (data != nullptr)
+    if (reference != nullptr)
     {
-        ReleaseChunkDataReference(&data);
+        ReleaseChunkDataReference(&reference);
     }
 
     vtable = g_SectionReaderVTable;
@@ -856,7 +862,7 @@ void ChunkPartRelease::Destroy(u32 flags)
 
 void ChunkPartRelease::Read(u8*, u32, ReaderStack*)
 {
-    ChunkData* chunk = data != nullptr ? data->data : nullptr;
+    ChunkData* chunk = reference != nullptr ? reference->chunk : nullptr;
     if (chunk == nullptr)
     {
         return;
@@ -864,32 +870,31 @@ void ChunkPartRelease::Read(u8*, u32, ReaderStack*)
 
     switch (part)
     {
-    case 0:
-        // Held until the parts queued before this are let go of
-        chunk->rm2Loads++;
+    case ChunkData::PartAddHold:
+        chunk->holds++;
         break;
-    case 1:
-        chunk->rm2Loads--;
+    case ChunkData::PartDropHold:
+        chunk->holds--;
         break;
-    case 3:
+    case ChunkData::PartCollision:
         DestroyChunkCollision(chunk);
         break;
-    case 4:
+    case ChunkData::PartLights:
         DestroyChunkLights(chunk);
         break;
-    case 5:
+    case ChunkData::PartShadows:
         DestroyChunkShadows(chunk);
         break;
-    case 6:
+    case ChunkData::PartParticles:
         DestroyChunkParticles(chunk);
         break;
-    case 8:
+    case ChunkData::PartSceneryInstances:
         ReleaseChunkScenery(chunk, true, false, true);
         break;
-    case 9:
+    case ChunkData::PartScenery:
         ReleaseChunkScenery(chunk, true, true, true);
         break;
-    case 10:
+    case ChunkData::PartClocks:
         DestroyChunkClocks(chunk);
         break;
     default:
@@ -920,8 +925,7 @@ u32 ChunkData::InSoundBox(const Vector4* point)
 
 u32 ChunkData::AddSoundBox(ChunkData* chunk, SoundBox* box)
 {
-    constexpr u32 MaxSoundBoxes = 7;
-    if (chunk->soundBoxCount == MaxSoundBoxes)
+    if (chunk->soundBoxCount == MostSoundBoxes)
     {
         return 0;
     }
@@ -933,19 +937,18 @@ u32 ChunkData::AddSoundBox(ChunkData* chunk, SoundBox* box)
 
 u32 ChunkData::AddInstance(ChunkData* chunk, InstanceContext* instance)
 {
-    constexpr u32 CellWords = 0x301;
     if (instance->chunk != nullptr)
     {
         return 0;
     }
 
     instance->chunk = chunk;
-    if ((instance->flags & ReferencedObject::FlagAsleep) == 0)
+    if (!instance->flags.asleep)
     {
         if (chunk->instanceCells == nullptr)
         {
-            auto* cells = static_cast<InstanceContext**>(MemoryAllocate(CellWords * sizeof(InstanceContext*)));
-            for (s32 index = CellWords - 1; index >= 0; index--)
+            auto* cells = static_cast<InstanceContext**>(MemoryAllocate(InstanceCells * sizeof(InstanceContext*)));
+            for (s32 index = InstanceCells - 1; index >= 0; index--)
             {
                 cells[index] = nullptr;
             }

@@ -42,19 +42,33 @@ extern "C"
 
 namespace
 {
-constexpr u32 FileSectionType = 1;
-constexpr u32 Sm2Sections = 7;
-constexpr u32 Rm2Sections = 12;
+// The SM2's sections (1-3 not read)
+enum Sm2Section : u32
+{
+    Sm2Scenery = 0,
+    Sm2DynamicScenery = 4,
+    Sm2Links = 5,
+    Sm2Graphics = 6,
+    Sm2Sections = 7,
+};
+
 // The RM2's sections past its layouts' instances (sections 0-7)
-constexpr u32 Rm2Layouts = 8;
-constexpr u32 Rm2ParticlesSection = 8;
-constexpr u32 Rm2CollisionSection = 9;
-constexpr u32 Rm2CodeSection = 10;
-constexpr u32 Rm2GraphicsSection = 11;
+enum Rm2Section : u32
+{
+    Rm2Particles = Rm2Reader::Layouts,
+    Rm2Collision = 9,
+    Rm2Code = 10,
+    Rm2Graphics = 11,
+    Rm2Sections = 12,
+};
+
+// The layouts 0-2 and the last are the chunk's own, the others aren't
+constexpr u32 FirstOtherLayout = 3;
+constexpr u32 LastLayout = Rm2Reader::Layouts - 1;
 
 ChunkData* ChunkDataOf(Sm2Loader* loader)
 {
-    return loader->data != nullptr ? loader->data->data : nullptr;
+    return loader->data != nullptr ? loader->data->chunk : nullptr;
 }
 
 template <typename Reader>
@@ -96,7 +110,7 @@ Sm2Reader* Sm2Reader::Construct(Sm2Reader* reader, Sm2Loader* loader)
 
 void Sm2Reader::Destroy(u32 flags)
 {
-    UnloadGraphics(&graphics, 2);
+    UnloadGraphics(&graphics, DestroyOnly);
     StringDestroy(&path);
     vtable = g_ItemInterfaceVTable;
     if ((flags & 1) != 0)
@@ -110,14 +124,14 @@ s32 Sm2Reader::SectionCount()
     return Sm2Sections;
 }
 
-s32 Sm2Reader::Unknown3()
+s32 Sm2Reader::SectionType()
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 bool Sm2Reader::CanRead(u32 type)
 {
-    return type == FileSectionType;
+    return type == DefaultSectionType;
 }
 
 SectionReader* Sm2Reader::GetReader(s32, ItemHeader* header, s32* size)
@@ -128,9 +142,9 @@ SectionReader* Sm2Reader::GetReader(s32, ItemHeader* header, s32* size)
     }
 
     // The graphics section is read as far as its header, the rest is queued
-    if (header->id == 6)
+    if (header->id == Sm2Graphics)
     {
-        *size = 0xC;
+        *size = sizeof(SectionHeader);
     }
 
     return MakeSectionReader<Sm2SectionReader>(g_Sm2SectionReaderVTable, this, header);
@@ -138,16 +152,16 @@ SectionReader* Sm2Reader::GetReader(s32, ItemHeader* header, s32* size)
 
 void Sm2Reader::Unload()
 {
-    ChunkData* data = ChunkDataOf(loader);
-    if (data != nullptr)
+    ChunkData* chunk = ChunkDataOf(loader);
+    if (chunk != nullptr)
     {
-        SceneryCell* scenery = data->scenery;
+        SceneryCell* scenery = chunk->scenery;
         if (scenery != nullptr)
         {
-            scenery->VirtualDestroy(3);
+            scenery->VirtualDestroy(DestroyAndFree);
         }
 
-        data->scenery = nullptr;
+        chunk->scenery = nullptr;
     }
 
     ReleaseGraphicsResources(&graphics);
@@ -155,9 +169,9 @@ void Sm2Reader::Unload()
 
 void Sm2Reader::Finish(s32, u32, u32)
 {
-    ChunkData* data = ChunkDataOf(loader);
-    ChunkSceneryRead(data);
-    ChunkListAdd(GetChunkList(), data);
+    ChunkData* chunk = ChunkDataOf(loader);
+    ChunkSceneryRead(chunk);
+    ChunkListAdd(GetChunkList(), chunk);
     FinishGraphicsReading(&graphics);
     reading = 0;
 }
@@ -190,33 +204,33 @@ void Sm2SectionReader::Read(u8* data, u32 size, ReaderStack*)
     Sm2Loader* loader = sm2->loader;
     switch (id)
     {
-    case 0:
+    case Sm2Scenery:
     {
         auto* section = ScenerySectionReader::Construct(
             static_cast<ScenerySectionReader*>(MemoryAllocate(sizeof(ScenerySectionReader))), data, size);
         MemoryReader* reader = MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), section,
                                                        nullptr, 0);
         ReadScenery(ChunkDataOf(loader), section->stream);
-        AddItemReaderToReaderStorage(g_ReadersStorages[0], reader, 0);
+        AddItemReaderToReaderStorage(g_ReadersStorages[MainReaders], reader, QueueBack);
         break;
     }
-    case 4:
+    case Sm2DynamicScenery:
     {
         MemoryStream stream;
-        MemoryStream::Construct(&stream, data, size, 0, 0x40);
+        MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
         LoadDynamicScenery(ChunkDataDynamicScenery(ChunkDataOf(loader)), &stream);
-        stream.Destroy(2);
+        stream.Destroy(DestroyOnly);
         break;
     }
-    case 5:
+    case Sm2Links:
     {
         MemoryStream stream;
-        MemoryStream::Construct(&stream, data, size, 0, 0x40);
+        MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
         LoadChunkLinks(loader->loader, &stream);
-        stream.Destroy(2);
+        stream.Destroy(DestroyOnly);
         break;
     }
-    case 6:
+    case Sm2Graphics:
         AddSectionToLoadQueue(&sm2->graphics, offset);
         break;
     default:
@@ -237,13 +251,12 @@ Rm2Reader* Rm2Reader::Construct(Rm2Reader* reader, ChunkEntry* entry)
     InitGraphicsItem(&reader->graphics);
     CodeItem::Construct(&reader->code, reader->resources, reader->objects);
     reader->entry = entry;
-    auto* data = static_cast<ChunkData*>(entry->data != nullptr ? static_cast<void*>(entry->data->object) : nullptr);
-    void* collision = data->collision;
+    ChunkData* chunk = entry->data != nullptr ? entry->data->chunk : nullptr;
+    CollisionData* collision = chunk->collision;
     RetailLibc::MemorySet(&reader->bits, 0, sizeof(reader->bits));
-    reader->bits |= 2;
-    reader->collision = ConstructCollisionHolder(static_cast<CollisionData**>(MemoryAllocate(sizeof(CollisionData*))),
-                                                 static_cast<CollisionData*>(collision));
-    for (u32 layout = 0; layout < Rm2Layouts; layout++)
+    reader->bits.reading = 1;
+    reader->collision = ConstructCollisionHolder(static_cast<CollisionData**>(MemoryAllocate(sizeof(CollisionData*))), collision);
+    for (u32 layout = 0; layout < Layouts; layout++)
     {
         reader->layouts[layout] = nullptr;
         reader->instanceItems[layout] = nullptr;
@@ -258,7 +271,7 @@ void Rm2Reader::Destroy(u32 flags)
     MemoryDeallocate2_(collision);
     DestroyInstances();
     code.Unload(DestroyOnly);
-    UnloadGraphics(&graphics, 2);
+    UnloadGraphics(&graphics, DestroyOnly);
     StringDestroy(&path);
     vtable = g_ItemInterfaceVTable;
     if ((flags & 1) != 0)
@@ -272,14 +285,14 @@ s32 Rm2Reader::SectionCount()
     return Rm2Sections;
 }
 
-s32 Rm2Reader::Unknown3()
+s32 Rm2Reader::SectionType()
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 bool Rm2Reader::CanRead(u32 type)
 {
-    return type == FileSectionType;
+    return type == DefaultSectionType;
 }
 
 SectionReader* Rm2Reader::GetReader(s32, ItemHeader* header, s32* size)
@@ -292,12 +305,12 @@ SectionReader* Rm2Reader::GetReader(s32, ItemHeader* header, s32* size)
     // These sections are read as far as their headers, the rest is queued
     switch (header->id)
     {
-    case 9:
-        *size = 0x14;
+    case Rm2Collision:
+        *size = CollisionHeaderSize;
         break;
-    case 10:
-    case 11:
-        *size = 0xC;
+    case Rm2Code:
+    case Rm2Graphics:
+        *size = sizeof(SectionHeader);
         break;
     default:
         break;
@@ -310,18 +323,19 @@ void Rm2Reader::Unload()
 {
     if (entry != nullptr)
     {
-        Reference* data = entry->data;
-        ReleaseChunkData(reinterpret_cast<ChunkData*>(data != nullptr ? data->object : nullptr), true, true, false);
+        ChunkDataReference* reference = entry->data;
+        ReleaseChunkData(reference != nullptr ? reference->chunk : nullptr, true, true, false);
     }
 
-    UnloadPendingResources(resources);
+    ReleaseCodeResources(resources);
     ReleaseGraphicsResources(&graphics);
 }
 
 void Rm2Reader::Finish(s32, u32, u32)
 {
-    CallVirtual<void>(resources, resources->vtable, 2, 0u);
-    if ((bits & 1) != 0)
+    // The resources told they were read: the code models' slots set up again
+    CallVirtual<void>(resources, resources->vtable, GameResources::SetUpCodeModelsSlot, 0u);
+    if (bits.defaultChunk != 0)
     {
         ForgetGraphicsReading(&graphics);
     }
@@ -330,7 +344,7 @@ void Rm2Reader::Finish(s32, u32, u32)
         FinishGraphicsReading(&graphics);
     }
 
-    bits &= ~2u;
+    bits.reading = 0;
 }
 
 void Rm2Reader::Queue(bool now, bool queue)
@@ -358,9 +372,9 @@ Rm2Reader* Rm2Reader::ConstructDefault(Rm2Reader* reader, const char* path, Game
     CodeItem::Construct(&reader->code, resources, objects);
     reader->entry = nullptr;
     RetailLibc::MemorySet(&reader->bits, 0, sizeof(reader->bits));
-    // Its graphics finish without registering
-    reader->bits |= 3;
-    for (u32 layout = 0; layout < Rm2Layouts; layout++)
+    reader->bits.defaultChunk = 1;
+    reader->bits.reading = 1;
+    for (u32 layout = 0; layout < Layouts; layout++)
     {
         reader->layouts[layout] = nullptr;
         reader->instanceItems[layout] = nullptr;
@@ -371,7 +385,7 @@ Rm2Reader* Rm2Reader::ConstructDefault(Rm2Reader* reader, const char* path, Game
 
 void Rm2Reader::DestroyInstances()
 {
-    for (u32 layout = 0; layout < Rm2Layouts; layout++)
+    for (u32 layout = 0; layout < Layouts; layout++)
     {
         if (layouts[layout] != nullptr)
         {
@@ -396,26 +410,26 @@ void Rm2Reader::ReadSection(u32 id, u32 offset, MemoryStream* stream)
 {
     switch (id)
     {
-    case Rm2ParticlesSection:
+    case Rm2Particles:
         ReadParticleData(this, stream);
         return;
-    case Rm2CollisionSection:
+    case Rm2Collision:
         QueueCollisionSection(collision, static_cast<s32>(offset));
         return;
-    case Rm2CodeSection:
+    case Rm2Code:
         AddSectionToLoadQueue(&code, offset);
         return;
-    case Rm2GraphicsSection:
+    case Rm2Graphics:
         AddSectionToLoadQueue(&graphics, offset);
         return;
     default:
         break;
     }
 
-    // The other sections are the layouts' instances: layouts 0-2 and 7 are the chunk's own
-    u32 chunkOwn = id < 3 || id == 7 ? 1 : 0;
+    // The other sections are the layouts' instances
+    u32 chunkOwn = id < FirstOtherLayout || id == LastLayout ? 1 : 0;
     auto* layout = static_cast<LayoutInstances*>(MemoryAllocate(sizeof(LayoutInstances)));
-    layout = LayoutInstances::Construct(layout, bits & 1, chunkOwn, resources, entry);
+    layout = LayoutInstances::Construct(layout, bits.defaultChunk, chunkOwn, resources, entry);
     auto* item = static_cast<InstanceSectionItem*>(MemoryAllocate(sizeof(InstanceSectionItem)));
     item = InstanceSectionItem::Construct(item, layout);
     layouts[id] = layout;
@@ -428,34 +442,34 @@ void Rm2Reader::FilePath(u32 kind, String* file)
     StringAssign(file, path.string);
     switch (kind)
     {
-    case 0:
+    case FileMa2:
         StringAppend(file, g_Ma2Extension);
         break;
-    case 1:
+    case FileMc2:
         StringAppend(file, g_Mc2Extension);
         break;
-    case 2:
+    case FileMe2:
         StringAppend(file, g_Me2Extension);
         break;
-    case 3:
+    case FileGa2:
         StringAppend(file, g_Ga2Extension);
         break;
-    case 4:
+    case FileGc2:
         StringAppend(file, g_Gc2Extension);
         break;
-    case 5:
+    case FileGe2:
         StringAppend(file, g_Ge2Extension);
         break;
-    case 6:
+    case FileGw2:
         StringAppend(file, g_Gw2Extension);
         break;
-    case 7:
+    case FileSu2:
         StringAppend(file, g_Su2Extension);
         break;
-    case 8:
+    case FilePtl:
         StringAppend(file, g_PtlExtension);
         break;
-    case 9:
+    case FileTri:
         StringAppend(file, g_TriExtension);
         break;
     default:
@@ -475,35 +489,37 @@ void Rm2SectionReader::Destroy(u32 flags)
 void Rm2SectionReader::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, 0x40);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     static_cast<Rm2Reader*>(item)->ReadSection(id, offset, &stream);
-    stream.Destroy(2);
+    stream.Destroy(DestroyOnly);
 }
 
 ScenerySectionReader* ScenerySectionReader::Construct(ScenerySectionReader* reader, const u8* data, u32 size)
 {
-    reader->node = -1;
+    reader->diskHandle = NoDiskHandle;
     reader->vtable = g_ScenerySectionReaderVTable;
-    s32 node;
-    DiskAllocate(&node, GetDiskManager(), size, true, 0);
-    reader->node = node;
-    u8* copy = DiskMemory(GetDiskManager(), &reader->node);
+    s32 handle;
+    DiskAllocate(&handle, GetDiskManager(), size, true, 0);
+    reader->diskHandle = handle;
+    u8* copy = DiskMemory(GetDiskManager(), &reader->diskHandle);
     RetailLibc::MemoryCopy(copy, data, size);
-    reader->stream = MemoryStream::Construct(static_cast<MemoryStream*>(MemoryAllocate(sizeof(MemoryStream))), copy, size, 0, 0x40);
+    reader->stream =
+        MemoryStream::Construct(static_cast<MemoryStream*>(MemoryAllocate(sizeof(MemoryStream))), copy, size, 0,
+                                MemoryStream::FileAlignment);
     return reader;
 }
 
 void ScenerySectionReader::Destroy(u32 flags)
 {
     vtable = g_ScenerySectionReaderVTable;
-    if (node >= 0)
+    if (diskHandle >= 0)
     {
-        DiskRelease(GetDiskManager(), &node);
+        DiskRelease(GetDiskManager(), &diskHandle);
     }
 
     if (stream != nullptr)
     {
-        stream->Destroy(3);
+        stream->Destroy(DestroyAndFree);
     }
 
     vtable = g_SectionReaderVTable;

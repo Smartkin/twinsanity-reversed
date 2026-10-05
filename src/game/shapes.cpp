@@ -7,13 +7,6 @@
 
 namespace
 {
-// The game's colour table's entry the shapes are drawn in by default
-constexpr s32 DefaultColourIndex = 0xF;
-// The vtable's function that lets the resource go, and the draw through a matrix in a colour
-constexpr u32 SetMaterialByIdSlot = 3;
-constexpr u32 ReleaseResourceSlot = 4;
-constexpr u32 DrawPlacedSlot = 8;
-
 // The unit square's corners a sprite is drawn between (y up), and its corners around its middle a turned sprite's matrix places,
 // in the texture area's order (its corner, the corner a height from it, the one a width from it, the opposite one)
 constexpr Vector4 SquareStart = {0.0f, 1.0f, 0.0f, 1.0f};
@@ -25,9 +18,8 @@ constexpr Vector4 TurnedCorners[4] = {
     {0.5f, -0.5f, 0.0f, 1.0f},
 };
 
-// A ring's squareness that leaves it an ellipse, its default span (a whole turn, in radians), its arrays' vertexes for each point
-constexpr f32 RoundEpsilon = 0x1.A36E2Ep-15f;
-constexpr f32 TurnRadians = 0x1.921FB6p+2f;
+// A ring's squareness that leaves it an ellipse, its arrays' vertexes for each point
+constexpr f32 RoundEpsilon = Epsilon;
 constexpr u32 PointVertexes = 2;
 
 // A colour curve's value at t: between two points, made with the game's vector maths, its w (the alpha) is 1
@@ -65,14 +57,14 @@ Vector4 Squared(f32 x, f32 y, f32 squareness)
 u32 DefaultColour()
 {
     u32 colour;
-    GetColor(&colour, DefaultColourIndex);
+    GetColor(&colour, ColourWhite);
     return colour;
 }
 
 // The strip's arrays freed when it owns them, its count and flags cleared
 void FreeArrays(Strip* strip)
 {
-    if ((strip->ownsArrays & 1) != 0)
+    if (strip->flags.ownsArrays != 0)
     {
         if (strip->places != nullptr)
         {
@@ -86,9 +78,9 @@ void FreeArrays(Strip* strip)
     }
 
     strip->count = 0;
-    strip->ownsArrays = 0;
-    strip->unknown12[0] = 0;
-    strip->unknown12[1] = 0;
+    strip->flags.value = 0;
+    strip->unused12[0] = 0;
+    strip->unused12[1] = 0;
 }
 
 // The strip's places moved by the matrix
@@ -108,7 +100,7 @@ void Shape2D::Destroy(u32 flags)
 {
     vtable = g_Shape2DVTable;
     ReleaseResource();
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -116,7 +108,7 @@ void Shape2D::Destroy(u32 flags)
 
 void Shape2D::SetMaterial(Material* newMaterial)
 {
-    CallVirtual<void>(this, vtable, ReleaseResourceSlot);
+    CallVirtual<void>(this, vtable, Shape2D::ReleaseResourceSlot);
     material = newMaterial;
 }
 
@@ -157,14 +149,14 @@ void Sprite::Destroy(u32 flags)
 void Sprite::SetMaterial(Material* newMaterial)
 {
     texture = {0.0f, 0.0f, 1.0f, 1.0f};
-    CallVirtual<void>(this, vtable, ReleaseResourceSlot);
+    CallVirtual<void>(this, vtable, Shape2D::ReleaseResourceSlot);
     material = newMaterial;
 }
 
 void Sprite::SetMaterial(Material* newMaterial, const Vector2* start, const Vector2* end)
 {
     texture = {start->x, start->y, end->x - start->x, end->y - start->y};
-    CallVirtual<void>(this, vtable, ReleaseResourceSlot);
+    CallVirtual<void>(this, vtable, Shape2D::ReleaseResourceSlot);
     material = newMaterial;
 }
 
@@ -188,7 +180,7 @@ void Sprite::Draw(u32 colour)
 void Sprite::Draw(const Matrix4x4* matrix)
 {
     u32 colour = DefaultColour();
-    CallVirtual<void>(this, vtable, DrawPlacedSlot, matrix, colour);
+    CallVirtual<void>(this, vtable, Shape2D::DrawPlacedColouredSlot, matrix, colour);
 }
 
 void Sprite::Draw(const Matrix4x4* matrix, u32 colour)
@@ -228,7 +220,7 @@ void Shape2D::Read(Stream* stream)
     stream->ReadS32(&materialId);
     GameTexture* texture = TextureFromStream(static_cast<u32>(textureId), stream);
     resource = MaterialFromStream(static_cast<u32>(materialId), stream);
-    CallVirtual<void>(this, vtable, SetMaterialByIdSlot, static_cast<u32>(materialId));
+    CallVirtual<void>(this, vtable, Shape2D::SetMaterialByIdSlot, static_cast<u32>(materialId));
     ReleaseTexture(texture);
 }
 
@@ -239,9 +231,9 @@ Strip* Strip::Construct(Strip* strip)
     strip->turned = 0;
     strip->vtable = g_StripVTable;
     strip->count = 0;
-    strip->ownsArrays = 0;
-    strip->unknown12[0] = 0;
-    strip->unknown12[1] = 0;
+    strip->flags.value = 0;
+    strip->unused12[0] = 0;
+    strip->unused12[1] = 0;
     return strip;
 }
 
@@ -264,18 +256,19 @@ void Strip::SetVertexes(u8 newCount, Vector2* newPlaces, u32* newColours)
 
 void Strip::TintColours(u32 colour, u32* tinted)
 {
-    f32 red = Colour::ColourFraction(colour, 0);
-    f32 green = Colour::ColourFraction(colour, 1);
-    f32 blue = Colour::ColourFraction(colour, 2);
-    f32 alpha = Colour::AlphaFraction(colour);
+    Rgba tint = {colour};
+    f32 red = Colour::ColourFraction(tint.red);
+    f32 green = Colour::ColourFraction(tint.green);
+    f32 blue = Colour::ColourFraction(tint.blue);
+    f32 alpha = Colour::AlphaFraction(tint.alpha);
     for (u32 vertex = 0; vertex < count; vertex++)
     {
-        u32 own = colours[vertex];
-        auto* out = reinterpret_cast<u8*>(&tinted[vertex]);
-        out[0] = Colour::ColourByte(red * Colour::ColourFraction(own, 0));
-        out[1] = Colour::ColourByte(green * Colour::ColourFraction(own, 1));
-        out[2] = Colour::ColourByte(blue * Colour::ColourFraction(own, 2));
-        out[3] = Colour::AlphaByte(alpha * Colour::AlphaFraction(own));
+        Rgba own = {colours[vertex]};
+        auto* out = reinterpret_cast<Rgba*>(&tinted[vertex]);
+        out->red = Colour::ColourByte(red * Colour::ColourFraction(own.red));
+        out->green = Colour::ColourByte(green * Colour::ColourFraction(own.green));
+        out->blue = Colour::ColourByte(blue * Colour::ColourFraction(own.blue));
+        out->alpha = Colour::AlphaByte(alpha * Colour::AlphaFraction(own.alpha));
     }
 }
 
@@ -286,22 +279,22 @@ void Strip::Draw()
 
 void Strip::Draw(u32 colour)
 {
-    u32 tinted[256];
+    u32 tinted[MostVertexes];
     TintColours(colour, tinted);
     Platform::Graphics::DrawStrip(material, count, places, tinted);
 }
 
 void Strip::Draw(const Matrix4x4* matrix)
 {
-    Vector2 placed[256];
+    Vector2 placed[MostVertexes];
     PlaceVertexes(this, matrix, placed);
     Platform::Graphics::DrawStrip(material, count, placed, colours);
 }
 
 void Strip::Draw(const Matrix4x4* matrix, u32 colour)
 {
-    u32 tinted[256];
-    Vector2 placed[256];
+    u32 tinted[MostVertexes];
+    Vector2 placed[MostVertexes];
     TintColours(colour, tinted);
     PlaceVertexes(this, matrix, placed);
     Platform::Graphics::DrawStrip(material, count, placed, tinted);
@@ -311,22 +304,22 @@ Ring* Ring::Construct(Ring* ring, u32 points, Material* material)
 {
     Strip::Construct(ring);
     ring->vtable = g_RingVTable;
-    GetColor(&ring->middleColour, DefaultColourIndex);
-    GetColor(&ring->colour, DefaultColourIndex);
+    GetColor(&ring->middleColour, ColourWhite);
+    GetColor(&ring->colour, ColourWhite);
     ring->innerScale = {0.0f, 0.0f};
     ring->innerColours = nullptr;
     ring->outerColours = nullptr;
     ring->innerShape = nullptr;
     ring->outerShape = nullptr;
     ring->outerScale = {1.0f, 1.0f};
-    AngleFrom(&ring->rotation, 0.0f, 0);
-    AngleFrom(&ring->startAngle, 0.0f, 0);
-    AngleFrom(&ring->span, TurnRadians, 0);
+    AngleFrom(&ring->rotation, 0.0f, AngleRadians);
+    AngleFrom(&ring->startAngle, 0.0f, AngleRadians);
+    AngleFrom(&ring->span, TwoPi, AngleRadians);
     ring->squareness = 0.0f;
     u32 vertexes = (points + 1) * PointVertexes;
     ring->vertexPlaces = static_cast<Vector2*>(MemoryAllocate2(vertexes * sizeof(Vector2)));
     ring->vertexColours = static_cast<u32*>(MemoryAllocate2(vertexes * sizeof(u32)));
-    CallVirtual<void>(ring, ring->vtable, ReleaseResourceSlot);
+    CallVirtual<void>(ring, ring->vtable, Shape2D::ReleaseResourceSlot);
     ring->material = material;
     ring->SetVertexes(static_cast<u8>(points * PointVertexes), ring->vertexPlaces, ring->vertexColours);
     return ring;
@@ -391,21 +384,22 @@ void Ring::BuildColours(u32 points, u32 tint, u32 inner)
     }
     else
     {
-        f32 red = Colour::ColourFraction(tint, 0);
-        f32 green = Colour::ColourFraction(tint, 1);
-        f32 blue = Colour::ColourFraction(tint, 2);
-        f32 alpha = Colour::AlphaFraction(tint);
+        Rgba tinting = {tint};
+        f32 red = Colour::ColourFraction(tinting.red);
+        f32 green = Colour::ColourFraction(tinting.green);
+        f32 blue = Colour::ColourFraction(tinting.blue);
+        f32 alpha = Colour::AlphaFraction(tinting.alpha);
         f32 step = 1.0f / static_cast<f32>(static_cast<s32>(points));
         f32 t = 0.0f;
         for (u32 point = 0; point < points; point++)
         {
             Vector4 value = SampleColours(curve, t);
             t = t + step;
-            auto* bytes = reinterpret_cast<u8*>(out);
-            bytes[0] = Colour::ColourByte(value.x * red);
-            bytes[1] = Colour::ColourByte(value.y * green);
-            bytes[2] = Colour::ColourByte(value.z * blue);
-            bytes[3] = Colour::AlphaByte(value.w * alpha);
+            auto* vertexColour = reinterpret_cast<Rgba*>(out);
+            vertexColour->red = Colour::ColourByte(value.x * red);
+            vertexColour->green = Colour::ColourByte(value.y * green);
+            vertexColour->blue = Colour::ColourByte(value.z * blue);
+            vertexColour->alpha = Colour::AlphaByte(value.w * alpha);
             out += PointVertexes;
         }
     }
@@ -539,7 +533,7 @@ extern "C"
 
 void InitSpriteCorners(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -554,5 +548,5 @@ void InitSpriteCorners(s32 initialise, s32 priority)
 
 void SpritesStaticInit()
 {
-    InitSpriteCorners(1, 0xFFFF);
+    InitSpriteCorners(1, DefaultInitPriority);
 }

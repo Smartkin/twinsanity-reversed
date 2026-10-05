@@ -16,9 +16,10 @@ EABI_EXPORT(FUN_00287cc8, CastDown);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // An edge cross product shorter (squared) is no axis
 constexpr f32 ShortAxis = 0x1.5798ecp-27f;
+// Each separating axis keeps a space's two planes (one on either side)
+constexpr s32 PlanesPerAxis = 2;
 
 enum AxisTag : u32
 {
@@ -35,18 +36,17 @@ void TagAxis(Vector4* axis, u32 tag)
 // The gathered triangles made contacts: the solid ones (bit 20 of their surface) and the others (with no instance)
 void AddGatheredTriangles(ContactSet* set, s32 count, const CollisionHull* hull)
 {
-    constexpr u32 SolidToPlayer = 1u << 20;
     for (s32 index = 0; index < count; index++)
     {
         const CollisionHit* triangle = &g_GatheredTriangles[index];
-        if ((GetTriangleSurface(triangle)->collisionMask & SolidToPlayer) != 0)
+        if (GetTriangleSurface(triangle)->flags.solidToPlayer != 0)
         {
             CollisionHit* kept = &set->solid.triangles[set->solid.count];
             kept->vertices[0] = triangle->vertices[0];
             kept->vertices[1] = triangle->vertices[1];
             kept->vertices[2] = triangle->vertices[2];
             kept->surface = triangle->surface;
-            kept->unknown32 = triangle->unknown32;
+            kept->unused32 = triangle->unused32;
             AddTriangleContact(set, triangle, hull, 1);
         }
         else
@@ -57,21 +57,35 @@ void AddGatheredTriangles(ContactSet* set, s32 count, const CollisionHull* hull)
             kept->vertices[1] = triangle->vertices[1];
             kept->vertices[2] = triangle->vertices[2];
             kept->surface = triangle->surface;
-            kept->unknown32 = triangle->unknown32;
+            kept->unused32 = triangle->unused32;
             AddTriangleContact(set, triangle, hull, 0);
         }
     }
 }
 
-// A space's planes copied (22 or 23 of them take the room of 24, read past the source's end as retail)
+// The room a copy of so many planes takes: 22 or 23 of them take the room of 24 (and the copy reads past the source's end, as
+// retail does)
+u32 PlanesCopySize(s32 count)
+{
+    constexpr s32 FirstWidened = 22;
+    constexpr s32 Widened = 24;
+    u32 size = static_cast<u32>(count) * sizeof(Vector4);
+    if (static_cast<u32>(count - FirstWidened) < Widened - FirstWidened)
+    {
+        size = Widened * sizeof(Vector4);
+    }
+
+    return size;
+}
+
+// A space's planes copied
 void CopySpace(PlaneSet* to, PlaneSet* from)
 {
-    constexpr u32 PlaneSize = sizeof(Vector4);
     Vector4* planes = PlaneSetPlanes(from);
     MemoryDeallocate2_(to->planes);
     s32 count = from->count;
     to->count = count;
-    u32 size = static_cast<u32>(count - 22) < 2 ? 24 * PlaneSize : count * PlaneSize;
+    u32 size = PlanesCopySize(count);
     to->planes = static_cast<Vector4*>(MemoryAllocate2(size));
     RetailLibc::MemoryCopy(to->planes, planes, size);
 }
@@ -178,7 +192,6 @@ u32 HullPlaneCacheEntryMatches(const HullPlaneCacheEntry* entry, const Collision
 
 void* FillHullPlaneCacheEntry(HullPlaneCacheEntry* entry, const CollisionHit* triangle, const CollisionHull* hull, PlaneSet* space)
 {
-    constexpr u32 PlaneSize = sizeof(Vector4);
     entry->triangle[0] = triangle->vertices[0];
     entry->triangle[1] = triangle->vertices[1];
     entry->triangle[2] = triangle->vertices[2];
@@ -186,7 +199,7 @@ void* FillHullPlaneCacheEntry(HullPlaneCacheEntry* entry, const CollisionHit* tr
     MemoryDeallocate2_(entry->space.planes);
     s32 count = space->count;
     entry->space.count = count;
-    u32 size = static_cast<u32>(count - 22) < 2 ? 24 * PlaneSize : count * PlaneSize;
+    u32 size = PlanesCopySize(count);
     entry->space.planes = static_cast<Vector4*>(MemoryAllocate2(size));
     void* copied = RetailLibc::MemoryCopy(entry->space.planes, planes, size);
     entry->hull = hull;
@@ -214,7 +227,6 @@ void EndContacts()
 
 void AddTriangleContact(ContactSet* set, const CollisionHit* triangle, const CollisionHull* hull, u32 solid)
 {
-    constexpr u32 TriangleContact = 2;
     ContactList* list = solid != 0 ? &set->solid : &set->others;
     HullPlaneCacheEntry* found = nullptr;
     for (HullPlaneCacheEntry& entry : g_HullPlaneCache.entries)
@@ -237,13 +249,13 @@ void AddTriangleContact(ContactSet* set, const CollisionHit* triangle, const Col
         FillHullPlaneCacheEntry(&g_HullPlaneCache.entries[g_HullPlaneCache.next], triangle, hull,
                                 &list->contacts[list->count].space);
         g_HullPlaneCache.next++;
-        if (g_HullPlaneCache.next >= 64)
+        if (g_HullPlaneCache.next >= HullPlaneCache::Entries)
         {
             g_HullPlaneCache.next = 0;
         }
     }
 
-    list->contacts[list->count].kind = TriangleContact;
+    list->contacts[list->count].kind.value = ContactKind::Triangle;
     list->count++;
 }
 
@@ -253,9 +265,9 @@ u32 MakeTriangleHullSpace(PlaneSet* space, const CollisionHit* triangle, const C
     Vector4 axes[MostAxes];
     LoadTriangleHullSupport(triangle, HullVertex(hull, 0));
     s32 count = TriangleHullAxes(triangle, hull, nullptr, axes);
-    space->count = count << 1;
+    space->count = count * PlanesPerAxis;
     MemoryDeallocate2_(space->planes);
-    auto* planes = static_cast<Vector4*>(MemoryAllocate2(count << 5));
+    auto* planes = static_cast<Vector4*>(MemoryAllocate2(count * PlanesPerAxis * sizeof(Vector4)));
     space->count = 0;
     space->planes = planes;
     const Vector4* axis = axes;
@@ -386,9 +398,8 @@ s32 TriangleHullAxes(const CollisionHit* triangle, const CollisionHull* hull, co
 
 u32 GatherBoxTriangleContacts(ContactSet* set, ChunkData* chunk, const Box* box, const CollisionHull* hull)
 {
-    constexpr u32 PlayerProbes = 0x10;
-    constexpr s32 MostTriangles = 32;
-    s32 count = ChunkBoxTriangles(chunk, box, PlayerProbes, g_GatheredTriangles, MostTriangles);
+    constexpr s32 MostTriangles = ContactList::MostContacts;
+    s32 count = ChunkBoxTriangles(chunk, box, SurfaceFlags::SolidToPlayerProbes, g_GatheredTriangles, MostTriangles);
     set->box = *box;
     u32 full = 0;
     if (count >= MostTriangles)
@@ -403,20 +414,22 @@ u32 GatherBoxTriangleContacts(ContactSet* set, ChunkData* chunk, const Box* box,
 
 u32 GatherTriangleContacts(ContactSet* set, ChunkData* chunk, const Vector4* position, Vector4* motion, const CollisionHull* hull)
 {
-    constexpr u32 PlayerProbes = 0x10;
-    constexpr s32 MostTriangles = 32;
+    constexpr s32 MostTriangles = ContactList::MostContacts;
+    // The motion cut down a fifth at a time, the box grown by it and a margin
     constexpr s32 Tries = 5;
+    constexpr f32 Fifth = Rounded(0.2);
+    constexpr f32 Margin = Rounded(0.3);
     Vector4 step = *motion;
-    step.x = step.x * Rounded(0.2);
-    step.y = step.y * Rounded(0.2);
-    step.z = step.z * Rounded(0.2);
+    step.x = step.x * Fifth;
+    step.y = step.y * Fifth;
+    step.z = step.z * Fifth;
     s32 count = 0;
     for (s32 tries = 0; tries < Tries; tries++)
     {
         Box box;
         HullBox(hull, &box);
         box.max.x = box.max.x + position->x;
-        f32 share = 5.0f - static_cast<f32>(tries);
+        f32 share = static_cast<f32>(Tries) - static_cast<f32>(tries);
         box.max.y = box.max.y + position->y;
         box.max.z = box.max.z + position->z;
         box.min.x = box.min.x + position->x;
@@ -429,8 +442,8 @@ u32 GatherTriangleContacts(ContactSet* set, ChunkData* chunk, const Vector4* pos
         moved.w = 1.0f;
         *motion = moved;
         GrowBoxByVector(&box, motion);
-        GrowBox(Rounded(0.3), &box);
-        count = ChunkBoxTriangles(chunk, &box, PlayerProbes, g_GatheredTriangles, MostTriangles);
+        GrowBox(Margin, &box);
+        count = ChunkBoxTriangles(chunk, &box, SurfaceFlags::SolidToPlayerProbes, g_GatheredTriangles, MostTriangles);
         set->box = box;
         if (count < MostTriangles)
         {
@@ -445,16 +458,12 @@ u32 GatherTriangleContacts(ContactSet* set, ChunkData* chunk, const Vector4* pos
 void GatherInstanceContacts(ContactSet* set, ChunkData* chunk, const Vector4* position, const Vector4* motion, const u32* mask,
                             InstanceContext** skipped, s32 skippedCount, const CollisionHull* hull)
 {
-    // The node kind with the sphere, its centre and radius
-    constexpr u32 SphereNodeKind = 5;
-    constexpr u32 SphereCentre = 0xE0;
-    constexpr u32 SphereRadius = 0x380;
     constexpr s32 MostInstances = 0x40;
-    constexpr s32 MostContacts = 32;
+    constexpr f32 Margin = Rounded(0.1);
     Box box;
     HullBox(hull, &box);
     GrowBoxByVector(&box, motion);
-    GrowBox(Rounded(0.1), &box);
+    GrowBox(Margin, &box);
     box.max.x = box.max.x + position->x;
     box.max.y = box.max.y + position->y;
     box.max.z = box.max.z + position->z;
@@ -462,16 +471,16 @@ void GatherInstanceContacts(ContactSet* set, ChunkData* chunk, const Vector4* po
     box.min.y = box.min.y + position->y;
     box.min.z = box.min.z + position->z;
     InstanceContext* results[MostInstances];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = reinterpret_cast<void**>(results);
     query.count = 0;
     query.most = MostInstances;
-    query.distance = Rounded(1e30);
+    query.distance = Infinite;
     // Retail clears bits 0 and 1 of what the stack had (nothing reads the rest)
-    query.bits = 0;
-    // Instances with collision (bit 3) or a sphere (bit 4), awake
-    query.wantedFlags = 0x18;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.bits.value = 0;
+    // Instances that triggers' signals reach or with their collision active, awake
+    query.wantedFlags = ReferencedObjectFlags::ReceivesTriggerSignals | ReferencedObjectFlags::CollisionActive;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.skipped[0] = nullptr;
     query.skipped[1] = nullptr;
     query.instance = nullptr;
@@ -494,35 +503,36 @@ void GatherInstanceContacts(ContactSet* set, ChunkData* chunk, const Vector4* po
             continue;
         }
 
-        if ((instance->flags & ReferencedObject::FlagSphereContact) == 0)
+        if (!instance->flags.collisionActive)
         {
             AddInstanceHullContacts(set, &box, instance, hull, 0);
             continue;
         }
 
-        if (set->solid.count == MostContacts)
+        if (set->solid.count == ContactList::MostContacts)
         {
             return;
         }
 
-        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, SphereNodeKind));
-        if (node != nullptr && CallVirtual<u32>(node, node->vtable, 15) == 0)
+        auto* body = static_cast<DynamicBody*>(GetGameNode(&instance->nodes, NodeRigidBody));
+        if (body != nullptr && CallVirtual<u32>(body, body->vtable, DynamicBody::IsSphereSlot) == 0)
         {
-            node = nullptr;
+            body = nullptr;
         }
 
-        if (node == nullptr)
+        if (body == nullptr)
         {
             AddInstanceHullContacts(set, &box, instance, hull, 1);
             continue;
         }
 
-        Vector4 sphere = *reinterpret_cast<const Vector4*>(reinterpret_cast<const u8*>(node) + SphereCentre);
-        sphere.w = *reinterpret_cast<const f32*>(reinterpret_cast<const u8*>(node) + SphereRadius);
+        auto* sphereBody = static_cast<SphereBody*>(body);
+        Vector4 sphere = *RowOf(&sphereBody->matrix, 3);
+        sphere.w = sphereBody->radius;
         Contact* contact = &set->solid.contacts[set->solid.count];
         contact->space.count = 0;
         contact->sphere = sphere;
-        contact->kind = Contact::KindSphere;
+        contact->kind.value = ContactKind::Sphere;
         contact->instance = instance;
         contact->hullIndex = 0;
         set->solid.count++;
@@ -531,7 +541,6 @@ void GatherInstanceContacts(ContactSet* set, ChunkData* chunk, const Vector4* po
 
 void AddInstanceHullContacts(ContactSet* set, const Box* box, InstanceContext* instance, const CollisionHull* hull, u32 solid)
 {
-    constexpr s32 MostContacts = 32;
     Matrix4x4 identity;
     InitIdentityMatrix(&identity);
     ObjectCollision* collision = &instance->collision;
@@ -549,7 +558,7 @@ void AddInstanceHullContacts(ContactSet* set, const Box* box, InstanceContext* i
             continue;
         }
 
-        if (list->count >= MostContacts)
+        if (list->count >= ContactList::MostContacts)
         {
             return;
         }
@@ -557,7 +566,7 @@ void AddInstanceHullContacts(ContactSet* set, const Box* box, InstanceContext* i
         list->contacts[list->count].instance = instance;
         list->contacts[list->count].hullIndex = index;
         MakeHullHullSpace(&list->contacts[list->count].space, instanceHull, &matrix, hull, &identity);
-        list->contacts[list->count].kind = Contact::KindHull;
+        list->contacts[list->count].kind.value = ContactKind::Hull;
         list->count++;
     }
 }
@@ -567,9 +576,10 @@ u32 MakeHullHullSpace(PlaneSet* space, const CollisionHull* hull, const Matrix4x
 {
     constexpr s32 MostMoved = 32;
     constexpr s32 MostDifferences = 256;
+    constexpr s32 MostAxes = 256;
     // As retail's stack has them: the moved vertexes, the differences and the axes, each running into the next when there are
     // more than fit (the padding below writes one past the differences)
-    Vector4 scratch[MostMoved + MostDifferences + 256];
+    Vector4 scratch[MostMoved + MostDifferences + MostAxes];
     Vector4* moved = scratch;
     Vector4* differences = scratch + MostMoved;
     Vector4* axes = differences + MostDifferences;
@@ -596,9 +606,9 @@ u32 MakeHullHullSpace(PlaneSet* space, const CollisionHull* hull, const Matrix4x
     }
 
     pairs += extra;
-    space->count = axisCount << 1;
+    space->count = axisCount * PlanesPerAxis;
     MemoryDeallocate2_(space->planes);
-    auto* planes = static_cast<Vector4*>(MemoryAllocate2(axisCount << 5));
+    auto* planes = static_cast<Vector4*>(MemoryAllocate2(axisCount * PlanesPerAxis * sizeof(Vector4)));
     space->count = 0;
     space->planes = planes;
     AddAxisPlanes(space, planes, differences, pairs, axes, axisCount);
@@ -637,7 +647,7 @@ u32 PointInsideSolidContact(f32 margin, ContactSet* set, const Vector4* point, u
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & mask) != 0)
+        if ((contact->kind.value & mask) != 0)
         {
             continue;
         }
@@ -653,8 +663,8 @@ u32 PointInsideSolidContact(f32 margin, ContactSet* set, const Vector4* point, u
 
 u32 PushOutOfSpace(const PlaneSet* space, const Vector4* point, Vector4* push, void*)
 {
-    constexpr f32 InFront = -Rounded(5e-5);
-    f32 least = Rounded(1e30);
+    constexpr f32 InFront = -Epsilon;
+    f32 least = Infinite;
     const Vector4* nearest = nullptr;
     const Vector4* plane = space->planes;
     s32 count = space->count;
@@ -702,10 +712,9 @@ void MarkInstanceContact(ContactSet* set, InstanceContext* instance, s32 after, 
     {
         const Contact* contact = &set->solid.contacts[index];
         Contact* marked = &set->solid.contacts[index + after];
-        if ((contact->kind & Contact::KindHull) != 0 && contact->instance == instance && index + after < count &&
-            marked->instance == instance)
+        if (contact->kind.hull != 0 && contact->instance == instance && index + after < count && marked->instance == instance)
         {
-            marked->kind |= bits;
+            marked->kind.value |= bits;
             return;
         }
 
@@ -718,9 +727,9 @@ s32 MarkSphereContactBelow(ContactSet* set)
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Contact::SphereBit) != 0 && contact->spherePush.y < 0.0f)
+        if (contact->kind.sphere != 0 && contact->spherePush.y < 0.0f)
         {
-            contact->kind |= Contact::Marked;
+            contact->kind.marked = 1;
             return index;
         }
     }
@@ -732,13 +741,12 @@ void ClearContactMarks(ContactSet* set)
 {
     for (s32 index = 0; index < set->solid.count; index++)
     {
-        set->solid.contacts[index].kind &= Contact::KeptBits;
+        set->solid.contacts[index].kind.value &= ContactKind::KeptBits;
     }
 }
 
 void Depenetrate(ContactSet* set, const Vector4* position, Vector4* push, u32 hulls, u32 triangles, u32 pushBodies, f32* pushed)
 {
-    constexpr u32 SphereNodeKind = 5;
     if (pushed != nullptr)
     {
         *pushed = 0.0f;
@@ -749,13 +757,13 @@ void Depenetrate(ContactSet* set, const Vector4* position, Vector4* push, u32 hu
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        u32 kind = contact->kind;
-        if ((kind & Contact::SphereBit) != 0)
+        ContactKind kind = contact->kind;
+        if (kind.sphere != 0)
         {
             continue;
         }
 
-        if (!((hulls != 0 && (kind & Contact::KindHull) != 0) || (triangles != 0 && (kind & Contact::KindTriangle) != 0)))
+        if (!((hulls != 0 && kind.hull != 0) || (triangles != 0 && kind.triangle != 0)))
         {
             continue;
         }
@@ -771,9 +779,10 @@ void Depenetrate(ContactSet* set, const Vector4* position, Vector4* push, u32 hu
         }
 
         kind = contact->kind;
-        if ((kind & Contact::NoPush) != 0)
+        if (kind.noPush != 0)
         {
-            contact->kind = kind | Contact::PushRefused;
+            kind.pushRefused = 1;
+            contact->kind = kind;
             continue;
         }
 
@@ -786,30 +795,30 @@ void Depenetrate(ContactSet* set, const Vector4* position, Vector4* push, u32 hu
 
         if (pushBodies != 0)
         {
-            contact->kind |= Contact::PushedOut;
-            GameNode* node = nullptr;
-            if ((contact->kind & Contact::KindHull) != 0)
+            contact->kind.pushedOut = 1;
+            DynamicBody* body = nullptr;
+            if (contact->kind.hull != 0)
             {
-                node = static_cast<GameNode*>(GetGameNode(&contact->instance->nodes, SphereNodeKind));
-                if (node != nullptr && CallVirtual<u32>(node, node->vtable, 15) != 0)
+                body = static_cast<DynamicBody*>(GetGameNode(&contact->instance->nodes, NodeRigidBody));
+                if (body != nullptr && CallVirtual<u32>(body, body->vtable, DynamicBody::IsSphereSlot) != 0)
                 {
-                    node = nullptr;
+                    body = nullptr;
                 }
             }
 
-            if (node != nullptr)
+            if (body != nullptr)
             {
                 Vector4 half;
                 half.x = step.x * -0.5f;
                 half.y = step.y * -0.5f;
                 half.z = step.z * -0.5f;
                 half.w = 1.0f;
-                static_cast<RigidBody*>(node)->MoveBy(&half);
+                body->MoveBy(&half);
                 half.x = step.x * 0.5f;
                 half.y = step.y * 0.5f;
                 half.z = step.z * 0.5f;
                 half.w = 1.0f;
-                contact->kind |= Contact::PushShared;
+                contact->kind.pushShared = 1;
                 contact->point.x = contact->point.x + half.x;
                 contact->point.y = contact->point.y + half.y;
                 contact->point.z = contact->point.z + half.z;
@@ -833,8 +842,8 @@ void PushOutOfSpheres(f32 height, f32 halfWidth, ContactSet* set, const Vector4*
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        u32 kind = contact->kind;
-        if ((kind & Contact::KindHull) == 0 || (kind & Contact::SphereBit) == 0)
+        ContactKind kind = contact->kind;
+        if (kind.hull == 0 || kind.sphere == 0)
         {
             continue;
         }
@@ -859,7 +868,8 @@ void PushOutOfSpheres(f32 height, f32 halfWidth, ContactSet* set, const Vector4*
         half.y = out.y * 0.5f;
         half.z = out.z * 0.5f;
         half.w = 1.0f;
-        contact->kind |= Contact::PushShared | Contact::Touched;
+        contact->kind.pushShared = 1;
+        contact->kind.touched = 1;
         contact->spherePush = half;
         push->x = push->x - half.x;
         push->y = push->y - half.y;
@@ -870,37 +880,40 @@ void PushOutOfSpheres(f32 height, f32 halfWidth, ContactSet* set, const Vector4*
     }
 }
 
-u32 GroundAhead(ContactSet* set, const PhysicsBody* body)
+u32 GroundAhead(ContactSet* set, const MovingPoint* point)
 {
-    constexpr u32 NotSpheres = Contact::SphereBit;
+    constexpr u32 NotSpheres = ContactKind::SphereBit;
     constexpr f32 Below = Rounded(0.8);
-    Vector4 point = body->position;
-    point.x = point.x + body->velocity.x * 0.5f;
-    point.y = (point.y + body->velocity.y * 0.5f) - Below;
-    point.z = point.z + body->velocity.z * 0.5f;
-    if (PointInsideSolidContact(0.0f, set, &point, NotSpheres) != 0)
+    // Where half of its velocity takes it, then 1.6 times it
+    constexpr f32 Near = 0.5f;
+    constexpr f32 Far = Rounded(1.6);
+    Vector4 ahead = point->position;
+    ahead.x = ahead.x + point->velocity.x * Near;
+    ahead.y = (ahead.y + point->velocity.y * Near) - Below;
+    ahead.z = ahead.z + point->velocity.z * Near;
+    if (PointInsideSolidContact(0.0f, set, &ahead, NotSpheres) != 0)
     {
         return 1;
     }
 
-    point = body->position;
-    point.x = point.x + body->velocity.x * Rounded(1.6);
-    point.y = (point.y + body->velocity.y * Rounded(1.6)) - Below;
-    point.z = point.z + body->velocity.z * Rounded(1.6);
-    return PointInsideSolidContact(0.0f, set, &point, NotSpheres) != 0;
+    ahead = point->position;
+    ahead.x = ahead.x + point->velocity.x * Far;
+    ahead.y = (ahead.y + point->velocity.y * Far) - Below;
+    ahead.z = ahead.z + point->velocity.z * Far;
+    return PointInsideSolidContact(0.0f, set, &ahead, NotSpheres) != 0;
 }
 
 s32 CollectCrossedPlanes(ContactSet* set, const Vector4* from, const Vector4* motion, const Vector4** planes, s32* contacts,
                          s32 most, s32* lastContact)
 {
-    constexpr u32 Skipped = Contact::SphereBit | Contact::NoPush | Contact::PushedOut;
+    constexpr u32 Skipped = ContactKind::SphereBit | ContactKind::NoPush | ContactKind::PushedOut;
     constexpr f32 Near = Rounded(0.0001);
     constexpr f32 Same = Rounded(0.001);
     s32 count = 0;
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Skipped) != 0)
+        if ((contact->kind.value & Skipped) != 0)
         {
             continue;
         }
@@ -966,19 +979,21 @@ void TouchContact(ContactSet* set, s32 index, const Vector4* motion, const Vecto
 {
     constexpr f32 Share = 20.0f;
     constexpr f32 Margin = -Rounded(0.01);
+    // Stood on when the end a bit above it is inside it
+    constexpr f32 Above = Rounded(0.05);
     Contact* contact = &set->solid.contacts[index];
     Vector4 moved;
     moved.x = to->x - from->x;
     moved.y = to->y - from->y;
     moved.z = to->z - from->z;
     moved.w = 1.0f;
-    u32 kind = contact->kind;
-    if ((kind & Contact::KindHull) != 0 && (kind & Contact::SphereBit) == 0)
+    ContactKind kind = contact->kind;
+    if (kind.hull != 0 && kind.sphere == 0)
     {
         contact->point.x = contact->point.x + (moved.x - motion->x) * Share;
         contact->point.y = contact->point.y + (moved.y - motion->y) * Share;
         contact->point.z = contact->point.z + (moved.z - motion->z) * Share;
-        contact->kind |= Contact::PushShared;
+        contact->kind.pushShared = 1;
     }
 
     bool stood = false;
@@ -986,23 +1001,31 @@ void TouchContact(ContactSet* set, s32 index, const Vector4* motion, const Vecto
     {
         Vector4 above;
         above.x = to->x + 0.0f;
-        above.y = to->y + Rounded(0.05);
+        above.y = to->y + Above;
         above.z = to->z + 0.0f;
         above.w = 1.0f;
         stood = (PointInsidePlanes(Margin, &contact->space, &above, &contact->outside) & 0xFF) != 0;
     }
 
     contact = &set->solid.contacts[index];
-    contact->kind |= stood ? Contact::StoodOn : Contact::Touched;
+    if (stood)
+    {
+        contact->kind.stoodOn = 1;
+    }
+    else
+    {
+        contact->kind.touched = 1;
+    }
 }
 
 u32 SlideStep(ContactSet* set, const Vector4* from, const Vector4* motion, Vector4* to, u32 limitClimb)
 {
     constexpr s32 MostPlanes = 4;
     constexpr f32 Nudge = Rounded(2e-5);
-    constexpr f32 NoSlide = Rounded(1e30);
+    constexpr f32 NoSlide = Infinite;
     constexpr f32 ShortSlide = 0x1.0c6f7cp-20f;
-    constexpr u32 Blocking = Contact::SphereBit | Contact::NoPush | Contact::PushedOut | 0x8;
+    // The contacts a slide may end inside of: spheres, those not to be pushed out of or pushed out of, the hull it rides
+    constexpr u32 MayEndInside = ContactKind::SphereBit | ContactKind::NoPush | ContactKind::PushedOut | ContactKind::Ridden;
     const Vector4* planes[MostPlanes];
     s32 contacts[MostPlanes];
     s32 best[2] = {g_NoContacts[0], g_NoContacts[1]};
@@ -1024,7 +1047,7 @@ u32 SlideStep(ContactSet* set, const Vector4* from, const Vector4* motion, Vecto
     Vector4 bestEnd;
     for (s32 index = 0; index < count; index++)
     {
-        set->solid.contacts[contacts[index]].kind |= Contact::Touched;
+        set->solid.contacts[contacts[index]].kind.touched = 1;
         const Vector4* plane = planes[index];
         Vector4 normal = {plane->x, plane->y, plane->z, 1.0f};
         f32 into = motion->x * normal.x + motion->y * normal.y + motion->z * normal.z;
@@ -1044,7 +1067,7 @@ u32 SlideStep(ContactSet* set, const Vector4* from, const Vector4* motion, Vecto
         to->x = to->x + slide.x;
         to->y = to->y + slide.y;
         to->z = to->z + slide.z;
-        if (PointInsideSolidContact(0.0f, set, to, Blocking) != 0)
+        if (PointInsideSolidContact(0.0f, set, to, MayEndInside) != 0)
         {
             continue;
         }
@@ -1087,7 +1110,7 @@ u32 SlideStep(ContactSet* set, const Vector4* from, const Vector4* motion, Vecto
         s32 crossedCount = CollectCrossedPlanes(set, from, &slide, crossed, crossedContacts, MostPlanes, &lastContact);
         for (s32 other = 0; other < crossedCount; other++)
         {
-            set->solid.contacts[crossedContacts[other]].kind |= Contact::Touched;
+            set->solid.contacts[crossedContacts[other]].kind.touched = 1;
             const Vector4* otherPlane = crossed[other];
             Vector4 otherNormal = {otherPlane->x, otherPlane->y, otherPlane->z, 1.0f};
             Vector4 crease;
@@ -1124,7 +1147,7 @@ u32 SlideStep(ContactSet* set, const Vector4* from, const Vector4* motion, Vecto
             to->x = to->x + creaseSlide.x;
             to->y = to->y + creaseSlide.y;
             to->z = to->z + creaseSlide.z;
-            if (PointInsideSolidContact(0.0f, set, to, Blocking) != 0)
+            if (PointInsideSolidContact(0.0f, set, to, MayEndInside) != 0)
             {
                 continue;
             }
@@ -1161,7 +1184,7 @@ s32 CountContactsContaining(f32 margin, ContactSet* set, const Vector4* point, u
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & mask) != 0)
+        if ((contact->kind.value & mask) != 0)
         {
             continue;
         }
@@ -1177,11 +1200,11 @@ s32 CountContactsContaining(f32 margin, ContactSet* set, const Vector4* point, u
 
 s32 FindGround(ContactSet* set, const Vector4* point, Vector4* normal)
 {
-    constexpr u32 Skipped = Contact::SphereBit | Contact::NoPush;
+    constexpr u32 Skipped = ContactKind::SphereBit | ContactKind::NoPush;
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Skipped) != 0)
+        if ((contact->kind.value & Skipped) != 0)
         {
             continue;
         }
@@ -1200,7 +1223,8 @@ s32 FindGround(ContactSet* set, const Vector4* point, Vector4* normal)
             continue;
         }
 
-        contact->kind |= Contact::Ground | Contact::Marked;
+        contact->kind.ground = 1;
+        contact->kind.marked = 1;
         if (normal != nullptr)
         {
             f32 inverse = InverseLength(&push, LengthEpsilon);
@@ -1218,18 +1242,21 @@ s32 FindGround(ContactSet* set, const Vector4* point, Vector4* normal)
 
 s32 ProbeAlong(ContactSet* set, const Vector4* from, const Vector4* motion, Vector4* lastOutside, Vector4* normal)
 {
-    constexpr u32 Skipped = Contact::SphereBit | Contact::NoPush;
+    constexpr u32 Skipped = ContactKind::SphereBit | ContactKind::NoPush;
     constexpr f32 Smallest = Rounded(0.0001);
     constexpr f32 Upward = Rounded(0.707);
+    // Below every plane's y
+    constexpr f32 Lowest = -1e10f;
     Vector4 step = *motion;
     Vector4 outside = *from;
     Vector4 inside = *from;
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Skipped) != 0 || (PointInsidePlanes(0.0f, &contact->space, from, &contact->outside) & 0xFF) != 0)
+        if ((contact->kind.value & Skipped) != 0 ||
+            (PointInsidePlanes(0.0f, &contact->space, from, &contact->outside) & 0xFF) != 0)
         {
-            contact->kind |= Contact::ProbeStart;
+            contact->kind.probeStart = 1;
         }
     }
 
@@ -1240,7 +1267,7 @@ s32 ProbeAlong(ContactSet* set, const Vector4* from, const Vector4* motion, Vect
         probe.x = probe.x + step.x;
         probe.y = probe.y + step.y;
         probe.z = probe.z + step.z;
-        s32 count = CountContactsContaining(0.0f, set, &probe, Contact::ProbeStart);
+        s32 count = CountContactsContaining(0.0f, set, &probe, ContactKind::ProbeStart);
         if (count > 0)
         {
             found = count;
@@ -1258,11 +1285,11 @@ s32 ProbeAlong(ContactSet* set, const Vector4* from, const Vector4* motion, Vect
 
     if (found == -1)
     {
-        return -2;
+        return NoProbeHit;
     }
 
     s32 result = -1;
-    f32 highest = -1e10f;
+    f32 highest = Lowest;
     if (lastOutside != nullptr)
     {
         *lastOutside = outside;
@@ -1271,7 +1298,7 @@ s32 ProbeAlong(ContactSet* set, const Vector4* from, const Vector4* motion, Vect
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Contact::ProbeStart) != 0)
+        if (contact->kind.probeStart != 0)
         {
             continue;
         }
@@ -1311,7 +1338,8 @@ s32 ProbeAlong(ContactSet* set, const Vector4* from, const Vector4* motion, Vect
 
         if (upward != 0)
         {
-            contact->kind |= Contact::Ground | Contact::Marked;
+            contact->kind.ground = 1;
+            contact->kind.marked = 1;
         }
     }
 
@@ -1326,8 +1354,11 @@ s32 Move(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* mot
     constexpr f32 Stuck = Rounded(0.001);
     constexpr f32 Rising = Rounded(0.001);
     constexpr f32 Short = Rounded(0.05);
+    // The longest step at a frame's time, and the least the ground is probed for
+    constexpr f32 StepLength = Rounded(0.05);
+    constexpr f32 LeastReach = Rounded(0.1);
     constexpr s32 Directions = 9;
-    f32 maxStep = Rounded(0.05) / frameTime;
+    f32 maxStep = StepLength / frameTime;
     Vector4 position = *from;
     Vector4 step = *motion;
     s32 stuck = 0;
@@ -1383,8 +1414,8 @@ s32 Move(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* mot
     else
     {
         f32 aside = __builtin_sqrtf(motion->x * motion->x + motion->z * motion->z);
-        f32 reach = Rounded(0.1);
-        if (Rounded(0.1) < aside)
+        f32 reach = LeastReach;
+        if (LeastReach < aside)
         {
             reach = aside;
         }
@@ -1400,7 +1431,7 @@ s32 Move(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* mot
         Vector4 landing;
         s32 probed = 0;
         s32 found = ProbeAlong(set, &position, &probe, &lastOutside, &normal);
-        if (found != -2 && found != -1)
+        if (found != NoProbeHit && found != -1)
         {
             ground = found;
             probed = 1;
@@ -1466,7 +1497,7 @@ s32 Move(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* mot
 
     if (stuck != 0 && motion->y < 0.0f)
     {
-        return -2;
+        return StuckFalling;
     }
 
     return -1;
@@ -1475,15 +1506,17 @@ s32 Move(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* mot
 s32 MoveCharacter(f32 frameTime, ContactSet* set, const Vector4* from, const Vector4* motion, Vector4* end, Vector4* groundNormal,
                   u32 limitClimb)
 {
+    // A small fall tried when it's stuck
+    constexpr f32 Fall = -0.125f;
     s32 result = Move(frameTime, set, from, motion, end, groundNormal, limitClimb);
-    if (result != -2)
+    if (result != StuckFalling)
     {
         return result;
     }
 
-    Vector4 fall = {0.0f, -0.125f, 0.0f, 1.0f};
+    Vector4 fall = {0.0f, Fall, 0.0f, 1.0f};
     result = Move(frameTime, set, from, &fall, end, groundNormal, limitClimb);
-    if (result != -2)
+    if (result != StuckFalling)
     {
         return result;
     }
@@ -1495,7 +1528,7 @@ s32 MoveCharacter(f32 frameTime, ContactSet* set, const Vector4* from, const Vec
     for (s32 index = 0; index < set->solid.count; index++)
     {
         Contact* contact = &set->solid.contacts[index];
-        if ((contact->kind & Contact::SphereBit) != 0)
+        if (contact->kind.sphere != 0)
         {
             continue;
         }
@@ -1505,9 +1538,10 @@ s32 MoveCharacter(f32 frameTime, ContactSet* set, const Vector4* from, const Vec
             continue;
         }
 
-        if ((contact->kind & Contact::KindHull) != 0)
+        if (contact->kind.hull != 0)
         {
-            contact->kind |= Contact::Ground | Contact::Marked;
+            contact->kind.ground = 1;
+            contact->kind.marked = 1;
         }
 
         groundNormal->x = 0.0f;
@@ -1517,12 +1551,12 @@ s32 MoveCharacter(f32 frameTime, ContactSet* set, const Vector4* from, const Vec
         result = index;
     }
 
-    return result != -2 ? result : 0;
+    return result != StuckFalling ? result : 0;
 }
 
 s32 ClipSegmentToSpace(const PlaneSet* space, const Vector4* start, const Vector4* end, Vector4* entry, Vector4* plane)
 {
-    constexpr f32 OnPlane = Rounded(5e-5);
+    constexpr f32 OnPlane = Epsilon;
     constexpr f32 Outside = Rounded(1e-5);
     Vector4 from = *start;
     Vector4 to = *end;
@@ -1535,7 +1569,7 @@ s32 ClipSegmentToSpace(const PlaneSet* space, const Vector4* start, const Vector
 
     if (index == space->count)
     {
-        return 2;
+        return SegmentStartsInside;
     }
 
     for (index = 0; index < space->count; index++)
@@ -1548,7 +1582,7 @@ s32 ClipSegmentToSpace(const PlaneSet* space, const Vector4* start, const Vector
         {
             if (toOutside)
             {
-                return 0;
+                return SegmentOutside;
             }
 
             RayPlaneIntersection(clip, &from, &to, &crossing);
@@ -1563,14 +1597,14 @@ s32 ClipSegmentToSpace(const PlaneSet* space, const Vector4* start, const Vector
     }
 
     *entry = from;
-    return 1;
+    return SegmentEnters;
 }
 
 f32 CastDown(f32 above, f32 below, ContactSet* set, const Vector4* point, Vector4* hit, Vector4* normal, CollisionHit** triangle,
              InstanceContext** instance)
 {
-    f32 highest = -Rounded(1e30);
-    f32 drop = Rounded(1e30);
+    f32 highest = -Infinite;
+    f32 drop = Infinite;
     if (triangle != nullptr)
     {
         *triangle = nullptr;
@@ -1588,8 +1622,8 @@ f32 CastDown(f32 above, f32 below, ContactSet* set, const Vector4* point, Vector
         Vector4 bottom = *point;
         top.y = top.y + above;
         bottom.y = bottom.y - below;
-        u32 kind = contact->kind;
-        if ((kind & Contact::SphereBit) != 0)
+        ContactKind kind = contact->kind;
+        if (kind.sphere != 0)
         {
             if (contact->spherePush.y < 0.0f)
             {
@@ -1609,7 +1643,7 @@ f32 CastDown(f32 above, f32 below, ContactSet* set, const Vector4* point, Vector
             continue;
         }
 
-        if ((kind & Contact::NoPush) != 0)
+        if (kind.noPush != 0)
         {
             continue;
         }
@@ -1621,13 +1655,13 @@ f32 CastDown(f32 above, f32 below, ContactSet* set, const Vector4* point, Vector
 
         Vector4 entry;
         Vector4 plane;
-        if (ClipSegmentToSpace(&contact->space, &top, &bottom, &entry, &plane) != 1 || !(highest < entry.y))
+        if (ClipSegmentToSpace(&contact->space, &top, &bottom, &entry, &plane) != SegmentEnters || !(highest < entry.y))
         {
             continue;
         }
 
         highest = entry.y;
-        if ((contact->kind & Contact::KindHull) != 0)
+        if (contact->kind.hull != 0)
         {
             if (instance != nullptr)
             {
@@ -1674,6 +1708,9 @@ u32 StepUp(ContactSet* set, const Vector4* position, const Vector4* velocity, Ve
     constexpr f32 MostLift = Rounded(0.2);
     constexpr f32 Turned = Rounded(0.866);
     constexpr f32 Rising = Rounded(0.001);
+    // Lifted by its flat speed times this, and lowered a fifth of its speed at a time
+    constexpr f32 LiftPerSpeed = 3.0f;
+    constexpr f32 LowerShare = Rounded(0.2);
     Vector4 flat = *velocity;
     flat.y = 0.0f;
     f32 speed = __builtin_sqrtf(velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z);
@@ -1719,7 +1756,7 @@ u32 StepUp(ContactSet* set, const Vector4* position, const Vector4* velocity, Ve
     Vector4 step = {velocity->x, 0.0f, velocity->z, 1.0f};
     f32 lostLength = __builtin_sqrtf(lost.x * lost.x + lost.y * lost.y + lost.z * lost.z);
     f32 inverse = InverseLength(&step, LengthEpsilon);
-    f32 lift = __builtin_sqrtf(velocity->x * velocity->x + velocity->z * velocity->z) * 3.0f;
+    f32 lift = __builtin_sqrtf(velocity->x * velocity->x + velocity->z * velocity->z) * LiftPerSpeed;
     step.x = step.x * inverse * lostLength;
     step.z = step.z * inverse * lostLength;
     step.y = MostLift < lift ? MostLift : lift;
@@ -1727,14 +1764,14 @@ u32 StepUp(ContactSet* set, const Vector4* position, const Vector4* velocity, Ve
     probe.x = probe.x + step.x;
     probe.y = probe.y + step.y;
     probe.z = probe.z + step.z;
-    if (PointInsideSolidContact(0.0f, set, &probe, Contact::SphereBit) != 0)
+    if (PointInsideSolidContact(0.0f, set, &probe, ContactKind::SphereBit) != 0)
     {
         return 0;
     }
 
     Vector4 groundNormal = lost;
     f32 drop = CastDown(0.0f, __builtin_fabsf(step.y), set, &probe, nullptr, &groundNormal, nullptr, nullptr);
-    if (!(drop == Rounded(1e30)) && !(Turned < groundNormal.y))
+    if (!(drop == Infinite) && !(Turned < groundNormal.y))
     {
         return 0;
     }
@@ -1755,13 +1792,13 @@ u32 StepUp(ContactSet* set, const Vector4* position, const Vector4* velocity, Ve
         test.z = position->z + outVelocity->z;
         test.w = 1.0f;
         test.y = test.y - lower;
-        if (PointInsideSolidContact(0.0f, set, &test, Contact::SphereBit | Contact::NoPush) == 0)
+        if (PointInsideSolidContact(0.0f, set, &test, ContactKind::SphereBit | ContactKind::NoPush) == 0)
         {
             outVelocity->y = outVelocity->y - lower;
             return 1;
         }
 
-        lower = lower - speed * MostLift;
+        lower = lower - speed * LowerShare;
         if (!(Rising < lower))
         {
             return 1;
@@ -1800,8 +1837,7 @@ void ClearContacts(ContactSet* set)
 
 void InitPhysicsStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -1811,7 +1847,7 @@ void InitPhysicsStatics(u32 initialise, u32 priority)
 
 void ConstructPhysicsModule()
 {
-    InitPhysicsStatics(1, 0xFFFF);
+    InitPhysicsStatics(1, DefaultInitPriority);
 }
 
 namespace
@@ -1823,7 +1859,9 @@ struct ContactScratch
     static constexpr s32 MostMoved = 32;
     static constexpr s32 MostDifferences = 256;
     static constexpr s32 MostAxes = 256;
-    Vector4 all[MostMoved + MostDifferences + MostAxes + 4];
+    // The axes' padding to a multiple of four
+    static constexpr s32 AxisPadding = 4;
+    Vector4 all[MostMoved + MostDifferences + MostAxes + AxisPadding];
 
     Vector4* Moved()
     {
@@ -1863,7 +1901,7 @@ void PadAxes(Vector4* axes, s32 count)
 bool LeastOverlap(const Vector4* differences, s32 groups, bool sixteenGroups, const Vector4* axes, s32 axisCount, Vector4* push,
                   Vector4* way, s32* least)
 {
-    f32 deepest = -0x1.93e594p+99f;
+    f32 deepest = -Infinite;
     for (s32 index = 0; index < axisCount; index++)
     {
         const Vector4* axis = &axes[index];
@@ -2018,11 +2056,10 @@ u32 TriangleHullContact(const CollisionHit* triangle, const CollisionHull* hull,
         return 0;
     }
 
-    constexpr f32 Far = -0x1.93e594p+99f;
-    point->x = Far;
+    point->x = -Infinite;
     point->w = 1.0f;
-    point->y = Far;
-    point->z = Far;
+    point->y = -Infinite;
+    point->z = -Infinite;
     Matrix4x4 identity;
     InitIdentityMatrix(&identity);
     ContactScratch scratch;
@@ -2069,8 +2106,7 @@ u32 TriangleHullContact(const CollisionHit* triangle, const CollisionHull* hull,
     {
         // A face of the hull's: the triangle's corner furthest along the way out (worked out again for every face that's more
         // against it)
-        constexpr f32 Most = 0x1.93e594p+99f;
-        f32 against = Most;
+        f32 against = Infinite;
         for (s32 index = 0; index < hull->planeCount; index++)
         {
             Vector4 face;

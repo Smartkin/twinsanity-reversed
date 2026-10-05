@@ -8,13 +8,15 @@
 // The archives: a BH file's table of the files in its BD file
 extern "C"
 {
-    // The C library's character classes (bit 0 upper case, 1 lower case)
+    // The C library's character classes
     extern const u8 CasingTable[];
 }
 
 namespace
 {
 constexpr const char* HostPrefix = "HOST0:";
+// The buffer the table's paths are copied through
+constexpr u32 PathBufferSize = 0x400;
 
 void ConstructStrings(String* strings, u32 count)
 {
@@ -31,10 +33,10 @@ void UpperCase(String* string)
     for (s32 i = 0; i < string->length; i++)
     {
         char* character = string->string + i;
-        s8 value = *character;
-        if ((CasingTable[value] & 2) != 0)
+        s8 code = *character;
+        if ((CasingTable[code] & RetailLibc::CasingLowerCase) != 0)
         {
-            *character = static_cast<char>(value - 0x20);
+            *character = static_cast<char>(code - ('a' - 'A'));
         }
     }
 }
@@ -115,17 +117,18 @@ extern "C"
         tableReader->path.capacity = 0;
         StringAssign(&tableReader->path, copy.string);
         StringDestroy(&copy);
-        GenericItemReader* table = SubItemsReader::ConstructFile(static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))),
-                                                                 tablePath.string, tableReader, 5);
+        GenericItemReader* table = SubItemsReader::ConstructFile(
+            static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))), tablePath.string, tableReader,
+            SubItemsReaderOptions::Unused0 | SubItemsReaderOptions::ClosesFile);
         if (table != nullptr)
         {
-            AddItemReaderToReaderStorage(storage, table, 0);
+            AddItemReaderToReaderStorage(storage, table, QueueBack);
         }
 
         GenericItemReader* data = BdReader::Construct(static_cast<BdReader*>(MemoryAllocate(sizeof(BdReader))), &dataPath, nullptr, 0, 1);
         if (data != nullptr)
         {
-            AddItemReaderToReaderStorage(storage, data, 0);
+            AddItemReaderToReaderStorage(storage, data, QueueBack);
         }
 
         if (readNow != 0)
@@ -175,7 +178,7 @@ extern "C"
 
     s32 ArchiveAddFile(Archive* archive, const ArchiveEntry* entry, String* path)
     {
-        s32 there = 0;
+        s32 existed = 0;
         if (archive->count == 0)
         {
             archive->count = 1;
@@ -198,7 +201,7 @@ extern "C"
             s32 index = SearchIndex(archive, path);
             if (!StringNotEqual(&archive->files[index].path, path->string))
             {
-                there = 1;
+                existed = 1;
                 SetFile(&archive->files[index], entry, path->string);
             }
             else
@@ -214,7 +217,7 @@ extern "C"
         }
 
         StringDestroy(path);
-        return there;
+        return existed;
     }
 
     void ArchiveInsertFile(Archive* archive, s32 index, const ArchiveEntry* entry, String* path)
@@ -311,7 +314,7 @@ void ArchiveSectionReader::Destroy(u32 flags)
     vtable = g_ArchiveSectionReaderVTable;
     StringDestroy(&path);
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -320,7 +323,7 @@ void ArchiveSectionReader::Destroy(u32 flags)
 void ArchiveFilesReleaser::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -348,7 +351,7 @@ void ArchiveFilesReleaser::Read(u8*, u32, ReaderStack*)
 void ArchiveSectionReader::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream table;
-    MemoryStream::Construct(&table, data, size, 1, 0x40);
+    MemoryStream::Construct(&table, data, size, 1, MemoryStream::FileAlignment);
     Stream* reader = &table;
     s32 header = 0;
     reader->ReadS32(&header);
@@ -356,7 +359,7 @@ void ArchiveSectionReader::Read(u8* data, u32 size, ReaderStack*)
     {
         s32 length;
         reader->ReadS32(&length);
-        char name[0x400];
+        char name[PathBufferSize];
         RetailLibc::MemoryCopy(name, table.position, static_cast<u32>(length));
         table.position += length;
         String filePath;
@@ -387,7 +390,7 @@ void ArchiveSectionReader::Read(u8* data, u32 size, ReaderStack*)
 void SectionReader::BaseDestroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }

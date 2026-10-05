@@ -9,36 +9,51 @@ struct ExitPointAnimation;
 struct InstanceContext;
 struct Reference;
 
+// An attachment's bits: how it follows its holder (Attachment::Follow), what it is (Attachment::Kind), whether it keeps its
+// matrix to the holder, the holder's exit point it's at (0xFF none), whether a joining instance has met its holder and whether
+// the instance hangs from the holder
+union AttachmentBits
+{
+    u64 value;
+    struct
+    {
+        u64 follow : 4;
+        u64 kind : 3;
+        u64 keepsOffset : 1;
+        u64 unused8 : 8;
+        u64 exitPoint : 8;
+        u64 joined : 1;
+        u64 hangs : 1;
+        u64 unused26 : 38;
+    };
+};
+CHECK_SIZE(AttachmentBits, 8);
+
 // An instance attached to another, its holder (0xC0 bytes, made with new; the holder's attachments node keeps them on a path): the
 // matrix it keeps to the holder (its place in the space of the holder or of the holder's exit point) and that matrix as it was
 // taken, a spring's end, the instance (and a reference to it), the AI position it's on, the spring's focus, the holder, the
 // holder's exit point's animation and the focus's, the spring's stiffness, damping and length, and its bits
 struct Attachment
 {
-    enum Bits : u64
+    // How it follows (game/attachments.h's UpdateAttachment): placed at the holder's matrix, moved to its position (an AI
+    // position too), hanging from there turned toward it, on a spring, keeping the holder where it is, joining the holder; none
+    // past 6
+    enum Follow : u32
     {
-        // How it follows (bits 0-3, game/attachments.h's UpdateAttachment: 0 placed at the holder's matrix, 1 moved to its position
-        // (an AI position too), 2 hanging from there turned toward it, 4 on a spring, 5 keeping the holder where it is, 6 joining
-        // the holder; none past 6), what it is (bits 4-6: 0 an instance held, 1 on an AI position, 2 a spring), and whether it
-        // keeps its matrix to the holder
-        FollowMask = 0xF,
-        FollowsPlace = 0x0,
-        FollowsPosition = 0x1,
-        FollowsHanging = 0x2,
-        FollowsSpring = 0x4,
-        FollowsPinned = 0x5,
-        FollowsJoining = 0x6,
-        KindMask = 0x70,
-        KindPosition = 0x10,
-        KindSpring = 0x20,
-        BitKeepsOffset = 0x80,
-        // The holder's exit point (bits 16-23, 0xFF none)
-        ExitPointShift = 16,
-        ExitPointMask = 0xFF0000,
-        // A joining instance has met its holder
-        Bit24 = 0x1000000,
-        // The instance hangs from the holder
-        BitHangs = 0x2000000,
+        FollowsPlace = 0,
+        FollowsPosition = 1,
+        FollowsHanging = 2,
+        FollowsSpring = 4,
+        FollowsPinned = 5,
+        FollowsJoining = 6,
+    };
+
+    // What it is: an instance held, on an AI position, a spring
+    enum Kind : u32
+    {
+        KindInstance = 0,
+        KindPosition = 1,
+        KindSpring = 2,
     };
 
     Matrix4x4 offset;
@@ -54,9 +69,10 @@ struct Attachment
     f32 stiffness;
     f32 damping;
     f32 length;
-    u64 bits;
+    AttachmentBits bits;
 };
 CHECK_OFFSET(Attachment, point, 0x80);
+CHECK_OFFSET(Attachment, instanceReference, 0x94);
 CHECK_OFFSET(Attachment, holder, 0xA0);
 CHECK_OFFSET(Attachment, bits, 0xB8);
 CHECK_SIZE(Attachment, 0xC0);

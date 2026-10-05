@@ -23,10 +23,10 @@
 EABI_EXPORT(FUN_001e97a8, InstanceCellsInCylinder);
 EABI_EXPORT(FUN_001eac90, CellListInCylinder);
 
-// A chunk's awake instances' collision is sorted into cells (chunk->instanceCells, 0x301 lists): three levels of 16 by 16 cells of
-// 4, 8 and 20 units, an instance going in the level its box's size fits (under 2, 4 and 10 units across), the cell its place's
-// x and z fall in (wrapping, the grid repeats every 16 cells), and everything bigger in the last cell. A query visits the cells
-// a volume overlaps at every level, each grown by the level's margin
+// A chunk's awake instances' collision is sorted into cells (chunk->instanceCells, ChunkData::InstanceCells lists): three levels
+// of 16 by 16 cells of 4, 8 and 20 units, an instance going in the level its box's size fits (under 2, 4 and 10 units across),
+// the cell its place's x and z fall in (wrapping, the grid repeats every 16 cells), and everything bigger in the last cell. A
+// query visits the cells a volume overlaps at every level, each grown by the level's margin
 extern "C"
 {
     extern const f32 g_CellSizes[4] RETAIL(D_002FBEB0);
@@ -35,7 +35,8 @@ extern "C"
     extern const s32 g_CellCounts[4] RETAIL(D_002FBEE0);
     extern const s32 g_CellMasks[4] RETAIL(D_002FBEF0);
     extern s32 g_CellBases[4] RETAIL(D_003B49C0);
-    extern u32 g_Unknown30A908 RETAIL(D_0030A908);
+    // A word the cells' start-up clears, which nothing reads
+    extern u32 g_CellsUnused RETAIL(D_0030A908);
     // Set while an instance moves from one chunk to another (MoveToChunk)
     extern u8 g_ChangingChunk RETAIL(D_00309FF3);
     // Whether the chunks the links lead to are drawn
@@ -43,7 +44,8 @@ extern "C"
     // The instances whose drawing waits until the chunk's scenery is drawn (D_0030ACA8 in view, D_0030ACA4 clipped)
     extern s32 g_DeferredInViewCount RETAIL(D_0030ACA8);
     extern s32 g_DeferredClippedCount RETAIL(D_0030ACA4);
-    extern s32 g_Unknown30ACAC RETAIL(D_0030ACAC);
+    // A third count cleared with them, which nothing reads
+    extern s32 g_DeferredUnusedCount RETAIL(D_0030ACAC);
     extern InstanceContext** g_DeferredInView[256] RETAIL(D_003D8600);
     extern InstanceContext** g_DeferredClipped[256] RETAIL(D_003D8A00);
     extern const char g_NonAgentObject[] RETAIL(D_002FB610);
@@ -51,43 +53,21 @@ extern "C"
 
 namespace
 {
-constexpr u32 CellCount = 0x301;
-constexpr u32 LastCell = 0x300;
+constexpr u32 CellCount = ChunkData::InstanceCells;
+// The last cell has everything too big for the levels
+constexpr u32 LastCell = ChunkData::InstanceCells - 1;
 constexpr u32 LevelCount = 3;
+// The links an instance is on a cell's list by (InstanceContext::cellPrevious and cellNext), as GCC 2.9x member pointers: their
+// offsets plus 1
 constexpr u32 CellPrevious = 0x148 + 1;
 constexpr u32 CellNext = 0x14C + 1;
-constexpr u32 DynamicFlag = 0x40000;
-constexpr u32 SolidModelFlag = 0x80000;
-constexpr f32 NoHit = 0x1.93E594p+99f;
-constexpr f32 CellMargin = 0x1.A36E2Ep-15f;
-constexpr u32 NodeObject = 1;
-constexpr u32 HitRecordSize = 0x34;
-constexpr u32 LinkVisibilityMask = 0x7F;
-constexpr u32 LinkWallShift = 14;
-constexpr u32 LinkWallMask = 0xC000;
-constexpr u32 ReleasingState = 0x80000;
-constexpr u32 ReleasedState = 0xC0000;
-constexpr u32 DrawnBit = 0x800000;
-constexpr u32 HasRootBit = 0x400000;
-
-enum CellSlot : u32
-{
-    SlotRender = 3,
-    SlotCollect = 14,
-    SlotCellOf = 15,
-    SlotSleepInstances = 22,
-};
-
-enum ViewSlot : u32
-{
-    ViewTestCell = 12,
-};
-
-enum InstanceSlot : u32
-{
-    InstanceSleep = 3,
-    InstanceRelease = 4,
-};
+// How much of a box may stick out of its scenery cell (CellHoldsBox)
+constexpr f32 CellMargin = Epsilon;
+// The planes a view or a portal is bounded by
+constexpr u32 ViewPlaneCount = 6;
+// A load wall's corners, and how far in front of it it takes an instance
+constexpr u32 WallCorners = 4;
+constexpr f32 WallReach = 2.0f;
 
 void PushCell(InstanceContext** list, InstanceContext* instance)
 {
@@ -99,12 +79,12 @@ void RemoveCell(InstanceContext** list, InstanceContext* instance)
     ListRemove(instance, reinterpret_cast<void**>(list), CellPrevious, CellNext);
 }
 
-bool Skipped(const InstanceRayHit* query, const InstanceContext* instance)
+bool Skipped(const InstanceQuery* query, const InstanceContext* instance)
 {
     return query->skipped[0] == instance || query->skipped[1] == instance;
 }
 
-void Add(InstanceRayHit* query, InstanceContext* instance)
+void Add(InstanceQuery* query, InstanceContext* instance)
 {
     u16 count = query->count;
     if (count < query->most)
@@ -114,17 +94,27 @@ void Add(InstanceRayHit* query, InstanceContext* instance)
         return;
     }
 
-    query->bits |= InstanceRayHit::BitFull;
+    query->bits.unused0 = 1;
 }
 
 SceneryCell* RootOf(ChunkData* chunk)
 {
-    return reinterpret_cast<SceneryCell*>(chunk->scenery);
+    return chunk->scenery;
+}
+
+// The part of a hit the game copies: its triangle and surface (not the rest of its 0x40 bytes)
+void CopyHit(CollisionHit* to, const CollisionHit* from)
+{
+    to->vertices[0] = from->vertices[0];
+    to->vertices[1] = from->vertices[1];
+    to->vertices[2] = from->vertices[2];
+    to->surface = from->surface;
+    to->unused32 = from->unused32;
 }
 
 SceneryCell* CellOfInstance(SceneryCell* root, InstanceContext* instance, const Matrix4x4* matrix)
 {
-    return CallVirtual<SceneryCell*>(root, root->vtable, SlotCellOf, instance, matrix);
+    return CallVirtual<SceneryCell*>(root, root->vtable, SceneryCell::SlotCellOf, instance, matrix);
 }
 
 InstanceContext** MakeCells(ChunkData* chunk)
@@ -150,7 +140,7 @@ void LeaveCells(InstanceContext* instance)
     SceneryCell* cell = collision->sceneryCell;
     if (cell != nullptr)
     {
-        if ((instance->flags & DynamicFlag) == DynamicFlag)
+        if (instance->flags.dynamicScenery)
         {
             CellListRemove(&cell->dynamicInstances, instance);
         }
@@ -269,7 +259,7 @@ s32 CellsOfVolume(s32* cells, const BoundingVolume* volume)
     return count + 1;
 }
 
-void InstanceCellsInSphere(InstanceContext** cells, const Vector4* sphere, u32 kinds, InstanceRayHit* query, u32 boxTest)
+void InstanceCellsInSphere(InstanceContext** cells, const Vector4* sphere, u32 kinds, InstanceQuery* query, u32 boxTest)
 {
     s32 list[CellCount];
     BoundingVolume volume;
@@ -294,7 +284,7 @@ void InstanceCellsInSphere(InstanceContext** cells, const Vector4* sphere, u32 k
     volume.vtable = g_VolumeVTable;
 }
 
-void InstanceCellsInCylinder(f32 height, InstanceContext** cells, const Vector4* base, u32 kinds, InstanceRayHit* query)
+void InstanceCellsInCylinder(f32 height, InstanceContext** cells, const Vector4* base, u32 kinds, InstanceQuery* query)
 {
     s32 list[CellCount];
     BoundingVolume volume;
@@ -322,40 +312,34 @@ void InstanceCellsInCylinder(f32 height, InstanceContext** cells, const Vector4*
     volume.vtable = g_VolumeVTable;
 }
 
-// The nearest hit along the segment: with a record wanted (the flags are its address), the record of the nearest hit
-f32 InstanceCellsRayCast(InstanceContext** cells, const Vector4* segment, u32 mask, InstanceRayHit* hit, u32 flags)
+// The nearest hit along the segment: with a record wanted (hitFace is its address), the record of the nearest hit
+f32 InstanceCellsRayCast(InstanceContext** cells, const Vector4* segment, u32 kinds, InstanceQuery* hit, u32 hitFace)
 {
     s32 list[CellCount];
     BoundingVolume volume;
     volume.vtable = g_BoxVolumeVTable;
     Box box;
     ResetBox(&box);
-    f32 nearest = NoHit;
+    f32 nearest = NoHitDistance;
     GrowBoxByPoint(&box, &segment[0]);
     GrowBoxByPoint(&box, &segment[1]);
     SetBoundingVolume(&volume, &box.min, &box.max);
     s32 count = CellsOfVolume(list, &volume);
     if (count > 0)
     {
-        alignas(16) u8 record[HitRecordSize + 0xC];
-        auto* out = reinterpret_cast<u8*>(flags);
-        void* wanted = out != nullptr ? record : nullptr;
+        CollisionHit record;
+        auto* out = reinterpret_cast<CollisionHit*>(hitFace);
+        void* wanted = out != nullptr ? &record : nullptr;
         InstanceContext** lists = cells;
         for (s32 index = 0; index < count; index++)
         {
-            f32 share = CellListRayCast(hit, lists[list[index]], segment, mask, wanted);
+            f32 share = CellListRayCast(hit, lists[list[index]], segment, kinds, wanted);
             if (share < nearest)
             {
                 nearest = share;
                 if (out != nullptr)
                 {
-                    auto* to = reinterpret_cast<Vector4*>(out);
-                    const auto* from = reinterpret_cast<const Vector4*>(record);
-                    to[0] = from[0];
-                    to[1] = from[1];
-                    to[2] = from[2];
-                    reinterpret_cast<u16*>(out)[0x18] = reinterpret_cast<const u16*>(record)[0x18];
-                    reinterpret_cast<u16*>(out)[0x19] = reinterpret_cast<const u16*>(record)[0x19];
+                    CopyHit(out, &record);
                 }
             }
         }
@@ -366,7 +350,7 @@ f32 InstanceCellsRayCast(InstanceContext** cells, const Vector4* segment, u32 ma
 }
 
 // A cell list's instances in a sphere (their place within its radius) or, testing boxes, whose box overlaps the sphere's
-u16 CellListInSphere(InstanceRayHit* query, InstanceContext* first, const Vector4* sphere, u32 kinds, u32 boxTest)
+u16 CellListInSphere(InstanceQuery* query, InstanceContext* first, const Vector4* sphere, u32 kinds, u32 boxTest)
 {
     u16 before = query->count;
     if (boxTest != 0)
@@ -411,7 +395,7 @@ u16 CellListInSphere(InstanceRayHit* query, InstanceContext* first, const Vector
 }
 
 // A cell list's instances whose box spans the cylinder's height somewhere and whose place is within its radius across
-u16 CellListInCylinder(f32 height, InstanceRayHit* query, InstanceContext* first, const Vector4* base, u32 kinds)
+u16 CellListInCylinder(f32 height, InstanceQuery* query, InstanceContext* first, const Vector4* base, u32 kinds)
 {
     f32 half = height * 0.5f;
     f32 top = base->y + half;
@@ -446,7 +430,7 @@ u16 CellListInCylinder(f32 height, InstanceRayHit* query, InstanceContext* first
 
 // A cell list's instances touching a hull at a matrix: with points, the instances whose place is inside it; else those whose box
 // the volume touches and (with a hull) one of whose hulls touches it
-u16 CellListInHull(InstanceRayHit* query, InstanceContext* first, BoundingVolume* volume, const CollisionHull* hull,
+u16 CellListInHull(InstanceQuery* query, InstanceContext* first, BoundingVolume* volume, const CollisionHull* hull,
                    const Matrix4x4* matrix, u32 kinds, u32 points)
 {
     u16 before = query->count;
@@ -517,9 +501,9 @@ u16 CellListInHull(InstanceRayHit* query, InstanceContext* first, BoundingVolume
 
 // An instance's hulls cast at (when its box overlaps the segment's): the nearest share and, when wanted, its record; the
 // instance added to the query when it was hit
-f32 InstanceRayCast(InstanceRayHit* query, const Box* box, const Vector4* segment, InstanceContext* instance, void* hit)
+f32 InstanceRayCast(InstanceQuery* query, const Box* box, const Vector4* segment, InstanceContext* instance, void* hit)
 {
-    f32 nearest = NoHit;
+    f32 nearest = NoHitDistance;
     if (BoxesOverlap(&instance->collision.box, box) == 0)
     {
         return nearest;
@@ -529,8 +513,8 @@ f32 InstanceRayCast(InstanceRayHit* query, const Box* box, const Vector4* segmen
     s32 count = GetHullCount(collision);
     if (count > 0)
     {
-        alignas(16) u8 record[HitRecordSize + 0xC];
-        void* wanted = hit != nullptr ? record : nullptr;
+        CollisionHit record;
+        void* wanted = hit != nullptr ? &record : nullptr;
         for (s32 index = 0; index < count; index++)
         {
             Matrix4x4 matrix;
@@ -546,20 +530,14 @@ f32 InstanceRayCast(InstanceRayHit* query, const Box* box, const Vector4* segmen
             nearest = share;
             if (hit != nullptr)
             {
-                auto* to = static_cast<Vector4*>(hit);
-                const auto* from = reinterpret_cast<const Vector4*>(record);
-                to[0] = from[0];
-                to[1] = from[1];
-                to[2] = from[2];
-                static_cast<u16*>(hit)[0x18] = reinterpret_cast<const u16*>(record)[0x18];
-                static_cast<u16*>(hit)[0x19] = reinterpret_cast<const u16*>(record)[0x19];
+                CopyHit(static_cast<CollisionHit*>(hit), &record);
             }
         }
     }
 
-    if (nearest == NoHit)
+    if (nearest == NoHitDistance)
     {
-        return NoHit;
+        return NoHitDistance;
     }
 
     Add(query, instance);
@@ -567,7 +545,7 @@ f32 InstanceRayCast(InstanceRayHit* query, const Box* box, const Vector4* segmen
 }
 
 // A cell list cast at: the query's distance and instance the nearest hit's
-f32 CellListRayCast(InstanceRayHit* query, InstanceContext* first, const Vector4* segment, u32 mask, void* hit)
+f32 CellListRayCast(InstanceQuery* query, InstanceContext* first, const Vector4* segment, u32 kinds, void* hit)
 {
     Box box;
     ResetBox(&box);
@@ -575,7 +553,7 @@ f32 CellListRayCast(InstanceRayHit* query, InstanceContext* first, const Vector4
     GrowBoxByPoint(&box, &segment[1]);
     for (InstanceContext* instance = first; instance != nullptr; instance = instance->cellNext)
     {
-        if (Skipped(query, instance) || QueryTakes(query, instance, mask) == 0)
+        if (Skipped(query, instance) || QueryTakes(query, instance, kinds) == 0)
         {
             continue;
         }
@@ -591,7 +569,7 @@ f32 CellListRayCast(InstanceRayHit* query, InstanceContext* first, const Vector4
     return query->distance;
 }
 
-s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceRayHit* query)
+s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceQuery* query)
 {
     InstanceContext** lists = chunk->instanceCells;
     if (lists == nullptr)
@@ -614,8 +592,8 @@ s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceRayH
     return static_cast<u16>(query->count - before);
 }
 
-// Every cell's instances with the flags
-s32 QueryChunkInstancesByFlags(ChunkData* chunk, u32 flags, InstanceRayHit* query)
+// Every cell's instances with a node of the kinds
+s32 QueryChunkInstancesOfKinds(ChunkData* chunk, u32 kinds, InstanceQuery* query)
 {
     InstanceContext** lists = chunk->instanceCells;
     if (lists == nullptr)
@@ -626,14 +604,14 @@ s32 QueryChunkInstancesByFlags(ChunkData* chunk, u32 flags, InstanceRayHit* quer
     u16 before = query->count;
     for (s32 cell = LastCell; cell >= 0; cell--)
     {
-        QueryCellList(query, *lists++, flags);
+        QueryCellList(query, *lists++, kinds);
     }
 
     return static_cast<u16>(query->count - before);
 }
 
-u32 ChunkInstancesInHull(ChunkData* chunk, CollisionHull* hull, const Matrix4x4* matrix, u32 kinds, InstanceRayHit* query,
-                         u32 points)
+u32 ChunkInstancesInHull(ChunkData* chunk, CollisionHull* hull, const Matrix4x4* matrix, u32 kinds, InstanceQuery* query,
+                         u32 byPlace)
 {
     if (chunk->instanceCells == nullptr)
     {
@@ -649,7 +627,7 @@ u32 ChunkInstancesInHull(ChunkData* chunk, CollisionHull* hull, const Matrix4x4*
     s32 count = CellsOfVolume(list, &volume);
     for (s32 index = 0; index < count; index++)
     {
-        CellListInHull(query, lists[list[index]], &volume, hull, matrix, kinds, points);
+        CellListInHull(query, lists[list[index]], &volume, hull, matrix, kinds, byPlace);
     }
 
     volume.vtable = g_VolumeVTable;
@@ -659,7 +637,7 @@ u32 ChunkInstancesInHull(ChunkData* chunk, CollisionHull* hull, const Matrix4x4*
 // The levels' first cells (their counts added up), at the program's start
 void InitCellBases(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -670,12 +648,12 @@ void InitCellBases(s32 initialise, s32 priority)
     g_CellBases[1] = first;
     g_CellBases[3] = second + g_CellCounts[2];
     g_CellBases[2] = second;
-    g_Unknown30A908 = 0;
+    g_CellsUnused = 0;
 }
 
 void CellsStaticInit()
 {
-    InitCellBases(1, 0xFFFF);
+    InitCellBases(1, DefaultInitPriority);
 }
 
 // An instance's collision moved to the cells its box is in now: a solid model's into its chunk's root, an instance out of its
@@ -683,12 +661,12 @@ void CellsStaticInit()
 // leftover of a message), else into the collision cell of its place
 ChunkData* UpdateCollisionCell(ObjectCollision* collision, InstanceContext* instance)
 {
-    if ((collision->owner->flags & SolidModelFlag) == SolidModelFlag)
+    if (collision->owner->flags.solidModel)
     {
         return MoveToCell(collision, instance, RootOf(collision->sceneryCell->chunk));
     }
 
-    if (CellHoldsBox(CellMargin, collision->sceneryCell, &collision->box.min, &collision->box.max) != 1)
+    if (CellHoldsBox(CellMargin, collision->sceneryCell, &collision->box.min, &collision->box.max) != Volume::Inside)
     {
         SceneryCell* root = RootOf(collision->sceneryCell->chunk);
         if (root == nullptr)
@@ -719,7 +697,7 @@ ChunkData* UpdateCollisionCell(ObjectCollision* collision, InstanceContext* inst
             return MoveToCell(collision, instance, cell);
         }
 
-        return static_cast<ChunkData*>(ChunkNoticeInstance(instance));
+        return static_cast<ChunkData*>(UpdateInstanceChunk(instance));
     }
 
     InstanceContext** cells = collision->cells;
@@ -742,7 +720,7 @@ ChunkData* UpdateCollisionCell(ObjectCollision* collision, InstanceContext* inst
         collision->cells = cells;
     }
 
-    return static_cast<ChunkData*>(ChunkNoticeInstance(instance));
+    return static_cast<ChunkData*>(UpdateInstanceChunk(instance));
 }
 
 // An awake instance put on the list of the scenery cell holding its box (the root when none does), and in its collision cell
@@ -766,7 +744,7 @@ u32 SortIntoCells(ObjectCollision* collision, SceneryCell* root, InstanceContext
         collision->sceneryCell = root;
     }
 
-    if ((instance->flags & DynamicFlag) == DynamicFlag)
+    if (instance->flags.dynamicScenery)
     {
         CellListAdd(&collision->sceneryCell->dynamicInstances, instance);
     }
@@ -800,7 +778,7 @@ ChunkData* MoveToCell(ObjectCollision* collision, InstanceContext* instance, Sce
     SceneryCell* old = collision->sceneryCell;
     if (old != nullptr)
     {
-        if ((instance->flags & DynamicFlag) == DynamicFlag)
+        if (instance->flags.dynamicScenery)
         {
             CellListRemove(&old->dynamicInstances, instance);
         }
@@ -810,7 +788,7 @@ ChunkData* MoveToCell(ObjectCollision* collision, InstanceContext* instance, Sce
         }
     }
 
-    if ((instance->flags & DynamicFlag) == DynamicFlag)
+    if (instance->flags.dynamicScenery)
     {
         CellListAdd(&cell->dynamicInstances, instance);
     }
@@ -831,7 +809,7 @@ u32 ChunkRemoveInstance(ChunkData* chunk, InstanceContext* instance)
         return 0;
     }
 
-    if ((instance->flags & 1) != 1)
+    if (!instance->flags.asleep)
     {
         LeaveCells(instance);
     }
@@ -847,7 +825,7 @@ u32 MoveToChunk(ChunkData* chunk, ReferencedObject* object)
     auto* instance = static_cast<InstanceContext*>(object);
     g_ChangingChunk = 0;
     ChunkData* old = instance->chunk;
-    u32 awake = (instance->flags & 1) ^ 1;
+    u32 awake = !instance->flags.asleep;
     if (old != nullptr)
     {
         g_ChangingChunk = 1;
@@ -867,7 +845,7 @@ u32 MoveToChunk(ChunkData* chunk, ReferencedObject* object)
 
     if (chunk->instances == nullptr)
     {
-        return CallVirtual<u32>(instance, instance->vtable, InstanceRelease);
+        return CallVirtual<u32>(instance, instance->vtable, InstanceContext::ReleaseSlot);
     }
 
     instance->chunk = chunk;
@@ -887,7 +865,7 @@ u32 ChunkSleepInstance(ChunkData* chunk, InstanceContext* instance)
         return 0;
     }
 
-    if ((instance->flags & 1) != 1)
+    if (!instance->flags.asleep)
     {
         LeaveCells(instance);
     }
@@ -897,13 +875,13 @@ u32 ChunkSleepInstance(ChunkData* chunk, InstanceContext* instance)
 
 // The chunk an instance belongs in now: the deepest keep link holding it, else this chunk when its scenery has a cell for it,
 // else the first link holding it (the instance moved through it), none when nothing does
-ChunkData* ChunkNoticeInstance2(ChunkData* chunk, InstanceContext* instance)
+ChunkData* ChunkUpdateInstanceChunk(ChunkData* chunk, InstanceContext* instance)
 {
     u32 deepest = 1;
     ChunkLinkData* found = nullptr;
     for (ChunkLinkData* link = chunk->links; link != nullptr; link = link->next)
     {
-        u32 depth = static_cast<u32>((*reinterpret_cast<const u64*>(link) << 25) >> 32) & 0x7F;
+        u32 depth = link->flags.keep;
         if (deepest < depth && LinkTakesInstance(link, instance) != 0)
         {
             deepest = depth;
@@ -943,7 +921,7 @@ u32 ChunkWakeInstance(ChunkData* chunk, InstanceContext* instance)
     }
 
     u32 woken = chunk->instances->WakeInstance(instance);
-    if ((instance->flags & 1) == 0)
+    if (!instance->flags.asleep)
     {
         return woken;
     }
@@ -971,61 +949,61 @@ u32 ChunkReleaseInstance(ChunkData* chunk, InstanceContext* instance)
 void ChunkSceneryRead(ChunkData* chunk)
 {
     SceneryCell* root = RootOf(chunk);
-    CallVirtual<void>(root, root->vtable, 9, chunk);
+    CallVirtual<void>(root, root->vtable, SceneryCell::SlotSetChunk, chunk);
 }
 
 // An instance moved to the instances of no chunk (put to sleep first when it's awake), not while the chunk is being released
 // when asked
-u32 ChunkMakeGlobal(ChunkData* chunk, u32 checkState, u32 unknown, InstanceContext* instance)
+u32 ChunkMakeGlobal(ChunkData* chunk, u32 checkState, u32 way, InstanceContext* instance)
 {
     if (checkState != 0)
     {
-        u32 state = chunk->bits & ChunkData::StateMask;
-        if (state == ReleasingState || state == ReleasedState)
+        u32 state = chunk->flags.state;
+        if (state == ChunkReleasing || state == ChunkReleased)
         {
             return 0;
         }
     }
 
-    if ((instance->flags & 1) != 1)
+    if (!instance->flags.asleep)
     {
-        CallVirtual<void>(instance, instance->vtable, InstanceSleep);
+        CallVirtual<void>(instance, instance->vtable, InstanceContext::SleepSlot);
     }
 
     if (chunk->instances != nullptr)
     {
-        chunk->instances->MakeGlobal(unknown, instance);
+        chunk->instances->MakeGlobal(way, instance);
     }
 
     return 1;
 }
 
 // The same of the instances matching a filter: the rigid bodies let go of, the scenery's instances put to sleep
-u32 ChunkMakeGlobalWhere(ChunkData* chunk, u32 checkState, u32 unknown, const u32* filter)
+u32 ChunkMakeGlobalWhere(ChunkData* chunk, u32 checkState, u32 way, const u32* filter)
 {
     if (checkState != 0)
     {
-        u32 state = chunk->bits & ChunkData::StateMask;
-        if (state == ReleasingState || state == ReleasedState)
+        u32 state = chunk->flags.state;
+        if (state == ChunkReleasing || state == ChunkReleased)
         {
             return 0;
         }
     }
 
-    if (chunk->unknown164 != nullptr)
+    if (chunk->rigidBodies != nullptr)
     {
-        ReleaseChunkRigidBodies(static_cast<ChunkRigidBodies*>(chunk->unknown164));
+        ReleaseChunkRigidBodies(chunk->rigidBodies);
     }
 
     SceneryCell* root = RootOf(chunk);
     if (root != nullptr)
     {
-        CallVirtual<void>(root, root->vtable, SlotSleepInstances, filter);
+        CallVirtual<void>(root, root->vtable, SceneryCell::SlotSleepInstances, filter);
     }
 
     if (chunk->instances != nullptr)
     {
-        chunk->instances->MakeGlobalWhere(unknown, filter);
+        chunk->instances->MakeGlobalWhere(way, filter);
     }
 
     return 1;
@@ -1038,27 +1016,27 @@ u32 CollectChunksInstances(ChunkList* list, u32 kinds, InstanceCollector* collec
         SceneryCell* root = chunk->scenery;
         if (root != nullptr)
         {
-            CallVirtual<void>(root, root->vtable, SlotCollect, kinds, collector);
+            CallVirtual<void>(root, root->vtable, SceneryCell::SlotCollect, kinds, collector);
         }
     }
 
     return InstanceCollectorFound(collector);
 }
 
-void ChunkListMakeGlobalWhere(ChunkList* list, u32 unknown, const u32* filter)
+void ChunkListMakeGlobalWhere(ChunkList* list, u32 way, const u32* filter)
 {
-    ChunkData* current = list->current != nullptr ? list->current->data : nullptr;
+    ChunkData* current = list->current != nullptr ? list->current->chunk : nullptr;
     if (current != nullptr)
     {
-        ChunkMakeGlobalWhere(current, 1, unknown, filter);
+        ChunkMakeGlobalWhere(current, 1, way, filter);
     }
 
     for (ChunkData* chunk = list->first; chunk != nullptr; chunk = chunk->next)
     {
-        current = list->current != nullptr ? list->current->data : nullptr;
+        current = list->current != nullptr ? list->current->chunk : nullptr;
         if (chunk != current)
         {
-            ChunkMakeGlobalWhere(chunk, 1, unknown, filter);
+            ChunkMakeGlobalWhere(chunk, 1, way, filter);
         }
     }
 }
@@ -1079,7 +1057,7 @@ u32 MoveThroughLink(ChunkLinkData* link, InstanceContext* instance)
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     Matrix4x4 moved;
-    VuMultiplyMatrices(&place->matrix, reinterpret_cast<const Matrix4x4*>(link->objectMatrix), &moved);
+    VuMultiplyMatrices(&place->matrix, &link->objectMatrix, &moved);
     if (SetPlaceMatrix(instance->place, &moved) == 0)
     {
         return 0;
@@ -1091,12 +1069,12 @@ u32 MoveThroughLink(ChunkLinkData* link, InstanceContext* instance)
 
 ChunkRigidBodies* ChunkRigidBodiesOf(ChunkData* chunk)
 {
-    if (chunk->unknown164 == nullptr)
+    if (chunk->rigidBodies == nullptr)
     {
-        chunk->unknown164 = ConstructChunkRigidBodies(MemoryAllocate(sizeof(ChunkRigidBodies)));
+        chunk->rigidBodies = ConstructChunkRigidBodies(MemoryAllocate(sizeof(ChunkRigidBodies)));
     }
 
-    return static_cast<ChunkRigidBodies*>(chunk->unknown164);
+    return chunk->rigidBodies;
 }
 
 ChunkLinkData* FindLinkTo(ChunkData* chunk, ChunkData* linked)
@@ -1116,7 +1094,7 @@ ChunkLinkData* FindLinkTo(ChunkData* chunk, ChunkData* linked)
 void TransformThroughLink(const ChunkLinkData* link, Matrix4x4* matrix, u32 whole)
 {
     Matrix4x4 out;
-    const auto* object = reinterpret_cast<const Matrix4x4*>(link->objectMatrix);
+    const Matrix4x4* object = &link->objectMatrix;
     if (whole != 0)
     {
         VuMultiplyMatrices(matrix, object, &out);
@@ -1153,7 +1131,7 @@ void TransformVectorThroughLink(const ChunkLinkData* link, Vector4* vector, u32 
     rows.m[2][2] = 1.0f;
     *RowOf(&rows, 3) = *vector;
     Matrix4x4 out;
-    const auto* object = reinterpret_cast<const Matrix4x4*>(link->objectMatrix);
+    const Matrix4x4* object = &link->objectMatrix;
     if (whole != 0)
     {
         VuMultiplyMatrices(&rows, object, &out);
@@ -1186,14 +1164,13 @@ u32 LinkTakesInstance(const ChunkLinkData* link, InstanceContext* instance)
         return LoadWallHolds(wall, &position);
     }
 
-    if (link->linkedData == nullptr || (link->flags & ChunkLinkData::LinkedRm2Loaded) == 0 ||
-        (link->flags & ChunkLinkData::KeepMask) == 0)
+    if (link->linkedData == nullptr || link->flags.linkedRm2Loaded == 0 || link->flags.keep == 0)
     {
         return 0;
     }
 
     SceneryCell* root = RootOf(link->linkedData);
-    return CellOfInstance(root, instance, reinterpret_cast<const Matrix4x4*>(link->objectMatrix)) != nullptr;
+    return CellOfInstance(root, instance, &link->objectMatrix) != nullptr;
 }
 
 // The wall's plane through three of its corners, then its edges' planes (each through an edge along the wall's normal, facing
@@ -1203,7 +1180,7 @@ void BuildLoadWall(LoadWall* wall, const Vector4* corners)
     PlaneFromTriangle(&wall->plane, &corners[0], &corners[2], &corners[1]);
     PlaneSideOf(&wall->plane, &g_DefaultBox.min);
     Vector4 middle = g_DefaultBox.min;
-    for (u32 corner = 0; corner < 4; corner++)
+    for (u32 corner = 0; corner < WallCorners; corner++)
     {
         wall->corners[corner] = corners[corner];
         middle.x = middle.x + corners[corner].x;
@@ -1214,14 +1191,14 @@ void BuildLoadWall(LoadWall* wall, const Vector4* corners)
     middle.z = middle.z * 0.25f;
     middle.x = middle.x * 0.25f;
     middle.y = middle.y * 0.25f;
-    Vector4 planes[4];
+    Vector4 planes[WallCorners];
     Vector4 along = {wall->plane.x, wall->plane.y, wall->plane.z, 1.0f};
-    for (u32 edge = 0; edge < 4; edge++)
+    for (u32 edge = 0; edge < WallCorners; edge++)
     {
         Vector4 from = corners[edge];
-        Vector4 to = corners[(edge + 1) & 3];
+        Vector4 to = corners[(edge + 1) % WallCorners];
         PlaneThroughEdge(&planes[edge], &from, &to, &along);
-        if (PlaneSideOf(&planes[edge], &middle) == 3)
+        if (PlaneSideOf(&planes[edge], &middle) == BehindPlane)
         {
             planes[edge].x = -planes[edge].x;
             planes[edge].y = -planes[edge].y;
@@ -1230,7 +1207,7 @@ void BuildLoadWall(LoadWall* wall, const Vector4* corners)
         }
     }
 
-    for (u32 edge = 0; edge < 4; edge++)
+    for (u32 edge = 0; edge < WallCorners; edge++)
     {
         const f32* plane = &planes[edge].x;
         for (u32 component = 0; component < 4; component++)
@@ -1245,7 +1222,7 @@ void BuildLoadWall(LoadWall* wall, const Vector4* corners)
 void PortalPlanes(const LoadWall* wall, Vector4* planes, const Vector4* eye)
 {
     Vector4 middle = wall->corners[0];
-    for (u32 corner = 1; corner < 4; corner++)
+    for (u32 corner = 1; corner < WallCorners; corner++)
     {
         middle.x = middle.x + wall->corners[corner].x;
         middle.y = middle.y + wall->corners[corner].y;
@@ -1262,28 +1239,28 @@ void PortalPlanes(const LoadWall* wall, Vector4* planes, const Vector4* eye)
     PlaneOfCorners(planes, 0, triangle);
     FacePlaneTowards(planes, 0, &middle);
     triangle[0] = *eye;
-    for (s32 edge = 0; edge < 4; edge++)
+    for (s32 edge = 0; edge < static_cast<s32>(WallCorners); edge++)
     {
-        s32 next = edge + 1 < 4 ? edge + 1 : 0;
+        s32 next = edge + 1 < static_cast<s32>(WallCorners) ? edge + 1 : 0;
         triangle[1] = wall->corners[edge];
         triangle[2] = wall->corners[next];
         PlaneOfCorners(planes, edge + 1, triangle);
         FacePlaneTowards(planes, edge + 1, &middle);
     }
 
-    PlaneOfCorners(planes, 5, triangle);
+    PlaneOfCorners(planes, ViewPlaneCount - 1, triangle);
 }
 
-// A point in front of the wall's plane by less than 2 and inside its four edges
+// A point in front of the wall's plane by less than its reach and inside its four edges
 u32 LoadWallHolds(const LoadWall* wall, const Vector4* point)
 {
     f32 distance = ((wall->plane.x * point->x + wall->plane.y * point->y) + wall->plane.z * point->z) + wall->plane.w;
-    if (!(distance < 2.0f) || !(0.0f < distance))
+    if (!(distance < WallReach) || !(0.0f < distance))
     {
         return 0;
     }
 
-    if (PlaneSideOf(&wall->plane, point) != 1)
+    if (PlaneSideOf(&wall->plane, point) != InFrontOfPlane)
     {
         return 0;
     }
@@ -1293,44 +1270,45 @@ u32 LoadWallHolds(const LoadWall* wall, const Vector4* point)
     return 0.0f <= sides.x && 0.0f <= sides.y && 0.0f <= sides.z && 0.0f <= sides.w;
 }
 
-ChunkLinkData* LinkMatricesConstruct(ChunkLinkData* data)
+ChunkLinkData* ConstructChunkLinkData(ChunkLinkData* link)
 {
-    data->linkedData = nullptr;
-    data->next = nullptr;
-    data->previous = nullptr;
-    data->loadWall = nullptr;
-    data->flags = 0;
-    return data;
+    link->linkedData = nullptr;
+    link->next = nullptr;
+    link->previous = nullptr;
+    link->loadWall = nullptr;
+    link->flags.value = 0;
+    return link;
 }
 
-void LinkMatricesDestroy(ChunkLinkData* data, u32 flags)
+void DestroyChunkLinkData(ChunkLinkData* link, u32 flags)
 {
-    if (data->loadWall != nullptr)
+    if (link->loadWall != nullptr)
     {
-        LoadWallDestroy(static_cast<LoadWall*>(data->loadWall), 3);
+        LoadWallDestroy(static_cast<LoadWall*>(link->loadWall), DestroyAndFree);
     }
 
     if ((flags & 1) != 0)
     {
-        MemoryDeallocate2_(data);
+        MemoryDeallocate2_(link);
     }
 }
 
-// Its flags (bits 16 to 18 cleared), its object and chunk matrices and, with bit 19, its load wall
-void LinkMatricesRead(ChunkLinkData* data, Stream* reader)
+// Its flags (what the loading sets cleared), its object and chunk matrices and, when the flags say so, its load wall
+void ReadChunkLinkData(ChunkLinkData* link, Stream* reader)
 {
-    constexpr u32 ReadCleared = 0x70000;
-    reader->Read(&data->flags, 4, 1);
-    data->flags &= ~ReadCleared;
-    reader->Read(data->objectMatrix, sizeof(data->objectMatrix), 1);
-    reader->Read(data->chunkMatrix, sizeof(data->chunkMatrix), 1);
-    if ((data->flags & ChunkLinkData::HasLoadWall) == 0)
+    reader->Read(&link->flags, sizeof(link->flags), 1);
+    link->flags.inList = 0;
+    link->flags.hasLinkedData = 0;
+    link->flags.linkedRm2Loaded = 0;
+    reader->Read(&link->objectMatrix, sizeof(link->objectMatrix), 1);
+    reader->Read(&link->chunkMatrix, sizeof(link->chunkMatrix), 1);
+    if (link->flags.hasLoadWall == 0)
     {
-        data->loadWall = nullptr;
+        link->loadWall = nullptr;
         return;
     }
 
-    data->loadWall = LoadLoadWall(static_cast<LoadWall*>(MemoryAllocate(sizeof(LoadWall))), reader);
+    link->loadWall = LoadLoadWall(static_cast<LoadWall*>(MemoryAllocate(sizeof(LoadWall))), reader);
 }
 
 // A rotation turned by the link's object matrix
@@ -1341,7 +1319,7 @@ void TransformRotationThroughLink(const ChunkLinkData* link, Vector4* rotation)
     *RowOf(&turn, 3) = g_DefaultBox.min;
     turn.m[3][3] = 1.0f;
     Matrix4x4 turned;
-    VuMultiplyMatrices(&turn, reinterpret_cast<const Matrix4x4*>(link->objectMatrix), &turned);
+    VuMultiplyMatrices(&turn, &link->objectMatrix, &turned);
     GetRotationVec(rotation, &turned);
 }
 
@@ -1381,7 +1359,7 @@ void WallMiddle(const Vector4* corners, Vector4* middle)
     f32 x = 0.0f;
     f32 y = 0.0f;
     f32 z = 0.0f;
-    for (u32 corner = 0; corner < 4; corner++)
+    for (u32 corner = 0; corner < WallCorners; corner++)
     {
         x = middle->x + corners[corner].x;
         middle->x = x;
@@ -1398,7 +1376,7 @@ void WallMiddle(const Vector4* corners, Vector4* middle)
 
 void TransformPlanes(Vector4* planes, const Matrix4x4* matrix)
 {
-    for (u32 plane = 0; plane < 6; plane++)
+    for (u32 plane = 0; plane < ViewPlaneCount; plane++)
     {
         TransformPlaneInPlace(&planes[plane], matrix);
     }
@@ -1413,7 +1391,7 @@ void TransformPlaneOf(const Vector4* planes, s32 index, const Matrix4x4* matrix,
 void FacePlaneTowards(Vector4* planes, s32 index, const Vector4* point)
 {
     Vector4* plane = &planes[index];
-    if (PlaneSideOf(plane, point) == 3)
+    if (PlaneSideOf(plane, point) == BehindPlane)
     {
         plane->x = -plane->x;
         plane->y = -plane->y;
@@ -1431,50 +1409,50 @@ void PlaneOfCorners(Vector4* planes, s32 index, const Vector4* corners)
 // it, the draw matrix's inverse)
 void SetUpChunkView(Matrix4x4* matrices, ChunkView* view, const ObjectPlace* place)
 {
-    matrices[0] = place->matrix;
-    Platform::Graphics::LoadChunkPlanes(&matrices[0]);
+    matrices[ChunkView::CameraMatrix] = place->matrix;
+    Platform::Graphics::LoadChunkPlanes(&matrices[ChunkView::CameraMatrix]);
     view->matrices = matrices;
-    VuMultiplyMatrices(&matrices[2], &view->view->toScreen, &matrices[1]);
-    VuInvertRigid(&matrices[3], &matrices[2]);
+    VuMultiplyMatrices(&matrices[ChunkView::DrawMatrix], &view->view->toScreen, &matrices[ChunkView::ToScreenMatrix]);
+    VuInvertRigid(&matrices[ChunkView::DrawInverseMatrix], &matrices[ChunkView::DrawMatrix]);
 }
 
 // The same through a portal's planes
 void SetUpLinkedChunkView(Matrix4x4* matrices, ChunkView* view, const ObjectPlace* place, const Vector4* portal)
 {
-    matrices[0] = place->matrix;
-    Platform::Graphics::LoadPortalPlanes(&matrices[0], portal);
+    matrices[ChunkView::CameraMatrix] = place->matrix;
+    Platform::Graphics::LoadPortalPlanes(&matrices[ChunkView::CameraMatrix], portal);
     view->matrices = matrices;
-    VuMultiplyMatrices(&matrices[2], &view->view->toScreen, &matrices[1]);
-    VuInvertRigid(&matrices[3], &matrices[2]);
+    VuMultiplyMatrices(&matrices[ChunkView::DrawMatrix], &view->view->toScreen, &matrices[ChunkView::ToScreenMatrix]);
+    VuInvertRigid(&matrices[ChunkView::DrawInverseMatrix], &matrices[ChunkView::DrawMatrix]);
 }
 
 // The chunk a link leads to drawn when it's shown and visible: its draw matrix the link's chunk matrix, through a linked view,
-// the camera's place taken into it, seen through the load wall's portal when the wall was partly in view
+// the camera's place taken into it, seen through the load wall's portal when the wall was wholly in view
 void DrawLinkedChunk(ChunkLinkData* link, ChunkView* view, const ObjectPlace* place, s32 depth)
 {
     ChunkData* linked = link->linkedData;
-    if (linked == nullptr || (link->flags & ChunkLinkData::HasLinkedData) == 0 || (link->flags & LinkVisibilityMask) == 0)
+    if (linked == nullptr || link->flags.hasLinkedData == 0 || link->flags.visibility == ChunkLinkData::VisibilityHidden)
     {
         return;
     }
 
-    const auto* chunkMatrix = reinterpret_cast<const Matrix4x4*>(link->chunkMatrix);
-    const auto* objectMatrix = reinterpret_cast<const Matrix4x4*>(link->objectMatrix);
+    const Matrix4x4* chunkMatrix = &link->chunkMatrix;
+    const Matrix4x4* objectMatrix = &link->objectMatrix;
     linked->drawMatrix = *chunkMatrix;
     LinkedChunkView linkedView;
     LinkedChunkView::Construct(&linkedView, chunkMatrix, objectMatrix);
     linkedView.camera = view->camera;
     ObjectPlace moved;
     VuMultiplyMatrices(&place->matrix, objectMatrix, &moved.matrix);
-    Vector4 portal[6];
+    Vector4 portal[ViewPlaneCount];
     const Vector4* through = nullptr;
     bool walled = false;
     if (link->loadWall != nullptr)
     {
-        walled = !((link->flags & LinkVisibilityMask) < 2);
+        walled = link->flags.visibility >= ChunkLinkData::VisibilityThroughWall;
     }
 
-    if (walled && ((link->flags & LinkWallMask) >> LinkWallShift) == 1)
+    if (walled && link->flags.wallView == ChunkView::InView)
     {
         PortalPlanes(static_cast<const LoadWall*>(link->loadWall), portal, reinterpret_cast<const Vector4*>(&place->matrix.m[3][0]));
         TransformPlanes(portal, objectMatrix);
@@ -1483,60 +1461,58 @@ void DrawLinkedChunk(ChunkLinkData* link, ChunkView* view, const ObjectPlace* pl
 
     DrawChunk(link->linkedData, &linkedView, &moved, depth, through);
     linkedView.vtable = g_LinkedChunkViewVTable;
-    linkedView.ChunkView::Destroy(2);
+    linkedView.ChunkView::Destroy(DestroyOnly);
 }
 
-// Which links' walls are in view (bits 14 and 15 of their flags): a wall's box tested while the last one's outcome is read; a
-// link without a wall or always shown counts as in view
+// Which links' walls are in view (their flags' wallView): a wall's box tested while the last one's outcome is read; a link
+// without a wall or always shown counts as wholly in view
 void LinksVisibility(ChunkData* chunk, ChunkView* view)
 {
     ChunkLinkData* tested = nullptr;
     for (ChunkLinkData* link = chunk->links; link != nullptr; link = link->next)
     {
         auto* wall = static_cast<const LoadWall*>(link->loadWall);
-        if (wall == nullptr || (link->flags & LinkVisibilityMask) == 1)
+        if (wall == nullptr || link->flags.visibility == ChunkLinkData::VisibilityAlways)
         {
-            link->flags = (link->flags & ~LinkWallMask) | (1 << LinkWallShift);
+            link->flags.wallView = ChunkView::InView;
             continue;
         }
 
         Box box;
         ResetBox(&box);
-        for (u32 corner = 0; corner < 4; corner++)
+        for (u32 corner = 0; corner < WallCorners; corner++)
         {
             GrowBoxByPoint(&box, &wall->corners[corner]);
         }
 
         if (tested != nullptr)
         {
-            u32 visibility = view->CellResult();
-            tested->flags = (tested->flags & ~LinkWallMask) | (visibility & 3) << LinkWallShift;
+            tested->flags.wallView = view->CellResult();
         }
 
-        CallVirtual<void>(view, view->vtable, ViewTestCell, &box);
+        CallVirtual<void>(view, view->vtable, ChunkView::SlotTestCell, &box);
         tested = link;
     }
 
     if (tested != nullptr)
     {
-        u32 visibility = view->CellResult();
-        tested->flags = (tested->flags & ~LinkWallMask) | (visibility & 3) << LinkWallShift;
+        tested->flags.wallView = view->CellResult();
     }
 }
 
-// A chunk's scenery drawn once a frame (bit 22: it has a root; the low half of its bits the frame it was drawn in; bit 23:
-// something of it was), then the chunks its links lead to, a level deeper each
+// A chunk's scenery drawn once a frame (its flags say whether it has a root, the frame it was drawn in and whether something
+// of it was), then the chunks its links lead to, a level deeper each
 void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 depth, const Vector4* portal)
 {
     bool hasRoot = chunk->scenery != nullptr;
-    chunk->bits = (chunk->bits & ~HasRootBit) | (hasRoot ? HasRootBit : 0);
+    chunk->flags.hasRoot = hasRoot;
     u32 frame = g_RenderedFrames;
-    if (!hasRoot || (chunk->bits & 0xFFFF) == (frame & 0xFFFF))
+    if (!hasRoot || chunk->flags.drawStamp == static_cast<u16>(frame))
     {
         return;
     }
 
-    *reinterpret_cast<u16*>(&chunk->bits) = static_cast<u16>(frame);
+    chunk->flags.drawStamp = frame;
     auto* matrices = &chunk->matrix;
     if (portal == nullptr)
     {
@@ -1549,9 +1525,10 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
 
     chunk->drawnFrame = frame;
     SceneryCell* root = RootOf(chunk);
-    s32 drawn = static_cast<s32>(CallVirtual<u32>(root, root->vtable, SlotRender, 2, view, chunk));
+    // Its root tested like a partly visible cell's child
+    s32 drawn = static_cast<s32>(root->VirtualRender(ChunkView::PartlyInView, view, chunk));
     DrawDeferredInstances(view);
-    chunk->bits = (chunk->bits & ~DrawnBit) | (0 < drawn ? DrawnBit : 0);
+    chunk->flags.drawn = 0 < drawn;
     if (g_DrawLinkedChunks == 0 || !(0 < depth))
     {
         return;
@@ -1560,7 +1537,7 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
     LinksVisibility(chunk, view);
     for (ChunkLinkData* link = chunk->links; link != nullptr; link = link->next)
     {
-        if ((link->flags & LinkWallMask) != 0)
+        if (link->flags.wallView != ChunkView::OutOfView)
         {
             DrawLinkedChunk(link, view, place, depth - 1);
         }
@@ -1572,17 +1549,17 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
 void DrawChunkShadows(ChunkData* chunk, s32 depth, const Matrix4x4* toCamera, const Matrix4x4* matrix)
 {
     ChunkShadows* shadows = chunk->shadows;
-    if ((chunk->bits & ChunkData::StateMask) == ChunkData::Shown && shadows != nullptr && *shadows->currentCount != 0)
+    if (chunk->flags.state == ChunkShown && shadows != nullptr && *shadows->currentCount != 0)
     {
-        if ((chunk->bits & DrawnBit) == 0)
+        if (chunk->flags.drawn == 0)
         {
             shadows->Swap();
         }
         else
         {
-            Vector4 planes[6];
+            Vector4 planes[ViewPlaneCount];
             const Vector4* view = Platform::Graphics::ViewPlanes();
-            for (u32 plane = 0; plane < 6; plane++)
+            for (u32 plane = 0; plane < ViewPlaneCount; plane++)
             {
                 planes[plane] = view[plane];
             }
@@ -1602,9 +1579,9 @@ void DrawChunkShadows(ChunkData* chunk, s32 depth, const Matrix4x4* toCamera, co
     for (ChunkLinkData* link = chunk->links; link != nullptr; link = link->next)
     {
         ChunkData* linked = link->linkedData;
-        if (linked != nullptr && (link->flags & ChunkLinkData::HasLinkedData) != 0 && (link->flags & LinkVisibilityMask) != 0)
+        if (linked != nullptr && link->flags.hasLinkedData != 0 && link->flags.visibility != ChunkLinkData::VisibilityHidden)
         {
-            DrawChunkShadows(linked, depth - 1, toCamera, reinterpret_cast<const Matrix4x4*>(link->chunkMatrix));
+            DrawChunkShadows(linked, depth - 1, toCamera, &link->chunkMatrix);
         }
     }
 }
@@ -1613,19 +1590,21 @@ void DrawChunkShadows(ChunkData* chunk, s32 depth, const Matrix4x4* toCamera, co
 // the instances
 void DrawScene(ChunkData* chunk, const ObjectPlace* place, RenderView* renderView)
 {
+    // The clipped instances go in the frame's list from its end
+    constexpr s32 LastDrawnSlot = sizeof(g_DrawnInstances) / sizeof(g_DrawnInstances[0]) - 1;
     ChunkView view;
     ChunkView::ConstructFor(&view, renderView);
     g_DeferredClippedCount = 0;
-    g_DrawnClippedEnd = 0x3FF;
+    g_DrawnClippedEnd = LastDrawnSlot;
     g_DeferredInViewCount = 0;
-    g_Unknown30ACAC = 0;
+    g_DeferredUnusedCount = 0;
     g_DrawnInViewCount = 0;
     g_DrawnInstanceCount = 0;
     view.camera = *reinterpret_cast<const Vector4*>(&place->matrix.m[3][0]);
     view.Load();
     DrawChunk(chunk, &view, place, 1, nullptr);
     DrawQueuedInstances();
-    view.Destroy(2);
+    view.Destroy(DestroyOnly);
 }
 
 void DrawShadows(ChunkData* chunk, const Matrix4x4* toCamera, const Matrix4x4* matrix)
@@ -1663,28 +1642,29 @@ void DrawDeferredInstances(ChunkView* view)
     g_DeferredClippedCount = 0;
 }
 
-// The reverb's settings (its type byte, its bits 8 and 9, delay, feedback and depth), and the box reverb's
+// The reverb's settings (the command's arguments have their layout: the type and bits, delay, feedback and depth), and the box
+// reverb's
 void SetChunkReverb(ChunkData* chunk, const void* arguments)
 {
-    const auto* words = static_cast<const u32*>(arguments);
+    const auto* given = static_cast<const ReverbSettings*>(arguments);
     ReverbSettings* reverb = &chunk->reverb;
-    *reinterpret_cast<u8*>(&reverb->bits) = static_cast<u8>(words[0]);
-    reverb->bits = (reverb->bits & ~0x100u) | (words[0] & 0x100);
-    reverb->bits = (reverb->bits & ~0x200u) | (words[0] & 0x200);
-    reverb->depth = *reinterpret_cast<const f32*>(&words[3]);
-    reverb->delay = *reinterpret_cast<const f32*>(&words[1]);
-    reverb->feedback = *reinterpret_cast<const f32*>(&words[2]);
+    reverb->bits.type = given->bits.type;
+    reverb->bits.unused8 = given->bits.unused8;
+    reverb->bits.unused9 = given->bits.unused9;
+    reverb->depth = given->depth;
+    reverb->delay = given->delay;
+    reverb->feedback = given->feedback;
 }
 
 void SetChunkBoxReverb(ChunkData* chunk, const void* arguments)
 {
-    const auto* words = static_cast<const u32*>(arguments);
+    const auto* given = static_cast<const ReverbSettings*>(arguments);
     ReverbSettings* reverb = &chunk->boxReverb;
-    *reinterpret_cast<u8*>(&reverb->bits) = static_cast<u8>(words[0]);
-    reverb->bits = (reverb->bits & ~0x100u) | (words[0] & 0x100);
-    reverb->bits = (reverb->bits & ~0x200u) | (words[0] & 0x200);
-    reverb->depth = *reinterpret_cast<const f32*>(&words[3]);
-    reverb->delay = *reinterpret_cast<const f32*>(&words[1]);
-    reverb->feedback = *reinterpret_cast<const f32*>(&words[2]);
+    reverb->bits.type = given->bits.type;
+    reverb->bits.unused8 = given->bits.unused8;
+    reverb->bits.unused9 = given->bits.unused9;
+    reverb->depth = given->depth;
+    reverb->delay = given->delay;
+    reverb->feedback = given->feedback;
 }
 }

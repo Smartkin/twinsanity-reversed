@@ -49,21 +49,53 @@ enum PadAxis : u32
     PadAxisCount = 6,
 };
 
+// The report's buttons (pressed = 1)
+union PadReportButtons
+{
+    u32 value;
+    struct
+    {
+        u32 l2 : 1;
+        u32 r2 : 1;
+        u32 l1 : 1;
+        u32 r1 : 1;
+        u32 triangle : 1;
+        u32 circle : 1;
+        u32 cross : 1;
+        u32 square : 1;
+        u32 select : 1;
+        u32 l3 : 1;
+        u32 r3 : 1;
+        u32 start : 1;
+        u32 up : 1;
+        u32 right : 1;
+        u32 down : 1;
+        u32 left : 1;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(PadReportButtons, 4);
+
+// A pad's flags: the report's buttons released this frame (as PadReportButtons), its analog and pressure sensitive modes set up,
+// read this frame, and dead zones of 32 for the sticks' raw values (nothing sets it)
+union PadInformationFlags
+{
+    u64 value;
+    struct
+    {
+        u64 released : 32;
+        u64 analog : 1;
+        u64 pressure : 1;
+        u64 read : 1;
+        u64 stickDeadZones : 1;
+        u64 unused36 : 28;
+    };
+};
+CHECK_SIZE(PadInformationFlags, 8);
+
 // A pad's driver state and readings. Other code reads its fields as they are
 struct GamePadInformation
 {
-    enum Flags : u64
-    {
-        // The low 32 bits are the buttons released
-        FlagAnalog = 1ull << 32,
-        FlagPressure = 1ull << 33,
-        // It was read this frame
-        FlagRead = 1ull << 34,
-        // The sticks' raw values get a dead zone of 32
-        FlagStickDeadZones = 1ull << 35,
-        FlagsSetUp = FlagAnalog | FlagPressure | FlagRead,
-    };
-
     // The driver's 256 bytes, at the first 64 byte boundary
     u8 driverMemory[0x500];
     s32 port;
@@ -92,17 +124,17 @@ struct GamePadInformation
     // The motors: the small one on or off and the big one's strength, and which motor each actuator is
     u8 actuatorValues[6];
     u8 actuatorAlign[6];
-    // The report's buttons (pressed = 1: bits 0-7 L2, R2, L1, R1, Triangle, Circle, Cross, Square, bits 8-15 Select, L3, R3, Start,
-    // Up, Right, Down, Left), the last frame's, and the ones pressed since
-    u32 buttons;
-    u32 lastButtons;
-    u32 pressed;
-    u64 flags;
-    u32 unknown570;
-    // The driver's report: the mode at 1, the buttons at 2 and 3 (pressed = 0), the sticks at 4-7 (right x, y, left x, y, 128 in the
+    // The report's buttons, the last frame's, and the ones pressed since
+    PadReportButtons buttons;
+    PadReportButtons lastButtons;
+    PadReportButtons pressed;
+    PadInformationFlags flags;
+    u32 unused570;
+    // The driver's report: the mode at 1, the buttons at 2 and 3 (pressed = 0: Select, L3, R3, Start, Up, Right, Down, Left, then
+    // L2, R2, L1, R1, Triangle, Circle, Cross, Square from the lowest bit), the sticks at 4-7 (right x, y, left x, y, 128 in the
     // middle), the pressures at 8-19 (right, left, up, down, triangle, circle, cross, square, L1, R1, L2, R2)
     u8 report[32];
-    u8 unknown594[0xDA0 - 0x594];
+    u8 unused594[0xDA0 - 0x594];
 };
 CHECK_SIZE(GamePadInformation, 0xDA0);
 CHECK_OFFSET(GamePadInformation, port, 0x500);
@@ -125,21 +157,26 @@ struct GamePad : PadButtons
 };
 CHECK_SIZE(GamePad, 0xC);
 
+// A vibration request's bits: its pad's index + 1 (0 when there's none), to send to the pad, the small motor on and the big
+// motor's strength
+union VibrationBits
+{
+    u32 value;
+    struct
+    {
+        u32 pad : 5;
+        u32 pending : 1;
+        u32 smallMotor : 1;
+        u32 bigMotor : 8;
+        u32 unused15 : 17;
+    };
+};
+CHECK_SIZE(VibrationBits, 4);
+
 // A request to vibrate a pad for a time
 struct VibrationRequest
 {
-    enum Bits : u32
-    {
-        // The pad's index + 1, 0 when there's none
-        Pad = 0x1F,
-        // To send to the pad
-        Pending = 0x20,
-        SmallMotor = 0x40,
-        BigMotorShift = 7,
-        BigMotor = 0xFF << BigMotorShift,
-    };
-
-    u32 bits;
+    VibrationBits bits;
     f32 seconds;
 };
 CHECK_SIZE(VibrationRequest, 8);
@@ -150,43 +187,57 @@ constexpr u32 MaxPads = 8;
 class PadControllerInterface
 {
 public:
+    enum Slot : u32
+    {
+        UpdateSlot = 2,
+        DestroySlot = 4,
+        PauseSlot = 5,
+        ResumeSlot = 6,
+    };
+
     const GccVTableEntry* vtable;
 
     // Returns 0 when pad 0 is plugged in and a pad couldn't be read
     u32 Update(f32 seconds)
     {
-        return CallVirtual<u32>(this, vtable, 2, seconds);
+        return CallVirtual<u32>(this, vtable, UpdateSlot, seconds);
     }
 
     void Destroy(u32 flags)
     {
-        CallVirtual<void>(this, vtable, 4, flags);
+        CallVirtual<void>(this, vtable, DestroySlot, flags);
     }
 
     void Pause()
     {
-        CallVirtual<void>(this, vtable, 5);
+        CallVirtual<void>(this, vtable, PauseSlot);
     }
 
     void Resume()
     {
-        CallVirtual<void>(this, vtable, 6);
+        CallVirtual<void>(this, vtable, ResumeSlot);
     }
 };
+
+// The pad controller's flags: a bit per pad made, paused (the motors stopped), the vibration on
+union PadControllerFlags
+{
+    u32 value;
+    struct
+    {
+        u32 pads : 8;
+        u32 paused : 1;
+        u32 vibration : 1;
+        u32 unused10 : 22;
+    };
+};
+CHECK_SIZE(PadControllerFlags, 4);
 
 class GamePadController : public PadControllerInterface
 {
 public:
-    enum Flags : u32
-    {
-        // A bit per pad made
-        FlagsPads = 0xFF,
-        FlagPaused = 0x100,
-        FlagVibration = 0x200,
-    };
-
     GamePad* pads[MaxPads];
-    u32 flags;
+    PadControllerFlags flags;
 
     // Waits 60 frames for pad 0 to be set up
     static GamePadController* Construct(void* memory, s32 padCount) RETAIL(FUN_002b2a10);

@@ -22,7 +22,7 @@ extern "C"
     extern const GccVTableEntry g_ObjectSectionReaderVTable[] RETAIL(ObjectsSectionReader_Methods);
     void ObjectReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_00268438);
     u32 ObjectReaderCount(CodeKindReader* reader) RETAIL(GetSubItemsAmount_0026D168);
-    u32 ObjectReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0026d1c0);
+    u32 ObjectReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0026d1c0);
     u32 ObjectReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0026d1c8);
     void* ObjectReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetObjectSectionReader);
     void ObjectReaderClear(CodeKindReader* reader) RETAIL(FUN_0026d2a0);
@@ -31,7 +31,7 @@ extern "C"
     extern const GccVTableEntry g_BehaviourSectionReaderVTable[] RETAIL(ScriptSubItemReader_Methods);
     void BehaviourReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_00268468);
     u32 BehaviourReaderCount(CodeKindReader* reader) RETAIL(GetSubSectionAmount_0026CF80);
-    u32 BehaviourReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0026cfd8);
+    u32 BehaviourReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0026cfd8);
     u32 BehaviourReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0026cfe0);
     void* BehaviourReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetScriptSectionItemReader);
     void BehaviourReaderClear(CodeKindReader* reader) RETAIL(FUN_0026d0b8);
@@ -40,7 +40,7 @@ extern "C"
     extern const GccVTableEntry g_AnimationSectionReaderVTable[] RETAIL(AnimationSectionReader_methods);
     void AnimationReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_00268498);
     u32 AnimationReaderCount(CodeKindReader* reader) RETAIL(GetSubItemsAmount_0026CD98);
-    u32 AnimationReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0026cdf0);
+    u32 AnimationReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0026cdf0);
     u32 AnimationReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0026cdf8);
     void* AnimationReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetAnimationItemReader);
     void AnimationReaderClear(CodeKindReader* reader) RETAIL(FUN_0026ced0);
@@ -49,7 +49,7 @@ extern "C"
     extern const GccVTableEntry g_ModelSectionReaderVTable[] RETAIL(OgiReader_Methods);
     void ModelReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_002684c8);
     u32 ModelReaderCount(CodeKindReader* reader) RETAIL(GetOgiSubItemsAmount);
-    u32 ModelReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0026cc08);
+    u32 ModelReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0026cc08);
     u32 ModelReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0026cc10);
     void* ModelReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetOgiItemReader);
     void ModelReaderClear(CodeKindReader* reader) RETAIL(FUN_0026cce8);
@@ -58,7 +58,7 @@ extern "C"
     extern const GccVTableEntry g_CodeModelSectionReaderVTable[] RETAIL(D_003048A8);
     void CodeModelReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_002684f8);
     u32 CodeModelReaderCount(CodeKindReader* reader) RETAIL(GetCodeModelSubItemsAmount);
-    u32 CodeModelReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0026ca20);
+    u32 CodeModelReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0026ca20);
     u32 CodeModelReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0026ca28);
     void* CodeModelReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetCodeModelSectionReader);
     void CodeModelReaderClear(CodeKindReader* reader) RETAIL(FUN_0026cb00);
@@ -67,7 +67,7 @@ extern "C"
     extern const GccVTableEntry g_SoundSectionReaderVTable[] RETAIL(SoundSectionReader_Methods);
     void SoundReaderDestroy(CodeKindReader* reader, u32 destroyFlags) RETAIL(FUN_00179538);
     u32 SoundReaderCount(CodeKindReader* reader) RETAIL(GetSubItemsAmount);
-    u32 SoundReaderSlot3(CodeKindReader* reader) RETAIL(FUN_0017c4e8);
+    u32 SoundReaderSectionType(CodeKindReader* reader) RETAIL(FUN_0017c4e8);
     u32 SoundReaderCanRead(CodeKindReader* reader, u32 type) RETAIL(FUN_0017c4f0);
     void* SoundReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32* size) RETAIL(GetSoundItemSectionReader);
     void SoundReaderClear(CodeKindReader* reader) RETAIL(FUN_0017c5c8);
@@ -92,8 +92,8 @@ extern "C"
     extern const GccVTableEntry g_SoundTableBaseVTable[] RETAIL(D_00304558);
     extern const GccVTableEntry g_ResourcesBaseVTable[] RETAIL(GameResourcesPrototype_Methods);
     extern const GccVTableEntry g_ResourcesVTable[] RETAIL(GameResources_Methods);
-    // The game's languages
-    extern const u8 g_ResourceLanguages[] RETAIL(D_002F4960);
+    // The tools' path of the levels' agents, which the game's resources keep and never read
+    extern const char g_LevelAgentsPath[] RETAIL(D_002F4960);
     // The code section's item and its readers of each kind
     extern const GccVTableEntry g_CodeItemVTable[] RETAIL(CodeSectionItemReader_Methods);
     extern const GccVTableEntry g_ObjectReaderVTable[] RETAIL(ObjectsItemFunctions);
@@ -165,25 +165,28 @@ extern "C"
 
 namespace
 {
-// A table's size
-constexpr u32 TableSize = 0x18;
-// A script's vtable is 0x18 bytes in: its destructor, and what a table's step 4 tells each script added (with the table)
-constexpr u32 ScriptVTableOffset = 0x18;
-constexpr u32 ScriptDestroySlot = 1;
-constexpr u32 ScriptResolveSlot = 3;
 // A table's vtable function that lets every resource go, and its destructor
 constexpr u32 TableClearSlot = 2;
 constexpr u32 TableDestroySlot = 1;
+// How many languages have voices (none for Japanese), and how many resources of each kind the game's tables have room for
+constexpr u32 VoiceLanguages = 5;
+constexpr u32 ObjectCapacity = 1500;
+constexpr u32 AnimationCapacity = 2500;
+constexpr u32 ScriptCapacity = 8000;
+constexpr u32 CodeModelCapacity = 200;
+constexpr u32 ModelCapacity = 1500;
+constexpr u32 SoundCapacity = 2000;
+constexpr u32 VoiceCapacity = 2000;
 
 // A table made with its base's vtable and a capacity, every resource none
-void ConstructTable(ResourceTable* table, const GccVTableEntry* base, u32 capacity, bool bit15)
+void ConstructTable(ResourceTable* table, const GccVTableEntry* base, u32 capacity, bool setsUnused15)
 {
     table->vtable = base;
-    table->unknown0C = 0;
+    table->unused0C = 0;
     table->queue = nullptr;
-    RetailLibc::MemorySet(table, 0, 4);
-    u32 bits = (table->bits & ~ResourceTable::CapacityMask) | (capacity & ResourceTable::CapacityMask);
-    table->bits = bit15 ? bits | ResourceTable::Bit15 : bits & ~ResourceTable::Bit15;
+    RetailLibc::MemorySet(&table->bits, 0, sizeof(table->bits));
+    table->bits.capacity = capacity;
+    table->bits.unused15 = setsUnused15 ? 1 : 0;
     table->items = static_cast<void**>(MemoryAllocate2(capacity * sizeof(void*)));
     table->order = static_cast<u16*>(MemoryAllocate2(capacity * sizeof(u16)));
     for (u32 index = 0; index < capacity; index++)
@@ -192,10 +195,10 @@ void ConstructTable(ResourceTable* table, const GccVTableEntry* base, u32 capaci
     }
 }
 
-ResourceTable* MakeTable(const GccVTableEntry* base, u32 capacity, bool bit15)
+ResourceTable* MakeTable(const GccVTableEntry* base, u32 capacity, bool setsUnused15)
 {
-    auto* table = static_cast<ResourceTable*>(MemoryAllocate(TableSize));
-    ConstructTable(table, base, capacity, bit15);
+    auto* table = static_cast<ResourceTable*>(MemoryAllocate(sizeof(ResourceTable)));
+    ConstructTable(table, base, capacity, setsUnused15);
     return table;
 }
 
@@ -212,7 +215,7 @@ DeletionQueue* MakeQueue()
 template <typename Release>
 void ReleaseAll(ResourceTable* table, Release release)
 {
-    for (u32 index = 0; index < table->Capacity(); index++)
+    for (u32 index = 0; index < table->bits.capacity; index++)
     {
         void* item = table->items[index];
         if (item != nullptr)
@@ -239,7 +242,7 @@ void DestroyTable(ResourceTable* table, u32 destroyFlags, const GccVTableEntry* 
         MemoryDeallocate_(table->order);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(table);
     }
@@ -252,8 +255,8 @@ void ReleaseObject(void* object)
 
 void ReleaseScript(void* script)
 {
-    auto* vtable = *reinterpret_cast<const GccVTableEntry**>(static_cast<u8*>(script) + ScriptVTableOffset);
-    CallVirtual<void>(script, vtable, ScriptDestroySlot, u32{DestroyAndFree});
+    auto* resource = static_cast<ScriptResource*>(script);
+    CallVirtual<void>(resource, resource->vtable, ScriptResource::DestroySlot, u32{DestroyAndFree});
 }
 
 void ReleaseAnimation(void* animation)
@@ -315,36 +318,44 @@ u32 DeleteOldestGraphics(DeletionQueue* queue, void (*deleteItem)(Item*))
     return queue->DeleteFirst([deleteItem](void* item) { deleteItem(static_cast<Item*>(item)); });
 }
 
-// The game object of an ID (the ID 0xFFFF none)
+// The game object of an ID (NoObjectId none)
 GameObject* ObjectOf(GameResources* resources, u16 id)
 {
-    if (id == 0xFFFF)
+    if (id == NoObjectId)
     {
         return nullptr;
     }
 
-    return static_cast<GameObject*>(resources->objects->items[id & 0x7FFF]);
+    return static_cast<GameObject*>(resources->objects->items[id & ResourceIndexMask]);
 }
 }
 
 namespace
 {
-// The sections the code kinds' readers read
-constexpr u32 CodeKindSection = 1;
-// The code section's subsections (game/chunkfiles.h's CodeSubsectionReader): kind 5 has none, the voices of the language
-// played are read, and a subsection's reader reads its header
-constexpr u32 CodeKindNone = 5;
-constexpr u32 CodeKindVoices = 7;
-constexpr u32 CodeKindCount = 13;
-constexpr s32 CodeSubsectionHeaderSize = 0xC;
-// The tables' vtable functions the readers pass on to: the clear, the count of resources to come, the count read
+// The code section's subsections (game/chunkfiles.h's CodeSubsectionReader, TT Lab's CODE_*_SECTION): the objects, the scripts,
+// the animations, the models (OGIs), the code models, one never read, the sounds and the voices of six languages (the game has
+// five), of which the language played is read
+enum CodeSubsection : u32
+{
+    ObjectsSubsection = 0,
+    ScriptsSubsection = 1,
+    AnimationsSubsection = 2,
+    ModelsSubsection = 3,
+    CodeModelsSubsection = 4,
+    UnusedSubsection = 5,
+    SoundsSubsection = 6,
+    VoicesSubsection = 7,
+    CodeSubsectionCount = 13,
+};
+
+// The tables' vtable functions the readers pass on to: the count of resources to come, the count read
 constexpr u32 TableSetCountSlot = 3;
 constexpr u32 TableFinishSlot = 4;
 
 void DestroyReader(CodeKindReader* reader, u32 destroyFlags)
 {
     reader->vtable = g_ItemInterfaceVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(reader);
     }
@@ -360,7 +371,7 @@ u32 CountResources(CodeKindReader* reader)
     }
 
     u32 count = 0;
-    u32 capacity = table->Capacity();
+    u32 capacity = table->bits.capacity;
     for (u32 index = 0; index < capacity; index++)
     {
         if (table->items[index] != nullptr)
@@ -382,8 +393,8 @@ void* ResourceReaderFor(CodeKindReader* reader, s32 index, ItemHeader* header, c
     }
 
     u32 id = header->id;
-    u16 shortId = static_cast<u16>(id);
-    void* existing = shortId != 0xFFFF ? table->items[shortId & 0x7FFF] : nullptr;
+    u16 tableId = static_cast<u16>(id);
+    void* existing = tableId != UndefinedId ? table->items[tableId & ResourceIndexMask] : nullptr;
     if (existing == nullptr)
     {
         auto* made = static_cast<ResourceSectionReader*>(MemoryAllocate(sizeof(ResourceSectionReader)));
@@ -395,10 +406,10 @@ void* ResourceReaderFor(CodeKindReader* reader, s32 index, ItemHeader* header, c
         return made;
     }
 
-    u32& bits = HeaderOf(existing)->bits;
-    if ((bits & ResourceHeader::Kept) == 0)
+    ResourceBits& bits = HeaderOf(existing)->bits;
+    if (bits.kept == 0)
     {
-        bits |= ResourceHeader::Kept;
+        bits.kept = 1;
     }
 
     return nullptr;
@@ -431,7 +442,7 @@ void TableFinish(CodeKindReader* reader, s32 read, u32 count, u32 end)
 
 void InitResourceQueues(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -449,14 +460,14 @@ void InitResourceQueues(s32 initialise, s32 priority)
 
 void ResourceQueuesStaticInit()
 {
-    InitResourceQueues(1, 0xFFFF);
+    InitResourceQueues(1, DefaultInitPriority);
 }
 
-GameResources* GameResources::ConstructBase(GameResources* resources, u32 languageCount, const void* languages)
+GameResources* GameResources::ConstructBase(GameResources* resources, u32 languageCount, const void* agentsPath)
 {
     resources->vtable = g_ResourcesBaseVTable;
     resources->languageCount = languageCount;
-    resources->languages = languages;
+    resources->unused04 = agentsPath;
     g_SkinTable.queue = &g_SkinQueue;
     g_BlendSkinTable.queue = &g_BlendSkinQueue;
     g_SkyTable.queue = &g_SkyQueue;
@@ -486,15 +497,15 @@ GameResources* GameResources::ConstructBase(GameResources* resources, u32 langua
 
 GameResources* GameResources::Construct(GameResources* resources)
 {
-    ConstructBase(resources, 5, g_ResourceLanguages);
+    ConstructBase(resources, VoiceLanguages, g_LevelAgentsPath);
     resources->vtable = g_ResourcesVTable;
-    resources->MakeObjectTable(1500);
-    resources->MakeAnimationTable(2500);
-    resources->MakeScriptTable(8000);
-    resources->MakeCodeModelTable(200);
-    resources->MakeModelTable(1500);
-    resources->MakeSoundTable(2000);
-    resources->MakeVoiceTables(2000);
+    resources->MakeObjectTable(ObjectCapacity);
+    resources->MakeAnimationTable(AnimationCapacity);
+    resources->MakeScriptTable(ScriptCapacity);
+    resources->MakeCodeModelTable(CodeModelCapacity);
+    resources->MakeModelTable(ModelCapacity);
+    resources->MakeSoundTable(SoundCapacity);
+    resources->MakeVoiceTables(VoiceCapacity);
     G_GameResourcesObjectPointer = resources;
     return resources;
 }
@@ -588,7 +599,7 @@ ResourceTable** GameResources::MakeVoiceTables(u32 capacity)
     return voices;
 }
 
-// The ID 0xFFFF has no object: retail reads its references at address 0x24
+// NoObjectId has no object: retail reads its references at address 0x24
 void GameResources::TakeObjects(const u32* objects)
 {
     const u16* ids = reinterpret_cast<const u16*>(objects + 1);
@@ -619,7 +630,7 @@ CodeItem* CodeItem::Construct(CodeItem* item, GameResources* resources, u32* obj
     item->models = {g_ModelReaderVTable, resources->models, nullptr};
     item->codeModels = {g_CodeModelReaderVTable, resources->codeModels, nullptr};
     item->sounds = {g_SoundTableItemVTable, resources->sounds, nullptr};
-    for (u32 language = 0; language < 6; language++)
+    for (u32 language = 0; language < CodeSubsectionCount - VoicesSubsection; language++)
     {
         ResourceTable** voices = resources->voices;
         ResourceTable* table = nullptr;
@@ -644,7 +655,7 @@ void CodeItem::Unload(u32 destroyFlags)
         reader->vtable = g_ItemInterfaceVTable;
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -657,18 +668,18 @@ SectionReader* CodeItemGetReader(CodeItem* item, s32, ItemHeader* header, s32* s
         return nullptr;
     }
 
-    u32 voices = CodeKindVoices + g_CurrentLanguage;
+    u32 voices = VoicesSubsection + g_CurrentLanguage;
     u32 kind = header->id;
     u32 start = header->offset;
-    if (kind < CodeKindCount)
+    if (kind < CodeSubsectionCount)
     {
-        if (kind >= CodeKindVoices)
+        if (kind >= VoicesSubsection)
         {
-            *size = kind == voices ? CodeSubsectionHeaderSize : 0;
+            *size = kind == voices ? sizeof(SectionHeader) : 0;
         }
-        else if (kind != CodeKindNone)
+        else if (kind != UnusedSubsection)
         {
-            *size = CodeSubsectionHeaderSize;
+            *size = sizeof(SectionHeader);
         }
     }
 
@@ -687,22 +698,22 @@ SectionReader* CodeItemGetReader(CodeItem* item, s32, ItemHeader* header, s32* s
 
 s32 CodeItem::SectionCount()
 {
-    return CodeKindCount;
+    return CodeSubsectionCount;
 }
 
-s32 CodeItem::Unknown3()
+s32 CodeItem::SectionType()
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 bool CodeItem::CanRead(u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void CodeItem::ReleaseResources()
 {
-    UnloadPendingResources(resources);
+    ReleaseCodeResources(resources);
 }
 
 void CodeItem::QueueSubsection(u32 kind, u32 start)
@@ -710,31 +721,31 @@ void CodeItem::QueueSubsection(u32 kind, u32 start)
     CodeKindReader* reader;
     switch (kind)
     {
-    case 0:
+    case ObjectsSubsection:
         reader = &objects;
         break;
-    case 1:
+    case ScriptsSubsection:
         reader = &behaviours;
         break;
-    case 2:
+    case AnimationsSubsection:
         reader = &animations;
         break;
-    case 3:
+    case ModelsSubsection:
         reader = &models;
         break;
-    case 4:
+    case CodeModelsSubsection:
         reader = &codeModels;
         break;
-    case 6:
+    case SoundsSubsection:
         reader = &sounds;
         break;
     default:
-        if (kind < CodeKindVoices || kind >= CodeKindCount)
+        if (kind < VoicesSubsection || kind >= CodeSubsectionCount)
         {
             return;
         }
 
-        reader = &voices[kind - CodeKindVoices];
+        reader = &voices[kind - VoicesSubsection];
         break;
     }
 
@@ -744,7 +755,7 @@ void CodeItem::QueueSubsection(u32 kind, u32 start)
 void CodeSubsectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -767,7 +778,7 @@ SoundTable* SoundTable::Construct(SoundTable* table, u32 count)
 
 void SoundTableQueueSamples(ResourceTable* table, s32 read, u32, u32 end)
 {
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     for (u32 index = 0; index < static_cast<u32>(read); index++)
     {
         auto* sound = static_cast<GameSound*>(table->items[table->order[index]]);
@@ -780,7 +791,7 @@ void SoundTableQueueSamples(ResourceTable* table, s32 read, u32, u32 end)
         u32 offset = end + sound->offset;
         auto* reader = static_cast<SoundBankReader*>(MemoryAllocate(sizeof(SoundBankReader)));
         reader = SoundBankReader::Construct(reader, reinterpret_cast<SoundBankEntry*>(sound), offset, size);
-        AddItemReaderToReaderStorage(storage, reader, 0);
+        AddItemReaderToReaderStorage(storage, reader, QueueBack);
     }
 }
 
@@ -827,7 +838,7 @@ void GameResources::DestroyBase(u32 destroyFlags)
         MemoryDeallocate2_(voiceQueues);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -898,7 +909,7 @@ u32 ResourcesStep(GameResources* resources)
     return deleted;
 }
 
-void UnloadPendingResources(GameResources* resources)
+void ReleaseCodeResources(GameResources* resources)
 {
     ResourceTable* const tables[] = {resources->objects, resources->scripts, resources->animations, resources->models,
                                      resources->codeModels, resources->sounds};
@@ -948,11 +959,11 @@ void ScriptTableResolve(ResourceTable* table, u32 count)
 {
     for (u32 added = 0; added < count; added++)
     {
-        void* script = table->items[table->order[added]];
+        auto* script = static_cast<ScriptResource*>(table->items[table->order[added]]);
         if (script != nullptr)
         {
-            auto* vtable = *reinterpret_cast<const GccVTableEntry**>(static_cast<u8*>(script) + ScriptVTableOffset);
-            CallVirtual<void>(script, vtable, ScriptResolveSlot, table);
+            // A table's step 4 tells each script added
+            CallVirtual<void>(script, script->vtable, ScriptResource::ResolveSlot, table);
         }
     }
 }
@@ -1080,14 +1091,14 @@ u32 ObjectReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 ObjectReaderSlot3(CodeKindReader*)
+u32 ObjectReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 ObjectReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* ObjectReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1120,14 +1131,14 @@ u32 BehaviourReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 BehaviourReaderSlot3(CodeKindReader*)
+u32 BehaviourReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 BehaviourReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* BehaviourReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1160,14 +1171,14 @@ u32 AnimationReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 AnimationReaderSlot3(CodeKindReader*)
+u32 AnimationReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 AnimationReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* AnimationReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1200,14 +1211,14 @@ u32 ModelReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 ModelReaderSlot3(CodeKindReader*)
+u32 ModelReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 ModelReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* ModelReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1240,14 +1251,14 @@ u32 CodeModelReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 CodeModelReaderSlot3(CodeKindReader*)
+u32 CodeModelReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 CodeModelReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* CodeModelReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1280,14 +1291,14 @@ u32 SoundReaderCount(CodeKindReader* reader)
     return CountResources(reader);
 }
 
-u32 SoundReaderSlot3(CodeKindReader*)
+u32 SoundReaderSectionType(CodeKindReader*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 SoundReaderCanRead(CodeKindReader*, u32 type)
 {
-    return type == CodeKindSection;
+    return type == DefaultSectionType;
 }
 
 void* SoundReaderGetReader(CodeKindReader* reader, s32 index, ItemHeader* header, s32*)
@@ -1331,15 +1342,12 @@ extern "C"
 
 namespace
 {
-// The loaders read their items from memory streams aligned like this
-constexpr u16 ItemAlignment = 0x40;
-
-// The resource read given the reader's ID and put in the table: at the low 15 bits of the ID, its index's place in the order of
-// the resources added and, when the reader has the chunk's list of object IDs, at its end
+// The resource read given the reader's ID and put in the table: at the ID's place (ResourceIndexMask), its index's place in the
+// order of the resources added and, when the reader has the chunk's list of object IDs, at its end
 void AddResource(ResourceSectionReader* reader, void* resource)
 {
-    static_cast<u32*>(resource)[1] = reader->id;
-    u16 id = static_cast<u16>(reader->id) & 0x7FFF;
+    HeaderOf(resource)->id = reader->id;
+    u16 id = static_cast<u16>(reader->id) & ResourceIndexMask;
     ResourceTable* table = reader->table;
     auto* objects = static_cast<u32*>(reader->objects);
     table->items[id] = resource;
@@ -1355,7 +1363,7 @@ void AddResource(ResourceSectionReader* reader, void* resource)
 void DestroySectionReader(ResourceSectionReader* reader, u32 destroyFlags)
 {
     reader->vtable = g_SectionReaderInterfaceVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(reader);
     }
@@ -1395,7 +1403,7 @@ void SoundSectionReaderDestroy(ResourceSectionReader* reader, u32 destroyFlags)
 void LoadObject(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     GameObject* object = GameObject::Construct(static_cast<GameObject*>(MemoryAllocate(sizeof(GameObject))), &stream);
     AddResource(reader, object);
     stream.Destroy(DestroyOnly);
@@ -1404,7 +1412,7 @@ void LoadObject(ResourceSectionReader* reader, u8* data, u32 size, void*)
 void LoadScript(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     ScriptResource* script;
     // Even IDs are the graphs' starters, odd ones the graphs
     if ((reader->id & 1) == 0)
@@ -1429,15 +1437,15 @@ void LoadScript(ResourceSectionReader* reader, u8* data, u32 size, void*)
 void LoadAnimation(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     // InitAnimation but for the bits, which the reader sets
     auto* animation = static_cast<GameAnimation*>(MemoryAllocate(sizeof(GameAnimation)));
     ConstructResourceHeader(animation);
     animation->blendShapes.diskHandle = -1;
     animation->main.diskHandle = -1;
-    animation->main.sections = 0;
+    animation->main.layout.value = 0;
     animation->main.frames = 0;
-    animation->blendShapes.sections = 0;
+    animation->blendShapes.layout.value = 0;
     animation->blendShapes.frames = 0;
     ReadAnimation(animation, &stream);
     AddResource(reader, animation);
@@ -1447,7 +1455,7 @@ void LoadAnimation(ResourceSectionReader* reader, u8* data, u32 size, void*)
 void LoadOgi(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     // Only the header and the name of InitOGI, the reader sets the rest
     auto* model = static_cast<GameOGI*>(MemoryAllocate(sizeof(GameOGI)));
     ConstructResourceHeader(model);
@@ -1462,7 +1470,7 @@ void LoadOgi(ResourceSectionReader* reader, u8* data, u32 size, void*)
 void LoadCodeModel(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     auto* codeModel = static_cast<CodeModel*>(MemoryAllocate(sizeof(CodeModel)));
     ConstructResourceHeader(codeModel);
     codeModel->Read(&stream);
@@ -1473,7 +1481,7 @@ void LoadCodeModel(ResourceSectionReader* reader, u8* data, u32 size, void*)
 void LoadSound(ResourceSectionReader* reader, u8* data, u32 size, void*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, ItemAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     GameSound* sound = GameSound::Construct(static_cast<GameSound*>(MemoryAllocate(sizeof(GameSound))), &stream);
     AddResource(reader, sound);
     stream.Destroy(DestroyOnly);
@@ -1497,8 +1505,7 @@ void GameResources::Destroy(u32 destroyFlags)
 
 void GameResources::SetUpCodeModels(u32 clear)
 {
-    // The code models' table's capacity, and the kinds of code models with slots (their byte 8)
-    constexpr u16 CodeModelIds = 200;
+    // The kinds of code models with slots (their byte 8)
     constexpr u8 PickupModel = 0x11;
     constexpr u8 ProjectileModel = 0x12;
     if (clear != 0)
@@ -1507,21 +1514,21 @@ void GameResources::SetUpCodeModels(u32 clear)
         ClearCustomProjectiles();
     }
 
-    for (u16 index = 0; index < CodeModelIds; index++)
+    for (u16 index = 0; index < CodeModelCapacity; index++)
     {
         u16 id;
         CopyResourceId(&id, &index);
-        CodeModel* model = id != 0xFFFF ? static_cast<CodeModel*>(codeModels->items[id & 0x7FFF]) : nullptr;
+        CodeModel* model = id != UndefinedId ? static_cast<CodeModel*>(codeModels->items[id & ResourceIndexMask]) : nullptr;
         if (model == nullptr)
         {
             continue;
         }
 
-        if (model->unknown08 == PickupModel)
+        if (model->kind == PickupModel)
         {
             SetUpCustomPickup(model);
         }
-        else if (model->unknown08 == ProjectileModel)
+        else if (model->kind == ProjectileModel)
         {
             SetUpCustomProjectile(model);
         }

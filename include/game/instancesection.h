@@ -20,21 +20,29 @@ struct LayoutContexts
 };
 CHECK_SIZE(LayoutContexts, 0x8);
 
-// A layout's instances as an RM2's instance section has them (0x40 bytes): flags (bit 0 the RM2 reader's bit 0, bit 1 that its
-// instances are the chunk's own: layouts 0-2 and 7, bits 2-15 how many of its object instances got contexts), the game's resources,
-// the chunk, the list of each kind (pointer arrays: the instance templates, the object instances, the AI positions, the AI paths,
-// the positions, the paths, the triggers, the cameras and the collision surfaces), the contexts of its object instances, and the
-// chunk's AI navigation, positions and paths it adds its own to
+// A layout's instances' flags
+union LayoutInstancesFlags
+{
+    u32 value;
+    struct
+    {
+        // (The RM2 reader's bit 0: its graphics finish without registering)
+        u32 unused0 : 1;
+        // Its instances are the chunk's own (layouts 0-2 and 7)
+        u32 chunkOwn : 1;
+        // How many of its object instances got contexts
+        u32 contextCount : 14;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(LayoutInstancesFlags, 4);
+
+// A layout's instances as an RM2's instance section has them (0x40 bytes): flags, the game's resources, the chunk, the list of
+// each kind (pointer arrays: the instance templates, the object instances, the AI positions, the AI paths, the positions, the
+// paths, the triggers, the cameras and the collision surfaces), the contexts of its object instances, and the chunk's AI
+// navigation, positions and paths it adds its own to
 struct LayoutInstances
 {
-    enum Flags : u32
-    {
-        FlagReaderBit0 = 0x1,
-        FlagChunkOwn = 0x2,
-        ContextCountShift = 2,
-        ContextCountMask = 0x3FFF,
-    };
-
     // The kinds' lists
     enum Kind : u32
     {
@@ -47,19 +55,20 @@ struct LayoutInstances
         KindTriggers,
         KindCameras,
         KindSurfaces,
+        KindCount,
     };
 
-    u32 flags;
+    LayoutInstancesFlags flags;
     GameResources* resources;
     ChunkEntry* chunk;
-    PointerArray<void>* kinds[9];
+    PointerArray<void>* kinds[KindCount];
     LayoutContexts* contexts;
     AiNavigation* navigation;
     PointerArray<void>* positions;
     PointerArray<void>* paths;
 
-    static LayoutInstances* Construct(LayoutInstances* layout, u32 readerBit0, u32 chunkOwn, GameResources* resources, ChunkEntry* chunk)
-        RETAIL(FUN_0026a978);
+    static LayoutInstances* Construct(LayoutInstances* layout, u32 unregistered, u32 chunkOwn, GameResources* resources,
+                                      ChunkEntry* chunk) RETAIL(FUN_0026a978);
     // Once every kind is read: the chunk's AI navigation linked, every object instance's context linked to the contexts of the
     // instances it names, and the contexts' table let go
     void Finish() RETAIL(FUN_00266ba0);
@@ -113,12 +122,12 @@ struct InstanceKindReader
 CHECK_SIZE(InstanceKindReader, 0x10);
 
 // The RM2's instance section item (0x98 bytes; vtable: 1 the destructor, 2 the count of kinds (9), 3 (1), 4 whether it reads a
-// section's type (1), 5 a reader of a kind's section, 8 the layout's instances made once every kind is read): the layout and an
-// item of each kind
+// section's type (1), 5 a reader of a kind's section, 6 and 7 nothing, 8 the layout's instances made once every kind is read): the
+// layout and an item of each kind
 struct InstanceSectionItem : ItemInterface
 {
     LayoutInstances* layout;
-    InstanceKindItem kinds[9];
+    InstanceKindItem kinds[LayoutInstances::KindCount];
 
     static InstanceSectionItem* Construct(InstanceSectionItem* item, LayoutInstances* layout) RETAIL(InitInstanceSectionItem);
     // A section of the layout queued for the item of its kind (nothing past the kinds): the sections' IDs go templates, AI

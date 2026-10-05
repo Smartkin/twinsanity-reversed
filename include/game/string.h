@@ -16,6 +16,9 @@ struct String
 };
 CHECK_SIZE(String, 0xC);
 
+// StringFind's result when the text isn't there
+constexpr s32 StringNotFound = -1;
+
 extern "C"
 {
     // Constructors: the struct is taken as it is and made up
@@ -28,7 +31,7 @@ extern "C"
     // The constructor's body: no text or an empty one frees the buffer
     void StringInitialise(String* string, const char* text) RETAIL(FUN_00204b60);
     void StringDestroy(String* string) RETAIL(StringDelete);
-    // A copy of another's text, and the destructor with GCC 2.9x's flags (bit 0 frees the struct)
+    // A copy of another's text, and the destructor with GCC 2.9x's flags (FreeAfterDestroy frees the struct)
     String* StringConstructCopy(String* string, const String* other) RETAIL(FUN_0019ffd0);
     void StringDelete(String* string, u32 flags) RETAIL(FUN_001a0008);
 
@@ -46,7 +49,7 @@ extern "C"
     void StringTruncate(String* string, s32 length) RETAIL(FUN_002048e0);
     void StringToBackslashes(String* string) RETAIL(ForwardToBackSlash);
 
-    // Where the text is from start on, -1 when it isn't
+    // Where the text is from start on, StringNotFound when it isn't
     s32 StringFind(const String* string, s32 start, const char* text) RETAIL(FUN_00202360);
     // Remove or replace the text's first occurrence. Return whether there was one
     bool StringRemove(String* string, const char* text) RETAIL(FUN_002045c0);

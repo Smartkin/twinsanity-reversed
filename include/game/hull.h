@@ -32,6 +32,13 @@ struct CollisionHull
 CHECK_OFFSET(CollisionHull, surface, 0x16);
 CHECK_SIZE(CollisionHull, 0x20);
 
+// The room the hull builder has: points, faces (each with a plane and at most one normal), a face's corners, and edges (each with
+// at most one direction); the hulls the game tests take at most as many points
+constexpr s32 MostHullPoints = 64;
+constexpr s32 MostHullFaces = 64;
+constexpr s32 MostFaceCorners = 24;
+constexpr s32 MostHullEdges = 72;
+
 // How much of a hull the builder has (HullBuilderCounts; the points are counted apart): faces, edge directions, face normals,
 // edges
 struct HullBuildCounts
@@ -87,8 +94,8 @@ extern "C"
     u8 HullsTouch(const CollisionHull* hull, const Matrix4x4* matrix, const CollisionHull* other, const Matrix4x4* otherMatrix)
         RETAIL(FUN_00200b00);
     // Where a segment from start to end gets into a hull under a matrix, its start outside it (in front of a plane): the share of
-    // the way and, when wanted, a hit of the face it gets in through (its first three corners) with the hull's surface. 0 when it
-    // misses or starts inside
+    // the way and, when wanted, a hit (a CollisionHit) of the face it gets in through (its first three corners) with the hull's
+    // surface. 0 when it misses or starts inside
     u32 HullRayCast(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* start, const Vector4* end, f32* share,
                     void* hit) RETAIL(FUN_001fcc00);
 
@@ -99,13 +106,13 @@ extern "C"
     extern s32 g_HullBuilderPointCount RETAIL(HullBuilderPointCount);
     extern HullBuildCounts g_HullBuilderCounts RETAIL(HullBuilderCounts);
     extern u8 g_HullBuilding RETAIL(D_0030A058);
-    extern Vector4 g_HullBuilderPoints[64] RETAIL(HullBuilderPoints);
-    extern Vector4 g_HullBuilderPlanes[64] RETAIL(HullBuilderPlanes);
-    extern Vector4 g_HullBuilderEdgeDirections[72] RETAIL(HullBuilderEdgeDirections);
-    extern Vector4 g_HullBuilderFaceNormals[64] RETAIL(HullBuilderFaceNormals);
-    extern u8 g_HullBuilderFaceSizes[64] RETAIL(HullBuilderFaceSizes);
-    extern u8 g_HullBuilderFaces[64][24] RETAIL(HullBuilderFaces);
-    extern u8 g_HullBuilderEdges[72][2] RETAIL(HullBuilderEdges);
+    extern Vector4 g_HullBuilderPoints[MostHullPoints] RETAIL(HullBuilderPoints);
+    extern Vector4 g_HullBuilderPlanes[MostHullFaces] RETAIL(HullBuilderPlanes);
+    extern Vector4 g_HullBuilderEdgeDirections[MostHullEdges] RETAIL(HullBuilderEdgeDirections);
+    extern Vector4 g_HullBuilderFaceNormals[MostHullFaces] RETAIL(HullBuilderFaceNormals);
+    extern u8 g_HullBuilderFaceSizes[MostHullFaces] RETAIL(HullBuilderFaceSizes);
+    extern u8 g_HullBuilderFaces[MostHullFaces][MostFaceCorners] RETAIL(HullBuilderFaces);
+    extern u8 g_HullBuilderEdges[MostHullEdges][2] RETAIL(HullBuilderEdges);
     void BeginHullBuild() RETAIL(FUN_00200690);
     void EndHullPoints() RETAIL(FUN_002006b0);
     u32 FinishHullBuild(CollisionHull* hull) RETAIL(FUN_002006b8);

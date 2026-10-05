@@ -2,21 +2,21 @@
 
 #include "game/memory.h"
 
-using namespace ReferenceBits;
-
 Reference* AddReference(ReferencedObject* object)
 {
     if (object->reference == nullptr)
     {
         auto* block = static_cast<Reference*>(MemoryAllocate(sizeof(Reference)));
-        u32 leftover = block->value;
+        ReferenceBits leftover = block->bits;
         object->reference = block;
         block->object = object;
-        block->value = leftover & 0xFE000000;
+        leftover.count = 0;
+        leftover.owns = 0;
+        block->bits = leftover;
     }
 
     Reference* block = object->reference;
-    block->value = (block->value & ~CountMask) | (((block->value & CountMask) + 1) & CountMask);
+    block->bits.count++;
     return block;
 }
 
@@ -30,21 +30,20 @@ extern "C"
             return;
         }
 
-        u32 value = reference->value;
-        u32 count = ((value & CountMask) - 1) & CountMask;
-        value = (value & ~CountMask) | count;
-        reference->value = value;
-        if (count == 0 && (value & Owns) != 0)
+        ReferenceBits bits = reference->bits;
+        bits.count--;
+        reference->bits = bits;
+        if (bits.count == 0 && bits.owns)
         {
             if (reference->object != nullptr)
             {
-                reference->object->Destroy(3);
+                reference->object->Destroy(DestroyAndFree);
             }
 
             reference->object = nullptr;
         }
 
-        if ((reference->value & CountMask) != 0)
+        if (reference->bits.count != 0)
         {
             return;
         }
@@ -55,7 +54,7 @@ extern "C"
         {
             if (reference != nullptr)
             {
-                if ((reference->value & Owns) != 0)
+                if (reference->bits.owns)
                 {
                     reference->object = nullptr;
                 }
@@ -71,11 +70,11 @@ extern "C"
         Reference* block = object->reference;
         if (block != nullptr)
         {
-            if ((block->value & Owns) != 0)
+            if (block->bits.owns)
             {
                 if (block->object != nullptr)
                 {
-                    block->object->Destroy(3);
+                    block->object->Destroy(DestroyAndFree);
                 }
 
                 block->object = nullptr;

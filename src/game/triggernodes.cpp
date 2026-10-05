@@ -15,17 +15,19 @@ extern "C"
 
 namespace
 {
-constexpr u32 NoHit = 0x7149F2CA;
+// The trigger nodes' vtable functions: a check begins, an instance entered (and the second kind of entry), entered or stayed,
+// and left
 constexpr u32 SlotBeginCheck = 11;
 constexpr u32 SlotEntered = 12;
 constexpr u32 SlotEnteredSecond = 13;
 constexpr u32 SlotEnteredOrStayed = 14;
 constexpr u32 SlotLeft = 15;
-constexpr u32 InstanceWake = 2;
+// The handles a reference set holds
+constexpr u32 SetHandles = sizeof(ReferenceSet::handles) / sizeof(Reference*);
 
 void ReleaseAll(ReferenceSet* set)
 {
-    for (s32 index = 31; index >= 0; index--)
+    for (s32 index = SetHandles - 1; index >= 0; index--)
     {
         RemoveReference(&set->handles[index]);
     }
@@ -36,29 +38,29 @@ extern "C"
 {
 s32 CompareHandles(const Reference* const* first, const Reference* const* second)
 {
-    const ReferencedObject* a = *first != nullptr ? (*first)->object : nullptr;
-    const ReferencedObject* b = *second != nullptr ? (*second)->object : nullptr;
-    return reinterpret_cast<s32>(a) - reinterpret_cast<s32>(b);
+    const ReferencedObject* firstObject = *first != nullptr ? (*first)->object : nullptr;
+    const ReferencedObject* secondObject = *second != nullptr ? (*second)->object : nullptr;
+    return reinterpret_cast<s32>(firstObject) - reinterpret_cast<s32>(secondObject);
 }
 
 // The instances (awake, of the node kinds) inside an instance's first hull, the instance itself left out, sorted
 ReferenceSet* GatherTriggerInstances(ReferenceSet* set, ChunkData* chunk, u32 kinds, InstanceContext* owner)
 {
-    for (u32 index = 0; index < 32; index++)
+    for (u32 index = 0; index < ReferenceSet::MostHandles; index++)
     {
         set->handles[index] = nullptr;
     }
 
-    void* results[32];
-    InstanceRayHit query;
-    query.most = 32;
+    void* results[ReferenceSet::MostHandles];
+    InstanceQuery query;
+    query.most = ReferenceSet::MostHandles;
     query.results = results;
     query.count = 0;
-    query.distance = __builtin_bit_cast(f32, NoHit);
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.distance = NoHitDistance;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.wantedFlags = 0;
     query.skipped[0] = nullptr;
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.instance = nullptr;
     query.skipped[1] = nullptr;
     Matrix4x4 matrix;
@@ -79,7 +81,7 @@ ReferenceSet* GatherTriggerInstances(ReferenceSet* set, ChunkData* chunk, u32 ki
 
 ReferenceSet* ReferenceSet::Construct(ReferenceSet* set, ReferencedObject* first)
 {
-    for (u32 index = 0; index < 32; index++)
+    for (u32 index = 0; index < MostHandles; index++)
     {
         set->handles[index] = nullptr;
     }
@@ -119,7 +121,7 @@ ReferenceSet* ReferenceSet::Assign(const ReferenceSet* other)
         handles[index] = handle;
         if (handle != nullptr)
         {
-            handle->value = (handle->value & ~ReferenceBits::CountMask) | (((handle->value & ReferenceBits::CountMask) + 1) & ReferenceBits::CountMask);
+            handle->bits.count++;
         }
     }
 
@@ -179,18 +181,16 @@ void HandleWalk::Next()
 
 TriggerNode* TriggerNode::Construct(TriggerNode* node, ChunkData* chunk, LayoutTrigger* trigger)
 {
-    constexpr u32 TriggerNotPolled = 12;
     GameNode::Construct(node);
     node->chunk = chunk;
     node->eventKinds = 0;
     node->vtable = g_TriggerNodeBaseVTable;
     InstancePlacement::Construct(&node->placement, chunk);
     ReferenceSet::Construct(&node->inside, nullptr);
-    node->Bits() = 0;
+    node->bits.value = 0;
     node->eventKinds = 0;
-    node->unknown18 = *reinterpret_cast<const u8*>(trigger);
-    u64 header = *reinterpret_cast<const u64*>(trigger);
-    node->Bits() = (node->Bits() & ~NeverPolled) | static_cast<u32>((header >> TriggerNotPolled) & 1) << 20;
+    node->bits.kind = trigger->header.kind;
+    node->bits.neverPolled = trigger->header.notPolled;
     return node;
 }
 
@@ -211,20 +211,20 @@ void TriggerNode::SetOwner(InstanceContext* instance)
 void TriggerNode::Reset()
 {
     inside.count = 0;
-    Bits() &= ~WasEntered;
+    bits.wasEntered = 0;
     placement.Apply(owner);
-    CallVirtual<void>(owner, owner->vtable, InstanceWake);
+    CallVirtual<void>(owner, owner->vtable, InstanceContext::WakeSlot);
 }
 
 // Polled with the clock running, a check once the interval since the last one passed (else the node's time is kept)
 u32 TriggerNode::Update(TimeClock* clock)
 {
-    if ((Bits() & NeverPolled) != 0)
+    if (bits.neverPolled != 0)
     {
         return 0;
     }
 
-    if ((static_cast<u8>(clock->flags) & TimeClock::FlagRunning) != 0)
+    if (clock->flags.running != 0)
     {
         if (!(static_cast<s32>(clock->time - time) < checkTicks))
         {
@@ -235,7 +235,7 @@ u32 TriggerNode::Update(TimeClock* clock)
         }
         else
         {
-            flags |= FlagKeepTime;
+            flags.keepsTime = 1;
         }
     }
 
@@ -258,7 +258,7 @@ void TriggerNode::Compare(const ReferenceSet* now)
         ReferencedObject* is = fresh.Object();
         if (was == is)
         {
-            if ((Bits() & TellsEnteredAndStayed) != 0)
+            if (bits.tellsEntryOrStay != 0)
             {
                 CallVirtual<void>(this, vtable, SlotEnteredOrStayed, is);
             }
@@ -268,7 +268,7 @@ void TriggerNode::Compare(const ReferenceSet* now)
         }
         else if (reinterpret_cast<u32>(was) < reinterpret_cast<u32>(is))
         {
-            if ((Bits() & TellsLeft) != 0)
+            if (bits.tellsExit != 0)
             {
                 CallVirtual<void>(this, vtable, SlotLeft, was);
             }
@@ -277,15 +277,15 @@ void TriggerNode::Compare(const ReferenceSet* now)
         }
         else
         {
-            if ((Bits() & (TellsEntered | WasEntered)) == TellsEntered)
+            if (bits.tellsFirstEntry != 0 && bits.wasEntered == 0)
             {
                 CallVirtual<void>(this, vtable, SlotEntered, is);
             }
-            else if ((Bits() & TellsEnteredSecond) != 0)
+            else if (bits.tellsEveryEntry != 0)
             {
                 CallVirtual<void>(this, vtable, SlotEnteredSecond, is);
             }
-            else if ((Bits() & TellsEnteredAndStayed) != 0)
+            else if (bits.tellsEntryOrStay != 0)
             {
                 CallVirtual<void>(this, vtable, SlotEnteredOrStayed, is);
             }
@@ -294,7 +294,7 @@ void TriggerNode::Compare(const ReferenceSet* now)
         }
     }
 
-    if ((Bits() & TellsLeft) != 0)
+    if (bits.tellsExit != 0)
     {
         while (!old.AtEnd())
         {
@@ -304,15 +304,15 @@ void TriggerNode::Compare(const ReferenceSet* now)
     }
 
     u32 slot = 0;
-    if ((Bits() & (TellsEntered | WasEntered)) == TellsEntered)
+    if (bits.tellsFirstEntry != 0 && bits.wasEntered == 0)
     {
         slot = SlotEntered;
     }
-    else if ((Bits() & TellsEnteredSecond) != 0)
+    else if (bits.tellsEveryEntry != 0)
     {
         slot = SlotEnteredSecond;
     }
-    else if ((Bits() & TellsEnteredAndStayed) != 0)
+    else if (bits.tellsEntryOrStay != 0)
     {
         slot = SlotEnteredOrStayed;
     }
@@ -339,12 +339,11 @@ void TriggerNode::Compare(const ReferenceSet* now)
         inside.handles[index] = handle;
         if (handle != nullptr)
         {
-            handle->value = (handle->value & ~ReferenceBits::CountMask) | (((handle->value & ReferenceBits::CountMask) + 1) & ReferenceBits::CountMask);
+            handle->bits.count++;
         }
     }
 
-    u32 entered = ((Bits() >> 21) & 1) | (now->count != 0);
-    Bits() = (Bits() & ~WasEntered) | entered << 21;
+    bits.wasEntered = bits.wasEntered | (now->count != 0);
     fresh.vtable = g_HandleWalkBaseVTable;
     old.vtable = g_HandleWalkBaseVTable;
 }

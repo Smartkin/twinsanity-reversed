@@ -33,9 +33,9 @@ void SinCos(f32 first, f32 second, f32* out)
                  :
                  : "r"(values), "r"(angles)
                  : "memory");
-    for (u32 value = 0; value < 4; value++)
+    for (u32 index = 0; index < 4; index++)
     {
-        out[value] = values[value];
+        out[index] = values[index];
     }
 }
 

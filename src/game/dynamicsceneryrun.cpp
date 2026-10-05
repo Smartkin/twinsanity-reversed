@@ -18,33 +18,15 @@ EABI_EXPORT(GetDynamicSceneryRotationResult, ReadTrackAngle);
 
 namespace
 {
-// The flags a dynamic scenery's instance is made with (triggers' signals reach it, the character's solver keeps out of its hulls,
-// it's shown, and 0x4000), and the one its node gives it (the scenery cells keep such instances on a list of their own)
-constexpr u32 DynamicSceneryFlags =
-    ReferencedObject::FlagTriggerSignals | ReferencedObject::FlagSphereContact | ReferencedObject::FlagVisible | 0x4000;
-constexpr u32 FlagDynamicScenery = 0x40000;
-// Bit 0 of its collision's bits (some agents' instances set it too; no reader of it was found)
-constexpr u64 CollisionBit0 = 0x1;
-// The graphics tables' vtable slot of the resource of an ID with a reference taken (GraphicsTable::Acquire)
-constexpr u32 AcquireSlot = 4;
-
-constexpr f32 FramesPerSecond = 25.0f;
-constexpr f32 SecondsPerFrame = Rounded(0.04);
-// A channel above this shows the instance, below it hides it
-constexpr f32 ShownAbove = 0.5f;
-constexpr f32 TurnToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToTurn = 0x1.45f306p+13f;
-constexpr s32 Turn = 0x10000;
-constexpr s32 HalfTurn = 0x8000;
-// Where the static values start past the joints' settings, and the bytes they take (the count of bits 11-21, times 4)
-constexpr u32 StaticBytesShift = 9;
-constexpr u32 StaticBytesMask = 0x1FFC;
+// A model's animation frames a second, and a frame's seconds
+constexpr f32 ModelFramesPerSecond = 25.0f;
+constexpr f32 SecondsPerModelFrame = Rounded(0.04);
 
 // The resource of an ID from a graphics table with a reference taken, through the table's vtable
 template <typename Table>
 typename Table::Item* AcquireById(Table* table, u32 id)
 {
-    return CallVirtual<typename Table::Item*>(table, table->vtable, AcquireSlot, static_cast<const u32*>(&id),
+    return CallVirtual<typename Table::Item*>(table, table->vtable, Table::AcquireSlot, static_cast<const u32*>(&id),
                                               static_cast<bool*>(nullptr));
 }
 
@@ -54,8 +36,8 @@ DynamicSceneryNode* ConstructNode(void* memory)
     GameNode::Construct(node);
     node->vtable = g_DynamicSceneryNodeVTable;
     node->model = nullptr;
-    node->unknown1C = 0;
-    node->unknown20 = 0;
+    node->unused1C = 0;
+    node->unused20 = 0;
     node->time = 0.0f;
     node->animation = nullptr;
     node->meshes = nullptr;
@@ -63,10 +45,9 @@ DynamicSceneryNode* ConstructNode(void* memory)
 }
 
 // Where a frame's values start: past the static values, as many values in as a frame has times the frame
-const f32* FrameValues(const f32* statics, u32 sections, u16 frame)
+const f32* FrameValues(const f32* statics, AnimationLayout layout, u16 frame)
 {
-    const u8* values = reinterpret_cast<const u8*>(statics) + (sections >> StaticBytesShift & StaticBytesMask);
-    return reinterpret_cast<const f32*>(values + (sections >> AnimationDataInformation::FrameValuesShift) * frame * sizeof(f32));
+    return statics + layout.staticValues + layout.frameValues * frame;
 }
 
 // The next channel's value: its static value, or the share of the way from this frame's value to the next frame's
@@ -92,7 +73,7 @@ f32 ReadTrackValue(DynamicTrackReader* reader, f32 share)
 
 ChunkDynamicScenery* ConstructDynamicScenery(ChunkDynamicScenery* scenery, ChunkData* chunk)
 {
-    scenery->unknown04 = 0;
+    scenery->unused04 = 0;
     scenery->chunk = chunk;
     ConstructDynamicSceneryData(&scenery->data);
     return scenery;
@@ -109,11 +90,11 @@ void DestroyDynamicScenery(ChunkDynamicScenery* scenery, u32 destroyFlags)
 
 u32 LoadDynamicScenery(ChunkDynamicScenery* scenery, Stream* stream)
 {
-    DynamicSceneryData* data = &scenery->data;
-    ReadDynamicScenery(data, stream);
-    for (u32 index = 0; index < data->modelCount; index++)
+    DynamicSceneryData* sm2 = &scenery->data;
+    ReadDynamicScenery(sm2, stream);
+    for (u32 index = 0; index < sm2->modelCount; index++)
     {
-        DynamicSceneryModel* model = &data->models[index];
+        DynamicSceneryModel* model = &sm2->models[index];
         auto* instance = InstanceContext::Construct(static_cast<InstanceContext*>(MemoryAllocate(sizeof(InstanceContext))));
         Vector4 position = g_DefaultBox.min;
         position.w = 1.0f;
@@ -132,18 +113,22 @@ u32 LoadDynamicScenery(ChunkDynamicScenery* scenery, Stream* stream)
             QueueObject(instance);
         }
 
-        instance->flags |= DynamicSceneryFlags;
+        // Triggers' signals reach it, the character's solver keeps out of its hulls, it's shown and what stands on it rides along
+        instance->flags.receivesTriggerSignals = 1;
+        instance->flags.collisionActive = 1;
+        instance->flags.visible = 1;
+        instance->flags.carriesRiders = 1;
         DynamicSceneryNode* node = ConstructNode(MemoryAllocate(sizeof(DynamicSceneryNode)));
-        RegisterNode(instance, 1, node);
+        RegisterNode(instance, AttachNode, node);
         node->SetModel(model);
-        RegisterNode(instance, 1, ConstructMovementNode(MemoryAllocate(sizeof(MovementNode))));
+        RegisterNode(instance, AttachNode, ConstructMovementNode(MemoryAllocate(sizeof(MovementNode))));
         instance->clockIndex = static_cast<u8>(g_DynamicSceneryClockIndex);
         RotateAndTranslate(instance->place);
         ObjectCollision* collision = &instance->collision;
         StepObjectCollision(collision);
         AllocateHullSurfaces(collision, model->hullCount);
         SetAllHullSurfaces(collision, 0);
-        collision->bits |= CollisionBit0;
+        collision->bits.stopsBodies = 1;
         node->Animate(0.0f);
         ChunkData::AddInstance(scenery->chunk, instance);
     }
@@ -169,18 +154,18 @@ void DynamicSceneryNode::Destroy(u32 destroyFlags)
 
 void DynamicSceneryNode::SetOwner(InstanceContext* instance)
 {
-    instance->flags |= FlagDynamicScenery;
+    instance->flags.dynamicScenery = 1;
     GameNode::SetOwner(instance);
 }
 
 u32 DynamicSceneryNode::Kind()
 {
-    return NodeKind;
+    return NodeDynamicScenery;
 }
 
 u32 DynamicSceneryNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) != 0)
+    if (clock->flags.running != 0)
     {
         Animate(static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit);
     }
@@ -230,11 +215,11 @@ u32 DynamicSceneryNode::Animate(f32 seconds)
     // Taken back a loop at a time once it's past the last frame (a model of no frames would loop for ever)
     time += seconds;
     u32 frames = model->frames;
-    f32 at = time * FramesPerSecond;
+    f32 at = time * ModelFramesPerSecond;
     while (static_cast<f32>(frames) <= at)
     {
-        time -= static_cast<f32>(frames) * SecondsPerFrame;
-        at = time * FramesPerSecond;
+        time -= static_cast<f32>(frames) * SecondsPerModelFrame;
+        at = time * ModelFramesPerSecond;
     }
 
     u16 frame = static_cast<u16>(static_cast<s32>(at));
@@ -245,25 +230,24 @@ u32 DynamicSceneryNode::Animate(f32 seconds)
         next = static_cast<u16>(next - frames);
     }
 
-    DynamicAnimationData* data = animation;
-    AnimationDataInformation* information = data->information;
+    DynamicAnimationData* animationData = animation;
+    AnimationDataInformation* information = animationData->information;
     u8* memory = DiskLoadedMemory(GetDiskManager(), &information->diskHandle);
-    data->settings = reinterpret_cast<const JointTrackSettings*>(memory);
-    const f32* statics = reinterpret_cast<const f32*>(
-        memory + (information->sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings));
-    data->statics = statics;
-    data->current = FrameValues(statics, information->sections, frame);
-    data->next = FrameValues(statics, data->information->sections, next);
+    animationData->settings = reinterpret_cast<const JointTrackSettings*>(memory);
+    const f32* statics = reinterpret_cast<const f32*>(memory + information->layout.joints * sizeof(JointTrackSettings));
+    animationData->statics = statics;
+    animationData->current = FrameValues(statics, information->layout, frame);
+    animationData->next = FrameValues(statics, animationData->information->layout, next);
 
-    data = animation;
-    const JointTrackSettings* joint = data->settings;
+    animationData = animation;
+    const JointTrackSettings* joint = animationData->settings;
     DynamicTrackReader reader;
     reader.statics = joint->statics;
-    u32 channelCount = joint->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask;
+    u32 channelCount = joint->flags.channels;
     reader.channels = static_cast<u16>((1 << channelCount) - 1);
-    reader.staticValues = data->statics + joint->staticIndex;
-    reader.current = data->current + joint->frameIndex;
-    reader.next = data->next + joint->frameIndex;
+    reader.staticValues = animationData->statics + joint->staticIndex;
+    reader.current = animationData->current + joint->frameIndex;
+    reader.next = animationData->next + joint->frameIndex;
     Vector4 position;
     position.x = ReadTrackValue(&reader, share);
     position.y = ReadTrackValue(&reader, share);
@@ -296,15 +280,15 @@ u32 DynamicSceneryNode::Animate(f32 seconds)
     }
 
     instance = owner;
-    bool visible = (instance->flags & ReferencedObject::FlagVisible) != 0;
+    bool visible = instance->flags.visible;
     if (ShownAbove < shown && !visible)
     {
-        instance->flags |= ReferencedObject::FlagVisible;
+        instance->flags.visible = 1;
         visible = true;
     }
     else if (shown < ShownAbove && visible)
     {
-        instance->flags &= ~ReferencedObject::FlagVisible;
+        instance->flags.visible = 0;
         visible = false;
     }
 
@@ -349,18 +333,18 @@ s32* ReadTrackAngle(s32* angle, DynamicTrackReader* reader, f32 share)
         AngleFrom(&next, *reader->next, AngleRadians);
         // The shorter way round: a turn taken off or added when they're more than half a turn apart (as words, wrapping round)
         s32 difference = static_cast<s32>(static_cast<u32>(current) - static_cast<u32>(next));
-        if (difference > HalfTurn)
+        if (difference > HalfTurnAngle)
         {
-            current = static_cast<s32>(static_cast<u32>(current) - Turn);
+            current = static_cast<s32>(static_cast<u32>(current) - FullTurnAngle);
         }
-        else if (difference < -HalfTurn)
+        else if (difference < -HalfTurnAngle)
         {
-            current = static_cast<s32>(static_cast<u32>(current) + Turn);
+            current = static_cast<s32>(static_cast<u32>(current) + FullTurnAngle);
         }
 
         f32 radians =
-            static_cast<f32>(next) * TurnToRadians * share + static_cast<f32>(current) * TurnToRadians * (1.0f - share);
-        turned = static_cast<s32>(radians * RadiansToTurn);
+            static_cast<f32>(next) * AngleToRadians * share + static_cast<f32>(current) * AngleToRadians * (1.0f - share);
+        turned = static_cast<s32>(radians * RadiansToAngle);
         reader->current++;
         reader->next++;
     }

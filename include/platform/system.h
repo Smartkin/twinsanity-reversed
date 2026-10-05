@@ -13,8 +13,21 @@ void Initialise();
 // Starts what the pads, the memory cards and the sound go through
 void StartServices();
 [[noreturn]] void Exit(s32 status);
-// The console's language: 0 Japanese, 1 English, 2 French, 3 Spanish, 4 German, 5 Italian, 6 Dutch, 7 Portuguese
-s32 Language();
+
+// The console's languages (the PS2's system settings')
+enum ConsoleLanguage : s32
+{
+    LanguageJapanese = 0,
+    LanguageEnglish = 1,
+    LanguageFrench = 2,
+    LanguageSpanish = 3,
+    LanguageGerman = 4,
+    LanguageItalian = 5,
+    LanguageDutch = 6,
+    LanguagePortuguese = 7,
+};
+
+ConsoleLanguage Language();
 
 struct DateTime
 {

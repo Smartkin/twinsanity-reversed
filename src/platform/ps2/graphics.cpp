@@ -19,6 +19,7 @@ constexpr u32 Vu0Reset = 0x2;           // FBRST.RS0
 constexpr u32 Vu1Reset = 0x200;         // FBRST.RS1
 constexpr u32 VuDebugBreaks = 0x404;    // FBRST.DE0 and DE1
 constexpr u32 Vu1Busy = 0x100;          // VPU-STAT.VBS1
+constexpr u32 GifReset = 0x1;           // GIF CTRL.RST
 
 // Channels 0-4, 8 and 9: VIF0, VIF1, GIF, IPU from and to, SPR from and to
 constexpr u32 ResetChannels[] = {0x10008000, 0x10009000, 0x1000A000, 0x1000B000, 0x1000B400, 0x1000D000, 0x1000D400};
@@ -118,7 +119,7 @@ void Platform::Graphics::ResetPath()
     WriteVuFbrst(VuDebugBreaks);
     WriteQuadword(VIF1_FIFO, Vif1Settings);
     WriteQuadword(VIF1_FIFO, Vif1Settings + 4);
-    GIF_REG_CTRL = 1;
+    GIF_REG_CTRL = GifReset;
 }
 
 // Sony's libgraph's settings, waits and vertical blank callback, and libdma's channels, on PS2SDK's kernel calls and register
@@ -126,16 +127,44 @@ void Platform::Graphics::ResetPath()
 namespace
 {
 constexpr u32 VBlankStart = 1 << INTC_VBLANK_S; // I_STAT
-constexpr u64 GsReset = 0x200;                  // CSR.RESET
-constexpr u64 GsFlush = 0x100;                  // CSR.FLUSH
-constexpr u32 GsFieldShift = 13;                // CSR.FIELD: the field shown
-constexpr u32 GsRevisionShift = 16;             // CSR.REV
 constexpr u64 GsInterruptsMasked = 0xFF00;      // IMR
 constexpr s16 Interlaced = 1;
-constexpr u32 ChannelStarted = 0x100; // Dn_CHCR.STR
-constexpr u32 VifPathBusy = 0x3;      // VIF1_STAT.VPS
-constexpr u32 GifPathActive = 0xC00;  // GIF_STAT.APATH
-constexpr u32 DmaChannels = 10;
+constexpr u32 VifPathBusy = 0x3;     // VIF1_STAT.VPS
+constexpr u32 GifPathActive = 0xC00; // GIF_STAT.APATH
+
+// The GS's CSR: its events (SIGNAL, FINISH, HSINT, VSINT, EDWINT), FLUSH, RESET, the field shown (NFIELD, FIELD), the FIFO's
+// state, the GS's revision and ID
+union GsControlStatus
+{
+    u64 value;
+    struct
+    {
+        u64 signal : 1;
+        u64 finish : 1;
+        u64 horizontalSync : 1;
+        u64 verticalSync : 1;
+        u64 drawWindowEnd : 1;
+        u64 unused5 : 3;
+        u64 flush : 1;
+        u64 reset : 1;
+        u64 unused10 : 2;
+        u64 nextField : 1;
+        u64 field : 1;
+        u64 fifo : 2;
+        u64 revision : 8;
+        u64 id : 8;
+        u64 unused32 : 32;
+    };
+};
+CHECK_SIZE(GsControlStatus, 8);
+
+// A DMA channel still sending (its CHCR's STR)
+bool IsChannelSending(volatile u32* chcr)
+{
+    DmaChannelControl control;
+    control.value = *chcr;
+    return control.started != 0;
+}
 
 enum ResetGraphMode : s16
 {
@@ -213,7 +242,9 @@ void sceGsResetGraph(s32 mode, s32 interlace, s32 videoMode, s32 fieldMode)
     auto shortFieldMode = static_cast<s16>(fieldMode);
     if (resetMode == ResetGraphFlush)
     {
-        *GS_REG_CSR = GsFlush;
+        GsControlStatus flush = {};
+        flush.flush = 1;
+        *GS_REG_CSR = flush.value;
         return;
     }
 
@@ -225,12 +256,16 @@ void sceGsResetGraph(s32 mode, s32 interlace, s32 videoMode, s32 fieldMode)
     GsParameters* parameters = sceGsGetGParam();
     if (resetMode == ResetGraphFull)
     {
-        *GS_REG_CSR = GsReset;
+        GsControlStatus reset = {};
+        reset.reset = 1;
+        *GS_REG_CSR = reset.value;
     }
 
     parameters->interlace = shortInterlace;
     parameters->videoMode = shortVideoMode;
-    parameters->revision = static_cast<s16>((*GS_REG_CSR >> GsRevisionShift) & 0xFF);
+    GsControlStatus status;
+    status.value = *GS_REG_CSR;
+    parameters->revision = static_cast<s16>(status.revision);
     if (resetMode == ResetGraphFull)
     {
         GsPutIMR(GsInterruptsMasked);
@@ -284,21 +319,24 @@ s32 sceGsSyncV(s32)
             return 1;
         }
 
-        return static_cast<s32>((*GS_REG_CSR >> GsFieldShift) & 1);
+        GsControlStatus status;
+        status.value = *GS_REG_CSR;
+        return static_cast<s32>(status.field);
     }
 
-    u64 csr = WaitForVBlankFlag();
+    GsControlStatus status;
+    status.value = WaitForVBlankFlag();
     if (parameters->interlace != Interlaced)
     {
         return 1;
     }
 
-    return static_cast<s32>((csr >> GsFieldShift) & 1);
+    return static_cast<s32>(status.field);
 }
 
 s32 sceGsSyncPath(s32, u16)
 {
-    while ((*R_EE_D1_CHCR & ChannelStarted) != 0 || (*R_EE_D2_CHCR & ChannelStarted) != 0 || (*R_EE_VIF1_STAT & VifPathBusy) != 0 ||
+    while (IsChannelSending(R_EE_D1_CHCR) || IsChannelSending(R_EE_D2_CHCR) || (*R_EE_VIF1_STAT & VifPathBusy) != 0 ||
            (ReadVpuStat() & Vu1Busy) != 0 || (*R_EE_GIF_STAT & GifPathActive) != 0)
     {
     }
@@ -362,10 +400,15 @@ extern "C"
     extern s32 g_VideoFieldMode RETAIL(G_VideoFFMode);
 }
 
+namespace
+{
+constexpr s32 VideoNtsc = 2;
+constexpr s32 VideoPal = 3;
+}
+
 bool Platform::Graphics::IsPalDisplay()
 {
-    constexpr s32 Pal = 3;
-    return g_VideoOutMode == Pal;
+    return g_VideoOutMode == VideoPal;
 }
 
 extern "C"
@@ -373,15 +416,16 @@ extern "C"
     // The display's settings the renderer worked out at start-up (FUN_0019b570): the GS's PCRTC registers' fields
     struct DisplaySettings
     {
-        // DISPFB: the frame buffer's base (in 2048 word pages), width (in 64 pixels) and pixel format
+        // DISPFB: the frame buffer's base (in 2048 word pages), width (in 64 pixels) and pixel format; then words nothing reads
+        // (0, the depth buffer's page, 0 and 0)
         u32 frameBuffer;
         u32 frameWidth;
         u32 pixelFormat;
-        u32 unknown0C;
-        u32 unknown10;
-        u32 unknown14;
-        u32 unknown18;
-        // PMODE
+        u32 unused0C;
+        u32 unused10;
+        u32 unused14;
+        u32 unused18;
+        // PMODE; then words nothing reads (0 and 2)
         u32 alpha;
         u32 enable1;
         u32 enable2;
@@ -389,8 +433,8 @@ extern "C"
         u32 blendWithBackground;
         u32 crtMode;
         u32 alphaOutput;
-        u32 unknown38;
-        u32 unknown3C;
+        u32 unused38;
+        u32 unused3C;
         // DISPLAY: the magnifications, the size (minus 1 for the height) and the offset from the TV's corner
         u32 magnifyX;
         u32 magnifyY;
@@ -404,9 +448,27 @@ extern "C"
 
 namespace
 {
-constexpr u32 GifChannel = 2;
-constexpr u32 ChainFromMemory = 0x105; // D_CHCR: DIR from memory, MOD chain, STR
-constexpr u32 ConditionChannels = 0x3FF0000; // D_PCR.CDE for every channel: COP0's condition follows them
+// The PCRTC registers' fields the settings are ORed into unmasked, by their first bits: PMODE's second circuit on (EN2), CRT mode
+// (CRTMD), alpha from ALP (MMOD), alpha output (AMOD), blending with the background (SLBG) and the alpha (ALP); DISPLAY's y (DY),
+// magnifications (MAGH, MAGV), width and height (DW, DH); DISPFB's width (FBW) and pixel format (PSM)
+constexpr u32 PmodeEnable2Shift = 1;
+constexpr u32 PmodeCrtModeShift = 2;
+constexpr u32 PmodeAlphaFromRegisterShift = 5;
+constexpr u32 PmodeAlphaOutputShift = 6;
+constexpr u32 PmodeBlendWithBackgroundShift = 7;
+constexpr u32 PmodeAlphaShift = 8;
+constexpr u32 DisplayYShift = 12;
+constexpr u32 DisplayMagnifyXShift = 23;
+constexpr u32 DisplayMagnifyYShift = 27;
+constexpr u32 DisplayWidthShift = 32;
+constexpr u32 DisplayHeightShift = 44;
+constexpr u32 DispfbWidthShift = 9;
+constexpr u32 DispfbFormatShift = 15;
+// SMODE2: interlaced (INT), a field at a time (FFMD 0)
+constexpr u64 InterlacedFields = 1;
+// The display's corner on the TV (in its units across and in lines): the second circuit a line lower
+constexpr s32 TvLeft = 0x27C;
+constexpr s32 TvTop = 0x32;
 
 // The first frame keeps the display the reset set up (the retail G_IsPCRTC_Ready starts at 1)
 bool g_SkipDisplaySetUp = true;
@@ -415,21 +477,24 @@ bool g_SkipDisplaySetUp = true;
 void SetUpDisplay()
 {
     const DisplaySettings& display = g_DisplaySettings;
-    u64 mode = display.enable1 | static_cast<u64>(display.enable2) << 1 | static_cast<u64>(display.crtMode) << 2 |
-               static_cast<u64>(display.alphaFromRegister) << 5 | static_cast<u64>(display.alphaOutput) << 6 |
-               static_cast<u64>(display.blendWithBackground) << 7 | static_cast<u64>(display.alpha) << 8;
-    *reinterpret_cast<volatile u64*>(0x12000000) = mode;
-    // SMODE2: interlaced, a field at a time
-    *reinterpret_cast<volatile u64*>(0x12000020) = 1;
-    u64 area = static_cast<u64>(display.magnifyX) << 23 | static_cast<u64>(display.magnifyY) << 27 |
-               static_cast<u64>(display.width) << 32 | static_cast<u64>(display.height) << 44;
-    u64 x = static_cast<u32>(display.x + 0x27C);
-    // The second circuit a line lower
-    *reinterpret_cast<volatile u64*>(0x12000080) = x | static_cast<u64>(static_cast<u32>(display.y + 0x32)) << 12 | area;
-    *reinterpret_cast<volatile u64*>(0x120000A0) = x | static_cast<u64>(static_cast<u32>(display.y + 0x33)) << 12 | area;
-    u64 frame = display.frameBuffer | static_cast<u64>(display.frameWidth) << 9 | static_cast<u64>(display.pixelFormat) << 15;
-    *reinterpret_cast<volatile u64*>(0x12000070) = frame;
-    *reinterpret_cast<volatile u64*>(0x12000090) = frame;
+    u64 mode = display.enable1 | static_cast<u64>(display.enable2) << PmodeEnable2Shift |
+               static_cast<u64>(display.crtMode) << PmodeCrtModeShift |
+               static_cast<u64>(display.alphaFromRegister) << PmodeAlphaFromRegisterShift |
+               static_cast<u64>(display.alphaOutput) << PmodeAlphaOutputShift |
+               static_cast<u64>(display.blendWithBackground) << PmodeBlendWithBackgroundShift |
+               static_cast<u64>(display.alpha) << PmodeAlphaShift;
+    *GS_REG_PMODE = mode;
+    *GS_REG_SMODE2 = InterlacedFields;
+    u64 area = static_cast<u64>(display.magnifyX) << DisplayMagnifyXShift |
+               static_cast<u64>(display.magnifyY) << DisplayMagnifyYShift | static_cast<u64>(display.width) << DisplayWidthShift |
+               static_cast<u64>(display.height) << DisplayHeightShift;
+    u64 x = static_cast<u32>(display.x + TvLeft);
+    *GS_REG_DISPLAY1 = x | static_cast<u64>(static_cast<u32>(display.y + TvTop)) << DisplayYShift | area;
+    *GS_REG_DISPLAY2 = x | static_cast<u64>(static_cast<u32>(display.y + TvTop + 1)) << DisplayYShift | area;
+    u64 frame = display.frameBuffer | static_cast<u64>(display.frameWidth) << DispfbWidthShift |
+                static_cast<u64>(display.pixelFormat) << DispfbFormatShift;
+    *GS_REG_DISPFB1 = frame;
+    *GS_REG_DISPFB2 = frame;
 }
 
 // Starts sending the chain to the GIF (Start_DMAC_GIF_Transfer, FUN_00182178 from an interrupt)
@@ -448,8 +513,13 @@ void SendToGif(const void* chain, bool fromInterrupt)
     *R_EE_D_STAT = gif.statusBit;
     gif.sending = 1;
     *R_EE_D2_QWC = 0;
-    *R_EE_D2_TADR = reinterpret_cast<u32>(chain) & 0x0FFFFFFF;
-    *R_EE_D2_CHCR = ChainFromMemory;
+    *R_EE_D2_TADR = reinterpret_cast<u32>(chain) & PhysicalMask;
+    // From memory in chain mode
+    DmaChannelControl start = {};
+    start.fromMemory = 1;
+    start.mode = DmaChainMode;
+    start.started = 1;
+    *R_EE_D2_CHCR = start.value;
     asm volatile("sync" : : : "memory");
 }
 
@@ -508,7 +578,7 @@ void Platform::Graphics::WaitSent()
     while (gif.sending != 0)
     {
         u32 bit = gif.statusBit;
-        *R_EE_D_PCR = bit | ConditionChannels;
+        *R_EE_D_PCR = WaitOnChannels(bit);
         asm volatile(".set push\n"
                      ".set noreorder\n"
                      "1:\n"
@@ -551,9 +621,6 @@ extern "C"
     // The display's offset from the TV's corner (in its units across and in lines)
     void SetDisplayPosition(GsDisplay* display, s32 x, s32 y) RETAIL(FUN_001a0848);
 
-    // The pages of the buffers the frame is drawn in (its colour, 32 bits a pixel, after the display's, then its depth)
-    extern u32 g_FrameBufferPage RETAIL(D_0030AAFC);
-    extern u32 g_DepthBufferPage RETAIL(D_0030AB00);
     // The GS's offsets of the screen's middle across and down (2048), the frame's width and height (512 and the renderer's)
     // and whether the game clock was stopped at the last step, none of which anything reads
     extern s32 g_UnreadScreenMiddleX RETAIL(D_0030AAEC);
@@ -565,15 +632,11 @@ extern "C"
 
 namespace
 {
-constexpr s32 VideoNtsc = 2;
-constexpr s32 VideoPal = 3;
-constexpr u32 DmaMemorySize = 0x540000;
 constexpr s32 FrameWidth = 0x200;
-constexpr s32 ScreenMiddle = 0x800;
 // The display's settings: 16 bits a pixel (PSMCT16), PMODE's alpha 0x80 and its two circuits on, the alpha from ALP
 constexpr u32 DisplayPixelFormat = 2;
 constexpr u32 DisplayAlpha = 0x80;
-constexpr u32 DisplayUnknown3C = 2;
+constexpr u32 UnusedDisplayWord = 2;
 // How far the display moves at the screen offset's ends
 constexpr f32 DisplayMoveAcross = 256.0f;
 constexpr f32 DisplayMoveDown = 32.0f;
@@ -601,9 +664,9 @@ u32 MagnifyX(u32 width, u32 current)
 
 void InitDisplay(GsDisplay*, s32 width, s32 height, s32 videoMode)
 {
-    g_UnreadScreenMiddleX = ScreenMiddle;
+    g_UnreadScreenMiddleX = GsScreenMiddle;
     g_VideoOutMode = videoMode == VideoPal ? VideoPal : VideoNtsc;
-    g_UnreadScreenMiddleY = ScreenMiddle;
+    g_UnreadScreenMiddleY = GsScreenMiddle;
     g_DisplayWidth = width;
     g_DisplayHeight = height;
     g_VideoFieldMode = 0;
@@ -612,17 +675,17 @@ void InitDisplay(GsDisplay*, s32 width, s32 height, s32 videoMode)
 
     DisplaySettings& display = g_DisplaySettings;
     u32 pixels = g_DisplayWidth * g_DisplayHeight;
-    display.frameWidth = g_DisplayWidth >> 6;
-    display.unknown3C = DisplayUnknown3C;
+    display.frameWidth = g_DisplayWidth >> GsWidthShift;
+    display.unused3C = UnusedDisplayWord;
     display.alpha = DisplayAlpha;
     display.alphaFromRegister = 1;
     display.frameBuffer = 0;
     display.pixelFormat = DisplayPixelFormat;
-    display.unknown0C = 0;
-    display.unknown10 = (g_DrawPixelBytes + g_DisplayPixelBytes) * pixels >> 13;
-    display.unknown14 = 0;
-    display.unknown18 = 0;
-    display.unknown38 = 0;
+    display.unused0C = 0;
+    display.unused10 = (g_DrawPixelBytes + g_DisplayPixelBytes) * pixels >> GsPageShift;
+    display.unused14 = 0;
+    display.unused18 = 0;
+    display.unused38 = 0;
     display.enable1 = 1;
     display.enable2 = 1;
     display.blendWithBackground = 0;
@@ -636,8 +699,8 @@ void InitDisplay(GsDisplay*, s32 width, s32 height, s32 videoMode)
     display.width = (display.magnifyX + 1) * g_DisplayWidth;
     WriteFrameHead();
     pixels = g_DisplayWidth * g_DisplayHeight;
-    g_FrameBufferPage = pixels * g_DisplayPixelBytes >> 13;
-    g_DepthBufferPage = pixels * (g_DisplayPixelBytes + g_DrawPixelBytes) >> 13;
+    g_FrameBufferPage = pixels * g_DisplayPixelBytes >> GsPageShift;
+    g_DepthBufferPage = pixels * (g_DisplayPixelBytes + g_DrawPixelBytes) >> GsPageShift;
 }
 
 void SetDisplayPosition(GsDisplay*, s32 x, s32 y)
@@ -648,7 +711,7 @@ void SetDisplayPosition(GsDisplay*, s32 x, s32 y)
 
 void Platform::Graphics::StartRenderer(s32 height, bool pal)
 {
-    auto* memory = static_cast<u8*>(MemoryAllocate2(DmaMemorySize));
+    auto* memory = static_cast<u8*>(MemoryAllocate2(RendererDmaMemorySize));
     g_UnreadFrameWidth = FrameWidth;
     g_RendererDmaNext = memory;
     g_RendererDmaMemory = memory;
@@ -663,8 +726,8 @@ void Platform::Graphics::FinishRendererStart()
     InitialiseFrameBuckets(&g_FrameBuckets);
     InitialiseSmallBucket(&g_SmallBucket);
     InitialiseLargeBucket(&g_LargeBucket);
-    FUN_001bc8f0(D_0030A820);
-    InitShadersRenderedAmt();
+    MakeTextureSlots(g_TextureUploadContext);
+    ClearRenderedMaterials();
     g_RendererDmaNext = InitialiseInstanceBlocks(g_RendererDmaNext);
     MakeDefaultMaterials();
     InitAlphaPresets();
@@ -680,7 +743,7 @@ void Platform::Graphics::MoveDisplay(const Vector2* offset)
 
 void Platform::Graphics::StepAnimations(const TimeClock* clock)
 {
-    g_AnimationsStopped = (clock->flags & TimeClock::FlagRunning) ^ 1;
+    g_AnimationsStopped = clock->flags.running ^ 1;
     AnimateMaterials(clock);
     UpdateParticleWaves(clock);
 }

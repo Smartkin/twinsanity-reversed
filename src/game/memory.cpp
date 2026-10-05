@@ -6,19 +6,34 @@
 
 namespace
 {
-constexpr u32 FreeBit = 0x80000000;
-constexpr u32 SizeMask = 0x7FFFFFFF;
 constexpr u32 PageSize = 0x1000;
 // A page's share of the pages' memory: its node, its entries and its size class
 constexpr u32 PageCost = sizeof(FixedAllocatorNode) + PageSize + sizeof(u16);
-// MemoryAllocateAligned leaves it in front of an aligned allocation, with the block's own address after it
+// The heap's blocks and their sizes
+constexpr u32 HeapAlignment = 0x10;
+// A free block is split when more than this is left of it
+constexpr u32 SmallestSplit = 0x20;
+// A size word's free bit, for the merge that ORs the sum of two sizes into the whole word
+constexpr u32 FreeBit = 0x80000000;
+// MemoryAllocateAligned leaves it in front of an aligned allocation (the word 12 bytes before it), with the block's own address
+// after it (8 bytes before)
 constexpr u32 AlignedMarker = 0xFEDCBA98;
+constexpr s32 AlignedMarkerWord = -3;
+constexpr s32 AlignedBlockWord = -2;
 constexpr s32 NoFit = -1;
 constexpr s32 WorstFit = 1000000000;
 // The disk manager's pool; the heap manager's takes what the platform has left after it
 constexpr u32 DiskPoolSize = 0x10A3D70;
 
+// g_PoolsAllocated's entries
+enum PoolIndex : u32
+{
+    HeapPool = 0,
+    DiskPool = 1,
+};
+
 // The entries' sizes: 4 bytes apart up to 148, then fewer the bigger they get
+constexpr u32 SizeClassStep = 4;
 constexpr u32 SizeClassSizes[SizeClassCount] = {
     4,   8,   12,  16,  20,  24,  28,  32,  36,  40,  44,  48,  52,  56,  60,   64,   68,   72,   76,   80,  84,
     88,  92,  96,  100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,  148,  156,  160,  168,  176, 184,
@@ -122,14 +137,21 @@ extern "C"
     FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node) RETAIL(InitRootNode_);
     void DestroyAllocatorNode(FixedAllocatorNode* node, u32 flags) RETAIL(FUN_002054b0);
     MemoryController* InitMemController(MemoryController* small) RETAIL(InitMemController_);
-    void* CacheAlloc(MemoryController* small, u32 size) RETAIL(CacheAlloc_);
-    void FreeCache(MemoryController* small, void* memory) RETAIL(FreeCache_);
+    void* SmallAllocate(MemoryController* small, u32 size) RETAIL(CacheAlloc_);
+    void SmallFree(MemoryController* small, void* memory) RETAIL(FreeCache_);
+    void PushOnChain(void* node, void** head, u32 newerField, u32 olderField) RETAIL(StoreInCacheChain);
+    void InitFixedAllocator(FixedAllocatorNode* node, u32 size, u32 entrySize, void* memory) RETAIL(AllocateMemory);
+    void* TakeEntry(FixedAllocatorNode* node) RETAIL(GetAvailableAddress);
+    void FreeEntry(FixedAllocatorNode* node, void* entry) RETAIL(FreeAddress);
+    u32 SizeClassOf(u32 size) RETAIL(GetIndexBasedOnAllocSize);
+    void InitPages(MemoryController* small, u8* memory, u32 size) RETAIL(InitAllocatorCache);
+    void* HeapManagerAllocate(HeapManager* heap, u32 size) RETAIL(GetMemoryAddress);
     void DestroyMemoryController(MemoryController* small, u32 flags) RETAIL(FUN_002052f0);
     u32 BlockSize(HeapBlock* block) RETAIL(FUN_00204e98);
     void InitHeapManager(HeapManager* heap) RETAIL(InitHeapManager_);
     HeapManager* CreateHeapManager(HeapManager* heap) RETAIL(CreateHeapManager_);
     void DestroyHeapManager(HeapManager* heap, u32 flags) RETAIL(FUN_00204ef8);
-    void InitHeap(HeapManager* heap, u8* memory, u32 size, u32 unknown) RETAIL(FUN_00204f60);
+    void InitHeap(HeapManager* heap, u8* memory, u32 size, u32 unused) RETAIL(FUN_00204f60);
     void SetHeapPool(HeapManager* heap, u8* memory, u32 size) RETAIL(FUN_00204c00);
     s32 BlockFitSlack(HeapManager*, HeapBlock* block, u32 size) RETAIL(FUN_00205158);
     void* TakeBlock(HeapManager* heap, HeapBlock* block, u32 size) RETAIL(FUN_002027c8);
@@ -141,7 +163,7 @@ extern "C"
 
     // The retail code's intrusive list templates, GCC 2.9x's: the node's fields come as member pointers. The list's head is its
     // newest node, each node's older field leads to the one before
-    void StoreInCacheChain(void* node, void** head, u32 newerField, u32 olderField)
+    void PushOnChain(void* node, void** head, u32 newerField, u32 olderField)
     {
         if (*head == nullptr)
         {
@@ -156,7 +178,7 @@ extern "C"
         *head = node;
     }
 
-void UnlinkFromChain(void* node, void** head, u32 newerField, u32 olderField)
+    void UnlinkFromChain(void* node, void** head, u32 newerField, u32 olderField)
     {
         void* newer = Field(node, newerField);
         void* older = Field(node, olderField);
@@ -186,15 +208,15 @@ void UnlinkFromChain(void* node, void** head, u32 newerField, u32 olderField)
         Field(node, newerField) = nullptr;
     }
 
-void MoveToChainFront(void* node, void** head)
+    void MoveToChainFront(void* node, void** head)
     {
         UnlinkFromChain(node, head, NewerField, OlderField);
-        StoreInCacheChain(node, head, NewerField, OlderField);
+        PushOnChain(node, head, NewerField, OlderField);
     }
 
     // The fixed size entries
 
-FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
+    FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
     {
         node->allocator.memory = nullptr;
         node->allocator.size = 0;
@@ -206,7 +228,8 @@ FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
         return node;
     }
 
-    void AllocateMemory(FixedAllocatorNode* node, u32 size, u32 entrySize, void* memory)
+    // The memory made the node's entries, all free
+    void InitFixedAllocator(FixedAllocatorNode* node, u32 size, u32 entrySize, void* memory)
     {
         u32 capacity = size / entrySize;
         node->allocator.size = size;
@@ -230,7 +253,8 @@ FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
         node->allocator.nextFree = node->allocator.memory;
     }
 
-    void* GetAvailableAddress(FixedAllocatorNode* node)
+    // An entry taken (none when they're all used), and one given back
+    void* TakeEntry(FixedAllocatorNode* node)
     {
         u32 freeCount = node->allocator.freeCount;
         if (freeCount == 0)
@@ -244,7 +268,7 @@ FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
         return entry;
     }
 
-    void FreeAddress(FixedAllocatorNode* node, void* entry)
+    void FreeEntry(FixedAllocatorNode* node, void* entry)
     {
         if (entry == nullptr)
         {
@@ -257,9 +281,9 @@ FixedAllocatorNode* InitRootNode(FixedAllocatorNode* node)
         node->allocator.freeCount++;
     }
 
-void DestroyAllocatorNode(FixedAllocatorNode* node, u32 flags)
+    void DestroyAllocatorNode(FixedAllocatorNode* node, u32 flags)
     {
-        if (flags & 1)
+        if (flags & FreeAfterDestroy)
         {
             MemoryDeallocate2_(node);
         }
@@ -268,11 +292,11 @@ void DestroyAllocatorNode(FixedAllocatorNode* node, u32 flags)
     // The small allocations
 
     // The first size class that fits a size (a multiple of 4)
-    u32 GetIndexBasedOnAllocSize(u32 size)
+    u32 SizeClassOf(u32 size)
     {
         if (size <= SizeClassSizes[EvenSizeClasses - 1])
         {
-            return (size - 1) >> 2;
+            return (size - 1) / SizeClassStep;
         }
 
         u32 low = EvenSizeClasses;
@@ -293,44 +317,45 @@ void DestroyAllocatorNode(FixedAllocatorNode* node, u32 flags)
         return low;
     }
 
-MemoryController* InitMemController(MemoryController* small)
+    MemoryController* InitMemController(MemoryController* small)
     {
         InitRootNode(&small->freeNodes);
         return small;
     }
 
-    void InitAllocatorCache(MemoryController* small, u8* memory, u32 size)
+    // The memory made the small allocations' pages, their nodes and their size classes
+    void InitPages(MemoryController* small, u8* memory, u32 size)
     {
         u32 pageCount = size / PageCost;
         small->nodes = reinterpret_cast<FixedAllocatorNode*>(memory);
         small->pageCount = pageCount;
         small->pages = memory + pageCount * sizeof(FixedAllocatorNode);
         small->pageSizeClasses = reinterpret_cast<u16*>(small->pages + pageCount * PageSize);
-        AllocateMemory(&small->freeNodes, pageCount * sizeof(FixedAllocatorNode), sizeof(FixedAllocatorNode), memory);
+        InitFixedAllocator(&small->freeNodes, pageCount * sizeof(FixedAllocatorNode), sizeof(FixedAllocatorNode), memory);
         for (u32 i = 0; i < SizeClassCount; i++)
         {
             small->sizeClasses[i] = nullptr;
         }
     }
 
-void* CacheAlloc(MemoryController* small, u32 size)
+    void* SmallAllocate(MemoryController* small, u32 size)
     {
         if (size == 0)
         {
             return nullptr;
         }
 
-        u32 sizeClass = GetIndexBasedOnAllocSize((size + 3) & ~3u);
+        u32 sizeClass = SizeClassOf((size + SizeClassStep - 1) & ~(SizeClassStep - 1));
         for (FixedAllocatorNode* node = small->sizeClasses[sizeClass]; node != nullptr; node = node->older)
         {
-            if (void* entry = GetAvailableAddress(node))
+            if (void* entry = TakeEntry(node))
             {
                 return entry;
             }
         }
 
         // A new page for the size
-        FixedAllocatorNode* node = static_cast<FixedAllocatorNode*>(GetAvailableAddress(&small->freeNodes));
+        FixedAllocatorNode* node = static_cast<FixedAllocatorNode*>(TakeEntry(&small->freeNodes));
         if (node == nullptr)
         {
             return nullptr;
@@ -338,21 +363,21 @@ void* CacheAlloc(MemoryController* small, u32 size)
 
         s32 page = node - small->nodes;
         small->pageSizeClasses[page] = sizeClass;
-        AllocateMemory(node, PageSize, SizeClassSizes[sizeClass], small->pages + page * PageSize);
-        StoreInCacheChain(node, reinterpret_cast<void**>(&small->sizeClasses[sizeClass]), NewerField, OlderField);
-        return GetAvailableAddress(node);
+        InitFixedAllocator(node, PageSize, SizeClassSizes[sizeClass], small->pages + page * PageSize);
+        PushOnChain(node, reinterpret_cast<void**>(&small->sizeClasses[sizeClass]), NewerField, OlderField);
+        return TakeEntry(node);
     }
 
-void FreeCache(MemoryController* small, void* memory)
+    void SmallFree(MemoryController* small, void* memory)
     {
-        u32 page = static_cast<u32>(Bytes(memory) - small->pages) >> 12;
+        u32 page = static_cast<u32>(Bytes(memory) - small->pages) / PageSize;
         FixedAllocatorNode* node = small->nodes + page;
-        FreeAddress(node, memory);
+        FreeEntry(node, memory);
         void** sizeClass = reinterpret_cast<void**>(&small->sizeClasses[small->pageSizeClasses[page]]);
         if (node->allocator.capacity == node->allocator.freeCount)
         {
             // All free: the page goes back
-            FreeAddress(&small->freeNodes, node);
+            FreeEntry(&small->freeNodes, node);
             UnlinkFromChain(node, sizeClass, NewerField, OlderField);
         }
         else if (node != *sizeClass)
@@ -361,10 +386,10 @@ void FreeCache(MemoryController* small, void* memory)
         }
     }
 
-void DestroyMemoryController(MemoryController* small, u32 flags)
+    void DestroyMemoryController(MemoryController* small, u32 flags)
     {
         DestroyAllocatorNode(&small->freeNodes, DestroyOnly);
-        if (flags & 1)
+        if (flags & FreeAfterDestroy)
         {
             MemoryDeallocate2_(small);
         }
@@ -372,14 +397,14 @@ void DestroyMemoryController(MemoryController* small, u32 flags)
 
     // The heap
 
-u32 BlockSize(HeapBlock* block)
+    u32 BlockSize(HeapBlock* block)
     {
-        return block->size & SizeMask;
+        return block->size.bytes;
     }
 
-void InitHeapManager(HeapManager* heap)
+    void InitHeapManager(HeapManager* heap)
     {
-        heap->unknown3C = 0;
+        heap->unused3C = 0;
         heap->end = nullptr;
         heap->first = nullptr;
         heap->recentFree = nullptr;
@@ -394,29 +419,30 @@ void InitHeapManager(HeapManager* heap)
         heap->peakUsedBytes = 0;
     }
 
-HeapManager* CreateHeapManager(HeapManager* heap)
+    HeapManager* CreateHeapManager(HeapManager* heap)
     {
         InitHeapManager(heap);
         return heap;
     }
 
-void DestroyHeapManager(HeapManager* heap, u32 flags)
+    void DestroyHeapManager(HeapManager* heap, u32 flags)
     {
-        if (flags & 1)
+        if (flags & FreeAfterDestroy)
         {
             MemoryDeallocate2_(heap);
         }
     }
 
     // One free block of all the memory
-void InitHeap(HeapManager* heap, u8* memory, u32 size, u32 unknown)
+    void InitHeap(HeapManager* heap, u8* memory, u32 size, u32 unused)
     {
-        HeapBlock* first = BlockAt(reinterpret_cast<u8*>((reinterpret_cast<u32>(memory) + 15) & ~15u));
+        HeapBlock* first =
+            BlockAt(reinterpret_cast<u8*>((reinterpret_cast<u32>(memory) + HeapAlignment - 1) & ~(HeapAlignment - 1)));
         first->next = nullptr;
         first->previous = nullptr;
         first->before = nullptr;
-        first->size = (first->size & FreeBit) | ((size - (Bytes(first) - memory + sizeof(HeapBlock))) & ~15u);
-        first->size = BlockSize(first) | FreeBit;
+        first->size.bytes = (size - (Bytes(first) - memory + sizeof(HeapBlock))) & ~(HeapAlignment - 1);
+        first->size.free = 1;
         heap->poolStart = memory;
         heap->poolSize = size;
         heap->recentFree = first;
@@ -431,22 +457,23 @@ void InitHeap(HeapManager* heap, u8* memory, u32 size, u32 unknown)
         heap->allocations = 0;
         heap->ready = 0;
         heap->peakUsedBytes = 0;
-        heap->unknown3C = 0;
+        heap->unused3C = 0;
         heap->freeBytes = size;
         heap->end = Bytes(After(first, BlockSize(first)));
-        heap->unknown38 = unknown;
+        heap->unused38 = unused;
         heap->ready = 1;
         heap->freeBlocks = 1;
     }
 
     // The heap gets two thirds of the pool, the small allocations' pages the rest
-void SetHeapPool(HeapManager* heap, u8* memory, u32 size)
+    void SetHeapPool(HeapManager* heap, u8* memory, u32 size)
     {
         u32 third = size / 3;
-        u32 heapSize = size - third - 0x10;
-        heap->small.start = reinterpret_cast<u8*>((reinterpret_cast<u32>(memory) + heapSize + 15) & ~15u);
+        u32 heapSize = size - third - HeapAlignment;
+        heap->small.start =
+            reinterpret_cast<u8*>((reinterpret_cast<u32>(memory) + heapSize + HeapAlignment - 1) & ~(HeapAlignment - 1));
         InitHeap(heap, memory, heapSize, 0);
-        InitAllocatorCache(&heap->small, heap->small.start, third - 0x10);
+        InitPages(&heap->small, heap->small.start, third - HeapAlignment);
         heap->deferredFrame = 0;
         heap->deferredFrees[2] = nullptr;
         heap->deferredFrees[1] = nullptr;
@@ -454,9 +481,9 @@ void SetHeapPool(HeapManager* heap, u8* memory, u32 size)
     }
 
     // How much bigger the block is than the size, or NoFit
-s32 BlockFitSlack(HeapManager*, HeapBlock* block, u32 size)
+    s32 BlockFitSlack(HeapManager*, HeapBlock* block, u32 size)
     {
-        u32 blockSize = block->size & SizeMask;
+        u32 blockSize = block->size.bytes;
         if (blockSize < size)
         {
             return NoFit;
@@ -465,31 +492,31 @@ s32 BlockFitSlack(HeapManager*, HeapBlock* block, u32 size)
         return blockSize - size;
     }
 
-    // Takes the size from the free block, the rest a free block of its own when more than 32 bytes are left
-void* TakeBlock(HeapManager* heap, HeapBlock* block, u32 size)
+    // Takes the size from the free block, the rest a free block of its own when more than SmallestSplit bytes are left
+    void* TakeBlock(HeapManager* heap, HeapBlock* block, u32 size)
     {
-        u32 blockSize = block->size & SizeMask;
+        u32 blockSize = block->size.bytes;
         if (blockSize < size)
         {
             return nullptr;
         }
 
         void* memory = block + 1;
-        if (size + 0x20 < blockSize)
+        if (size + SmallestSplit < blockSize)
         {
             HeapBlock* rest = After(block, size);
-            rest->size = (rest->size & FreeBit) | (blockSize - size - sizeof(HeapBlock));
+            rest->size.bytes = blockSize - size - sizeof(HeapBlock);
             rest->next = nullptr;
             rest->previous = nullptr;
             UnlinkFree(heap, block);
             heap->freeBlocks--;
-            block->size = BlockSize(block);
+            block->size.free = 0;
             heap->usedBlocks++;
             PushFree(heap, rest);
-            rest->size = BlockSize(rest) | FreeBit;
+            rest->size.free = 1;
             heap->recentFree = rest;
             heap->freeBlocks++;
-            block->size = (block->size & FreeBit) | size;
+            block->size.bytes = size;
             CountTaken(heap, BlockSize(block) + sizeof(HeapBlock));
             rest->before = block;
             HeapBlock* after = After(rest, BlockSize(rest));
@@ -503,7 +530,7 @@ void* TakeBlock(HeapManager* heap, HeapBlock* block, u32 size)
             heap->recentFree = block->next;
             UnlinkFree(heap, block);
             heap->freeBlocks--;
-            block->size = BlockSize(block);
+            block->size.free = 0;
             heap->usedBlocks++;
             CountTaken(heap, BlockSize(block) + sizeof(HeapBlock));
         }
@@ -512,7 +539,7 @@ void* TakeBlock(HeapManager* heap, HeapBlock* block, u32 size)
     }
 
     // The free block that fits the size best
-void* HeapBestFit(HeapManager* heap, HeapBlock* block, u32 size)
+    void* HeapBestFit(HeapManager* heap, HeapBlock* block, u32 size)
     {
         s32 bestSlack = WorstFit;
         HeapBlock* best = nullptr;
@@ -532,7 +559,7 @@ void* HeapBestFit(HeapManager* heap, HeapBlock* block, u32 size)
         return best != nullptr ? TakeBlock(heap, best, size) : nullptr;
     }
 
-void* HeapAlloc(HeapManager* heap, u32 size)
+    void* HeapAlloc(HeapManager* heap, u32 size)
     {
         if (!heap->ready)
         {
@@ -540,15 +567,15 @@ void* HeapAlloc(HeapManager* heap, u32 size)
         }
 
         heap->allocations++;
-        return HeapBestFit(heap, heap->freeList, (size + 15) & ~15u);
+        return HeapBestFit(heap, heap->freeList, (size + HeapAlignment - 1) & ~(HeapAlignment - 1));
     }
 
     // Joins the free block with the free blocks around it. Returns whether it joined any
-s32 MergeFreeBlock(HeapManager* heap, HeapBlock* block)
+    s32 MergeFreeBlock(HeapManager* heap, HeapBlock* block)
     {
         s32 merged = 0;
         HeapBlock* after = After(block, BlockSize(block));
-        if (Bytes(after) < heap->end && (after->size & FreeBit))
+        if (Bytes(after) < heap->end && after->size.free)
         {
             HeapBlock* afterAfter = After(after, BlockSize(after));
             if (heap->recentFree == after)
@@ -556,7 +583,8 @@ s32 MergeFreeBlock(HeapManager* heap, HeapBlock* block)
                 heap->recentFree = block;
             }
 
-            block->size = (block->size & FreeBit) | ((block->size & SizeMask) + (after->size & SizeMask) + sizeof(HeapBlock));
+            // The sum ORed into the whole word, as retail does
+            block->size.value = (block->size.value & FreeBit) | (BlockSize(block) + BlockSize(after) + sizeof(HeapBlock));
             if (Bytes(afterAfter) < heap->end)
             {
                 afterAfter->before = block;
@@ -568,12 +596,13 @@ s32 MergeFreeBlock(HeapManager* heap, HeapBlock* block)
         }
 
         HeapBlock* before = block->before;
-        if (before == nullptr || !(before->size & FreeBit))
+        if (before == nullptr || !before->size.free)
         {
             return merged;
         }
 
-        before->size = FreeBit | ((before->size & SizeMask) + (block->size & SizeMask) + sizeof(HeapBlock));
+        before->size.bytes = BlockSize(before) + BlockSize(block) + sizeof(HeapBlock);
+        before->size.free = 1;
         after = After(block, BlockSize(block));
         if (Bytes(after) < heap->end)
         {
@@ -590,7 +619,7 @@ s32 MergeFreeBlock(HeapManager* heap, HeapBlock* block)
         return 1;
     }
 
-void FreeHeap(HeapManager* heap, void* memory)
+    void FreeHeap(HeapManager* heap, void* memory)
     {
         if (memory == nullptr || !heap->ready)
         {
@@ -598,10 +627,11 @@ void FreeHeap(HeapManager* heap, void* memory)
         }
 
         u32* words = static_cast<u32*>(memory);
-        HeapBlock* block = words[-3] == AlignedMarker ? reinterpret_cast<HeapBlock*>(words[-2]) : BlockAt(memory) - 1;
+        HeapBlock* block = words[AlignedMarkerWord] == AlignedMarker ? reinterpret_cast<HeapBlock*>(words[AlignedBlockWord])
+                                                                     : BlockAt(memory) - 1;
         heap->usedBlocks--;
         PushFree(heap, block);
-        block->size = BlockSize(block) | FreeBit;
+        block->size.free = 1;
         heap->freeBlocks++;
         u32 freed = BlockSize(block) + sizeof(HeapBlock);
         heap->freeBytes += freed;
@@ -611,11 +641,12 @@ void FreeHeap(HeapManager* heap, void* memory)
 
     // The allocator
 
-    void* GetMemoryAddress(HeapManager* heap, u32 size)
+    // From the small allocations' pages below SmallAllocationLimit, from the heap otherwise
+    void* HeapManagerAllocate(HeapManager* heap, u32 size)
     {
         if (size < SmallAllocationLimit)
         {
-            return CacheAlloc(&heap->small, size);
+            return SmallAllocate(&heap->small, size);
         }
 
         return HeapAlloc(heap, size);
@@ -629,7 +660,7 @@ void FreeHeap(HeapManager* heap, void* memory)
         }
         else
         {
-            FreeCache(&heap->small, memory);
+            SmallFree(&heap->small, memory);
         }
     }
 
@@ -644,8 +675,8 @@ void FreeHeap(HeapManager* heap, void* memory)
         }
 
         u32* aligned = reinterpret_cast<u32*>((reinterpret_cast<u32>(memory) + alignment - 1) & ~mask);
-        aligned[-2] = reinterpret_cast<u32>(memory - sizeof(HeapBlock));
-        aligned[-3] = AlignedMarker;
+        aligned[AlignedBlockWord] = reinterpret_cast<u32>(memory - sizeof(HeapBlock));
+        aligned[AlignedMarkerWord] = AlignedMarker;
         return aligned;
     }
 
@@ -677,7 +708,7 @@ void FreeHeap(HeapManager* heap, void* memory)
         heap->deferredFrees[heap->deferredFrame] = nullptr;
     }
 
-void DestroyTheHeapManager()
+    void DestroyTheHeapManager()
     {
         DestroyMemoryController(&g_HeapManager.small, DestroyOnly);
         DestroyHeapManager(&g_HeapManager, DestroyOnly);
@@ -693,10 +724,10 @@ void DestroyTheHeapManager()
             RetailLibc::AtExit(DestroyTheHeapManager);
         }
 
-        if (!g_PoolsAllocated[0])
+        if (!g_PoolsAllocated[HeapPool])
         {
             u32 size = Platform::Memory::PoolSpace() - DiskPoolSize;
-            g_PoolsAllocated[0] = true;
+            g_PoolsAllocated[HeapPool] = true;
             g_HeapPool = Platform::Memory::AllocatePool(size);
             SetHeapPool(&g_HeapManager, static_cast<u8*>(g_HeapPool), size);
         }
@@ -718,9 +749,9 @@ void DestroyTheHeapManager()
             RetailLibc::AtExit(DestroyTheDiskManager);
         }
 
-        if (!g_PoolsAllocated[1])
+        if (!g_PoolsAllocated[DiskPool])
         {
-            g_PoolsAllocated[1] = true;
+            g_PoolsAllocated[DiskPool] = true;
             g_DiskPool = Platform::Memory::AllocatePool(DiskPoolSize);
             DiskManagerSetPool(&g_DiskManager, g_DiskPool, DiskPoolSize);
         }
@@ -730,12 +761,12 @@ void DestroyTheHeapManager()
 
     void* MemoryAllocate(u32 size)
     {
-        return GetMemoryAddress(GetHeapManager(), size);
+        return HeapManagerAllocate(GetHeapManager(), size);
     }
 
     void* MemoryAllocate2(u32 size)
     {
-        return GetMemoryAddress(GetHeapManager(), size);
+        return HeapManagerAllocate(GetHeapManager(), size);
     }
 
     void MemoryDeallocate2_(void* memory)

@@ -21,12 +21,11 @@ EABI_EXPORT(FUN_001504b0, &WallClingVehicle::Collide);
 
 namespace
 {
-// The character's body: its instance's node of kind 5, and the collision mask of the sphere Start gives it
-constexpr u32 BodyNodeKind = 5;
-constexpr u32 BodyCollisionMask = 0x1A030;
+// The kinds of nodes of the instances the sphere body Start gives the character collides with
+constexpr u32 BodyCollisionKinds = 1u << NodeDynamicScenery | 1u << NodeRigidBody | 1u << NodeCrate | 1u << NodeCreature
+                                   | 1u << NodeGenericObject;
 // The script event the wall cling runs on its character every frame it goes on
 constexpr u32 EventWallCling = 0x22;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 
 // The wall cling: its box (0.58 wide, 1.8 high, standing on its position); the fall (4.5 a second faster each second, never past
 // 4.5); the stick steering it along its x axis (6 times the stick's part along it less its speed that way, within 3, times 25 a
@@ -38,21 +37,18 @@ constexpr f32 ClingFallSpeed = 4.5f;
 constexpr f32 SteerScale = 6.0f;
 constexpr f32 MaxSteer = 3.0f;
 constexpr f32 SteerRate = 25.0f;
-// Its contacts: gathered within a frame's motion and half a unit more, with the instances of these bits but the character's own
+// Its contacts: gathered within a frame's motion and half a unit more, with the solid instances but the character's own
 constexpr f32 ReachMargin = 0.5f;
-constexpr u32 ClingContactMask = 0x5B010;
 // A push out of the contacts longer than 0.001 whose direction rises more than 0.707 is a landing; the wall must be within 0.5
 // along its z axis, and it creeps 0.02 toward it when there's room
 constexpr f32 PushEpsilon = Rounded(0.001);
 constexpr f32 LandingRise = Rounded(0.707);
 constexpr f32 WallReach = 0.5f;
 constexpr f32 WallCreep = 0.02f;
-// Turning to face the wall: not when its z axis already points along the wall's direction (their cross product's square)
-constexpr f32 FacingEpsilon = 5e-05f;
 
 DynamicBody* BodyOf(const CharacterAgent* agent)
 {
-    return static_cast<DynamicBody*>(GetGameNode(&agent->instance->nodes, BodyNodeKind));
+    return static_cast<DynamicBody*>(GetGameNode(&agent->instance->nodes, NodeRigidBody));
 }
 
 // The place of an instance that may be none (retail reads the word at address 8 then)
@@ -60,33 +56,6 @@ ObjectPlace* RetailPlaceOf(const InstanceContext* instance)
 {
     std::uintptr_t address = reinterpret_cast<std::uintptr_t>(instance) + offsetof(ReferencedObject, place);
     return *reinterpret_cast<ObjectPlace* const*>(address);
-}
-
-// When the vehicle's Place says so, the character put at agentMatrix and the other at otherMatrix, each queued when its place
-// changed (retail works out the rotation of agentMatrix first and drops it)
-void PlaceRiders(Vehicle* vehicle)
-{
-    if (vehicle->Place() == 0)
-    {
-        return;
-    }
-
-    Vector4 rotation;
-    GetRotationVec(&rotation, &vehicle->agentMatrix);
-    InstanceContext* instance = vehicle->agent->instance;
-    if (SetPlaceMatrix(instance->place, &vehicle->agentMatrix) != 0)
-    {
-        QueueObject(instance);
-    }
-
-    if (vehicle->other != nullptr)
-    {
-        InstanceContext* otherInstance = vehicle->other->instance;
-        if (SetPlaceMatrix(otherInstance->place, &vehicle->otherMatrix) != 0)
-        {
-            QueueObject(otherInstance);
-        }
-    }
 }
 }
 
@@ -105,8 +74,8 @@ void Vehicle::Start()
     {
         DynamicBody* body = AddPhysicsBody(world, instance, 1);
         body->SetMatrix(&place->matrix);
-        *reinterpret_cast<u64*>(&body->bits) &= ~u64{DynamicBody::BitPlacesInstance};
-        body->collisionMask = BodyCollisionMask;
+        body->bits.placesInstance = 0;
+        body->collisionMask = BodyCollisionKinds;
     }
 
     Place();
@@ -116,7 +85,7 @@ void Vehicle::Destroy(u32 destroyFlags)
 {
     vtable = g_VehicleVTable;
     RemoveBody();
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -152,7 +121,7 @@ void Vehicle::Knock(const Vector4*, u32, InstanceContext*)
 
 u32 Vehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -242,10 +211,11 @@ void Vehicle::SetBodyPosition(const Vector4* position)
 WallClingVehicle* WallClingVehicle::Construct(WallClingVehicle* vehicle, CharacterAgent* agent)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->other = nullptr;
     vehicle->vtable = g_WallClingVehicleVTable;
-    vehicle->Bits() = (vehicle->Bits() | BitDrives) & ~u64{BitHeld};
+    vehicle->bits.drives = 1;
+    vehicle->bits.held = 0;
     HullConstruct(&vehicle->hull);
     vehicle->Start();
     return vehicle;
@@ -275,7 +245,7 @@ u32 WallClingVehicle::Place()
 void WallClingVehicle::Destroy(u32 destroyFlags)
 {
     vtable = g_WallClingVehicleVTable;
-    HullDestroy(&hull, 2);
+    HullDestroy(&hull, DestroyOnly);
     Vehicle::Destroy(destroyFlags);
 }
 
@@ -294,7 +264,7 @@ void WallClingVehicle::Push(const Vector4* push, InstanceContext* instance)
 // Through a link whose chunk isn't loaded it stays, put back at the instance's kept position and stopped
 u32 WallClingVehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         *RowOf(&matrix, 3) = agent->instance->box;
         velocity = g_DefaultBox.min;
@@ -395,9 +365,9 @@ u32 WallClingVehicle::Collide(f32 seconds)
     // Along the world's z axis rather than the motion
     Vector4 reach = {0.0f, 0.0f, speed * seconds + ReachMargin, 1.0f};
     GatherTriangleContacts(contacts, chunk, position, &reach, &hull);
-    u32 mask = ClingContactMask;
+    u32 kinds = SolidNodeKinds;
     InstanceContext* skipped[] = {instance};
-    GatherInstanceContacts(contacts, chunk, position, &reach, &mask, skipped, 1, &hull);
+    GatherInstanceContacts(contacts, chunk, position, &reach, &kinds, skipped, 1, &hull);
     Vector4 push;
     f32 pushed;
     Depenetrate(contacts, position, &push, 1, 1, 1, &pushed);
@@ -416,7 +386,7 @@ u32 WallClingVehicle::Collide(f32 seconds)
     probe.x = probe.x + forward->x * WallReach;
     probe.y = probe.y + forward->y * WallReach;
     probe.z = probe.z + forward->z * WallReach;
-    if (PointInsideSolidContact(0.0f, contacts, &probe, Contact::SphereBit) == 0)
+    if (PointInsideSolidContact(0.0f, contacts, &probe, ContactKind::SphereBit) == 0)
     {
         EndContacts();
         // Retail then steps a probe from 0 to 2 units ahead by 0.1 without testing it (a loop left empty)
@@ -427,7 +397,7 @@ u32 WallClingVehicle::Collide(f32 seconds)
     probe.x = probe.x + forward->x * WallCreep;
     probe.y = probe.y + forward->y * WallCreep;
     probe.z = probe.z + forward->z * WallCreep;
-    if (PointInsideSolidContact(0.0f, contacts, &probe, Contact::SphereBit) == 0)
+    if (PointInsideSolidContact(0.0f, contacts, &probe, ContactKind::SphereBit) == 0)
     {
         *position = probe;
     }
@@ -450,7 +420,8 @@ void WallClingVehicle::FaceWall()
     forward.x = forward.x * inverse;
     forward.z = forward.z * inverse;
     forward.y = forward.y * inverse;
-    if (!(FacingEpsilon < crossSquared))
+    // Not when its z axis already points along the wall's direction
+    if (!(Epsilon < crossSquared))
     {
         return;
     }
@@ -473,11 +444,12 @@ PassengerVehicle* PassengerVehicle::Construct(PassengerVehicle* vehicle, u32 kin
                                               CharacterAgent* driver)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->other = driver;
     vehicle->vtable = g_PassengerVehicleVTable;
     vehicle->kind = kind;
-    vehicle->Bits() &= ~u64{BitDrives} & ~u64{BitHeld};
+    vehicle->bits.drives = 0;
+    vehicle->bits.held = 0;
     return vehicle;
 }
 

@@ -2,28 +2,34 @@
 
 #include <kernel.h>
 
+// The batches sent to the IOP and its replies read, MultiStream's start-up, and the EE's server of the fast load
 using namespace MultiStream;
 
 namespace
 {
+// The module's RPC server (SOUND_DEV), the function the batches go to (SOUND_SETPARAMS) and the EE's own server
+// (SOUND_FASTLOAD_RPC_DEVICE)
 constexpr s32 ServerId = 0x12345;
-constexpr s32 CallbackServerId = 0x12344321;
-constexpr u16 BatchMagic = 0x48;
-// Every batch sent on its own ends with it, with the words 0xFFFF and 0
-constexpr s32 CommandFrameEnd = 9;
-// The command the EE's server starts with, with the words 0 and 0
-constexpr s32 CommandServerStarted = 0x51;
-constexpr s32 SendBufferWords = TransferSize / sizeof(u16);
-// The IOP is about to read the EE's memory: the cache is written back
-constexpr s32 RequestReadMemory = 999;
+constexpr u32 SetParametersFunction = 0;
+constexpr s32 FastLoadServerId = 0x12344321;
+// The loops MsInitialise waits for the server's binding each time it isn't there
+constexpr s32 BindWaitLoops = 0x270E;
+// The IOP's thread's priority (SOUND_THREAD_PRIORITY), and where the SPU2's memory that isn't the SPU2's own starts
+// (SOUND_MemBaseAddress)
+constexpr s32 IopThreadPriority = 40;
+constexpr u32 SpuMemoryStart = 0x5010;
+// The fast load's callback returns where the next transfer goes, its low bits a FastLoadMode
+constexpr u32 FastLoadModeMask = 0xF;
 }
 
 extern "C"
 {
+    // SOUND_CopyIOPBuffer and SOUND_JP, the call's end
     void MsReadReply() RETAIL(FUN_001e26d8);
     void MsCallEnded(void*) RETAIL(fBufferReceiverFromUnkRPC_Call);
-    void* MsServe(s32 function, void* data, s32 size) RETAIL(FUN_001e4380);
-    void MsServerMain(void* argument) RETAIL(FUN_001e8710);
+    // SOUND_FASTLOAD_RPC and SOUND_InitFastLoad_RPC
+    void* MsFastLoadRpc(s32 function, void* data, s32 size) RETAIL(FUN_001e4380);
+    void MsFastLoadMain(void* argument) RETAIL(FUN_001e8710);
 
     void MsLock()
     {
@@ -40,36 +46,37 @@ extern "C"
 
     s32 MsInitialise()
     {
-        D_00309FC4 = -1;
+        g_MsLockThread = -1;
         MsLock();
-        g_MsServer.running = 0;
-        D_003B4680 = 0;
-        D_003B3E80 = 0;
-        g_MsVolume = 0x28;
-        g_MsServer.unknown18 = 0;
-        g_MsStatus4 = 0x5010;
-        D_00309FC8 = 0;
-        D_00309FCC = 0;
-        D_00309FC9 = 0;
-        D_0030A8B8 = 0;
-        g_MsRequestCounter = 0;
-        D_00309FAC = 0;
+        g_MsFastLoad.eeStatus = FastLoadOff;
+        g_MsIopUpdates = 0;
+        g_MsDspUpdates = 0;
+        g_MsIopThreadPriority = IopThreadPriority;
+        g_MsFastLoad.iopStatus = FastLoadOff;
+        g_MsSpuWriteAddress = SpuMemoryStart;
+        g_MsSleepCount = 0;
+        g_MsUnusedWord = 0;
+        g_MsWakeCount = 0;
+        g_MsStreamDataInitialised = 0;
+        g_MsFileIdCounter = 0;
+        g_MsFileQueryCounter = 0;
+        // Every stream, and every channel (as many)
         for (u32 i = 0; i < Streams; i++)
         {
             g_MsChannelVolumesLeft[i] = 0;
             g_MsChannelVolumesRight[i] = 0;
             g_MsChannelGroups[i] = 0;
-            g_MsStreamStates[i] = 0;
-            g_MsStreamWord3Top[i] = 0;
-            g_MsStreamWord3Low[i] = 0;
-            g_MsChannelStates[i] = 0;
-            g_MsSlotStreams[i] = 0xFF;
+            g_MsStreamStates[i] = StreamOff;
+            g_MsStreamActive[i] = 0;
+            g_MsStreamTypes[i] = AudioStream;
+            g_MsChannelStates[i] = ChannelOff;
+            g_MsChannelStreams[i] = NoStream;
         }
 
-        for (u32 i = 0; i < 4; i++)
+        for (u32 i = 0; i < Groups; i++)
         {
-            g_MsGroupVolumesLeft[i] = 0x1000;
-            g_MsGroupVolumesRight[i] = 0x1000;
+            g_MsGroupVolumesLeft[i] = Platform::Audio::FullGroupVolume;
+            g_MsGroupVolumesRight[i] = Platform::Audio::FullGroupVolume;
         }
 
         sceSifInitRpc(0);
@@ -83,7 +90,7 @@ extern "C"
                 }
             }
 
-            for (s32 wait = 0x270E; wait != -1; wait--)
+            for (s32 wait = BindWaitLoops; wait != -1; wait--)
             {
                 asm volatile("");
             }
@@ -100,15 +107,17 @@ extern "C"
             return;
         }
 
-        if (g_MsBatchLength + g_MsCommandLength + 3 >= static_cast<s32>(BatchWords))
+        // The command's last word has to be in the batch
+        s32 last = g_MsBatchLength + BatchHeaderWords + CommandHeaderWords + g_MsCommandLength - 1;
+        if (last >= static_cast<s32>(BatchWords))
         {
-            g_MsFlushing = 1;
+            g_MsStatusRequested = 1;
             while (MsIsBusy() == 1)
             {
             }
 
-            s32 sent = MsSend(0);
-            g_MsFlushing = 0;
+            s32 sent = MsSend(SendWait);
+            g_MsStatusRequested = 0;
             if (sent == -1)
             {
                 g_MsBatchFailed = 1;
@@ -116,15 +125,16 @@ extern "C"
             }
         }
 
-        g_MsBatch[g_MsBatchLength + 2] = static_cast<u16>(g_MsCommand);
-        g_MsBatch[g_MsBatchLength + 3] = static_cast<u16>(g_MsCommandLength);
+        u16* command = &g_MsBatch[g_MsBatchLength + BatchHeaderWords];
+        command[0] = static_cast<u16>(g_MsCommand);
+        command[1] = static_cast<u16>(g_MsCommandLength);
         g_MsBatchFailed = 0;
         for (s32 i = 0; i < g_MsCommandLength; i++)
         {
-            g_MsBatch[g_MsBatchLength + 4 + i] = g_MsCommandWords[i];
+            command[CommandHeaderWords + i] = g_MsCommandWords[i];
         }
 
-        g_MsBatchLength += 2;
+        g_MsBatchLength += CommandHeaderWords;
         g_MsBatchCommands++;
         g_MsCommand = NoCommand;
         g_MsBatchLength += g_MsCommandLength;
@@ -134,7 +144,7 @@ extern "C"
     s32 MsSend(u32 mode)
     {
         MsLock();
-        if (mode == 0)
+        if (mode == SendWait)
         {
             while (MsIsBusy() == 1)
             {
@@ -152,33 +162,34 @@ extern "C"
             return -1;
         }
 
-        if (g_MsFlushing == 0)
+        if (g_MsStatusRequested == 0)
         {
             MsLock();
-            Begin(CommandFrameEnd);
-            Push(0xFFFF);
+            Begin(OpGetStatus);
+            Push(NoStreamAllowed);
             Push(0);
             MsCommit();
-            g_MsFlushing = 1;
+            g_MsStatusRequested = 1;
             MsUnlock();
         }
 
+        // The header: the module's version, then the count of commands
         g_MsBatch[1] = static_cast<u16>(g_MsBatchCommands);
-        g_MsBatch[0] = BatchMagic;
-        g_MsFlushing = 0;
-        for (s32 i = 0; i < g_MsBatchLength + 2; i++)
+        g_MsBatch[0] = Version;
+        g_MsStatusRequested = 0;
+        for (s32 i = 0; i < g_MsBatchLength + BatchHeaderWords; i++)
         {
             g_MsSendBuffer[i] = g_MsBatch[i];
         }
 
         g_MsBusy = 1;
-        if (g_MsSyncState == 1)
+        if (g_MsDspChecksum == DspDataWaiting)
         {
-            g_MsSyncState = 2;
+            g_MsDspChecksum = DspDataSent;
         }
 
-        sceSifCallRpc(&g_MsClient, 0, static_cast<s32>(mode), g_MsSendBuffer, TransferSize, g_MsReply, TransferSize, MsCallEnded,
-                      nullptr);
+        sceSifCallRpc(&g_MsClient, SetParametersFunction, static_cast<s32>(mode), g_MsSendBuffer, TransferSize, g_MsReply,
+                      TransferSize, MsCallEnded, nullptr);
         s32 sent = g_MsBatchLength;
         g_MsBatchLength = 0;
         g_MsBatchCommands = 0;
@@ -200,319 +211,327 @@ extern "C"
     void MsReadReply()
     {
         g_MsBusy = 0;
-        if (g_MsSyncState == 2)
+        if (g_MsDspChecksum == DspDataSent)
         {
-            g_MsSyncState = 0;
-            D_00309FD8 = 0;
+            g_MsDspChecksum = DspIdle;
+            g_MsDspCheckCount = 0;
         }
 
         const u32* reply = g_MsReply;
-        u32 records = *reinterpret_cast<const u8*>(g_MsReply);
-        g_MsLastEvent = 0;
-        u32 base = records * 9;
-        g_MsTick = reply[base + 1];
-        if (g_MsTick == g_MsLastTick)
+        // The count of records is the first word's low byte
+        u32 recordCount = *reinterpret_cast<const u8*>(g_MsReply);
+        g_MsDiscAccess = 0;
+        const auto* records = reinterpret_cast<const StreamRecord*>(&reply[1]);
+        const auto* status = reinterpret_cast<const ReplyStatus*>(&records[recordCount]);
+        g_MsReplyCounter = status->counter;
+        if (g_MsReplyCounter == g_MsLastReplyCounter)
         {
             return;
         }
 
-        g_MsLastTick = g_MsTick;
+        // A stream the reply leaves out is off, unless a play is on its way (for so many replies); every channel's stream is
+        // forgotten (there are as many)
+        g_MsLastReplyCounter = g_MsReplyCounter;
         for (u32 stream = 0; stream < Streams; stream++)
         {
-            if (g_MsStreamStates[stream] == 5)
+            if (g_MsStreamStates[stream] == StreamPlaySent)
             {
                 g_MsStreamCountdown[stream]--;
                 if (g_MsStreamCountdown[stream] == 0)
                 {
-                    g_MsStreamStates[stream] = 0;
+                    g_MsStreamStates[stream] = StreamOff;
                 }
             }
 
-            if (g_MsStreamStates[stream] == 1)
+            if (g_MsStreamStates[stream] == StreamOn)
             {
-                g_MsStreamCountdown[stream] = 3;
-                g_MsStreamStates[stream] = 0;
+                g_MsStreamCountdown[stream] = PlaySentReplies;
+                g_MsStreamStates[stream] = StreamOff;
             }
-            else if (g_MsStreamStates[stream] == 2)
+            else if (g_MsStreamStates[stream] == StreamPlayRequested)
             {
-                g_MsStreamStates[stream] = 5;
+                g_MsStreamStates[stream] = StreamPlaySent;
             }
 
-            g_MsSlotStreams[stream] = 0xFF;
+            g_MsChannelStreams[stream] = NoStream;
         }
 
-        u32 lastEvent = g_MsLastEvent;
-        u32 lastEventStream = g_MsLastEventStream;
-        for (u32 i = 0; i < records; i++)
+        u32 discAccess = g_MsDiscAccess;
+        u32 discAccessStream = g_MsDiscAccessStream;
+        for (u32 i = 0; i < recordCount; i++)
         {
-            const StreamRecord* record = reinterpret_cast<const StreamRecord*>(&reply[1 + i * 9]);
-            u32 header = record->header;
-            u32 stream = (static_cast<s32>(header) >> 4) & 0x3F;
-            g_MsStreamStates[stream] = g_MsStreamStates[stream] == 3 ? 4 : 1;
-            g_MsStreamRecordBits[stream] = (static_cast<s32>(header) >> 2) & 0x3;
-            u32 slot = (static_cast<s32>(header) >> 10) & 0x3F;
-            if ((header & 0x3) != 0)
+            const StreamRecord& record = records[i];
+            RecordHeader header = record.header;
+            u32 stream = header.stream;
+            g_MsStreamStates[stream] = g_MsStreamStates[stream] == StreamStopRequested ? StreamStopPending : StreamOn;
+            g_MsStreamPlayHalves[stream] = header.playHalf;
+            u32 channel = header.channel;
+            if (header.discAccess != 0)
             {
-                lastEvent = header & 0x3;
-                lastEventStream = stream;
+                discAccess = header.discAccess;
+                discAccessStream = stream;
             }
 
-            u8 word3Low = static_cast<u8>(record->words[2]);
-            g_MsStreamRecordHigh[stream] = static_cast<s16>(static_cast<s32>(header) >> 16);
-            g_MsStreamWord1[stream] = record->words[0] & 0xFFFFFF;
-            g_MsStreamWord2[stream] = record->words[1];
-            g_MsStreamWord3Top[stream] = static_cast<u8>(record->words[2] >> 31);
-            g_MsStreamWord3Low[stream] = word3Low;
-            // By the slot it had
-            if (word3Low == 0)
+            u8 kind = record.type.kind;
+            g_MsStreamEnvelopes[stream] = static_cast<s16>(header.envelope);
+            g_MsStreamSpuAddresses[stream] = record.spuAddress & SpuAddressMask;
+            g_MsStreamFiles[stream] = record.file;
+            g_MsStreamActive[stream] = record.type.active;
+            g_MsStreamTypes[stream] = kind;
+            // An audio stream is its channel's: the channel the last reply gave it
+            if (kind == AudioStream)
             {
-                g_MsSlotStreams[g_MsStreamSlots[stream]] = static_cast<u8>(stream);
+                g_MsChannelStreams[g_MsStreamChannels[stream]] = static_cast<u8>(stream);
             }
 
-            g_MsStreamSlots[stream] = static_cast<u8>(slot);
-            g_MsStreamWord4[stream] = record->words[3];
-            g_MsStreamWord5[stream] = record->words[4];
-            g_MsStreamWord6[stream] = g_MsStreamStates[stream] == 1 ? record->words[5] : 0;
-            g_MsStreamWord7Low[stream] = static_cast<s16>(record->words[6]);
-            if ((g_MsStreamWord7High[stream] & 0x8000) != 0)
+            g_MsStreamChannels[stream] = static_cast<u8>(channel);
+            g_MsStreamWriteAddresses[stream] = record.writeAddress;
+            g_MsStreamPlayOffsets[stream] = record.playOffset;
+            g_MsStreamEeDataSizes[stream] = g_MsStreamStates[stream] == StreamOn ? record.eeDataSize : 0;
+            g_MsStreamPitches[stream] = static_cast<s16>(record.pitchAndPriority.pitch);
+            if ((g_MsStreamPriorities[stream] & PriorityKept) != 0)
             {
-                g_MsStreamWord7High[stream] &= 0x7FFF;
+                g_MsStreamPriorities[stream] &= ~PriorityKept;
             }
             else
             {
-                g_MsStreamWord7High[stream] = static_cast<u16>(record->words[6] >> 16);
+                g_MsStreamPriorities[stream] = record.pitchAndPriority.priority;
             }
 
-            g_MsStreamTime[stream] = record->words[7];
+            g_MsStreamTime[stream] = record.time;
         }
 
-        if (records != 0)
+        if (recordCount != 0)
         {
-            g_MsLastEventStream = lastEventStream;
-            g_MsLastEvent = lastEvent;
+            g_MsDiscAccessStream = discAccessStream;
+            g_MsDiscAccess = discAccess;
         }
 
+        // A stop the IOP hadn't seen yet waits for the next reply, one it saw is done
         for (u32 stream = 0; stream < Streams; stream++)
         {
-            if (g_MsStreamStates[stream] == 4)
+            if (g_MsStreamStates[stream] == StreamStopPending)
             {
-                g_MsStreamStates[stream] = 3;
+                g_MsStreamStates[stream] = StreamStopRequested;
             }
-            else if (g_MsStreamStates[stream] == 3)
+            else if (g_MsStreamStates[stream] == StreamStopRequested)
             {
-                g_MsStreamStates[stream] = 0;
+                g_MsStreamStates[stream] = StreamOff;
             }
         }
 
-        g_MsStatus2 = reply[base + 2];
-        g_MsStatus3 = reply[base + 3];
-        if (g_MsHoldStatus4 == 0)
+        g_MsLoadRequest = status->loadRequest;
+        g_MsDiscBusy = status->discBusy;
+        if (g_MsSpuWriteAddressSet == 0)
         {
-            g_MsStatus4 = reply[base + 4];
+            g_MsSpuWriteAddress = status->spuWriteAddress;
         }
         else
         {
-            g_MsHoldStatus4 = 0;
+            g_MsSpuWriteAddressSet = 0;
         }
 
-        g_MsStatus5 = reply[base + 5];
-        // 16 channels per word, from the top bits down
-        for (u32 word = 0; word < 3; word++)
+        g_MsStereoNotStarted = status->stereoNotStarted;
+        // A channel asked to play that the IOP reports off waits one more reply
+        for (u32 word = 0; word < ChannelStateWords; word++)
         {
-            for (u32 i = 0; i < 16; i++)
+            for (u32 i = 0; i < ChannelsPerWord; i++)
             {
-                u8* state = &g_MsChannelStates[word * 16 + i];
-                u32 value = (static_cast<s32>(reply[base + 6 + word]) >> (30 - 2 * i)) & 0x3;
-                if (value != 0)
+                u8* state = &g_MsChannelStates[word * ChannelsPerWord + i];
+                u32 shift = (ChannelsPerWord - 1 - i) * ChannelStateBits;
+                u32 value = (static_cast<s32>(status->channelStates[word]) >> shift) & ChannelStateMask;
+                if (value != ChannelOff)
                 {
                     *state = static_cast<u8>(value);
                 }
                 else
                 {
-                    *state = *state == 3 ? 4 : 0;
+                    *state = *state == ChannelRequested ? ChannelKeyedOn : ChannelOff;
                 }
             }
         }
 
-        g_MsStatus9 = reply[base + 9];
-        g_MsStatus10 = reply[base + 10];
-        g_MsStatus11 = reply[base + 11];
-        for (u32 i = 0; i < 9; i++)
+        g_MsIopDataAddress = status->iopDataAddress;
+        g_MsIopDataSize = status->iopDataSize;
+        g_MsIopDataCheck = status->iopDataCheck;
+        for (u32 i = 0; i < ChainFiles; i++)
         {
-            g_MsStatusTable12[i] = reply[base + 12 + i];
-            g_MsStatusTable21[i] = reply[base + 21 + i];
-            g_MsStatusTable30[i] = reply[base + 30 + i];
-            g_MsStatusTable39[i] = reply[base + 39 + i];
+            g_MsIopDataSeeks[i] = status->iopDataSeeks[i];
+            g_MsIopDataFiles[i] = status->iopDataFiles[i];
+            g_MsIopDataPlaySizes[i] = status->iopDataPlaySizes[i];
+            g_MsIopDataSectors[i] = status->iopDataSectors[i];
         }
 
-        u32 word51 = reply[base + 51];
-        g_MsStatus48 = reply[base + 48];
-        g_MsStatus49 = reply[base + 49];
-        g_MsStatus50 = reply[base + 50];
-        g_MsFileInfo51High = static_cast<u32>(static_cast<s32>(word51) >> 8);
-        g_MsFileInfo51Low = word51 & 0xFF;
-        g_MsFileInfo52 = reply[base + 52];
-        g_MsFileInfo53 = reply[base + 53];
-        g_MsStatus54 = reply[base + 54];
-        g_MsStatus55 = reply[base + 55];
-        if (g_MsHoldStatus56 == 0)
+        FileQuery fileQuery = status->fileQuery;
+        g_MsIopDataChainCount = status->iopDataChainCount;
+        g_MsIopDataChainPosition = status->iopDataChainPosition;
+        g_MsMaxIopMemory = status->maxIopMemory;
+        g_MsFileCounter = static_cast<u32>(fileQuery.counter);
+        g_MsFileSource = fileQuery.source;
+        g_MsFileSize = status->fileSize;
+        g_MsFileSector = status->fileSector;
+        g_MsIopDataRemaining = status->iopDataRemaining;
+        g_MsIopDataOffset = status->iopDataOffset;
+        if (g_MsEeWriteAddressSet == 0)
         {
-            g_MsStatus56 = reply[base + 56];
-        }
-        else
-        {
-            g_MsHoldStatus56 = 0;
-        }
-
-        if (g_MsHoldStatus57 == 0)
-        {
-            g_MsStatus57 = reply[base + 57];
+            g_MsEeWriteAddress = status->eeWriteAddress;
         }
         else
         {
-            g_MsHoldStatus57 = 0;
+            g_MsEeWriteAddressSet = 0;
         }
 
-        u32 flags = reply[base + 58];
-        g_MsFlag0 = static_cast<u8>(flags) & 1;
-        g_MsFlag1 = (flags >> 1) & 1;
-        g_MsDiscError = (flags >> 2) & 1;
-        g_MsStatus59 = reply[base + 59];
-        g_MsStatus60 = reply[base + 60];
-        g_MsStatus61 = reply[base + 61];
-        g_MsStatus62 = reply[base + 62];
-        g_MsStatus63 = reply[base + 63];
-        g_MsStatus64 = reply[base + 64];
-        g_MsStatus65 = reply[base + 65];
-        g_MsStatus66 = reply[base + 66];
-        s32 values = static_cast<s32>(reply[base + 67]);
-        u32 valueCount = 0;
-        if (values > 0)
+        if (g_MsIopWriteAddressSet == 0)
         {
-            for (s32 i = 0; i < values; i++)
+            g_MsIopWriteAddress = status->iopWriteAddress;
+        }
+        else
+        {
+            g_MsIopWriteAddressSet = 0;
+        }
+
+        DiscErrors discErrors = status->discErrors;
+        g_MsDiscError = discErrors.error;
+        g_MsDiscInternalError = discErrors.internalError;
+        g_MsDiscNotReady = discErrors.notReady;
+        g_MsIopLoadType = status->iopLoadType;
+        g_MsDtsStatus = status->dtsStatus;
+        g_MsEeTransferSize = status->eeTransferSize;
+        g_MsEeTransferCount = status->eeTransferCount;
+        g_MsPcmIopAddress = status->pcmIopAddress;
+        g_MsPcmSize = status->pcmSize;
+        g_MsPcmAddress = status->pcmAddress;
+        g_MsPcmStatus = status->pcmStatus;
+        s32 buffers = status->iopBufferCount;
+        u32 bufferCount = 0;
+        if (buffers > 0)
+        {
+            for (s32 i = 0; i < buffers; i++)
             {
-                g_MsStreamValues[i] = reply[base + 68 + i];
+                g_MsStreamIopBuffers[i] = status->iopBuffers[i];
             }
 
-            valueCount = static_cast<u32>(values);
+            bufferCount = static_cast<u32>(buffers);
         }
 
-        u32 at = base + 48 + valueCount;
-        g_MsStatusAfterValues = reply[at + 21];
-        for (u32 i = 0; i < Streams; i++)
+        const auto* channels = reinterpret_cast<const ReplyChannels*>(&status->iopBuffers[bufferCount]);
+        g_MsUserTransferStatus = channels->userTransferStatus;
+        for (u32 i = 0; i < Channels; i++)
         {
-            g_MsChannelValues[i] = reply[at + 22 + i];
+            g_MsChannelNextAddresses[i] = channels->nextAddresses[i];
         }
 
-        at += Streams;
-        g_MsStatusB = reply[at + 23];
-        g_MsStatusC = reply[at + 24];
-        for (u32 i = 0; i < 8; i++)
+        g_MsDebugScan[0] = channels->debugScan[0];
+        g_MsDebugScan[1] = channels->debugScan[1];
+        for (u32 i = 0; i < DspInfoWords; i++)
         {
-            g_MsStatusTableD[i] = reply[at + 25 + i];
+            g_MsDspInfo[i] = channels->dspInfo[i];
         }
 
-        g_MsStatusE = reply[at + 33];
-        at += 34;
-        s32 entries = static_cast<s32>(reply[at]);
-        u32 entryCount = 0;
-        g_MsEntryCount = reply[at];
-        if (entries > 0)
+        g_MsDspBuffer = channels->dspBuffer;
+        s32 transfers = channels->dspTransferCount;
+        u32 transferCount = 0;
+        g_MsDspTransferCount = static_cast<u32>(channels->dspTransferCount);
+        const auto* replyTransfers = reinterpret_cast<const ReplyDspTransfer*>(channels + 1);
+        if (transfers > 0)
         {
-            for (s32 i = 0; i < entries; i++)
+            for (s32 i = 0; i < transfers; i++)
             {
-                g_MsEntries[i * 3] = reply[at + 2 + i * 3];
-                g_MsEntries[i * 3 + 1] = reply[at + 3 + i * 3];
-                g_MsEntries[i * 3 + 2] = reply[at + 1 + i * 3];
+                g_MsDspTransfers[i].iopAddress = replyTransfers[i].iopAddress;
+                g_MsDspTransfers[i].eeAddress = replyTransfers[i].eeAddress;
+                g_MsDspTransfers[i].counter = replyTransfers[i].counter;
             }
 
-            entryCount = static_cast<u32>(entries);
+            transferCount = static_cast<u32>(transfers);
         }
 
-        at += 1 + entryCount * 3;
-        g_MsStatusF = static_cast<u8>(reply[at]);
-        g_MsStatusG = reply[at + 1];
-        g_MsStatusGIndex = static_cast<s32>(at + 1);
-        g_MsFileInfoLast1 = reply[at + 2];
-        g_MsFileInfoLast2 = reply[at + 3];
+        const auto* end = reinterpret_cast<const ReplyEnd*>(&replyTransfers[transferCount]);
+        g_MsDspStatus = static_cast<u8>(end->dspStatus);
+        g_MsDiscErrorCode = end->discErrorCode;
+        g_MsDiscErrorCodeIndex = &end->discErrorCode - reply;
+        g_MsAtWinMonOpen = end->atWinMonOpen;
+        g_MsAtWinMonFile = end->atWinMonFile;
     }
 
-    // The IOP's requests: 999 before it reads the EE's memory, the rest go to the callback. The answer's first word is 0 when the
-    // callback's mode is 2
-    void* MsServe(s32, void* data, s32)
+    // The IOP's calls (SOUND_FASTLOAD_RPC): FastLoadInvalidateCache before it writes the EE's memory (only in the mode
+    // FastLoadInvalidateCacheOn, which the game never sets; the cache isn't written back first), the others after a transfer,
+    // which the callback (nothing sets one) may stop or send elsewhere. The answer says whether the IOP may load on
+    void* MsFastLoadRpc(s32, void* data, s32)
     {
-        const s32* request = static_cast<const s32*>(data);
-        g_MsServerRequested = 1;
-        g_MsServer.request = request[0];
-        g_MsServer.argument1 = request[1];
-        g_MsServer.size = request[2];
-        g_MsServer.argument3 = request[3];
-        g_MsServer.address = reinterpret_cast<u8*>(request[4]);
-        g_MsServer.argument5 = request[5];
-        g_MsServer.argument6 = request[6];
-        if (g_MsServer.request == RequestReadMemory)
+        const auto* call = static_cast<const FastLoadCall*>(data);
+        g_MsFastLoadCalled = 1;
+        g_MsFastLoad.stream = call->stream;
+        g_MsFastLoad.totalSize = call->totalSize;
+        g_MsFastLoad.loadSize = call->loadSize;
+        g_MsFastLoad.status = call->status;
+        g_MsFastLoad.eeAddress = reinterpret_cast<u8*>(call->eeAddress);
+        g_MsFastLoad.counter = call->counter;
+        g_MsFastLoad.file = call->file;
+        if (g_MsFastLoad.stream == FastLoadInvalidateCache)
         {
-            SyncDCache(g_MsServer.address, g_MsServer.address + g_MsServer.size - 1);
-            return &g_MsServerAnswer;
+            InvalidDCache(g_MsFastLoad.eeAddress, g_MsFastLoad.eeAddress + g_MsFastLoad.loadSize - 1);
+            return &g_MsFastLoadAnswer;
         }
 
-        if (g_MsServerCallback == nullptr)
+        if (g_MsFastLoadCallback == nullptr)
         {
-            g_MsServerAnswer.value = 0;
+            g_MsFastLoadAnswer.nextEeAddress = 0;
         }
         else
         {
-            g_MsServerCallbackRunning = 1;
-            g_MsServerAnswer.unknown08 = 0;
-            g_MsServerAnswer.unknown18 = 0;
-            u32 result = g_MsServerCallback();
-            g_MsServerCallbackRunning = 0;
-            g_MsServerAnswer.value = result & ~0xFu;
-            u32 mode = result & 0xF;
-            if (mode == 2 || mode == 4)
+            g_MsFastLoadInCallback = 1;
+            g_MsFastLoadAnswer.setsFileOffsetAndSize = 0;
+            g_MsFastLoadAnswer.loadsNextFile = 0;
+            u32 result = g_MsFastLoadCallback();
+            g_MsFastLoadInCallback = 0;
+            g_MsFastLoadAnswer.nextEeAddress = result & ~FastLoadModeMask;
+            u32 mode = result & FastLoadModeMask;
+            if (mode == FastLoadStop || mode == FastLoadContinue)
             {
-                g_MsServer.mode = static_cast<s32>(mode);
+                g_MsFastLoad.allowLoad = static_cast<s32>(mode);
             }
         }
 
-        if (g_MsServer.argument3 < 2 && g_MsServer.mode == 3)
+        // A single transfer is the last while the IOP's status is below 2
+        if (g_MsFastLoad.status < 2 && g_MsFastLoad.allowLoad == FastLoadSingle)
         {
-            g_MsServer.mode = 2;
+            g_MsFastLoad.allowLoad = FastLoadStop;
         }
 
-        g_MsServerAnswer.unavailable = g_MsServer.mode == 2 ? 0 : 1;
-        return &g_MsServerAnswer;
+        g_MsFastLoadAnswer.allowLoad = g_MsFastLoad.allowLoad == FastLoadStop ? 0 : 1;
+        return &g_MsFastLoadAnswer;
     }
 
-    void MsServerMain(void*)
+    void MsFastLoadMain(void*)
     {
-        sceSifSetRpcQueue(&g_MsServerQueue, GetThreadId());
-        sceSifRegisterRpc(&g_MsServerData, CallbackServerId, MsServe, g_MsServerBuffer, nullptr, nullptr, &g_MsServerQueue);
-        sceSifRpcLoop(&g_MsServerQueue);
+        sceSifSetRpcQueue(&g_MsFastLoadQueue, GetThreadId());
+        sceSifRegisterRpc(&g_MsFastLoadServer, FastLoadServerId, MsFastLoadRpc, g_MsFastLoadArguments, nullptr, nullptr,
+                          &g_MsFastLoadQueue);
+        sceSifRpcLoop(&g_MsFastLoadQueue);
     }
 
-    s32 MsStartServer(s32 priority, void* stack, s32 stackSize)
+    s32 MsInitFastLoad(s32 priority, void* stack, s32 stackSize)
     {
         ee_thread_t thread{};
-        thread.func = reinterpret_cast<void*>(MsServerMain);
+        thread.func = reinterpret_cast<void*>(MsFastLoadMain);
         thread.stack = stack;
         thread.stack_size = stackSize;
         thread.gp_reg = &_gp;
         thread.initial_priority = priority;
-        g_MsServerStack = stack;
-        g_MsServer.running = 0;
-        g_MsServerThread = CreateThread(&thread);
-        if (g_MsServerThread <= 0)
+        g_MsFastLoadStack = stack;
+        g_MsFastLoad.eeStatus = FastLoadOff;
+        g_MsFastLoadThread = CreateThread(&thread);
+        if (g_MsFastLoadThread <= 0)
         {
             return -1;
         }
 
-        g_MsServer.running = 1;
-        StartThread(g_MsServerThread, nullptr);
-        g_MsServer.unknown18 = 0;
-        Begin(CommandServerStarted);
-        Push(0);
-        Push(0);
+        g_MsFastLoad.eeStatus = FastLoadOn;
+        StartThread(g_MsFastLoadThread, nullptr);
+        g_MsFastLoad.iopStatus = FastLoadOff;
+        Begin(OpFastLoad);
+        Push(FastLoadBindRpc);
+        Push(FastLoadOff);
         MsCommit();
         return 0;
     }

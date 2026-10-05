@@ -2,29 +2,20 @@
 
 #include "game/math.h"
 #include "game/memory.h"
+#include "game/objects.h"
 #include "game/stream.h"
 
 namespace
 {
-// 65536ths of a turn in radians, and the unit of radians
-constexpr f32 RadiansPerUnit = 0x1.921fb6p-14f;
-constexpr u32 FromRadians = 0;
-// The holders' vtable functions: the places to read and to write each kind of value
-constexpr u32 TaggedReadSlot = 1;
-constexpr u32 FloatReadSlot = 2;
-constexpr u32 IntReadSlot = 3;
-constexpr u32 TaggedWriteSlot = 4;
-constexpr u32 FloatWriteSlot = 5;
-constexpr u32 IntWriteSlot = 6;
-// The extras' kinds: tagged values, floats, integers
-constexpr u32 ExtraTagged = 0;
-constexpr u32 ExtraFloat = 1;
-constexpr u32 ExtraInt = 2;
+// The classes the holders' vtable function 12 gives (the factory hands it to PropertyList's unused parameter, nothing else reads
+// it): the playable characters', crates' and creatures' holders', and the others'
+constexpr u32 CharacterCrateCreatureClass = 0x13;
+constexpr u32 OtherHolderClass = 0x12;
 
 // The extras' values (beyond the 0x20 bytes allocated when there are more of them, in retail)
 u32* ValuesOf(PropertyExtras* extras)
 {
-    return reinterpret_cast<u32*>(extras->counts + 4);
+    return reinterpret_cast<u32*>(extras->counts + sizeof(extras->counts));
 }
 
 // Where the extras of a kind start
@@ -40,9 +31,9 @@ u32 FirstOf(const PropertyExtras* extras, u32 kind)
 }
 }
 
-TaggedValue* TaggedValue::FromFloat(TaggedValue* value, u32 kind, f32 number)
+TaggedValue* TaggedValue::FromFloat(TaggedValue* value, u32 unit, f32 number)
 {
-    AngleFrom(&value->raw, number, kind);
+    AngleFrom(&value->raw, number, unit);
     return value;
 }
 
@@ -67,7 +58,7 @@ PropertyList* PropertyList::Construct(PropertyList* list, Stream* stream)
 PropertyList* PropertyList::Construct(PropertyList* list, u32 taggedCount, u32 floatCount, u32 intCount, u32)
 {
     list->vtable = g_PropertyListVTable;
-    list->state = 0;
+    list->state.value = 0;
     list->taggedCount = taggedCount;
     list->tagged = taggedCount != 0 ? static_cast<TaggedValue*>(MemoryAllocate2(taggedCount * sizeof(TaggedValue))) : nullptr;
     list->floatCount = floatCount;
@@ -75,9 +66,9 @@ PropertyList* PropertyList::Construct(PropertyList* list, u32 taggedCount, u32 f
     list->intCount = intCount;
     list->ints = intCount != 0 ? static_cast<s32*>(MemoryAllocate2(intCount * sizeof(s32))) : nullptr;
     *reinterpret_cast<u32*>(list->counts) = 0;
-    list->counts[0] = taggedCount;
-    list->counts[1] = floatCount;
-    list->counts[2] = intCount;
+    list->counts[TaggedProperties] = taggedCount;
+    list->counts[FloatProperties] = floatCount;
+    list->counts[IntProperties] = intCount;
     return list;
 }
 
@@ -99,7 +90,7 @@ void PropertyList::Destroy(u32 destroyFlags)
         MemoryDeallocate_(tagged);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -184,21 +175,21 @@ PropertyExtras* PropertyExtras::Construct(PropertyExtras* extras, PropertyList* 
     u32 holderTagged = holder->TaggedCount();
     u32 holderFloats = holder->FloatCount();
     u32 holderInts = holder->IntCount();
-    extras->counts[ExtraTagged] = static_cast<u8>(list->counts[ExtraTagged] - holderTagged);
-    extras->counts[ExtraFloat] = static_cast<u8>(list->counts[ExtraFloat] - holderFloats);
-    extras->counts[ExtraInt] = static_cast<u8>(list->counts[ExtraInt] - holderInts);
-    for (u32 index = 0; index < extras->counts[ExtraTagged]; index++)
+    extras->counts[TaggedProperties] = static_cast<u8>(list->counts[TaggedProperties] - holderTagged);
+    extras->counts[FloatProperties] = static_cast<u8>(list->counts[FloatProperties] - holderFloats);
+    extras->counts[IntProperties] = static_cast<u8>(list->counts[IntProperties] - holderInts);
+    for (u32 index = 0; index < extras->counts[TaggedProperties]; index++)
     {
         TaggedValue value = list->tagged[holderTagged + index];
         extras->SetTagged(index, &value);
     }
 
-    for (u32 index = 0; index < extras->counts[ExtraFloat]; index++)
+    for (u32 index = 0; index < extras->counts[FloatProperties]; index++)
     {
         extras->SetFloat(index, list->floats[holderFloats + index]);
     }
 
-    for (u32 index = 0; index < extras->counts[ExtraInt]; index++)
+    for (u32 index = 0; index < extras->counts[IntProperties]; index++)
     {
         extras->SetInt(index, list->ints[holderInts + index]);
     }
@@ -208,7 +199,7 @@ PropertyExtras* PropertyExtras::Construct(PropertyExtras* extras, PropertyList* 
 
 void PropertyExtras::Destroy(u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -216,43 +207,43 @@ void PropertyExtras::Destroy(u32 destroyFlags)
 
 void PropertyExtras::SetTagged(u32 index, const TaggedValue* value)
 {
-    f32 radians = static_cast<f32>(value->raw) * RadiansPerUnit;
+    f32 radians = static_cast<f32>(value->raw) * AngleToRadians;
     ValuesOf(this)[index] = __builtin_bit_cast(u32, radians);
 }
 
 void PropertyExtras::SetFloat(u32 index, f32 value)
 {
-    ValuesOf(this)[FirstOf(this, ExtraFloat) + index] = __builtin_bit_cast(u32, value);
+    ValuesOf(this)[FirstOf(this, FloatProperties) + index] = __builtin_bit_cast(u32, value);
 }
 
 EABI_EXPORT(AddExtraFloat, &PropertyExtras::SetFloat);
 
 void PropertyExtras::SetInt(u32 index, s32 value)
 {
-    ValuesOf(this)[FirstOf(this, ExtraInt) + index] = static_cast<u32>(value);
+    ValuesOf(this)[FirstOf(this, IntProperties) + index] = static_cast<u32>(value);
 }
 
 TaggedValue* PropertyExtras::TaggedAt(TaggedValue* value, PropertyExtras* extras, u32 index)
 {
     TaggedValue made;
-    TaggedValue::FromFloat(&made, FromRadians, __builtin_bit_cast(f32, ValuesOf(extras)[index]));
+    TaggedValue::FromFloat(&made, AngleRadians, __builtin_bit_cast(f32, ValuesOf(extras)[index]));
     *value = made;
     return value;
 }
 
 f32 PropertyExtras::FloatAt(u32 index)
 {
-    return __builtin_bit_cast(f32, ValuesOf(this)[FirstOf(this, ExtraFloat) + index]);
+    return __builtin_bit_cast(f32, ValuesOf(this)[FirstOf(this, FloatProperties) + index]);
 }
 
 s32 PropertyExtras::IntAt(u32 index)
 {
-    return static_cast<s32>(ValuesOf(this)[FirstOf(this, ExtraInt) + index]);
+    return static_cast<s32>(ValuesOf(this)[FirstOf(this, IntProperties) + index]);
 }
 
 PropertyHolder* PropertyHolder::Construct(PropertyHolder* holder)
 {
-    holder->state = 0;
+    holder->state.value = 0;
     holder->vtable = g_PropertyHolderVTable;
     holder->extras = nullptr;
     return holder;
@@ -266,7 +257,7 @@ void PropertyHolder::Destroy(u32 destroyFlags)
         extras->Destroy(DestroyAndFree);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -283,7 +274,7 @@ TaggedValue* PropertyHolder::GetTagged(TaggedValue* value, PropertyHolder* holde
 
     if (holder->extras == nullptr)
     {
-        return TaggedValue::FromFloat(value, FromRadians, 0.0f);
+        return TaggedValue::FromFloat(value, AngleRadians, 0.0f);
     }
 
     PropertyExtras::TaggedAt(value, holder->extras, index - count);
@@ -374,9 +365,9 @@ void PropertyHolder::SetInt(u32 index, s32 value)
 
 void PropertyHolder::CopyFrom(PropertyList* list)
 {
-    s32 listTagged = list->counts[ExtraTagged];
-    s32 listFloats = list->counts[ExtraFloat];
-    s32 listInts = list->counts[ExtraInt];
+    s32 listTagged = list->counts[TaggedProperties];
+    s32 listFloats = list->counts[FloatProperties];
+    s32 listInts = list->counts[IntProperties];
     s32 holderTagged = static_cast<s32>(TaggedCount());
     s32 holderFloats = static_cast<s32>(FloatCount());
     s32 holderInts = static_cast<s32>(IntCount());
@@ -656,27 +647,27 @@ void CharacterHolderDestroy(CharacterPropertyHolder* holder, u32 flags)
 
 u32 CharacterHolderType(CharacterPropertyHolder*)
 {
-    return 0;
+    return GameObject::TypeCharacter;
 }
 
 u32 CharacterHolderTaggedCount(CharacterPropertyHolder*)
 {
-    return 9;
+    return CharacterPropertyHolder::KeptTagged;
 }
 
 u32 CharacterHolderFloatCount(CharacterPropertyHolder*)
 {
-    return 0x38;
+    return CharacterPropertyHolder::KeptFloats;
 }
 
 u32 CharacterHolderIntCount(CharacterPropertyHolder*)
 {
-    return 3;
+    return CharacterPropertyHolder::KeptInts;
 }
 
 u32 CharacterHolderClassId(CharacterPropertyHolder*)
 {
-    return 0x13;
+    return CharacterCrateCreatureClass;
 }
 
 TaggedValue* PickupHolderTaggedPlace(PickupPropertyHolder* holder, u32 index)
@@ -716,27 +707,27 @@ void PickupHolderDestroy(PickupPropertyHolder* holder, u32 flags)
 
 u32 PickupHolderType(PickupPropertyHolder*)
 {
-    return 1;
+    return GameObject::TypePickup;
 }
 
 u32 PickupHolderTaggedCount(PickupPropertyHolder*)
 {
-    return 0;
+    return PickupPropertyHolder::KeptTagged;
 }
 
 u32 PickupHolderFloatCount(PickupPropertyHolder*)
 {
-    return 1;
+    return PickupPropertyHolder::KeptFloats;
 }
 
 u32 PickupHolderIntCount(PickupPropertyHolder*)
 {
-    return 2;
+    return PickupPropertyHolder::KeptInts;
 }
 
 u32 PickupHolderClassId(PickupPropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 TaggedValue* CrateHolderTaggedPlace(CratePropertyHolder* holder, u32 index)
@@ -776,27 +767,27 @@ void CrateHolderDestroy(CratePropertyHolder* holder, u32 flags)
 
 u32 CrateHolderType(CratePropertyHolder*)
 {
-    return 2;
+    return GameObject::TypeCrate;
 }
 
 u32 CrateHolderTaggedCount(CratePropertyHolder*)
 {
-    return 0;
+    return CratePropertyHolder::KeptTagged;
 }
 
 u32 CrateHolderFloatCount(CratePropertyHolder*)
 {
-    return 3;
+    return CratePropertyHolder::KeptFloats;
 }
 
 u32 CrateHolderIntCount(CratePropertyHolder*)
 {
-    return 2;
+    return CratePropertyHolder::KeptInts;
 }
 
 u32 CrateHolderClassId(CratePropertyHolder*)
 {
-    return 0x13;
+    return CharacterCrateCreatureClass;
 }
 
 TaggedValue* CreatureHolderTaggedPlace(CreaturePropertyHolder* holder, u32 index)
@@ -836,27 +827,27 @@ void CreatureHolderDestroy(CreaturePropertyHolder* holder, u32 flags)
 
 u32 CreatureHolderType(CreaturePropertyHolder*)
 {
-    return 3;
+    return GameObject::TypeCreature;
 }
 
 u32 CreatureHolderTaggedCount(CreaturePropertyHolder*)
 {
-    return 1;
+    return CreaturePropertyHolder::KeptTagged;
 }
 
 u32 CreatureHolderFloatCount(CreaturePropertyHolder*)
 {
-    return 6;
+    return CreaturePropertyHolder::KeptFloats;
 }
 
 u32 CreatureHolderIntCount(CreaturePropertyHolder*)
 {
-    return 3;
+    return CreaturePropertyHolder::KeptInts;
 }
 
 u32 CreatureHolderClassId(CreaturePropertyHolder*)
 {
-    return 0x13;
+    return CharacterCrateCreatureClass;
 }
 
 TaggedValue* GenericObjectHolderTaggedPlace(GenericObjectPropertyHolder* holder, u32 index)
@@ -896,27 +887,27 @@ void GenericObjectHolderDestroy(GenericObjectPropertyHolder* holder, u32 flags)
 
 u32 GenericObjectHolderType(GenericObjectPropertyHolder*)
 {
-    return 4;
+    return GameObject::TypeGenericObject;
 }
 
 u32 GenericObjectHolderTaggedCount(GenericObjectPropertyHolder*)
 {
-    return 0;
+    return GenericObjectPropertyHolder::KeptTagged;
 }
 
 u32 GenericObjectHolderFloatCount(GenericObjectPropertyHolder*)
 {
-    return 1;
+    return GenericObjectPropertyHolder::KeptFloats;
 }
 
 u32 GenericObjectHolderIntCount(GenericObjectPropertyHolder*)
 {
-    return 2;
+    return GenericObjectPropertyHolder::KeptInts;
 }
 
 u32 GenericObjectHolderClassId(GenericObjectPropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 TaggedValue* GrabbableHolderTaggedPlace(GrabbablePropertyHolder* holder, u32 index)
@@ -956,27 +947,27 @@ void GrabbableHolderDestroy(GrabbablePropertyHolder* holder, u32 flags)
 
 u32 GrabbableHolderType(GrabbablePropertyHolder*)
 {
-    return 5;
+    return GameObject::TypeGrabbable;
 }
 
 u32 GrabbableHolderTaggedCount(GrabbablePropertyHolder*)
 {
-    return 1;
+    return GrabbablePropertyHolder::KeptTagged;
 }
 
 u32 GrabbableHolderFloatCount(GrabbablePropertyHolder*)
 {
-    return 4;
+    return GrabbablePropertyHolder::KeptFloats;
 }
 
 u32 GrabbableHolderIntCount(GrabbablePropertyHolder*)
 {
-    return 2;
+    return GrabbablePropertyHolder::KeptInts;
 }
 
 u32 GrabbableHolderClassId(GrabbablePropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 TaggedValue* PayGateHolderTaggedPlace(PayGatePropertyHolder* holder, u32 index)
@@ -1016,27 +1007,27 @@ void PayGateHolderDestroy(PayGatePropertyHolder* holder, u32 flags)
 
 u32 PayGateHolderType(PayGatePropertyHolder*)
 {
-    return 6;
+    return GameObject::TypePayGate;
 }
 
 u32 PayGateHolderTaggedCount(PayGatePropertyHolder*)
 {
-    return 0;
+    return PayGatePropertyHolder::KeptTagged;
 }
 
 u32 PayGateHolderFloatCount(PayGatePropertyHolder*)
 {
-    return 1;
+    return PayGatePropertyHolder::KeptFloats;
 }
 
 u32 PayGateHolderIntCount(PayGatePropertyHolder*)
 {
-    return 3;
+    return PayGatePropertyHolder::KeptInts;
 }
 
 u32 PayGateHolderClassId(PayGatePropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 TaggedValue* GrapleHolderTaggedPlace(GraplePropertyHolder* holder, u32 index)
@@ -1076,27 +1067,27 @@ void GrapleHolderDestroy(GraplePropertyHolder* holder, u32 flags)
 
 u32 GrapleHolderType(GraplePropertyHolder*)
 {
-    return 7;
+    return GameObject::TypeGraple;
 }
 
 u32 GrapleHolderTaggedCount(GraplePropertyHolder*)
 {
-    return 0;
+    return GraplePropertyHolder::KeptTagged;
 }
 
 u32 GrapleHolderFloatCount(GraplePropertyHolder*)
 {
-    return 0x12;
+    return GraplePropertyHolder::KeptFloats;
 }
 
 u32 GrapleHolderIntCount(GraplePropertyHolder*)
 {
-    return 2;
+    return GraplePropertyHolder::KeptInts;
 }
 
 u32 GrapleHolderClassId(GraplePropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 TaggedValue* ProjectileHolderTaggedPlace(ProjectilePropertyHolder* holder, u32 index)
@@ -1136,112 +1127,112 @@ void ProjectileHolderDestroy(ProjectilePropertyHolder* holder, u32 flags)
 
 u32 ProjectileHolderType(ProjectilePropertyHolder*)
 {
-    return 8;
+    return GameObject::TypeProjectile;
 }
 
 u32 ProjectileHolderTaggedCount(ProjectilePropertyHolder*)
 {
-    return 0;
+    return ProjectilePropertyHolder::KeptTagged;
 }
 
 u32 ProjectileHolderFloatCount(ProjectilePropertyHolder*)
 {
-    return 1;
+    return ProjectilePropertyHolder::KeptFloats;
 }
 
 u32 ProjectileHolderIntCount(ProjectilePropertyHolder*)
 {
-    return 2;
+    return ProjectilePropertyHolder::KeptInts;
 }
 
 u32 ProjectileHolderClassId(ProjectilePropertyHolder*)
 {
-    return 0x12;
+    return OtherHolderClass;
 }
 
 s32 TaggedValue::IntWith(PropertyHolder* holder) const
 {
-    if (TypeOf() != TypeInt)
+    if (type != TypeInt)
     {
         return 0;
     }
 
-    if ((raw & PropertyBit) != 0)
+    if (isProperty != 0)
     {
-        return holder->GetInt(static_cast<u32>(raw) >> ValueShift);
+        return holder->GetInt(propertyIndex);
     }
 
-    return raw >> ValueShift;
+    return number;
 }
 
 f32 TaggedValue::FloatWith(PropertyHolder* holder) const
 {
-    if (TypeOf() != TypeFloat)
+    if (type != TypeFloat)
     {
         return 0.0f;
     }
 
-    if ((raw & PropertyBit) != 0)
+    if (isProperty != 0)
     {
-        return holder->GetFloat(static_cast<u32>(raw) >> ValueShift);
+        return holder->GetFloat(propertyIndex);
     }
 
-    s32 bits = raw & ValueMask;
-    return *reinterpret_cast<const f32*>(&bits);
+    return ValueBits();
 }
 
 TaggedValue* TaggedValue::AngleWith(TaggedValue* angle, const TaggedValue* value, PropertyHolder* holder)
 {
-    constexpr u32 FromRadians = 0;
-    if (value->TypeOf() != TypeAngle)
+    if (value->type != TypeAngle)
     {
-        AngleFrom(&angle->raw, 0.0f, FromRadians);
+        AngleFrom(&angle->raw, 0.0f, AngleRadians);
         return angle;
     }
 
-    if ((value->raw & PropertyBit) != 0)
+    if (value->isProperty != 0)
     {
-        PropertyHolder::GetTagged(angle, holder, static_cast<u32>(value->raw) >> ValueShift);
+        PropertyHolder::GetTagged(angle, holder, value->propertyIndex);
         return angle;
     }
 
-    s32 bits = value->raw & ValueMask;
-    AngleFrom(&angle->raw, *reinterpret_cast<const f32*>(&bits), FromRadians);
+    AngleFrom(&angle->raw, value->ValueBits(), AngleRadians);
     return angle;
 }
 
 TaggedValue* TaggedValue::MakeFloat(TaggedValue* value, f32 number)
 {
-    value->raw = (*reinterpret_cast<const s32*>(&number) & ValueMask) | TypeFloat << TypeShift;
+    value->raw = __builtin_bit_cast(s32, number);
+    value->isProperty = 0;
+    value->type = TypeFloat;
     return value;
 }
 
 TaggedValue* TaggedValue::MakeInt(TaggedValue* value, s32 number)
 {
-    value->raw = number << ValueShift;
+    value->raw = 0;
+    value->number = number;
     return value;
 }
 
 void TaggedValue::SetAngle(const s32* angle)
 {
-    constexpr f32 RadiansPerUnit = Rounded(6.283185307179586 / 65536.0);
-    s32 tag = raw;
-    raw = tag & ~PropertyBit;
-    f32 radians = static_cast<f32>(*angle) * RadiansPerUnit;
-    raw = (tag & TypeMask) | (*reinterpret_cast<const s32*>(&radians) & ValueMask);
+    // Cleared before the angle is read, in retail's order
+    isProperty = 0;
+    SetValueBits(__builtin_bit_cast(s32, static_cast<f32>(*angle) * AngleToRadians));
 }
 
 void TaggedValue::SetFloat(f32 number)
 {
-    raw = (raw & TypeMask) | (*reinterpret_cast<const s32*>(&number) & ValueMask);
+    SetValueBits(__builtin_bit_cast(s32, number));
 }
 
 void TaggedValue::SetInt(s32 number)
 {
-    raw = (raw & TypeMask) | number << ValueShift;
+    isProperty = 0;
+    this->number = number;
 }
 
 void TaggedValue::SetProperty(u32, u32 index)
 {
-    raw = ((raw | PropertyBit) & 0x7) | index << ValueShift;
+    isProperty = 1;
+    propertyIndex = index;
 }

@@ -17,11 +17,6 @@
 // The save manager, the save code on OLEG's screens it derives from and its bank files
 extern "C"
 {
-    // The card slots (SaveDevice::Construct and Destroy): their files besides the icons, the icon files, the main file and the
-    // save's name
-    void ConstructCardSlots(void* slots, u32 fileCount, void* icons, void* mainFile, const char* name) RETAIL(FUN_002a2f78);
-    void DestroyCardSlots(void* slots, u32 destroyFlags) RETAIL(FUN_002a8e18);
-
     extern const GccVTableEntry g_SaveManagerVTable[] RETAIL(D_002F5120);
     extern const GccVTableEntry g_SaveCodeVTable[] RETAIL(D_00306570);
     extern const GccVTableEntry g_SaveCodeScreensVTable[] RETAIL(D_00306470);
@@ -44,56 +39,29 @@ namespace
 {
 constexpr u32 Banks = 4;
 constexpr u32 BankSize = 0xF400;
-// The icon files' room, the folder's files and their size
+// The icon files' room, and the folder's file's size
 constexpr u32 IconFilesRoom = 3;
 constexpr u32 FolderFileSize = 0x800;
-constexpr u32 CopiedFileSize = 0x2C;
-// The bank files' destructor (their vtable's)
-constexpr u32 BankDestroySlot = 5;
-// The volume groups of the effects and the music
-constexpr s32 EffectsGroup = 0;
-constexpr s32 MusicGroup = 2;
-// The pad controller's vibration bit made the options'
-constexpr u32 VibrationShift = 6;
-constexpr u32 WidescreenShift = 16;
+// The tag the folder's and the banks' files end with (with their checksums)
+constexpr u32 SaveTag = 1;
 
-// The folder's summaries of its files and the card slots' files
-struct SaveFolderFiles
+// The manager's OLEG screens (its screens' indexes): every widget hidden (before another is shown), the message's, the choices'
+// and the save slots'
+enum ManagerScreen : u32
 {
-    u8 unknown00[0x30];
-    void** summaries;
+    EveryWidgetScreen = 0,
+    MessageScreen = 1,
+    ChoicesScreen = 2,
+    SlotsScreen = 3,
 };
 
-struct CardSlotFiles
+// Its labels and their texts (messages' and strings' indexes): the message, the choices' title and the save slots' title
+enum ManagerLabel : u32
 {
-    u8 unknown00[0x18];
-    BankFile** files;
+    MessageLabel = 0,
+    ChoicesLabel = 1,
+    SlotsLabel = 2,
 };
-
-// The save code's strings the manager's destructor lets go of: the icon.sys file's and its own three
-constexpr u32 IconSysString = 0x2C;
-// The area play is in, the save controller's options' low bits (the progress's 16-20)
-constexpr u32 OptionArea = 0x1F;
-
-// A bank's summary is the folder's kind with the progress and the time played after it
-FolderSummary* SummaryOf(void* summary)
-{
-    return static_cast<FolderSummary*>(summary);
-}
-
-// The save code's screens (OLEG's widgets by their slots): the one they replace, the message's, the choices' and the save slots'
-constexpr u32 AwayWidget = 0;
-constexpr u32 MessageWidget = 1;
-constexpr u32 ChoicesWidget = 2;
-constexpr u32 SlotsWidget = 3;
-// The save code's operations (bits 0-3 of its bits): none and the check of the card (no message), the save its screens offer
-// to skip
-constexpr u32 OperationNone = 0;
-constexpr u32 OperationCheck = 2;
-constexpr u32 OperationSave = 3;
-// The screens of save slots: to save to and to load from
-constexpr u32 SaveSlotsScreen = 11;
-constexpr u32 LoadSlotsScreen = 12;
 
 // The screens appear and disappear over half a second
 s32 HalfSecond()
@@ -101,34 +69,34 @@ s32 HalfSecond()
     return static_cast<s32>(g_ClockUnitsPerSecond * 0.5f);
 }
 
-void SwitchScreen(SaveManager* manager, u32 widget)
+void SwitchScreen(SaveManager* manager, u32 screen)
 {
-    manager->oleg->Hide(manager->oleg->masks[manager->screens[AwayWidget]], HalfSecond(), 0);
-    manager->oleg->Show(manager->oleg->masks[manager->screens[widget]], HalfSecond(), 0);
+    manager->oleg->Hide(manager->oleg->screens[manager->screens[EveryWidgetScreen]], HalfSecond(), 0);
+    manager->oleg->Show(manager->oleg->screens[manager->screens[screen]], HalfSecond(), 0);
 }
 
-// The choices page's mode of a screen of choices (-1: none)
+// The choices page's mode of a screen of choices
 s32 ChoicesMode(u32 screen)
 {
-    if (screen >= 1 && screen <= 10)
+    if (screen >= SaveScreenNoCard && screen <= SaveScreenCancelSave)
     {
-        return static_cast<s32>(screen) - 1;
+        return static_cast<s32>(screen - SaveScreenNoCard) + ChoicesNoCard;
     }
 
-    if (screen >= 13 && screen <= 15)
+    if (screen >= SaveScreenFormatFailed && screen <= SaveScreenLoadFailed)
     {
-        return static_cast<s32>(screen) - 3;
+        return static_cast<s32>(screen - SaveScreenFormatFailed) + ChoicesFormatFailed;
     }
 
-    return -1;
+    return ChoicesHidden;
 }
 }
 
 extern "C"
 {
-    void ConstructSaveCode(SaveCode* code, const char* name, OLEG* oleg, void* slots)
+    void ConstructSaveCode(SaveCode* code, const char* name, OLEG* oleg, void* device)
     {
-        SaveCode::Construct(code, name, static_cast<SaveDevice*>(slots));
+        SaveCode::Construct(code, name, static_cast<SaveDevice*>(device));
         auto* manager = static_cast<SaveManager*>(code);
         manager->oleg = oleg;
         manager->vtable = g_SaveCodeScreensVTable;
@@ -149,26 +117,26 @@ extern "C"
             screen = 0;
         }
 
-        manager->screens[AwayWidget] = -1;
+        manager->screens[EveryWidgetScreen] = -1;
     }
 }
 
 u32 SaveManager::Ask(u32 operation, u32 file)
 {
     bool message = true;
-    SetScreen(0);
-    switch (bits & OperationMask)
+    bits.screen = SaveScreenMessage;
+    switch (bits.operation)
     {
-    case OperationNone:
-    case OperationCheck:
+    case SaveOperationNone:
+    case SaveOperationCheckInserted:
         message = false;
         break;
-    // The others but the save to a slot bring the message's screen up
-    case 1:
-    case 3:
-    case 4:
-    case 5:
-        SwitchScreen(this, MessageWidget);
+    // The others but the autosave bring the message's screen up
+    case SaveOperationCheckRoom:
+    case SaveOperationNewGameSave:
+    case SaveOperationPauseSave:
+    case SaveOperationLoad:
+        SwitchScreen(this, MessageScreen);
         break;
     default:
         break;
@@ -176,8 +144,8 @@ u32 SaveManager::Ask(u32 operation, u32 file)
 
     if (message)
     {
-        MessageText(g_OperationMessages[operation], &strings[0]);
-        StringAssign(&messages[0]->text, strings[0].string);
+        MessageText(g_OperationMessages[operation], &strings[MessageLabel]);
+        StringAssign(&messages[MessageLabel]->text, strings[MessageLabel].string);
     }
 
     return device->Ask(operation, file);
@@ -185,51 +153,51 @@ u32 SaveManager::Ask(u32 operation, u32 file)
 
 u32 SaveManager::ShowChoices(u32 screen)
 {
-    SetScreen(screen);
+    bits.screen = screen;
     if (choicesPage != nullptr)
     {
         s32 mode = ChoicesMode(screen);
-        MessageText(g_ScreenMessages[screen], &strings[1]);
-        StringAssign(&messages[1]->text, strings[1].string);
-        static_cast<SaveChoicesPage*>(choicesPage)->ShowItems(mode, (bits & OperationMask) == OperationSave);
+        MessageText(g_ScreenMessages[screen], &strings[ChoicesLabel]);
+        StringAssign(&messages[ChoicesLabel]->text, strings[ChoicesLabel].string);
+        static_cast<SaveChoicesPage*>(choicesPage)->ShowItems(mode, bits.operation == SaveOperationNewGameSave);
     }
 
-    SwitchScreen(this, ChoicesWidget);
+    SwitchScreen(this, ChoicesScreen);
     return screen;
 }
 
 u32 SaveManager::ShowSlots(u32 screen)
 {
-    SetScreen(screen);
+    bits.screen = screen;
     if (slotsPage != nullptr)
     {
-        s32 mode = -1;
-        if (screen == SaveSlotsScreen)
+        s32 mode = SlotsPageHidden;
+        if (screen == SaveScreenSaveSlots)
         {
-            mode = 1;
+            mode = SlotsPageSave;
         }
-        else if (screen == LoadSlotsScreen)
+        else if (screen == SaveScreenLoadSlots)
         {
-            mode = 0;
+            mode = SlotsPageLoad;
         }
 
-        MessageText(g_ScreenMessages[screen], &strings[2]);
-        StringAssign(&messages[2]->text, strings[2].string);
-        static_cast<SaveCodePage*>(slotsPage)->ShowSlotItems(mode, (bits & OperationMask) == OperationSave);
+        MessageText(g_ScreenMessages[screen], &strings[SlotsLabel]);
+        StringAssign(&messages[SlotsLabel]->text, strings[SlotsLabel].string);
+        static_cast<SaveCodePage*>(slotsPage)->ShowSlotItems(mode, bits.operation == SaveOperationNewGameSave);
     }
 
-    SwitchScreen(this, SlotsWidget);
+    SwitchScreen(this, SlotsScreen);
     return screen;
 }
 
 void SaveManager::DestroyScreens(u32 destroyFlags)
 {
-    StringDestroy(&strings[2]);
-    StringDestroy(&strings[1]);
-    StringDestroy(&strings[0]);
+    StringDestroy(&strings[SlotsLabel]);
+    StringDestroy(&strings[ChoicesLabel]);
+    StringDestroy(&strings[MessageLabel]);
     vtable = g_SaveCodeVTable;
     StringDestroy(&name);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -241,13 +209,13 @@ void SaveManager::Draw(Renderer*)
 
 SaveManager* SaveManager::Construct(SaveManager* manager, GameController* controller)
 {
-    ConstructSaveCode(manager, g_SaveCodeName, &controller->oleg, manager->slots);
+    ConstructSaveCode(manager, g_SaveCodeName, &controller->oleg, &manager->memoryCard);
     manager->vtable = g_SaveManagerVTable;
-    ConstructIconSys(manager->icon, g_SaveTitle, g_IconName);
-    ConstructIconFiles(manager->files, IconFilesRoom, manager->icon);
-    ConstructFolderFile(manager->folder, g_ProductCode, Banks, 1, FolderFileSize, g_SaveBuffer);
-    ConstructCardSlots(manager->slots, Banks, manager->files, manager->folder, g_SaveName);
-    AddIconFile(manager->files, ConstructCopiedFile(MemoryAllocate(CopiedFileSize), g_IconPath, g_IconName));
+    ConstructIconSys(&manager->iconSys, g_SaveTitle, g_IconName);
+    ConstructIconFiles(&manager->iconFiles, IconFilesRoom, &manager->iconSys);
+    ConstructFolderFile(&manager->folder, g_ProductCode, Banks, SaveTag, FolderFileSize, g_SaveBuffer);
+    SaveDevice::Construct(&manager->memoryCard, Banks, &manager->iconFiles, &manager->folder, g_SaveName);
+    AddIconFile(&manager->iconFiles, ConstructCopiedFile(MemoryAllocate(sizeof(CopiedFile)), g_IconPath, g_IconName));
     manager->banks = static_cast<BankFile**>(MemoryAllocate2(Banks * sizeof(BankFile*)));
     for (u32 index = 0; index < Banks; index++)
     {
@@ -259,13 +227,13 @@ SaveManager* SaveManager::Construct(SaveManager* manager, GameController* contro
         StringDestroy(&number);
         StringAppend(&name, g_BankExtension);
         auto* bank = static_cast<BankFile*>(MemoryAllocate(sizeof(BankFile)));
-        ConstructSaveFile(bank, name.string, 1, BankSize, g_SaveBuffer);
+        ConstructSaveFile(bank, name.string, SaveTag, BankSize, g_SaveBuffer);
         bank->vtable = g_BankFileVTable;
-        ConstructBankSummary(bank->summary);
+        ConstructBankSummary(&bank->summary);
         bank->controller = controller;
         manager->banks[index] = bank;
-        reinterpret_cast<SaveFolderFiles*>(manager->folder)->summaries[index] = bank->summary;
-        reinterpret_cast<CardSlotFiles*>(manager->slots)->files[index] = bank;
+        manager->folder.summaries[index] = &bank->summary.folder;
+        manager->memoryCard.files[index] = bank;
         StringDestroy(&name);
     }
 
@@ -280,19 +248,20 @@ void SaveManager::Destroy(u32 destroyFlags)
         BankFile* bank = banks[index];
         if (bank != nullptr)
         {
-            CallVirtual<void>(bank, bank->vtable, BankDestroySlot, u32{DestroyAndFree});
+            CallVirtual<void>(bank, bank->vtable, SaveFile::DestroySlot, u32{DestroyAndFree});
         }
     }
 
     MemoryDeallocate2_(banks);
-    DestroyCardSlots(slots, DestroyOnly);
-    DestroyFolderFile(folder, DestroyOnly);
-    DestroyIconFiles(files, DestroyOnly);
-    StringDestroy(reinterpret_cast<String*>(icon + IconSysString));
-    DestroySaveFile(icon, DestroyOnly);
-    StringDestroy(&strings[2]);
-    StringDestroy(&strings[1]);
-    StringDestroy(&strings[0]);
+    memoryCard.Destroy(DestroyOnly);
+    DestroyFolderFile(&folder, DestroyOnly);
+    DestroyIconFiles(&iconFiles, DestroyOnly);
+    // icon.sys's destructor inline
+    StringDestroy(&iconSys.title);
+    DestroySaveFile(&iconSys, DestroyOnly);
+    StringDestroy(&strings[SlotsLabel]);
+    StringDestroy(&strings[ChoicesLabel]);
+    StringDestroy(&strings[MessageLabel]);
     DestroySaveCode(this, destroyFlags);
 }
 
@@ -301,21 +270,19 @@ void BankFile::GatherSettings()
     SaveController* settings = &controller->saveController;
     auto* pads = static_cast<GamePadController*>(G_GamePadController);
     GameRendererController* renderer = G_GameRendererController;
-    settings->options = (settings->options & ~SaveController::OptionVibration) |
-                        (pads->flags << VibrationShift & SaveController::OptionVibration);
+    settings->options.vibration = pads->flags.vibration;
     settings->effectsVolume = GroupVolumeLevel(EffectsGroup);
     settings->musicVolume = GroupVolumeLevel(MusicGroup);
-    settings->options = (settings->options & ~(SaveController::OptionMusicStereoMask << SaveController::OptionMusicStereoShift)) |
-                        (g_MusicStereo & SaveController::OptionMusicStereoMask) << SaveController::OptionMusicStereoShift;
-    settings->options = (settings->options & ~SaveController::OptionWidescreen) | (g_WidescreenTv & 1) << WidescreenShift;
+    settings->options.musicStereo = g_MusicStereo;
+    settings->options.widescreen = g_WidescreenTv;
     settings->screenOffset.x = renderer->screenOffset.x;
     settings->screenOffset.y = renderer->screenOffset.y;
-    MakeBankSummary(summary, settings);
+    MakeBankSummary(&summary, settings);
 }
 
 void BankFile::Destroy(u32 destroyFlags)
 {
-    SummaryOf(summary)->Destroy(DestroyOnly);
+    summary.folder.Destroy(DestroyOnly);
     DestroySaveFile(this, destroyFlags);
 }
 
@@ -336,7 +303,7 @@ void SaveManager::Nothing10()
 void ConstructBankSummary(void* memory)
 {
     auto* summary = static_cast<SaveSummary*>(memory);
-    FolderSummary* folder = SummaryOf(summary);
+    FolderSummary* folder = &summary->folder;
     FolderSummary::Construct(folder);
     folder->vtable = g_BankSummaryVTable;
     RetailLibc::MemorySet(&summary->progress, 0, sizeof(summary->progress));
@@ -346,37 +313,33 @@ void ConstructBankSummary(void* memory)
 void MakeBankSummary(void* memory, SaveController* settings)
 {
     auto* summary = static_cast<SaveSummary*>(memory);
-    u32 bits = settings->summary;
-    u32 progress = summary->progress;
-    progress = (progress & ~SaveSummary::AreaMask) | (settings->options & OptionArea);
-    progress = (progress & ~(SaveSummary::CharacterMask << SaveSummary::CharacterShift)) |
-               (bits >> SaveController::SummaryCharacterShift & SaveSummary::CharacterMask) << SaveSummary::CharacterShift;
-    progress = (progress & ~(SaveSummary::LivesMask << SaveSummary::LivesShift)) |
-               (bits & SaveController::SummaryLivesMask) << SaveSummary::LivesShift;
-    progress = (progress & ~(SaveSummary::CrystalsMask << SaveSummary::CrystalsShift)) |
-               (bits >> SaveController::SummaryCrystalsShift & SaveController::SummaryCrystalsMask) << SaveSummary::CrystalsShift;
-    progress = (progress & ~(SaveSummary::DoneMask << SaveSummary::DoneShift)) |
-               (bits >> SaveController::SummaryDoneShift & SaveController::SummaryDoneMask) << SaveSummary::DoneShift;
+    SaveControllerSummary bits = settings->summary;
+    SavedProgress progress = summary->progress;
+    progress.area = settings->options.area;
+    progress.character = bits.character;
+    progress.lives = bits.lives;
+    progress.crystals = bits.crystals;
+    progress.done = bits.done;
     summary->progress = progress;
     summary->time = settings->timePlayed;
-    SummaryOf(summary)->Refresh();
+    summary->folder.Refresh();
 }
 
 void SaveSummary::Destroy(u32 destroyFlags)
 {
-    SummaryOf(this)->Destroy(destroyFlags);
+    folder.Destroy(destroyFlags);
 }
 
 void SaveSummary::Read(Stream* stream)
 {
     stream->Read(&progress, sizeof(progress), 1);
     stream->ReadU32(reinterpret_cast<u32*>(&time));
-    SummaryOf(this)->Read(stream);
+    folder.Read(stream);
 }
 
 void SaveSummary::Write(Stream* stream)
 {
     stream->Write(&progress, sizeof(progress));
     stream->WriteU32(time);
-    SummaryOf(this)->Write(stream);
+    folder.Write(stream);
 }

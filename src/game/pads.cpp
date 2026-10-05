@@ -6,10 +6,6 @@
 
 namespace
 {
-// The DualShock 2's modes: digital, and analog (DualShock)
-constexpr s32 ModeDigital = 4;
-constexpr s32 ModeAnalog = 7;
-
 enum SetupState : s32
 {
     SetupStart = 0,
@@ -24,45 +20,47 @@ enum SetupState : s32
     SetupDone = 9,
 };
 
-// Frames to wait before looking for a pad again when none answers (for every pad)
+// Frames to wait before looking for a pad again when none answers (for every pad), and the frames the controller waits for pad 0
+// to be set up when it's made
 constexpr s32 ReconnectDelay = 60;
+constexpr s32 SetupFrames = 60;
+// The information cleared when it's made: up to 12 bytes past the report
+constexpr u32 ClearedInformation = 0x5A0;
+// The driver's memory's alignment
+constexpr u32 DriverAlignment = 64;
+// The actuators: the small motor's and the big one's (their values the motors'), and none
+constexpr u32 SmallMotor = 0;
+constexpr u32 BigMotor = 1;
+constexpr u8 NoActuator = 0xFF;
+// The sticks' raw values' dead zone and range
 constexpr s32 StickDeadZone = 0x20;
+constexpr s32 StickRange = 0xFF;
 // A button is down when it's pressed further
 constexpr f32 ButtonDown = Rounded(0.05);
-constexpr u32 ReportModeByte = 1;
-constexpr u64 SetUpClearedFlags = GamePadInformation::FlagAnalog | GamePadInformation::FlagPressure | GamePadInformation::FlagRead;
-
-// The report's pressures (their bytes) and buttons (their bits in GamePadInformation::buttons)
-constexpr u32 PressureRight = 8;
-constexpr u32 PressureLeft = 9;
-constexpr u32 PressureUp = 10;
-constexpr u32 PressureDown = 11;
-constexpr u32 PressureTriangle = 12;
-constexpr u32 PressureCircle = 13;
-constexpr u32 PressureCross = 14;
-constexpr u32 PressureSquare = 15;
-constexpr u32 PressureL1 = 16;
-constexpr u32 PressureR1 = 17;
-constexpr u32 PressureL2 = 18;
-constexpr u32 PressureR2 = 19;
-constexpr u32 StickRightX = 4;
-constexpr u32 StickRightY = 5;
-constexpr u32 StickLeftX = 6;
-constexpr u32 StickLeftY = 7;
-constexpr u32 ButtonSelect = 0x100;
-constexpr u32 ButtonL3 = 0x200;
-constexpr u32 ButtonR3 = 0x400;
-constexpr u32 ButtonStart = 0x800;
+// The report's bytes (Platform::Pads::ReportByte: the buttons' high byte is GamePadInformation::buttons' high byte)
+using namespace Platform::Pads;
+// The report's sticks' middle
+constexpr u8 StickRawMiddle = 0x80;
+// The report's buttons with none pressed (each is 0 while it's pressed)
+constexpr u32 ReportButtonsUp = 0xFFFF;
 
 constexpr f32 PerPressure = Rounded(1.0 / 255.0);
 constexpr f32 StickMiddle = 127.5f;
 constexpr f32 PerStick = Rounded(1.0 / 127.5);
 
+// The flags the setup sets cleared
+void ClearSetUp(GamePadInformation* info)
+{
+    info->flags.analog = 0;
+    info->flags.pressure = 0;
+    info->flags.read = 0;
+}
+
 void ResetSetup(GamePadInformation* info)
 {
     info->setupState = SetupStart;
-    info->buttons = 0;
-    info->flags &= ~static_cast<u64>(SetUpClearedFlags);
+    info->buttons.value = 0;
+    ClearSetUp(info);
 }
 
 // A stick's raw value past a dead zone of 32, stretched back to the full range
@@ -70,10 +68,10 @@ s32 PastDeadZone(s32 value)
 {
     if (value > 0)
     {
-        return value < StickDeadZone ? 0 : (value - StickDeadZone) * 0xFF / 0xDF;
+        return value < StickDeadZone ? 0 : (value - StickDeadZone) * StickRange / (StickRange - StickDeadZone);
     }
 
-    return value < -(StickDeadZone - 1) ? (value + StickDeadZone) * 0xFF / 0xDF : 0;
+    return value < -(StickDeadZone - 1) ? (value + StickDeadZone) * StickRange / (StickRange - StickDeadZone) : 0;
 }
 
 // Scaled to the axis's scale plus its dead zone, then the dead zone taken off towards 0
@@ -132,9 +130,9 @@ f32 StickDirection(f32 value)
     return 0.0f;
 }
 
-f32 Digital(const GamePad* pad, u32 button)
+f32 Digital(u32 pressed)
 {
-    return (pad->info->buttons & button) != 0 ? 1.0f : 0.0f;
+    return pressed != 0 ? 1.0f : 0.0f;
 }
 
 // Two pressures as an axis: pressed at all is half way, full from a quarter's pressure on
@@ -178,9 +176,10 @@ EABI_EXPORT(FUN_002b2bc8, &GamePadController::Update);
 GamePadController* GamePadController::Construct(void* memory, s32 padCount)
 {
     GamePadController* controller = static_cast<GamePadController*>(memory);
-    controller->flags &= ~0xFFu;
+    controller->flags.pads = 0;
     controller->vtable = g_GamePadControllerVTable;
-    controller->flags = (controller->flags & ~FlagPaused) | FlagVibration;
+    controller->flags.paused = 0;
+    controller->flags.vibration = 1;
     for (s32 i = 0; i < static_cast<s32>(MaxPads); i++)
     {
         if (i < padCount)
@@ -191,17 +190,20 @@ GamePadController* GamePadController::Construct(void* memory, s32 padCount)
             GamePadInformation* info = CreateGamePadInfo(i & 1, i >> 1);
             controller->pads[i] = pad;
             pad->info = info;
-            controller->flags |= 1u << i;
+            controller->flags.value |= 1u << i;
         }
         else
         {
             controller->pads[i] = nullptr;
         }
 
-        g_VibrationRequests[i].bits &= ~(VibrationRequest::Pad | VibrationRequest::SmallMotor | VibrationRequest::BigMotor);
+        VibrationBits& bits = g_VibrationRequests[i].bits;
+        bits.pad = 0;
+        bits.smallMotor = 0;
+        bits.bigMotor = 0;
     }
 
-    for (s32 frame = 0; frame < 60; frame++)
+    for (s32 frame = 0; frame < SetupFrames; frame++)
     {
         Platform::Graphics::WaitVSync();
         GamePad* pad = controller->pads[0];
@@ -254,7 +256,7 @@ u32 GamePadController::Update(f32 seconds)
 
         if (!read)
         {
-            if ((flags & 1) != 0)
+            if ((flags.pads & 1) != 0)
             {
                 result = 0;
             }
@@ -263,7 +265,7 @@ u32 GamePadController::Update(f32 seconds)
         }
 
         VibrationRequest* request = &g_VibrationRequests[i];
-        if ((request->bits & VibrationRequest::Pad) == 0 || (flags & FlagPaused) != 0)
+        if (request->bits.pad == 0 || flags.paused != 0)
         {
             continue;
         }
@@ -274,15 +276,18 @@ u32 GamePadController::Update(f32 seconds)
         }
         else
         {
-            request->bits = (request->bits & ~(VibrationRequest::Pad | VibrationRequest::SmallMotor | VibrationRequest::BigMotor)) |
-                            VibrationRequest::Pending;
+            // Its time is up: the motors stopped
+            request->bits.pad = 0;
+            request->bits.smallMotor = 0;
+            request->bits.bigMotor = 0;
+            request->bits.pending = 1;
         }
 
-        u32 bits = request->bits;
-        if ((bits & VibrationRequest::Pending) != 0 && (flags & FlagVibration) != 0)
+        VibrationBits bits = request->bits;
+        if (bits.pending != 0 && flags.vibration != 0)
         {
-            SetPadMotors(pad->info, (bits >> 6) & 1, static_cast<u8>(bits >> VibrationRequest::BigMotorShift));
-            request->bits &= ~VibrationRequest::Pending;
+            SetPadMotors(pad->info, bits.smallMotor, bits.bigMotor);
+            request->bits.pending = 0;
         }
     }
 
@@ -316,31 +321,31 @@ void GamePadController::Pause()
 {
     for (u32 i = 0; i < MaxPads; i++)
     {
-        if (pads[i] != nullptr && (g_VibrationRequests[i].bits & VibrationRequest::Pad) != 0)
+        if (pads[i] != nullptr && g_VibrationRequests[i].bits.pad != 0)
         {
             SetPadMotors(pads[i]->info, 0, 0);
         }
     }
 
-    flags |= FlagPaused;
+    flags.paused = 1;
 }
 
 void GamePadController::Resume()
 {
-    flags &= ~FlagPaused;
+    flags.paused = 0;
 }
 
 void GamePadController::DisableVibration()
 {
     for (u32 i = 0; i < MaxPads; i++)
     {
-        if (pads[i] != nullptr && (g_VibrationRequests[i].bits & VibrationRequest::Pad) != 0)
+        if (pads[i] != nullptr && g_VibrationRequests[i].bits.pad != 0)
         {
             SetPadMotors(pads[i]->info, 0, 0);
         }
     }
 
-    flags &= ~FlagVibration;
+    flags.vibration = 0;
 }
 
 extern "C"
@@ -353,7 +358,7 @@ extern "C"
             return nullptr;
         }
 
-        RetailLibc::MemorySet(info, 0, 0x5A0);
+        RetailLibc::MemorySet(info, 0, ClearedInformation);
         info->port = port;
         info->slot = slot;
         info->rightScaleY = 1.0f;
@@ -365,16 +370,17 @@ extern "C"
         info->leftDeadZoneY = Rounded(0.1);
         info->rightScaleX = 1.0f;
         info->rightDeadZoneX = Rounded(0.1);
-        for (u32 i = 0; i < 6; i++)
+        for (u32 i = 0; i < sizeof(info->actuatorValues); i++)
         {
             info->actuatorValues[i] = 0;
-            info->actuatorAlign[i] = 0xFF;
+            info->actuatorAlign[i] = NoActuator;
         }
 
         // The small motor's actuator 0, the big one's 1
-        info->actuatorAlign[0] = 0;
-        info->actuatorAlign[1] = 1;
-        void* driverMemory = reinterpret_cast<void*>((reinterpret_cast<u32>(info->driverMemory) + 0x3F) & ~0x3Fu);
+        info->actuatorAlign[SmallMotor] = SmallMotor;
+        info->actuatorAlign[BigMotor] = BigMotor;
+        void* driverMemory =
+            reinterpret_cast<void*>((reinterpret_cast<u32>(info->driverMemory) + DriverAlignment - 1) & ~(DriverAlignment - 1));
         if (Platform::Pads::Open(info->port, info->slot, driverMemory) == 0)
         {
             MemoryDeallocate2_(info);
@@ -418,21 +424,21 @@ extern "C"
             switch (info->setupState)
             {
             case SetupStart:
-                info->flags &= ~static_cast<u64>(SetUpClearedFlags);
-                info->modeId = InfoMode(info->port, info->slot, 1, 0);
+                ClearSetUp(info);
+                info->modeId = InfoMode(info->port, info->slot, InfoCurrentId, 0);
                 if (info->modeId != 0)
                 {
-                    s32 extendedMode = InfoMode(info->port, info->slot, 2, 0);
+                    s32 extendedMode = InfoMode(info->port, info->slot, InfoCurrentExtendedId, 0);
                     if (extendedMode > 0)
                     {
                         info->modeId = extendedMode;
                     }
 
-                    if (info->modeId == ModeDigital)
+                    if (info->modeId == ModeIdDigital)
                     {
                         info->setupState = SetupCountModes;
                     }
-                    else if (info->modeId == ModeAnalog)
+                    else if (info->modeId == ModeIdAnalog)
                     {
                         info->setupState = SetupActuators;
                     }
@@ -444,7 +450,7 @@ extern "C"
 
                 break;
             case SetupCountModes:
-                if (InfoMode(info->port, info->slot, 4, -1) == 0)
+                if (InfoMode(info->port, info->slot, InfoModeTable, ModeTableLength) == 0)
                 {
                     ResetSetup(info);
                 }
@@ -455,7 +461,7 @@ extern "C"
 
                 break;
             case SetupLockAnalog:
-                if (SetMainMode(info->port, info->slot, 1, 3) == 1)
+                if (SetMainMode(info->port, info->slot, MainModeAnalog, ModeLocked) == 1)
                 {
                     info->setupState = SetupWaitLock;
                 }
@@ -474,7 +480,7 @@ extern "C"
 
                 break;
             case SetupActuators:
-                if (InfoActuator(info->port, info->slot, -1, 0) == 0)
+                if (InfoActuator(info->port, info->slot, CountActuators, 0) == 0)
                 {
                     info->setupState = SetupDone;
                 }
@@ -497,7 +503,7 @@ extern "C"
 
                 break;
             case SetupPressure:
-                info->flags |= GamePadInformation::FlagAnalog;
+                info->flags.analog = 1;
                 info->setupState = InfoPressureMode(info->port, info->slot) == 1 ? SetupEnterPressure : SetupDone;
                 if (info->setupState == SetupDone)
                 {
@@ -520,42 +526,41 @@ extern "C"
 
                 if (GetRequestState(info->port, info->slot) == RequestComplete)
                 {
-                    info->flags |= GamePadInformation::FlagPressure;
+                    info->flags.pressure = 1;
                     info->setupState = SetupDone;
                 }
 
                 break;
             default:
             {
-                constexpr u64 Required = GamePadInformation::FlagAnalog | GamePadInformation::FlagPressure;
-                if ((info->flags & Required) != Required || (state != StateStable && state != StateFindingCtp1))
+                if (info->flags.analog == 0 || info->flags.pressure == 0 || (state != StateStable && state != StateFindingCtp1))
                 {
                     ResetSetup(info);
                     break;
                 }
 
-                u8 lastMode = info->report[ReportModeByte];
+                u8 lastMode = info->report[ReportMode];
                 if (Read(info->port, info->slot, info->report) <= 0)
                 {
-                    info->report[2] = 0;
-                    info->report[3] = 0;
+                    info->report[ReportButtonsHigh] = 0;
+                    info->report[ReportButtonsLow] = 0;
                 }
 
-                // The report's buttons are 0 when pressed
-                u32 buttons = (static_cast<u32>(info->report[2]) << 8 | info->report[3]) ^ 0xFFFF;
-                u32 changed = buttons ^ info->lastButtons;
-                u32 released = info->lastButtons & changed;
-                info->lastButtons = buttons;
-                info->buttons = buttons;
-                info->flags = (info->flags & ~0xFFFFFFFFull) | released;
-                info->pressed = buttons & changed;
-                if ((info->flags & GamePadInformation::FlagAnalog) != 0)
+                u32 buttons =
+                    (static_cast<u32>(info->report[ReportButtonsHigh]) << 8 | info->report[ReportButtonsLow]) ^ ReportButtonsUp;
+                u32 changed = buttons ^ info->lastButtons.value;
+                u32 released = info->lastButtons.value & changed;
+                info->lastButtons.value = buttons;
+                info->buttons.value = buttons;
+                info->flags.released = released;
+                info->pressed.value = buttons & changed;
+                if (info->flags.analog != 0)
                 {
-                    info->leftY = 0x80 - info->report[StickLeftY];
-                    info->rightX = info->report[StickRightX] - 0x80;
-                    info->rightY = 0x80 - info->report[StickRightY];
-                    info->leftX = info->report[StickLeftX] - 0x80;
-                    if ((info->flags & GamePadInformation::FlagStickDeadZones) != 0)
+                    info->leftY = StickRawMiddle - info->report[StickLeftY];
+                    info->rightX = info->report[StickRightX] - StickRawMiddle;
+                    info->rightY = StickRawMiddle - info->report[StickRightY];
+                    info->leftX = info->report[StickLeftX] - StickRawMiddle;
+                    if (info->flags.stickDeadZones != 0)
                     {
                         info->leftX = PastDeadZone(info->leftX);
                         info->leftY = PastDeadZone(info->leftY);
@@ -574,11 +579,11 @@ extern "C"
                 }
                 else
                 {
-                    info->report[StickLeftX] = 0x80;
+                    info->report[StickLeftX] = StickRawMiddle;
                     info->leftStickX = 0.0f;
-                    info->report[StickRightY] = 0x80;
-                    info->report[StickRightX] = 0x80;
-                    info->report[StickLeftY] = 0x80;
+                    info->report[StickRightY] = StickRawMiddle;
+                    info->report[StickRightX] = StickRawMiddle;
+                    info->report[StickLeftY] = StickRawMiddle;
                     info->rightY = 0;
                     info->rightX = 0;
                     info->leftY = 0;
@@ -586,9 +591,9 @@ extern "C"
                     info->leftStickY = 0.0f;
                 }
 
-                info->flags |= GamePadInformation::FlagRead;
+                info->flags.read = 1;
                 // Its mode changed: set it up again
-                if (lastMode != 0 && info->report[ReportModeByte] != lastMode)
+                if (lastMode != 0 && info->report[ReportMode] != lastMode)
                 {
                     ResetSetup(info);
                 }
@@ -598,14 +603,14 @@ extern "C"
             }
         }
 
-        if ((info->flags & GamePadInformation::FlagRead) == 0)
+        if (info->flags.read == 0)
         {
-            info->report[StickRightX] = 0x80;
+            info->report[StickRightX] = StickRawMiddle;
             info->rightStickX = 0.0f;
-            info->lastButtons = 0;
-            info->flags &= ~0xFFFFFFFFull;
-            info->pressed = 0;
-            info->buttons = 0;
+            info->lastButtons.value = 0;
+            info->flags.released = 0;
+            info->pressed.value = 0;
+            info->buttons.value = 0;
             info->rightY = 0;
             info->rightX = 0;
             info->leftY = 0;
@@ -613,32 +618,32 @@ extern "C"
             info->leftStickY = 0.0f;
             info->leftStickX = 0.0f;
             info->rightStickY = 0.0f;
-            info->report[StickLeftY] = 0x80;
-            info->report[StickLeftX] = 0x80;
-            info->report[StickRightY] = 0x80;
+            info->report[StickLeftY] = StickRawMiddle;
+            info->report[StickLeftX] = StickRawMiddle;
+            info->report[StickRightY] = StickRawMiddle;
             for (u32 i = PressureRight; i <= PressureR2; i++)
             {
                 info->report[i] = 0;
             }
         }
 
-        return (info->flags & GamePadInformation::FlagRead) != 0 ? -1 : 0;
+        return info->flags.read != 0 ? -1 : 0;
     }
 
     s32 SetPadMotors(GamePadInformation* info, s32 small, u8 big)
     {
-        if ((info->flags & GamePadInformation::FlagRead) == 0)
+        if (info->flags.read == 0)
         {
             return 0;
         }
 
-        if ((info->flags & GamePadInformation::FlagAnalog) == 0)
+        if (info->flags.analog == 0)
         {
             return small > 0;
         }
 
-        info->actuatorValues[0] = small > 0;
-        info->actuatorValues[1] = big;
+        info->actuatorValues[SmallMotor] = small > 0;
+        info->actuatorValues[BigMotor] = big;
         return Platform::Pads::SetActuatorDirect(info->port, info->slot, info->actuatorValues);
     }
 
@@ -683,17 +688,17 @@ extern "C"
         case PadL2:
             return Pressure(pad, PressureL2);
         case PadL3:
-            return Digital(pad, ButtonL3);
+            return Digital(pad->info->buttons.l3);
         case PadR1:
             return Pressure(pad, PressureR1);
         case PadR2:
             return Pressure(pad, PressureR2);
         case PadR3:
-            return Digital(pad, ButtonR3);
+            return Digital(pad->info->buttons.r3);
         case PadStart:
-            return Digital(pad, ButtonStart);
+            return Digital(pad->info->buttons.start);
         case PadSelect:
-            return Digital(pad, ButtonSelect);
+            return Digital(pad->info->buttons.select);
         default:
             return 0.0f;
         }
@@ -722,7 +727,7 @@ extern "C"
 
     bool GetButtonState(GamePad* pad, u32 button, bool pressedNow)
     {
-        u32 mask = 1u << (button & 0x1F);
+        u32 mask = 1u << (button & ShiftMask);
         if (pressedNow)
         {
             return (pad->previous & mask) == 0 && (pad->now & mask) != 0;
@@ -738,19 +743,19 @@ extern "C"
             return false;
         }
 
-        return (pad->info->flags & GamePadInformation::FlagRead) != 0;
+        return pad->info->flags.read != 0;
     }
 
     void RequestVibration(const VibrationRequest* request)
     {
-        VibrationRequest* slot = &g_VibrationRequests[(request->bits & VibrationRequest::Pad) - 1];
+        VibrationRequest* slot = &g_VibrationRequests[request->bits.pad - 1];
         *slot = *request;
-        slot->bits |= VibrationRequest::Pending;
+        slot->bits.pending = 1;
     }
 
     void InitialiseVibrationRequests(s32 initialise, s32 priority)
     {
-        if (priority != 0xFFFF || initialise == 0)
+        if (priority != DefaultInitPriority || initialise == 0)
         {
             return;
         }
@@ -758,12 +763,16 @@ extern "C"
         for (u32 i = 0; i < MaxPads; i++)
         {
             g_VibrationRequests[i].seconds = 0.0f;
-            g_VibrationRequests[i].bits &= 0xFFFF8000;
+            VibrationBits& bits = g_VibrationRequests[i].bits;
+            bits.pad = 0;
+            bits.pending = 0;
+            bits.smallMotor = 0;
+            bits.bigMotor = 0;
         }
     }
 
     void ConstructPadsModule()
     {
-        InitialiseVibrationRequests(1, 0xFFFF);
+        InitialiseVibrationRequests(1, DefaultInitPriority);
     }
 }

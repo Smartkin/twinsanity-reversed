@@ -16,9 +16,6 @@ extern "C"
 
 namespace
 {
-constexpr u32 DeleteObject = 1;
-constexpr u32 AnimationDestroyFlags = 3;
-
 // Back to the base class, its GS settings freed (once the frame's DMA is done with them), its texture and animation released
 void DestroyShader(Shader* shader, u32 flags)
 {
@@ -26,15 +23,15 @@ void DestroyShader(Shader* shader, u32 flags)
     FreeDeferred(GetHeapManager(), reinterpret_cast<void*>(shader->registers));
     if (shader->texture != nullptr)
     {
-        ReleaseTexture(reinterpret_cast<GameTexture*>(shader->texture));
+        ReleaseTexture(shader->texture);
     }
 
     if (shader->animation != nullptr)
     {
-        DestroyShaderAnimation(shader->animation, AnimationDestroyFlags);
+        DestroyShaderAnimation(shader->animation, DestroyAndFree);
     }
 
-    if ((flags & DeleteObject) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(shader);
     }
@@ -460,7 +457,7 @@ extern "C"
     // Slot 7: where the GS settings are
     u32 ShaderRegisters(const Shader* shader) RETAIL(GetShaderSettings);
     // Slot 8 of most types: the shader doesn't need the eye and the model's matrix (ReadRigidModel and the skins ask)
-    u32 ShaderSlot8(const Shader* shader) RETAIL(FUN_001d9070);
+    u32 ShaderNeedsEye(const Shader* shader) RETAIL(FUN_001d9070);
     // Type 0's frame update: nothing to update
     u32 ShaderType00Update(Shader* shader) RETAIL(FUN_001d93f8);
 
@@ -469,7 +466,7 @@ extern "C"
         return shader->registers;
     }
 
-    u32 ShaderSlot8(const Shader*)
+    u32 ShaderNeedsEye(const Shader*)
     {
         return 0;
     }
@@ -483,23 +480,14 @@ extern "C"
 // The frame updates (slot 3, given the frame's seconds): the UV scroll and the animation, and the cloth and wave shaders' waves
 namespace
 {
-constexpr f32 HalfTurn = 0x1.921FB6p+1f;
-constexpr f32 Turn = 0x1.921FB6p+2f;
+// Five and ten turns in radians
 constexpr f32 FiveTurns = 0x1.F6A7A4p+4f;
 constexpr f32 TenTurns = 0x1.F6A7A4p+5f;
 // Type 0x1A's second wave on V turns 2.3 times as fast (2 on the others)
 constexpr f32 SecondWaveV = 0x1.266666p+1f;
-constexpr u32 WaveRows = 16;
-constexpr u32 WaveSize = 0x10;
-constexpr u32 RadiansUnit = 0;
 // The animation's colour as the shader's: bytes, alpha 127 at most
 constexpr f32 ColourScale = 256.0f;
 constexpr f32 AlphaScale = 127.0f;
-
-u32 Mode(u64 settings, u32 setting)
-{
-    return static_cast<u32>(settings >> setting) & 7;
-}
 
 // A phase going round 0 to 1
 f32 Wrapped(f32* phase, f32 speed, f32 seconds)
@@ -521,7 +509,7 @@ f32 Waved(f32* phase, f32 speed, f32 seconds, bool cosine)
 {
     *phase += speed * seconds;
     s32 angle;
-    AngleFrom(&angle, *phase * Turn, RadiansUnit);
+    AngleFrom(&angle, *phase * TwoPi, AngleRadians);
     return cosine ? CosOfAngle(&angle) : SinOfAngle(&angle);
 }
 
@@ -533,13 +521,13 @@ f32 Turned(f32 phase, f32 step, f32 limit, f32 back)
 
 Vector4* AllocateWaves()
 {
-    return reinterpret_cast<Vector4*>(AllocDmaTags(&g_FrameBuckets, WaveRows, WaveSize));
+    return reinterpret_cast<Vector4*>(AllocDmaTags(&g_FrameBuckets, ShaderWaveRows, sizeof(Vector4)));
 }
 
 // Their step: the speed in turns a second, or in mode 2 in radians
 f32 ClothStep(const ClothShader* shader, f32 seconds)
 {
-    return shader->mode == 2 ? shader->speed * seconds : shader->speed * (seconds * Turn);
+    return shader->mode == ClothRadians ? shader->speed * seconds : shader->speed * (seconds * TwoPi);
 }
 }
 
@@ -554,7 +542,7 @@ extern "C"
     // offset, and with bit 60 the shader its colour
     u32 UpdateShader(Shader* shader, f32 seconds)
     {
-        switch (Mode(shader->settings, SettingUScroll))
+        switch (shader->settings.uScroll)
         {
         case ScrollWrapped:
             shader->scroll[0] = Wrapped(&shader->scrollPhases[0], shader->scrollSpeeds[0], seconds);
@@ -567,7 +555,7 @@ extern "C"
             break;
         }
 
-        switch (Mode(shader->settings, SettingVScroll))
+        switch (shader->settings.vScroll)
         {
         case ScrollWrapped:
             shader->scroll[1] = Wrapped(&shader->scrollPhases[1], shader->scrollSpeeds[1], seconds);
@@ -587,17 +575,17 @@ extern "C"
         }
 
         AdvanceShaderAnimation(animation, seconds);
-        if (Mode(shader->settings, SettingUScroll) == ScrollAnimated)
+        if (shader->settings.uScroll == ScrollAnimated)
         {
             shader->scroll[0] = animation->uvOffset.x;
         }
 
-        if (Mode(shader->settings, SettingVScroll) == ScrollAnimated)
+        if (shader->settings.vScroll == ScrollAnimated)
         {
             shader->scroll[1] = animation->uvOffset.y;
         }
 
-        if ((shader->settings >> SettingAnimatedColour & 1) != 0)
+        if (shader->settings.animatedColour)
         {
             shader->shaderColour[0] = animation->colour.x * ColourScale;
             shader->shaderColour[1] = animation->colour.y * ColourScale;
@@ -627,23 +615,23 @@ extern "C"
         shader->waves = Address(waves);
         f32 share = Platform::Math::Min(seconds, 1.0f);
         f32 step = ClothStep(shader, seconds);
-        for (u32 row = 0; row < WaveRows; row++)
+        for (u32 row = 0; row < ShaderWaveRows; row++)
         {
             Vector4& phase = shader->phases[row];
-            if (shader->mode < 2)
+            if (shader->mode < ClothRadians)
             {
-                f32 x = Turned(phase.x, step, HalfTurn, Turn);
-                f32 y = Turned(phase.y, step, HalfTurn, Turn);
+                f32 x = Turned(phase.x, step, Pi, TwoPi);
+                f32 y = Turned(phase.y, step, Pi, TwoPi);
                 f32 sinCos[4];
                 Platform::Math::SinCos(x, y, sinCos);
-                f32 z = Turned(phase.z, step, HalfTurn, Turn);
+                f32 z = Turned(phase.z, step, Pi, TwoPi);
                 phase.x = x;
                 phase.y = y;
                 phase.z = z;
                 f32 third[4];
                 Platform::Math::SinCos(z, z, third);
-                waves[row].x = shader->mode == 0 ? sinCos[0] : sinCos[1];
-                waves[row].y = shader->mode == 0 ? sinCos[2] : sinCos[3];
+                waves[row].x = shader->mode == ClothSines ? sinCos[0] : sinCos[1];
+                waves[row].y = shader->mode == ClothSines ? sinCos[2] : sinCos[3];
                 waves[row].z = third[1];
                 continue;
             }
@@ -673,17 +661,17 @@ extern "C"
         Vector4* waves = AllocateWaves();
         shader->waves = Address(waves);
         f32 step = ClothStep(shader, seconds);
-        for (u32 row = 0; row < WaveRows; row++)
+        for (u32 row = 0; row < ShaderWaveRows; row++)
         {
             Vector4& phase = shader->phases[row];
             phase.x = Turned(phase.x, step, FiveTurns, TenTurns);
             phase.y = Turned(phase.y, step, FiveTurns, TenTurns);
             phase.z = Turned(phase.z, step, FiveTurns, TenTurns);
             s32 angles[3];
-            AngleFrom(&angles[0], phase.x, RadiansUnit);
-            AngleFrom(&angles[1], phase.y, RadiansUnit);
-            AngleFrom(&angles[2], phase.z, RadiansUnit);
-            if (shader->mode == 0)
+            AngleFrom(&angles[0], phase.x, AngleRadians);
+            AngleFrom(&angles[1], phase.y, AngleRadians);
+            AngleFrom(&angles[2], phase.z, AngleRadians);
+            if (shader->mode == ClothSines)
             {
                 waves[row].x = SinOfAngle(&angles[0]);
                 waves[row].y = SinOfAngle(&angles[1]);
@@ -696,7 +684,7 @@ extern "C"
                 waves[row].z = CosOfAngle(&angles[2]);
             }
 
-            if (shader->mode != 2)
+            if (shader->mode != ClothRadians)
             {
                 continue;
             }
@@ -705,9 +693,9 @@ extern "C"
             second.x = Turned(second.x, step, FiveTurns, TenTurns);
             second.y = Turned(second.y, step, FiveTurns, TenTurns);
             second.z = Turned(second.z, step, FiveTurns, TenTurns);
-            AngleFrom(&angles[0], second.x, RadiansUnit);
-            AngleFrom(&angles[1], second.y, RadiansUnit);
-            AngleFrom(&angles[2], second.z, RadiansUnit);
+            AngleFrom(&angles[0], second.x, AngleRadians);
+            AngleFrom(&angles[1], second.y, AngleRadians);
+            AngleFrom(&angles[2], second.z, AngleRadians);
             angles[0] = static_cast<s32>(static_cast<f32>(angles[0]) + static_cast<f32>(angles[0]));
             angles[1] = static_cast<s32>(static_cast<f32>(angles[1]) * SecondWaveV);
             angles[2] = static_cast<s32>(static_cast<f32>(angles[2]) + static_cast<f32>(angles[2]));
@@ -725,17 +713,17 @@ extern "C"
     {
         Vector4* waves = AllocateWaves();
         shader->waves = Address(waves);
-        f32 step = shader->speed * (seconds * Turn);
-        for (u32 row = 0; row < WaveRows; row++)
+        f32 step = shader->speed * (seconds * TwoPi);
+        for (u32 row = 0; row < ShaderWaveRows; row++)
         {
             Vector4& phase = shader->phases[row];
             phase.x = Turned(phase.x, step, FiveTurns, TenTurns);
             phase.y = Turned(phase.y, step, FiveTurns, TenTurns);
             phase.z = Turned(phase.z, step, FiveTurns, TenTurns);
             s32 angles[3];
-            AngleFrom(&angles[0], phase.x, RadiansUnit);
-            AngleFrom(&angles[1], phase.y, RadiansUnit);
-            AngleFrom(&angles[2], phase.z, RadiansUnit);
+            AngleFrom(&angles[0], phase.x, AngleRadians);
+            AngleFrom(&angles[1], phase.y, AngleRadians);
+            AngleFrom(&angles[2], phase.z, AngleRadians);
             waves[row].x = SinOfAngle(&angles[0]);
             waves[row].y = SinOfAngle(&angles[1]);
             waves[row].z = SinOfAngle(&angles[2]);

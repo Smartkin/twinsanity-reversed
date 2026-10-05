@@ -2,6 +2,8 @@
 
 #include "game/memory.h"
 
+#include <libgs.h>
+
 // The screen models' builder (the skid marks are its only models): a triangle strip of one material made into a packet VU1
 // draws as the vertexes come. It keeps the packet and the material in the 2D drawing's globals, and puts the vertexes it holds
 // into the packet every 38 (the packet grows by them) and when the model is made
@@ -9,19 +11,12 @@
 namespace
 {
 constexpr u32 HeldVertexes = 38;
-// A vertex's fourth word: the GS's ADC (no triangle drawn at it)
-constexpr u32 NoDraw = 0x8000;
 // The packet's first quadword: a RET tag (its count filled when the model is made) and VIF1's MARK of 0xC8
-constexpr u32 PacketMark = 0x070000C8;
-// The strip's GIF tag (its vertex count added): the end of the packet, PRIM preset to a triangle strip, three registers a
-// vertex (ST, RGBAQ and XYZ2)
-constexpr u64 StripTag = 0xC009ull << 46;
-constexpr u64 StripRegisters = 0x512;
-constexpr u32 GifEnd = 0x8000;
-// VIF1's codes: UNPACKs to addresses from VU1's TOPS (FLG), of V2-32 elements, and STCYCL writing one quadword of every four
-constexpr u32 VifTops = 0x8000;
-constexpr u32 VifUnpackV2 = 0x64010000;
-constexpr u32 VifCycle4 = 0x01000104;
+constexpr u32 PacketMark = VifMark | 0xC8;
+// The strip's GIF tag (its vertex count in it): the end of the packet, PRIM preset to a triangle strip, three registers a vertex
+// (ST, RGBAQ and XYZ2)
+constexpr u32 StripVertexRegisters = 3;
+constexpr u64 StripRegisters = GifDescriptors(GifSt, GifRgbaq, GifXyz2);
 // Where VU1 gets them: the GIF tag, the count it draws, then every vertex's place, colour (integers), texture coordinates and
 // colour (floats) in four quadwords
 constexpr u32 TagPlace = 0;
@@ -40,7 +35,7 @@ struct Quadword
 struct ChannelWord
 {
     u8 value;
-    u8 unknown01[3];
+    u8 unused01[3];
 };
 
 struct VertexColour
@@ -53,22 +48,33 @@ u32 WordOf(const f32& value)
     return *reinterpret_cast<const u32*>(&value);
 }
 
+u64 StripTag(u32 count)
+{
+    GifTag tag;
+    tag.value = count;
+    tag.endOfPacket = 1;
+    tag.setsPrim = 1;
+    tag.prim = GS_PRIM_TRI_STRIP;
+    tag.registerCount = StripVertexRegisters;
+    return tag.value;
+}
+
 // A quadword of VIF1's NOPs and an UNPACK of V4-32 elements to the place
 u32* UnpackV4(u32* at, u32 count, u32 place)
 {
     at[0] = 0;
     at[1] = 0;
     at[2] = 0;
-    at[3] = VifUnpackV4Count | count << 16 | VifTops | place;
+    at[3] = VifUnpackTo(VifUnpackV4Count | VifTops, place, count);
     return at + 4;
 }
 }
 
 extern "C"
 {
-    // The vertexes held: their places (the fourth word NoDraw or 0), normals and texture coordinates (nothing gives the builder
-    // any: their counts stay 0) and colours; how many places (in the 2D drawing's count of pairs), texture coordinates, colours
-    // and normals, the colour given last and whether one was given since the builder started
+    // The vertexes held: their places (the fourth word VertexNoDraw or 0), normals and texture coordinates (nothing gives the
+    // builder any: their counts stay 0) and colours; how many places (in the 2D drawing's count of pairs), texture coordinates,
+    // colours and normals, the colour given last and whether one was given since the builder started
     extern Vector4 g_ScreenModelPlaces[HeldVertexes] RETAIL(D_003D4ED0);
     extern Vector4 g_ScreenModelNormals[HeldVertexes] RETAIL(D_003D5130);
     extern VertexColour g_ScreenModelColours[HeldVertexes] RETAIL(D_003D5390);
@@ -135,7 +141,7 @@ extern "C"
         held.x = place->x;
         held.y = place->y;
         held.z = place->z;
-        *reinterpret_cast<u32*>(&held.w) = noDraw != 0 ? NoDraw : 0;
+        *reinterpret_cast<u32*>(&held.w) = noDraw != 0 ? VertexNoDraw : 0;
         g_ScreenModelPlaceCount++;
     }
 
@@ -198,18 +204,18 @@ extern "C"
         count = g_ScreenModelPlaceCount;
         at = UnpackV4(at, 1, TagPlace);
         auto* tag = reinterpret_cast<u64*>(at);
-        tag[0] = static_cast<u64>(count | GifEnd) | StripTag;
+        tag[0] = StripTag(count);
         tag[1] = StripRegisters;
         at += 4;
         at[0] = VifCycle1;
         at[1] = VifUnpackV2 | VifTops | CountPlace;
         at[2] = count << 2;
-        at[3] = count | GifEnd;
+        at[3] = count | GifEndOfPacket;
         at += 4;
         at[0] = 0;
         at[1] = 0;
         at[2] = VifCycle4;
-        at[3] = VifUnpackV4Count | count << 16 | VifTops | PlacePlace;
+        at[3] = VifUnpackTo(VifUnpackV4Count | VifTops, PlacePlace, count);
         at += 4;
         for (u32 index = 0; index < count; index++)
         {

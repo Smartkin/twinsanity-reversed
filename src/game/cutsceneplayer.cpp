@@ -27,26 +27,12 @@ extern "C"
     extern const char g_CutsceneNumberFormat[] RETAIL(D_0030A270);
     extern const char g_CutsceneSeparator[] RETAIL(D_0030A278);
     extern const char g_CutsceneExtension[] RETAIL(D_0030A280);
-
-    // The chunk manager's chunk of an index
 }
 
 namespace
 {
-// The music slot the cutscenes' music plays in
-constexpr s32 MusicSlot = 1;
-constexpr u16 NoModel = 0xFFFF;
-constexpr u16 EndFrame = 0xFFFF;
-constexpr u32 ObjectNodeKind = 1;
-// The root's animations (not a camera joint's)
-constexpr u32 RootJoint = 0xFF;
-// The agents' vtable slot that freezes them
-constexpr u32 FreezeSlot = 15;
-// The objects' header bits of the camera joints and the exit points the model is given
-constexpr u32 CameraJointsShift = 6;
-constexpr u32 JointsMask = 0x3F;
-constexpr u32 ObjectIdMask = 0x7FFF;
-constexpr u32 FramesPerSecond = 25;
+// The destructor's vtable slot
+constexpr u32 DestructorSlot = 1;
 // The digits a number of a cutscene's file name is formatted into
 constexpr u32 NumberDigits = 16;
 
@@ -58,7 +44,7 @@ void ReadNextPart(VideoController* controller)
         return;
     }
 
-    controller->bits &= ~VideoController::BitNextPartRead;
+    controller->bits.nextPartRead = 0;
     Cutscene* next = ConstructCutscene(static_cast<Cutscene*>(MemoryAllocate(sizeof(Cutscene))));
     controller->nextPart = next;
     Cutscene* cutscene = controller->cutscene;
@@ -71,7 +57,7 @@ void ReadNextPart(VideoController* controller)
 void DestroyUnused(void* object)
 {
     const GccVTableEntry* vtable = *static_cast<const GccVTableEntry* const*>(object);
-    CallVirtual<void>(object, vtable, 1, DestroyAndFree);
+    CallVirtual<void>(object, vtable, DestructorSlot, DestroyAndFree);
 }
 }
 
@@ -81,7 +67,8 @@ VideoController* ConstructVideoController(void* memory, void* resourceManager, u
     controller->resourceManager = resourceManager;
     controller->object = nullptr;
     controller->chunk = nullptr;
-    controller->bits = (controller->bits & ~VideoController::ConstructorMask) | VideoController::BitRelative;
+    controller->bits.value =
+        (controller->bits.value & ~VideoControllerBits::ConstructorCleared) | VideoControllerBits::Relative;
     controller->skipHint.string = nullptr;
     controller->skipHint.capacity = 0;
     controller->skipHint.length = 0;
@@ -130,22 +117,22 @@ u32 StartReadCutscene(VideoController* controller, TimeClock* clock)
     {
         if (controller->state == VideoController::StateQueued)
         {
-            controller->bits |= VideoController::BitWaitingForMusic;
+            controller->bits.waitingForMusic = 1;
         }
 
         controller->waitedFrames++;
         return 0;
     }
 
-    if (MusicSlotPrepared(MusicSlot) == 0)
+    if (MusicSlotPrepared(ContextMusicSlot) == 0)
     {
-        controller->bits |= VideoController::BitWaitingForMusic;
+        controller->bits.waitingForMusic = 1;
         controller->waitedFrames++;
         return 0;
     }
 
     controller->clock = clock;
-    controller->bits &= ~VideoController::BitWaitingForMusic;
+    controller->bits.waitingForMusic = 0;
     controller->startTime = clock->time;
     controller->partFrame = 0;
     controller->frame = 0;
@@ -153,13 +140,12 @@ u32 StartReadCutscene(VideoController* controller, TimeClock* clock)
     controller->part = 0;
     controller->now = clock->time;
     TakeCutsceneInstances(controller);
-    PlayPreparedMusic(1.0f, 1.0f, 0.0f, MusicSlot);
+    PlayPreparedMusic(1.0f, 1.0f, 0.0f, ContextMusicSlot);
     controller->state = VideoController::StatePlaying;
     ReadNextPart(controller);
     u32 seen = CutsceneSeen(controller);
     controller->waitedFrames = 0;
-    u32 skippable = (seen & 1) != 0 ? VideoController::BitSkippable : 0;
-    controller->bits = (controller->bits & ~VideoController::BitSkippable) | skippable;
+    controller->bits.skippable = seen & 1;
     return 1;
 }
 
@@ -178,7 +164,7 @@ void LoadCutscenePart(VideoController* controller, Cutscene* cutscene, s32 numbe
     RetailLibc::Format(digits, g_CutsceneNumberFormat, part);
     StringAppend(&path, digits);
     StringAppend(&path, g_CutsceneExtension);
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     auto* reader = static_cast<CutsceneReader*>(MemoryAllocate(sizeof(CutsceneReader)));
     reader->controller = controller;
     reader->vtable = g_CutsceneReaderVTable;
@@ -186,8 +172,9 @@ void LoadCutscenePart(VideoController* controller, Cutscene* cutscene, s32 numbe
     reader->part = part;
     reader->cutscene = cutscene;
     SubItemsReader* file = SubItemsReader::ConstructFile(static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))),
-                                                         path.string, reader, SubItemsReader::WholeFile | SubItemsReader::OnDisk);
-    AddItemReaderToReaderStorage(storage, file, 0);
+                                                         path.string, reader,
+                                                         SubItemsReaderOptions::ClosesFile | SubItemsReaderOptions::OnDisk);
+    AddItemReaderToReaderStorage(storage, file, QueueBack);
     StringDestroy(&path);
 }
 
@@ -265,7 +252,7 @@ void TakeCutsceneInstances(VideoController* controller)
     for (u32 index = 0; index < controller->cutscene->instanceTrackCount; index++)
     {
         u16 model = controller->cutscene->instanceTracks[index].model;
-        if (model == NoModel)
+        if (model == NoModelId)
         {
             continue;
         }
@@ -290,18 +277,18 @@ void TakeCutsceneInstances(VideoController* controller)
 
 void TakeOverInstance(VideoController* controller, InstanceContext* instance)
 {
-    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject));
     GameObject* object = node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
     Agent* agent = node->agent;
-    CallVirtual<void>(agent, agent->vtable, FreezeSlot);
+    CallVirtual<void>(agent, agent->vtable, Agent::FreezeSlot);
     auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator != nullptr)
     {
-        StopOgiAnimation(animator, 0, RootJoint);
+        StopOgiAnimation(animator, 0, OgiAnimator::RootJoint);
     }
 
-    u16 id = NoModel;
+    u16 id = NoModelId;
     for (u32 index = 0; index < controller->modelCount; index++)
     {
         if (controller->modelInstances[index] == instance)
@@ -312,30 +299,30 @@ void TakeOverInstance(VideoController* controller, InstanceContext* instance)
     }
 
     ResourceTable* models = G_GameResourcesObjectPointer->models;
-    auto* ogi = id != NoModel ? static_cast<GameOGI*>(models->items[id & ObjectIdMask]) : nullptr;
-    u32 header = object->header[0];
-    model->SetOgi(ogi, header >> CameraJointsShift & JointsMask, header & JointsMask);
+    auto* ogi =
+        id != NoModelId ? static_cast<GameOGI*>(models->items[id & ResourceIndexMask]) : nullptr;
+    model->SetOgi(ogi, object->header.reactJoints, object->header.exitPoints);
 }
 
 void UpdatePlayingCutscene(VideoController* controller)
 {
     TimeClock* clock = controller->clock;
-    if (clock != nullptr && (clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock != nullptr && clock->flags.running == 0)
     {
         controller->state = VideoController::StatePaused;
         return;
     }
 
-    if ((controller->bits & VideoController::BitMusicOnly) != 0)
+    if (controller->bits.musicOnly != 0)
     {
-        if (MusicSlotPlaying(MusicSlot) != 0)
+        if (MusicSlotPlaying(ContextMusicSlot) != 0)
         {
             return;
         }
 
         StopCutscene(controller);
         controller->state = VideoController::StateFinished;
-        controller->bits &= ~VideoController::BitMusicOnly;
+        controller->bits.musicOnly = 0;
         return;
     }
 
@@ -348,7 +335,7 @@ void UpdatePlayingCutscene(VideoController* controller)
     {
         DrawDiscError(controller);
     }
-    else if ((controller->bits & VideoController::BitSkippable) != 0)
+    else if (controller->bits.skippable != 0)
     {
         DrawSkipHint(controller);
     }
@@ -364,18 +351,18 @@ void UpdatePlayingCutscene(VideoController* controller)
 
     // Its end: marked seen in its instance's persistent flag
     GiveBackInstances(controller);
-    Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&controller->instance->nodes, ObjectNodeKind))->agent;
+    Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&controller->instance->nodes, NodeObject))->agent;
     ChunkEntry* chunk = ChunkOfIndex(g_ChunkManager, agent->chunkIndex);
-    SetPersistentFlag(chunk->flags, agent->id, 1);
+    SetPersistentFlag(chunk->savedFlags, agent->id, 1);
     StopCutscene(controller);
     controller->state = VideoController::StateFinished;
 }
 
 void UpdateQueuedCutscene(VideoController* controller)
 {
-    if ((controller->bits & VideoController::BitWaitingForMusic) != 0)
+    if (controller->bits.waitingForMusic != 0)
     {
-        if ((controller->bits & VideoController::BitMusicOnly) == 0)
+        if (controller->bits.musicOnly == 0)
         {
             StartReadCutscene(controller, controller->clock);
         }
@@ -385,7 +372,7 @@ void UpdateQueuedCutscene(VideoController* controller)
         }
     }
 
-    if ((controller->bits & VideoController::BitMusicOnly) == 0 && controller->waitedFrames >= VideoController::DiscErrorFrames)
+    if (controller->bits.musicOnly == 0 && controller->waitedFrames >= VideoController::DiscErrorFrames)
     {
         DrawDiscError(controller);
     }
@@ -396,7 +383,7 @@ u32 AdvanceCutscene(VideoController* controller, TimeClock* clock)
     u32 now = clock->time;
     controller->now = now;
     f32 frames = static_cast<f32>(static_cast<s32>(now - controller->startTime)) * g_SecondsPerClockUnit *
-                 static_cast<f32>(FramesPerSecond);
+                 static_cast<f32>(Cutscene::FramesPerSecond);
     u16 frame = static_cast<u16>(static_cast<s32>(frames));
     controller->frame = frame;
     controller->frameShare = frames - static_cast<f32>(controller->frame);
@@ -414,7 +401,7 @@ u32 AdvanceCutscene(VideoController* controller, TimeClock* clock)
 
 void NextCutscenePart(VideoController* controller)
 {
-    if ((controller->bits & VideoController::BitNextPartRead) == 0)
+    if (controller->bits.nextPartRead == 0)
     {
         controller->waitedFrames++;
         return;
@@ -438,54 +425,52 @@ void NextCutscenePart(VideoController* controller)
     ReadNextPart(controller);
 }
 
-void PlayInstanceTrackAnimation(PlayedInstanceTrack* track, const CutsceneInstanceTrack* data)
+void PlayInstanceTrackAnimation(PlayedInstanceTrack* played, const CutsceneInstanceTrack* track)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(&track->instance->nodes, NodeModel));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&played->instance->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
-    StopOgiAnimation(animator, 0, RootJoint);
-    if (track->animation != nullptr)
+    StopOgiAnimation(animator, 0, OgiAnimator::RootJoint);
+    if (played->animation != nullptr)
     {
-        DestroyAnimation(track->animation, DestroyAndFree);
+        DestroyAnimation(played->animation, DestroyAndFree);
     }
 
-    GameAnimation* animation = MakeAnimation(static_cast<GameAnimation*>(MemoryAllocate(sizeof(GameAnimation))), &data->joints,
-                                             data->hasBlendShapes != 0 ? &data->blendShapes : nullptr);
-    track->animation = animation;
-    animation->bits = (animation->bits & ~(GameAnimation::RateMask << GameAnimation::RateShift)) |
-                      FramesPerSecond << GameAnimation::RateShift;
-    track->animation->bits = (track->animation->bits & ~(GameAnimation::FramesMask << GameAnimation::FramesShift)) |
-                             Cutscene::PartFrames << GameAnimation::FramesShift;
+    GameAnimation* animation = MakeAnimation(static_cast<GameAnimation*>(MemoryAllocate(sizeof(GameAnimation))), &track->joints,
+                                             track->hasBlendShapes != 0 ? &track->blendShapes : nullptr);
+    played->animation = animation;
+    animation->bits.rate = Cutscene::FramesPerSecond;
+    played->animation->bits.frames = Cutscene::PartFrames;
     AnimationSettings settings;
-    ConstructAnimationSettings(1.0f, &settings, track->animation);
-    settings.bits &= ~AnimationSettings::Loops;
-    PlayOgiAnimation(animator, &settings, RootJoint);
+    ConstructAnimationSettings(1.0f, &settings, played->animation);
+    settings.bits.loops = 0;
+    PlayOgiAnimation(animator, &settings, OgiAnimator::RootJoint);
     DestroyAnimationSettings(&settings, DestroyOnly);
 }
 
 void VideoController::Skip()
 {
-    if ((bits & BitSkippable) == 0 || cutscene == nullptr || state != StatePlaying)
+    if (bits.skippable == 0 || cutscene == nullptr || state != StatePlaying)
     {
         return;
     }
 
-    const Matrix4x4* place = (bits & BitRelative) != 0 ? &origin : nullptr;
+    const Matrix4x4* place = bits.relative != 0 ? &origin : nullptr;
     for (u32 index = 0; index < cutscene->instanceTrackCount; index++)
     {
-        PlayInstanceTrackFrame(0.0f, &instanceTracks[index], &cutscene->instanceTracks[index], EndFrame, place);
+        PlayInstanceTrackFrame(0.0f, &instanceTracks[index], &cutscene->instanceTracks[index], Cutscene::EndFrame, place);
     }
 
     for (u32 index = 0; index < cutscene->emitterTrackCount; index++)
     {
-        PlayEmitterTrackFrame(0.0f, &emitterTracks[index], &cutscene->emitterTracks[index], EndFrame, place);
+        PlayEmitterTrackFrame(0.0f, &emitterTracks[index], &cutscene->emitterTracks[index], Cutscene::EndFrame, place);
     }
 
     for (u32 index = 0; index < cutscene->soundTrackCount; index++)
     {
-        PlaySoundTrackFrame(0.0f, &soundTracks[index], &cutscene->soundTracks[index], EndFrame, place);
+        PlaySoundTrackFrame(0.0f, &soundTracks[index], &cutscene->soundTracks[index], Cutscene::EndFrame, place);
     }
 
-    PlayCameraTrackFrame(0.0f, &cameraTrack, &cutscene->camera, EndFrame, place);
+    PlayCameraTrackFrame(0.0f, &cameraTrack, &cutscene->camera, Cutscene::EndFrame, place);
     GiveBackInstances(this);
     StopCutscene(this);
     state = StateFinished;

@@ -16,27 +16,35 @@ constexpr u32 StepCopy = 0x8000;
 constexpr u32 ReleasesPerRound = 16;
 constexpr s32 FreeIndex = -2;
 constexpr s32 FirstNodeIndex = -1;
+// DiskQueueRelease's count that keeps the node's
+constexpr u32 KeepWaitCount = 0xFFFFFFFF;
+// The states from DiskNodeMovedAway on that wait for rounds of releases
+constexpr u32 ReleaseStateCount = DiskNodeReleasedExpired - DiskNodeMovedAway + 1;
 
-// A new node's bits: the retail code keeps what the allocator left in bits 14, 15 and 18 up, which nothing reads
-constexpr u32 NewNodeKeptBits = 0xFFFC4000;
-// Taking a free node clears its state and flags, and keeps its count
-constexpr u32 TakenNodeKeptBits = ~(DiskNodeBits::State | DiskNodeBits::Loading | DiskNodeBits::Loaded | DiskNodeBits::DeferRelease);
-
-u32 StateOf(const DiskNode* node)
+// A new node's bits: free and ready, what the allocator left in the unused ones kept
+DiskNodeBits NewNodeBits(DiskNodeBits leftover)
 {
-    return node->bits & DiskNodeBits::State;
+    leftover.waitCount = 0;
+    leftover.ready = 1;
+    leftover.loadState = DiskNotReadInto;
+    leftover.deferRelease = 0;
+    leftover.state = DiskNodeFree;
+    return leftover;
 }
 
-void SetState(DiskNode* node, u32 state)
+// A free node taken: used and ready, its count kept
+void Take(DiskNode* node)
 {
-    node->bits = (node->bits & ~DiskNodeBits::State) | state;
+    node->bits.ready = 1;
+    node->bits.loadState = DiskNotReadInto;
+    node->bits.deferRelease = 0;
+    node->bits.state = DiskNodeUsed;
 }
 
 // A used node the hardware isn't reading into
 bool CanMove(const DiskNode* node)
 {
-    return StateOf(node) == DiskNodeUsed &&
-           (node->bits & (DiskNodeBits::Loading | DiskNodeBits::Loaded)) != DiskNodeBits::Loading;
+    return node->bits.state == DiskNodeUsed && node->bits.loadState != DiskLoading;
 }
 
 void TrackLowestFree(DiskManager* manager, DiskNode* node)
@@ -50,7 +58,7 @@ void TrackLowestFree(DiskManager* manager, DiskNode* node)
 DiskNode* NewFreeNode()
 {
     DiskNode* node = static_cast<DiskNode*>(MemoryAllocate(sizeof(DiskNode)));
-    u32 bits = node->bits;
+    DiskNodeBits leftover = node->bits;
     node->index = FirstNodeIndex;
     node->memory = nullptr;
     node->size = 0;
@@ -58,7 +66,7 @@ DiskNode* NewFreeNode()
     node->nextFree = nullptr;
     node->previous = nullptr;
     node->next = nullptr;
-    node->bits = (bits & NewNodeKeptBits) | DiskNodeBits::Ready | DiskNodeFree;
+    node->bits = NewNodeBits(leftover);
     return node;
 }
 
@@ -94,7 +102,7 @@ extern "C"
     void DiskReleaseNode(DiskManager* manager, DiskNode* node) RETAIL(FUN_002039c0);
     void DiskReleaseNow(DiskManager* manager, const s32* handle) RETAIL(FUN_002035b8);
     void DiskReleaseDeferred(DiskManager* manager, const s32* handle) RETAIL(FUN_00203680);
-    // Sets the state, and waits for a round of releases when it's one of the release states. A count of -1 keeps the count
+    // Sets the state, and waits for a round of releases when it's one of the release states. KeepWaitCount keeps the count
     void DiskQueueRelease(DiskManager* manager, DiskNode* node, u32 state, u32 count) RETAIL(FUN_00205968);
 
     void DiskStartMove(DiskMove* move, DiskNode* source, DiskNode* destination) RETAIL(FUN_00202cf0);
@@ -212,7 +220,7 @@ extern "C"
     {
         DiskNode* merged = node;
         DiskNode* previous = node->previous;
-        if (previous != nullptr && StateOf(previous) == DiskNodeFree)
+        if (previous != nullptr && previous->bits.state == DiskNodeFree)
         {
             DiskRemoveFree(manager, previous);
             previous->size += node->size;
@@ -224,7 +232,7 @@ extern "C"
         }
 
         DiskNode* next = merged->next;
-        if (next != nullptr && StateOf(next) == DiskNodeFree)
+        if (next != nullptr && next->bits.state == DiskNodeFree)
         {
             DiskRemoveFree(manager, merged);
             merged->size += next->size;
@@ -258,14 +266,14 @@ extern "C"
         u32 available = node->size;
         if (available == size)
         {
-            node->bits = (node->bits & TakenNodeKeptBits) | DiskNodeBits::Ready | DiskNodeUsed;
+            Take(node);
             DiskRemoveFree(manager, node);
         }
         else
         {
             DiskRemoveFree(manager, node);
             node->size = size;
-            node->bits = (node->bits & TakenNodeKeptBits) | DiskNodeBits::Ready | DiskNodeUsed;
+            Take(node);
         }
 
         s32 index = manager->freeHandles[manager->handlesUsed++];
@@ -286,9 +294,9 @@ extern "C"
 
     void DiskReleaseNode(DiskManager* manager, DiskNode* node)
     {
-        if (StateOf(node) != DiskNodeFree)
+        if (node->bits.state != DiskNodeFree)
         {
-            SetState(node, DiskNodeFree);
+            node->bits.state = DiskNodeFree;
             DiskAddFree(manager, node);
             if (node->index >= 0)
             {
@@ -306,7 +314,7 @@ extern "C"
     {
         DiskNode* node = manager->handles[*handle];
         DiskMove* move = manager->move;
-        switch (StateOf(node))
+        switch (node->bits.state)
         {
         case DiskNodeUsed:
             if (node != move->destination)
@@ -331,7 +339,7 @@ extern "C"
     {
         DiskNode* node = manager->handles[*handle];
         DiskMove* move = manager->move;
-        switch (StateOf(node))
+        switch (node->bits.state)
         {
         case DiskNodeUsed:
             if (node != move->destination)
@@ -356,8 +364,8 @@ extern "C"
 
     void DiskQueueRelease(DiskManager* manager, DiskNode* node, u32 state, u32 count)
     {
-        node->bits = (node->bits & ~DiskNodeBits::State) | (state & DiskNodeBits::State);
-        if (state - DiskNodeMovedAway < 4)
+        node->bits.state = state;
+        if (state - DiskNodeMovedAway < ReleaseStateCount)
         {
             DiskPendingRelease* pending = static_cast<DiskPendingRelease*>(MemoryAllocate(sizeof(DiskPendingRelease)));
             pending->node = node;
@@ -367,35 +375,34 @@ extern "C"
             manager->pendingReleaseCount++;
         }
 
-        if (count != 0xFFFFFFFF)
+        if (count != KeepWaitCount)
         {
-            node->bits = (node->bits & ~DiskNodeBits::Count) | (count & 0x3FF) << DiskNodeBits::CountShift;
+            node->bits.waitCount = count;
         }
     }
 
     void DiskStartMove(DiskMove* move, DiskNode* source, DiskNode* destination)
     {
         move->source = source;
-        SetState(source, DiskNodeMoving);
+        source->bits.state = DiskNodeMoving;
         move->size = source->size;
         move->copied = 0;
         u32 available = destination->size;
         move->destination = destination;
         DiskRemoveFree(move->manager, destination);
-        destination->bits = (destination->bits & TakenNodeKeptBits) | DiskNodeBits::Ready | DiskNodeUsed;
+        Take(destination);
         destination->size = move->size;
-        SetState(destination, DiskNodeMoveDestination);
-        destination->bits |= DiskNodeBits::Ready;
-        destination->bits = (destination->bits & ~DiskNodeBits::DeferRelease) | (move->source->bits & DiskNodeBits::DeferRelease);
-        constexpr u32 LoadBits = DiskNodeBits::Loading | DiskNodeBits::Loaded;
-        destination->bits = (destination->bits & ~LoadBits) | (move->source->bits & LoadBits);
+        destination->bits.state = DiskNodeMoveDestination;
+        destination->bits.ready = 1;
+        destination->bits.deferRelease = move->source->bits.deferRelease;
+        destination->bits.loadState = move->source->bits.loadState;
         if (available != move->size)
         {
             DiskNode* rest = static_cast<DiskNode*>(MemoryAllocate(sizeof(DiskNode)));
             rest->memory = destination->memory + move->size;
             rest->size = available - move->size;
             rest->index = FreeIndex;
-            rest->bits = (rest->bits & NewNodeKeptBits) | DiskNodeBits::Ready | DiskNodeFree;
+            rest->bits = NewNodeBits(rest->bits);
             rest->previousFree = nullptr;
             rest->nextFree = nullptr;
             rest->previous = nullptr;
@@ -468,13 +475,13 @@ extern "C"
     void DiskFinishMove(DiskMove* move)
     {
         move->destination->index = move->source->index;
-        SetState(move->destination, DiskNodeUsed);
+        move->destination->bits.state = DiskNodeUsed;
         move->manager->handles[move->destination->index] = move->destination;
         move->source->index = FreeIndex;
         DiskNode* source = move->source;
-        if ((source->bits & DiskNodeBits::DeferRelease) == 0)
+        if (!source->bits.deferRelease)
         {
-            SetState(source, DiskNodeFree);
+            source->bits.state = DiskNodeFree;
             DiskAddFree(move->manager, move->source);
             DiskMerge(move->manager, move->source);
         }
@@ -563,7 +570,7 @@ extern "C"
             MemoryDeallocate2_(manager->move);
         }
 
-        if ((flags & 1) != 0)
+        if ((flags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(manager);
         }
@@ -590,18 +597,18 @@ extern "C"
         if (readInto)
         {
             Platform::Memory::BeforeDeviceWrite(node->memory, node->size);
-            node->bits = (node->bits & ~(DiskNodeBits::Ready | DiskNodeBits::Loading | DiskNodeBits::Loaded)) |
-                         DiskNodeBits::Loading;
+            node->bits.ready = 0;
+            node->bits.loadState = DiskLoading;
         }
 
-        node->bits = (node->bits & ~DiskNodeBits::DeferRelease) | (deferRelease & 1) << 17;
+        node->bits.deferRelease = deferRelease;
         *handle = node->index;
         return handle;
     }
 
     void DiskRelease(DiskManager* manager, const s32* handle)
     {
-        if ((manager->handles[*handle]->bits & DiskNodeBits::DeferRelease) == 0)
+        if (!manager->handles[*handle]->bits.deferRelease)
         {
             DiskReleaseNow(manager, handle);
         }
@@ -619,7 +626,7 @@ extern "C"
     void DiskMarkLoaded(DiskManager* manager, const s32* handle)
     {
         DiskNode* node = manager->handles[*handle];
-        node->bits = (node->bits & ~(DiskNodeBits::Loading | DiskNodeBits::Loaded)) | DiskNodeBits::Loaded;
+        node->bits.loadState = DiskLoaded;
     }
 
     u8* DiskLoadedMemory(DiskManager* manager, const s32* handle)
@@ -630,23 +637,23 @@ extern "C"
             return nullptr;
         }
 
-        node->bits |= DiskNodeBits::Ready;
+        node->bits.ready = 1;
         return node->memory;
     }
 
     bool DiskNodeIsLoaded(const DiskNode* node)
     {
-        if ((node->bits & DiskNodeBits::State) == 0)
+        if (node->bits.state == 0)
         {
             return false;
         }
 
-        if ((node->bits & DiskNodeBits::Ready) != 0)
+        if (node->bits.ready)
         {
             return true;
         }
 
-        return (node->bits & (DiskNodeBits::Loading | DiskNodeBits::Loaded)) == DiskNodeBits::Loaded;
+        return node->bits.loadState == DiskLoaded;
     }
 
     bool DiskCompactStep(DiskManager* manager, bool immediately)
@@ -659,7 +666,7 @@ extern "C"
 
         for (DiskNode* node = move->manager->nodes; node != nullptr; node = node->next)
         {
-            if (CanMove(node) && node->previous != nullptr && StateOf(node->previous) == DiskNodeFree)
+            if (CanMove(node) && node->previous != nullptr && node->previous->bits.state == DiskNodeFree)
             {
                 DiskStartMove(move, node, node->previous);
                 // Into the free node right before it: the two may overlap
@@ -680,7 +687,7 @@ extern "C"
             bool moved = false;
             for (DiskNode* node = move->manager->nodes; node != nullptr; node = node->next)
             {
-                if (CanMove(node) && node->previous != nullptr && StateOf(node->previous) == DiskNodeFree)
+                if (CanMove(node) && node->previous != nullptr && node->previous->bits.state == DiskNodeFree)
                 {
                     DiskStartMove(move, node, node->previous);
                     RetailLibc::MemoryMove(move->destination->memory, move->source->memory, move->size);
@@ -715,13 +722,13 @@ extern "C"
             DiskNode* node = pending->node;
             ReleaseList::Remove(pending, &manager->pendingReleases);
             MemoryDeallocate2_(pending);
-            u32 state = StateOf(node);
+            u32 state = node->bits.state;
             switch (state)
             {
             case DiskNodeMovedAway:
             case DiskNodeReleased:
             {
-                u32 rounds = ((node->bits & DiskNodeBits::Count) >> DiskNodeBits::CountShift) + 1;
+                u32 rounds = node->bits.waitCount + 1;
                 if (rounds == 1)
                 {
                     DiskQueueRelease(manager, node, state + 1, 0);
@@ -734,7 +741,7 @@ extern "C"
                 break;
             }
             case DiskNodeMovedAwayExpired:
-                SetState(node, DiskNodeFree);
+                node->bits.state = DiskNodeFree;
                 DiskAddFree(manager, node);
                 DiskMerge(manager, node);
                 break;

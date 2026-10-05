@@ -8,22 +8,11 @@ class Stream;
 
 class PropertyHolder;
 
-// A value the scripts give in one of three units (the AgentLab's tagged values): angles in 65536ths of a turn, made from degrees
-// (kind 1), 16.16 fixed point numbers (kind 2) or angles from radians (any other kind). A command's argument of the kind is a word
-// whose bits 1-2 are its type (0 an integer, 1 an angle, 2 a float) and bit 0 makes the rest (bits 3-31) an instance property's
-// index; otherwise the rest is the value (an integer shifted up 3, the bits of a float or of an angle's radians, their low 3 bits
-// the tag's)
+// A value the scripts give (the AgentLab's tagged values): a word whose low 3 bits are its tag, its type and whether the rest
+// (bits 3-31) is an instance property's index; else the rest is the value: an integer, or the bits of a float or of an angle's
+// radians (their low 3 bits the tag's). The word also holds the angles the AgentLab gets from them (65536ths of a turn, AngleFrom's)
 struct TaggedValue
 {
-    enum Tag : s32
-    {
-        PropertyBit = 0x1,
-        TypeMask = 0x6,
-        TypeShift = 1,
-        ValueShift = 3,
-        ValueMask = ~0x7,
-    };
-
     enum Type : u32
     {
         TypeInt,
@@ -31,10 +20,27 @@ struct TaggedValue
         TypeFloat,
     };
 
-    s32 raw;
+    // The tag's bits, which a float's or an angle's bits leave out
+    static constexpr s32 TagMask = 0x7;
 
-    // The game's AngleFrom (game/math.h)
-    static TaggedValue* FromFloat(TaggedValue* value, u32 kind, f32 number);
+    union
+    {
+        s32 raw;
+        struct
+        {
+            u32 isProperty : 1;
+            u32 type : 2;
+            s32 number : 29;
+        };
+        struct
+        {
+            u32 : 3;
+            u32 propertyIndex : 29;
+        };
+    };
+
+    // An angle made from a number in a unit (game/math.h's AngleFrom and AngleUnit)
+    static TaggedValue* FromFloat(TaggedValue* value, u32 unit, f32 number);
     void Read(Stream* stream) RETAIL(FUN_0018c190);
     // Its destructor (the commands' destructors call it for each of theirs)
     void Destroy(u32 destroyFlags) RETAIL(DestroyObj_);
@@ -52,19 +58,83 @@ struct TaggedValue
     void SetInt(s32 number) RETAIL(SetTaggedInt);
     void SetProperty(u32 unused, u32 index) RETAIL(SetTaggedProperty);
 
-    u32 TypeOf() const
+    // A float's or an angle's value: the word's bits without the tag's
+    f32 ValueBits() const
     {
-        return static_cast<u32>(raw & TypeMask) >> TypeShift;
+        return __builtin_bit_cast(f32, raw & ~TagMask);
+    }
+
+    // The value's bits set (the tag's left out), its type kept, not a property
+    void SetValueBits(s32 bits)
+    {
+        u32 kept = type;
+        raw = bits;
+        isProperty = 0;
+        type = kept;
     }
 };
 CHECK_SIZE(TaggedValue, 4);
 
+// An instance's state flags (TT Lab's InstanceState), its properties' first word: what its agent applies to its instance and its
+// part, and what the other agents and the scripts read
+union InstanceState
+{
+    u32 value;
+    struct
+    {
+        // Put to sleep when its state is applied (else woken)
+        u32 deactivated : 1;
+        u32 collisionActive : 1;
+        u32 visible : 1;
+        u32 shadowActive : 1;
+        // What stands on it rides along (its context's flag 14)
+        u32 carriesRiders : 1;
+        // It gets a movement node keeping its previous transform
+        u32 tracksMovement : 1;
+        // It keeps a persistent flag of its chunk (the slot its agent's ID is), in the chunk's own store or the other one
+        u32 persistentFlag : 1;
+        u32 flagInChunkStore : 1;
+        u32 receivesTriggerSignals : 1;
+        u32 canDamageCharacter : 1;
+        // It stops the playable characters' attacks of each movement mode (CharacterAgent::MoveMode's bit): body slams (a crate
+        // with it can be landed on), slides (a crate with it doesn't break, nothing crushes it), spins, the tied characters'
+        // slams and thrown Cortex
+        u32 solidToBodySlam : 1;
+        u32 solidToSlide : 1;
+        u32 solidToSpin : 1;
+        u32 solidToTwinSlam : 1;
+        u32 solidToThrownCortex : 1;
+        u32 targettable : 1;
+        u32 canAlwaysDamageCharacter : 1;
+        u32 bulletsBounceBack : 1;
+        // Placed on the ground below it when it's made
+        u32 snapsToGround : 1;
+        // (Only the scripts' instance flag condition reads them)
+        u32 unused19 : 13;
+    };
+};
+CHECK_SIZE(InstanceState, 4);
+
+// The kinds of an instance's properties, which the lists and the extras count in bytes in this order: tagged values, floats,
+// integers
+enum PropertyKind : u32
+{
+    TaggedProperties = 0,
+    FloatProperties = 1,
+    IntProperties = 2,
+};
+
 // An instance's or an object's properties as an RM2 has them (vtable at 0x20: 1 the destructor): the counts a class's holder
-// goes by (bytes: the tagged values', the floats', the integers'), the instance's state flags, and the three arrays
+// goes by (bytes by PropertyKind, the fourth unused), the instance's state flags, and the three arrays
 struct PropertyList
 {
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+    };
+
     u8 counts[4];
-    u32 state;
+    InstanceState state;
     TaggedValue* tagged;
     u32 taggedCount;
     f32* floats;
@@ -93,8 +163,8 @@ CHECK_SIZE(PropertyList, 0x24);
 
 class PropertyHolder;
 
-// The values an instance has beyond the ones its class's holder keeps (0x20 bytes of the heap): the counts of each (bytes), then
-// the tagged values (as radians), the floats and the integers
+// The values an instance has beyond the ones its class's holder keeps (0x20 bytes of the heap): the counts of each (bytes by
+// PropertyKind), then the tagged values (as radians), the floats and the integers
 struct PropertyExtras
 {
     u8 counts[4];
@@ -113,18 +183,28 @@ struct PropertyExtras
 CHECK_SIZE(PropertyExtras, 0x20);
 
 // The properties an instance's class keeps (the retail holders, vtable at 8: 1 to 3 a tagged value's, a float's and an integer's
-// place to read, 4 to 6 to write, 7 the destructor, 9 to 11 how many of each the class keeps): the instance's state flags first
-// (bit 6 a persistent flag of its chunk, bit 7 kept in the chunk's own store), the values beyond the class's
+// place to read, 4 to 6 to write, 7 the destructor, 9 to 11 how many of each the class keeps): the instance's state flags first,
+// the values beyond the class's
 class PropertyHolder
 {
 public:
-    enum State : u32
+    enum Slots : u32
     {
-        StatePersistentFlag = 0x40,
-        StateFlagInChunkStore = 0x80,
+        TaggedReadSlot = 1,
+        FloatReadSlot = 2,
+        IntReadSlot = 3,
+        TaggedWriteSlot = 4,
+        FloatWriteSlot = 5,
+        IntWriteSlot = 6,
+        DestroySlot = 7,
+        TypeSlot = 8,
+        TaggedCountSlot = 9,
+        FloatCountSlot = 10,
+        IntCountSlot = 11,
+        ClassSlot = 12,
     };
 
-    u32 state;
+    InstanceState state;
     PropertyExtras* extras;
     const GccVTableEntry* vtable;
 
@@ -144,41 +224,48 @@ public:
 
     u32 TaggedCount()
     {
-        return CallVirtual<u32>(this, vtable, 9);
+        return CallVirtual<u32>(this, vtable, TaggedCountSlot);
     }
 
     u32 FloatCount()
     {
-        return CallVirtual<u32>(this, vtable, 10);
+        return CallVirtual<u32>(this, vtable, FloatCountSlot);
     }
 
     u32 IntCount()
     {
-        return CallVirtual<u32>(this, vtable, 11);
+        return CallVirtual<u32>(this, vtable, IntCountSlot);
     }
 };
 CHECK_SIZE(PropertyHolder, 0xC);
 
-// The holders of the agents' classes, one per object type (vtable functions 8 to 12: the type, how many tagged values, floats and
-// integers it keeps, and 0x12 or 0x13): the base's 0xC bytes, then its tagged values, floats and integers. The types: 0 the
-// playable characters, 1 pickups, 2 crates, 3 creatures, 4 generic objects (the game's furniture), 5 grabbables, 6 pay gates, 7
-// graples, 8 projectiles
+// The holders of the agents' classes, one per object type (game/objects.h's GameObject::Type; vtable functions 8 to 12: the type,
+// how many tagged values, floats and integers it keeps, and its class, 0x12 or 0x13): the base's 0xC bytes, then its tagged
+// values, floats and integers
 template <u32 Tagged, u32 Floats, u32 Ints>
 class TypedPropertyHolder : public PropertyHolder
 {
 public:
+    static constexpr u32 KeptTagged = Tagged;
+    static constexpr u32 KeptFloats = Floats;
+    static constexpr u32 KeptInts = Ints;
+
     TaggedValue tagged[Tagged];
     f32 floats[Floats];
     s32 ints[Ints];
 };
 
-// The playable characters' holder (type 0): the creatures' with arrays of its own after it
+// The playable characters' holder (type 0): the creatures' with arrays of its own after it, which are the ones it keeps
 class CharacterPropertyHolder : public TypedPropertyHolder<1, 6, 3>
 {
 public:
-    TaggedValue characterTagged[9];
-    f32 characterFloats[0x38];
-    s32 characterInts[3];
+    static constexpr u32 KeptTagged = 9;
+    static constexpr u32 KeptFloats = 0x38;
+    static constexpr u32 KeptInts = 3;
+
+    TaggedValue characterTagged[KeptTagged];
+    f32 characterFloats[KeptFloats];
+    s32 characterInts[KeptInts];
 };
 CHECK_OFFSET(CharacterPropertyHolder, characterTagged, 0x34);
 CHECK_OFFSET(CharacterPropertyHolder, characterInts, 0x138);

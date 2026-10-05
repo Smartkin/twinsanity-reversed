@@ -30,24 +30,18 @@ EABI_EXPORT(FUN_0015f968, &CharacterLink::SetStretch);
 
 namespace
 {
-constexpr u32 AgentNodeKind = 0xC;
-constexpr u32 IkChainSize = 0x90;
-constexpr u32 IkSolverOffset = 0x30;
 constexpr u32 ArmChainLinks = 5;
-constexpr u32 StateBits = CharacterLink::StateMask;
-constexpr u32 GaitBits = CharacterLink::GaitMask << CharacterLink::GaitShift;
-constexpr u32 HoldBits = CharacterLink::HoldMask << CharacterLink::HoldShift;
-// The second's gaits (its link's bits 4-7)
-constexpr u32 GaitNone = 0;
-constexpr u32 GaitIdle = 1;
-constexpr u32 GaitWalking = 2;
-constexpr u32 GaitRunning = 3;
-constexpr u32 GaitShuffling = 4;
-// The part's attack kinds of the spin (its two)
-constexpr u32 AttackSpin = 6;
-constexpr u32 AttackSpin2 = 10;
-// The characters (their first int property): Crash's hand point differs
-constexpr s32 Crash = 0;
+// The points the arms' chain is solved into: the leader's elbow and hand, the second's hand and elbow, and the end (the
+// second's shoulder); and the solver's steps
+enum ArmChainPoint : u32
+{
+    ChainLeaderElbow = 0,
+    ChainLeaderHand = 1,
+    ChainSecondHand = 2,
+    ChainSecondElbow = 3,
+    ChainEnd = 4,
+};
+constexpr u32 ArmChainSteps = 2;
 
 // The joints the link poses: the spine, and the arm holding the other's hand (the leader's right, the second's left)
 constexpr u32 SpineFirst = 2;
@@ -58,11 +52,11 @@ constexpr u32 LeaderHand = 0x13;
 constexpr u32 SecondShoulder = 0xD;
 constexpr u32 SecondElbow = 0xE;
 constexpr u32 SecondHand = 0xF;
-constexpr u32 PosedJoints[] = {2, 3, 4, LeaderShoulder, LeaderElbow, LeaderHand, SecondShoulder, SecondElbow, SecondHand};
+constexpr u32 PosedJoints[] = {SpineFirst, SpineFirst + 1, SpineFirst + 2, LeaderShoulder, LeaderElbow, LeaderHand,
+                               SecondShoulder, SecondElbow, SecondHand};
 
 // A shoulder not seen yet (its x)
 constexpr f32 Unseen = 1e10f;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // The stretch: how far the second's swing length is past 1.1, full at 1.45
 constexpr f32 StretchStart = Rounded(1.1);
 constexpr f32 StretchScale = 0x1.6db6dcp+1f;
@@ -103,9 +97,10 @@ ReferencedObject* ObjectOf(const Reference* handle)
 }
 
 // An object's flags and place as retail reads them, also when there's no object (the words at 4 and 8 then)
-u32& FlagsOf(ReferencedObject* object)
+ReferencedObjectFlags& FlagsOf(ReferencedObject* object)
 {
-    return *reinterpret_cast<u32*>(reinterpret_cast<std::uintptr_t>(object) + offsetof(ReferencedObject, flags));
+    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(object) + offsetof(ReferencedObject, flags);
+    return *reinterpret_cast<ReferencedObjectFlags*>(address);
 }
 
 ObjectPlace* PlaceOf(const ReferencedObject* object)
@@ -123,27 +118,17 @@ CharacterAgent* CharacterOf(const Reference* handle)
         return nullptr;
     }
 
-    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, AgentNodeKind))->agent);
+    return static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter))->agent);
 }
 
-u8 AttackKind(AgentPart* part)
+u32 AttackKind(AgentPart* part)
 {
-    return *reinterpret_cast<u8*>(&static_cast<BasicAgentPart*>(part)->bits);
+    return static_cast<BasicAgentPart*>(part)->bits.attackKind;
 }
 
-void SetState(CharacterLink* link, u32 state)
+s32 CharacterKindOf(const CharacterAgent* character)
 {
-    link->bits = (link->bits & ~StateBits) | state;
-}
-
-void SetGait(CharacterLink* link, u32 gait)
-{
-    link->bits = (link->bits & ~GaitBits) | gait << CharacterLink::GaitShift;
-}
-
-u32 StateOf(const CharacterLink* link)
-{
-    return link->bits & StateBits;
+    return character->properties->GetInt(CharacterKindProperty);
 }
 
 void Normalize(Vector4* vector)
@@ -166,7 +151,7 @@ void Negate(Vector4* row)
 void ArmRows(Matrix4x4* rows, const Vector4* segment, s32 character)
 {
     RowsAlong(RowOf(rows, 0), segment, 0, 1, 2, 0);
-    Negate(RowOf(rows, character == Crash ? 1 : 0));
+    Negate(RowOf(rows, character == CharacterCrash ? 1 : 0));
     Negate(RowOf(rows, 2));
 }
 
@@ -227,15 +212,16 @@ CharacterLink* CharacterLink::Construct(CharacterLink* link, CharacterAgent* cha
         AssignReference(&link->leader, other->instance);
     }
 
-    link->bits = StateTied | ((leader & 1) != 0 ? BitLeader : 0);
+    link->bits.value = 0;
+    link->bits.state = StateTied;
+    link->bits.leader = leader & 1;
     link->SetStretch(1.0f);
-    if ((link->bits & BitLeader) != 0)
+    if (link->bits.leader != 0)
     {
         // The second isn't taken for a projectile while tied (the flag put back by the destructor)
         InstanceContext* instance = other->instance;
-        u32 wasProjectile = (instance->flags & ReferencedObject::FlagProjectile) != 0 ? BitSecondWasProjectile : 0;
-        link->bits = (link->bits & ~BitSecondWasProjectile) | wasProjectile;
-        instance->flags &= ~ReferencedObject::FlagProjectile;
+        link->bits.secondWasProjectile = instance->flags.movesBetweenChunks;
+        instance->flags.movesBetweenChunks = 0;
     }
     else
     {
@@ -265,31 +251,31 @@ void CharacterLink::Destroy(u32 destroyFlags)
 {
     vtable = g_CharacterLinkVTable;
     DetachFromModelAnimator(this, character->instance);
-    if ((bits & BitLeader) != 0)
+    if (bits.leader != 0)
     {
         ReferencedObject* object = ObjectOf(second);
         if (object != nullptr)
         {
-            if ((bits & BitSecondWasProjectile) != 0)
+            if (bits.secondWasProjectile != 0)
             {
-                object->flags |= ReferencedObject::FlagProjectile;
+                object->flags.movesBetweenChunks = 1;
             }
             else
             {
-                object->flags &= ~ReferencedObject::FlagProjectile;
+                object->flags.movesBetweenChunks = 0;
             }
         }
     }
 
     if (ikChain != nullptr)
     {
-        DestroyIkChain(ikChain, 3);
+        DestroyIkChain(ikChain, DestroyAndFree);
     }
 
     RemoveReference(&leader);
     RemoveReference(&second);
     vtable = g_JointHookVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -302,7 +288,7 @@ void CharacterLink::Attach(OgiAnimator* animator)
         AddJointCallback(animator, joint, this);
     }
 
-    SetState(this, StateTied);
+    bits.state = StateTied;
 }
 
 void CharacterLink::Detach(OgiAnimator* animator)
@@ -312,7 +298,7 @@ void CharacterLink::Detach(OgiAnimator* animator)
         RemoveJointCallback(animator, joint, this);
     }
 
-    SetState(this, StateDetached);
+    bits.state = StateDetached;
 }
 
 void CharacterLink::SetStretch(f32 stretch)
@@ -360,7 +346,7 @@ u32 CharacterLink::MidSlam()
         seconds = leaderLink->slamSeconds;
     }
 
-    if (StateOf(this) != StateSlamming)
+    if (bits.state != StateSlamming)
     {
         return 0;
     }
@@ -374,7 +360,7 @@ f32 CharacterLink::SlamLeanWeight()
     CharacterAgent* leader = Leader();
     // Unlike MidSlam, a leader without a link isn't checked for (its slam seconds are read at 0x1A4 then)
     f32 seconds = second == nullptr ? LinkOf(leader)->slamSeconds : slamSeconds;
-    if (StateOf(this) != StateSlamming)
+    if (bits.state != StateSlamming)
     {
         return 1.0f;
     }
@@ -394,12 +380,12 @@ f32 CharacterLink::SlamLeanWeight()
 
 u32 CharacterLink::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
 
-    if ((bits & BitLeader) != 0)
+    if (bits.leader != 0)
     {
         TransformThroughLink(link, &secondMatrix, 1);
         return static_cast<InstanceContext*>(ObjectOf(second))->ChangeChunk(link) != nullptr;
@@ -413,16 +399,16 @@ u32 CharacterLink::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 u32 CharacterLink::StartSlam(const s32* time)
 {
     u32 kind = AttackKind(character->part);
-    if (kind == AttackSpin || kind == AttackSpin2)
+    if (kind == AttackSpin || kind == AttackSpinVariant)
     {
         return 0;
     }
 
     CharacterAgent* second = Second();
-    SetState(this, StateSlamming);
-    SetState(LinkOf(second), StateSlamming);
-    character->instance->flags |= ReferencedObject::FlagVisible;
-    FlagsOf(ObjectOf(this->second)) |= ReferencedObject::FlagVisible;
+    bits.state = StateSlamming;
+    LinkOf(second)->bits.state = StateSlamming;
+    character->instance->flags.visible = 1;
+    FlagsOf(ObjectOf(this->second)).visible = 1;
     RunEvent(character, EventBodySlam);
     RunEvent(second, EventBodySlam);
     slamStart = *time;
@@ -456,20 +442,19 @@ void CharacterLink::Frame(f32 circle, TimeClock* clock)
     if (second != nullptr)
     {
         s32 time = clock->time;
-        if (StateOf(this) == StateTied && (part->moveBits & CharacterPart::Jumping) == 0 && circle != 0.0f
-            && slamCooldown == 0.0f)
+        if (bits.state == StateTied && part->moveBits.jumping == 0 && circle != 0.0f && slamCooldown == 0.0f)
         {
             StartSlam(&time);
         }
 
-        if (StateOf(this) == StateSlamming)
+        if (bits.state == StateSlamming)
         {
             slamSeconds = time * g_SecondsPerClockUnit - slamStart * g_SecondsPerClockUnit;
             if (SlamSeconds < slamSeconds)
             {
-                SetState(this, StateTied);
-                SetState(LinkOf(second), StateTied);
-                SetGait(LinkOf(second), GaitNone);
+                bits.state = StateTied;
+                LinkOf(second)->bits.state = StateTied;
+                LinkOf(second)->bits.gait = GaitNone;
                 slamCooldown = SlamCooldown;
             }
         }
@@ -495,21 +480,21 @@ void CharacterLink::SecondGait(const Vector4* velocity, const Vector4* facing)
     Vector4 ahead = *facing;
     Normalize(&ahead);
     f32 agreement = moving.x * ahead.x + moving.y * ahead.y + moving.z * ahead.z;
-    switch (bits >> GaitShift & GaitMask)
+    switch (bits.gait)
     {
     case GaitNone:
         RunEvent(character, EventIdle);
-        SetGait(this, GaitIdle);
+        bits.gait = GaitIdle;
         break;
     case GaitIdle:
         if (GaitWalkSpeed < speed)
         {
-            SetGait(this, GaitWalking);
+            bits.gait = GaitWalking;
             RunEvent(character, EventWalk);
         }
         else if (agreement < GaitShuffleCosine && GaitShuffleSpeed < speed)
         {
-            SetGait(this, GaitShuffling);
+            bits.gait = GaitShuffling;
             RunEvent(character, EventShuffleFeet);
         }
         else
@@ -521,17 +506,17 @@ void CharacterLink::SecondGait(const Vector4* velocity, const Vector4* facing)
     case GaitWalking:
         if (agreement < GaitShuffleCosine && GaitShuffleSpeed < speed)
         {
-            SetGait(this, GaitShuffling);
+            bits.gait = GaitShuffling;
             RunEvent(character, EventShuffleFeet);
         }
         else if (GaitRunSpeed < speed)
         {
-            SetGait(this, GaitRunning);
+            bits.gait = GaitRunning;
             RunEvent(character, EventRun);
         }
         else if (speed < GaitStopSpeed)
         {
-            SetGait(this, GaitIdle);
+            bits.gait = GaitIdle;
             RunEvent(character, EventIdle);
         }
         else
@@ -543,7 +528,7 @@ void CharacterLink::SecondGait(const Vector4* velocity, const Vector4* facing)
     case GaitRunning:
         if (speed < GaitRunEndSpeed)
         {
-            SetGait(this, GaitWalking);
+            bits.gait = GaitWalking;
             RunEvent(character, EventWalk);
         }
         else
@@ -555,12 +540,12 @@ void CharacterLink::SecondGait(const Vector4* velocity, const Vector4* facing)
     case GaitShuffling:
         if (GaitShuffleEndCosine < agreement || GaitWalkSpeed < speed)
         {
-            SetGait(this, GaitWalking);
+            bits.gait = GaitWalking;
             RunEvent(character, EventWalk);
         }
         else if (speed < GaitShuffleSpeed)
         {
-            SetGait(this, GaitIdle);
+            bits.gait = GaitIdle;
             RunEvent(character, EventIdle);
         }
         else
@@ -586,10 +571,10 @@ s32 CharacterLink::SolveChain(const Vector4* start, const Vector4* end)
             angles[i] = g_ArmChainAngles[i];
         }
 
-        void* chain = MemoryAllocate(IkChainSize);
-        ConstructIkSolver(static_cast<u8*>(chain) + IkSolverOffset);
-        ikChain = chain;
-        SetIkLinks(chain, ArmChainLinks, lengths, angles);
+        auto* made = static_cast<IkChain*>(MemoryAllocate(sizeof(IkChain)));
+        ConstructIkSolver(&made->solver);
+        ikChain = made;
+        SetIkLinks(made, ArmChainLinks, lengths, angles);
         // Each link's angle limits: -72 to -18 degrees, -144 to -36, 0 to 135, 72 to 108 and 9 to 81
         f32 limits[ArmChainLinks][2] = {
             {-0x1.41b2f8p+0f, -0x1.41b2f8p-2f}, {-0x1.41b2f8p+1f, -0x1.41b2f8p-1f}, {0.0f, 0x1.2d97c8p+1f},
@@ -602,13 +587,13 @@ s32 CharacterLink::SolveChain(const Vector4* start, const Vector4* end)
     }
 
     SetIkEnds(ikChain, start, end);
-    return SolveIk(ikChain, chain, 2, LengthEpsilon);
+    return SolveIk(ikChain, chain, ArmChainSteps, LengthEpsilon);
 }
 
 void CharacterLink::SolveArms()
 {
     CharacterAgent* second = Second();
-    if ((bits & HoldBits) == 0 || (LinkOf(second)->bits & HoldBits) == 0)
+    if (bits.hold == HoldNone || LinkOf(second)->bits.hold == HoldNone)
     {
         return;
     }
@@ -634,24 +619,29 @@ void CharacterLink::SolveArms()
     VuRotateVector(&ownInverse, &turned, &end);
     Vector4 start = {0.0f, 0.0f, 0.0f, 1.0f};
     SolveChain(&start, &end);
-    bits = (bits & ~HoldBits) | HoldHands << HoldShift;
+    bits.hold = HoldHands;
     reach = __builtin_sqrtf(end.x * end.x + end.y * end.y + end.z * end.z);
     CharacterLink* secondLink = LinkOf(second);
-    secondLink->bits = (secondLink->bits & ~HoldBits) | HoldHands << HoldShift;
+    secondLink->bits.hold = HoldHands;
     // The chain's second half moved to end at the second's shoulder: the arms' segments
-    Vector4 shift = {end.x - chain[4].x, end.y - chain[4].y, end.z - chain[4].z, 1.0f};
-    upperArm = chain[0];
-    forearm = {chain[1].x - chain[0].x, chain[1].y - chain[0].y, chain[1].z - chain[0].z, 1.0f};
+    const Vector4& chainEnd = chain[ChainEnd];
+    Vector4 shift = {end.x - chainEnd.x, end.y - chainEnd.y, end.z - chainEnd.z, 1.0f};
+    const Vector4& leaderElbow = chain[ChainLeaderElbow];
+    const Vector4& leaderHand = chain[ChainLeaderHand];
+    upperArm = leaderElbow;
+    forearm = {leaderHand.x - leaderElbow.x, leaderHand.y - leaderElbow.y, leaderHand.z - leaderElbow.z, 1.0f};
     secondLink = LinkOf(second);
-    for (u32 i = 2; i < 4; i++)
+    for (u32 i = ChainSecondHand; i <= ChainSecondElbow; i++)
     {
         chain[i].x = chain[i].x + shift.x;
         chain[i].y = chain[i].y + shift.y;
         chain[i].z = chain[i].z + shift.z;
     }
 
-    secondLink->upperArm = {chain[3].x - end.x, chain[3].y - end.y, chain[3].z - end.z, 1.0f};
-    secondLink->forearm = {chain[2].x - chain[3].x, chain[2].y - chain[3].y, chain[2].z - chain[3].z, 1.0f};
+    const Vector4& secondHand = chain[ChainSecondHand];
+    const Vector4& secondElbow = chain[ChainSecondElbow];
+    secondLink->upperArm = {secondElbow.x - end.x, secondElbow.y - end.y, secondElbow.z - end.z, 1.0f};
+    secondLink->forearm = {secondHand.x - secondElbow.x, secondHand.y - secondElbow.y, secondHand.z - secondElbow.z, 1.0f};
     for (Vector4& point : chain)
     {
         point.x = point.x + shoulder.x;
@@ -659,13 +649,13 @@ void CharacterLink::SolveArms()
         point.z = point.z + shoulder.z;
     }
 
-    elbow = chain[0];
-    hand = chain[1];
+    elbow = leaderElbow;
+    hand = leaderHand;
     // The second's elbow and hand in its own model space
     Vector4 world;
-    VuTransformPoint(&own, &chain[3], &world);
+    VuTransformPoint(&own, &secondElbow, &world);
     VuTransformPoint(&otherInverse, &world, &secondLink->elbow);
-    VuTransformPoint(&own, &chain[2], &world);
+    VuTransformPoint(&own, &secondHand, &world);
     VuTransformPoint(&otherInverse, &world, &secondLink->hand);
     ObjectPlace* kept = PlaceOf(ObjectOf(this->second));
     RotateAndTranslate(kept);
@@ -689,7 +679,7 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
     }
 
     JointAnimation* animation = animator->animation;
-    u32 hold = bits >> HoldShift & HoldMask;
+    u32 hold = bits.hold;
     u32 joint = animation->joint->id;
     u32 shoulderJoint = second != nullptr ? LeaderShoulder : SecondShoulder;
     u32 elbowJoint = second != nullptr ? LeaderElbow : SecondElbow;
@@ -719,7 +709,7 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
     }
     else if (joint == shoulderJoint)
     {
-        if (StateOf(this) == StateSlamming)
+        if (bits.state == StateSlamming)
         {
             return 0;
         }
@@ -732,9 +722,9 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
             shoulder = now;
         }
 
-        if (hold == 0)
+        if (hold == HoldNone)
         {
-            bits = (bits & ~HoldBits) | HoldSeen << HoldShift;
+            bits.hold = HoldSeen;
         }
 
         if (hold != HoldHands)
@@ -742,19 +732,19 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
             return 0;
         }
 
-        ArmRows(&posed, &upperArm, character->properties->GetInt(0));
+        ArmRows(&posed, &upperArm, CharacterKindOf(character));
         const Vector4* at = RowOf(matrix, 3);
         shoulderShift = {at->x - shoulder.x, at->y - shoulder.y, at->z - shoulder.z, 1.0f};
         *RowOf(&posed, 3) = {shoulder.x + shoulderShift.x, shoulder.y + shoulderShift.y, shoulder.z + shoulderShift.z, 1.0f};
     }
     else if (joint == elbowJoint)
     {
-        if (StateOf(this) == StateSlamming || hold != HoldHands)
+        if (bits.state == StateSlamming || hold != HoldHands)
         {
             return 0;
         }
 
-        ArmRows(&posed, &forearm, character->properties->GetInt(0));
+        ArmRows(&posed, &forearm, CharacterKindOf(character));
         *RowOf(&posed, 3) = {elbow.x + shoulderShift.x, elbow.y + shoulderShift.y, elbow.z + shoulderShift.z, 1.0f};
     }
     else if (joint == handJoint)
@@ -769,11 +759,11 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
         {
             // The hand at the forearm's end, its point taken into the world
             Matrix4x4 rows;
-            ArmRows(&rows, &forearm, character->properties->GetInt(0));
+            ArmRows(&rows, &forearm, CharacterKindOf(character));
             Vector4 point = {elbow.x + along.x, elbow.y + along.y, elbow.z + along.z, 1.0f};
             *RowOf(&rows, 3) = {point.x + shoulderShift.x, point.y + shoulderShift.y, point.z + shoulderShift.z, 1.0f};
-            handPoint = character->properties->GetInt(0) == Crash ? CrashHandPoint : OtherHandPoint;
-            if (StateOf(this) != StateSlamming)
+            handPoint = CharacterKindOf(character) == CharacterCrash ? CrashHandPoint : OtherHandPoint;
+            if (bits.state != StateSlamming)
             {
                 posed = rows;
                 VuTransformPoint(&rows, &handPoint, &handPoint);
@@ -807,7 +797,7 @@ u32 CharacterLink::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
     bool replace = false;
     if (hold == HoldHands)
     {
-        if (StateOf(this) != StateSlamming || joint - SpineFirst < SpineCount)
+        if (bits.state != StateSlamming || joint - SpineFirst < SpineCount)
         {
             replace = true;
         }

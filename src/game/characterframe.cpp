@@ -36,58 +36,12 @@ EABI_EXPORT(FUN_00136800, &CharacterAgent::LiftOntoGround);
 
 namespace
 {
-// The nodes these functions use: the object node, the model node, the trigger and camera nodes and the follow camera's
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 TriggerNodeKind = 7;
-constexpr u32 CameraNodeKind = 8;
-constexpr u32 FollowNodeKind = 0x16;
-// The agents' vtable functions told of a contact message, of an instance touched and of a launch
-constexpr u32 AgentContactSlot = 9;
-constexpr u32 AgentTouchedSlot = 19;
-constexpr u32 AgentLaunchSlot = 21;
-// The object nodes' telling whether they take packets and what their code model is (the pickups' 0x11), the lens rig's stick
-// look (the angles the character's joints look along)
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 CodeModelSlot = 41;
+// The pickups' code model kind
 constexpr u32 PickupCodeModel = 0x11;
-constexpr u32 LookStickSlot = 11;
 // A pickup's state flying to its focus, and the event the other instances near the player run
 constexpr u32 PickupFliesToFocus = 6;
 constexpr u32 NearPlayerEvent = 1;
 
-// The part's attack kinds (its low byte): walking into, spinning, body slamming, sliding, the tied characters' slam, the second
-// kinds of the spin, the slam and the slide, and thrown by the other character from a spin and from a jump
-constexpr u32 AttackWalkInto = 3;
-constexpr u32 AttackSpin = 6;
-constexpr u32 AttackSlam = 7;
-constexpr u32 AttackSlide = 8;
-constexpr u32 AttackLinkSlam = 9;
-constexpr u32 AttackSpin2 = 10;
-constexpr u32 AttackSlam2 = 11;
-constexpr u32 AttackSlide2 = 12;
-constexpr u32 AttackThrown = 13;
-constexpr u32 AttackThrownJumping = 14;
-
-// The part's move bits the controllers' frames give that agentparts.h doesn't name: the double jump (and the knee drop), the slide
-// jump, the jump of kind 8, the flying kick, the crawl and the strafe held
-constexpr u32 MoveDoubleJump = 0x4;
-constexpr u32 MoveSlideJump = 0x8;
-constexpr u32 MoveJumpKind8 = 0x80;
-constexpr u32 MoveFlyingKick = 0x100;
-constexpr u32 MoveCrawling = 0x200;
-constexpr u32 MoveStrafing = 0x1000;
-
-// The characters (their first int property): the one that only checks triggers while it's the one played, Mecha-Bandicoot
-constexpr s32 NoCharacter = 4;
-constexpr s32 MechaBandicoot = 5;
-// The claw's states that aren't clawing: ready, coming back (never entered) and after a swipe
-constexpr u32 ClawReady = 0;
-constexpr u32 ClawReturning = 3;
-constexpr u32 ClawAfterSwipe = 13;
-// The model's exit points: the hand the second of the tied characters hits with, the head the look looks at
-constexpr u32 HandExitPoint = 0;
-constexpr u32 HeadExitPoint = 1;
 // The character's hull that kicks (its hits are spins)
 constexpr s32 KickHull = 7;
 // The most hulls the character's own are gathered for, and the most instances the queries find
@@ -95,27 +49,12 @@ constexpr s32 HullsMost = 24;
 constexpr u16 MostHits = 0xB4;
 constexpr u16 MostGround = 0x40;
 constexpr u16 MostHullHits = 0x100;
-// The kinds of nodes the hits look for: characters, crates, pickups, creatures, generic objects and pay gates (projectiles too
-// for the attacks); the hulls' and the ground's: kind 4 and the same without the pickups (projectiles too for the ground); the
-// pickups for the touches
-constexpr u32 LinkedHitKinds = 0x5F000;
-constexpr u32 AttackHitKinds = 0x15F000;
-constexpr u32 HullHitKinds = 0x5B010;
-constexpr u32 GroundKinds = 0x15B010;
-constexpr u32 PickupKinds = 0x4000;
-// The collision's surfaces the character stands on (and the instances found with that flag)
-constexpr u32 StandSurfaces = 0x10;
-// The contact message a splash into water sends (its hit kinds and damage), and the kind of the last contact that keeps a dead
-// character still (water)
-constexpr u32 SplashKinds = 0x8;
+// The kinds of nodes the attacks look for (projectiles too, besides what damage reaches) and the touches (the pickups)
+constexpr u32 AttackHitKinds = DamageableNodeKinds | 1u << NodeProjectile;
+constexpr u32 PickupKinds = 1u << NodePickup;
+// The contact message a splash into water sends (its hit kinds and damage)
+constexpr u32 SplashKinds = HitBurning;
 constexpr u8 SplashDamage = 1;
-constexpr u32 ContactWater = 0x2000000;
-// The events the character and the one it throws run: thrown from a spin, from a jump
-constexpr u32 ThrowSpinEvent = 0x45;
-constexpr u32 ThrowJumpEvent = 0x46;
-
-constexpr f32 NoHitDistance = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 
 static_assert(offsetof(CharacterAgent, triggers) == 0x110);
 static_assert(offsetof(CharacterAgent, cache) == 0x2B0);
@@ -123,12 +62,6 @@ static_assert(offsetof(CharacterBody, standingHull) == 0x14);
 static_assert(offsetof(LookController, freeLookX) == 0x34);
 static_assert(offsetof(FollowNode, camera) + offsetof(FollowCamera, lensRig) == 0x750);
 static_assert(offsetof(ObjectNode, agentRef2) == 0x11C);
-
-// The move bits as bits 32-63 of the part's 64 bits
-constexpr u64 MoveBit(u32 bit)
-{
-    return u64{bit} << 32;
-}
 
 // The attack kind (the part's bits' low byte, which retail reads and writes as a byte)
 u8& AttackKind(AgentPart* part)
@@ -150,7 +83,7 @@ u32 KindWhile(u32 kind, bool active, u32 from, u32 to)
 
 bool IsSpinning(u32 kind)
 {
-    return kind == AttackSpin || kind == AttackSpin2;
+    return kind == AttackSpin || kind == AttackSpinVariant;
 }
 
 // An instance's nodes (no instance: read at 0xD4, retail's)
@@ -165,15 +98,15 @@ InstanceContext* PlayerInstance()
 }
 
 // A query of a chunk's instances into the results: none of the asleep ones, all the wanted flags needed
-void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted)
+void StartQuery(InstanceQuery* query, void** results, u16 most, u32 wanted)
 {
     query->results = results;
     query->most = most;
     query->count = 0;
     query->distance = NoHitDistance;
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = wanted;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -221,8 +154,7 @@ Vector4 Cross(const Vector4& a, const Vector4& b, f32 w)
 InstanceContext* AwakeAgentRef2(ObjectNode* node)
 {
     InstanceContext* other = node->agentRef2;
-    if (other != nullptr && (other->flags & ReferencedObject::FlagAsleep) != 0
-        && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+    if (other != nullptr && other->flags.asleep && !node->flags.keepsAgentRef2)
     {
         node->agentRef2 = nullptr;
     }
@@ -247,10 +179,10 @@ void MoveInstance(InstanceContext* instance, const Vector4* position)
 void PlaceLinkMarker(CharacterAgent* character)
 {
     constexpr f32 FarHand = 1000.0f;
-    constexpr f32 Turned = Rounded(5e-05);
+    constexpr f32 Turned = Epsilon;
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(NodesOf(character->instance), ObjectNodeKind));
-    if (node == nullptr || CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+    auto* node = static_cast<ObjectNode*>(GetGameNode(NodesOf(character->instance), NodeObject));
+    if (node == nullptr || CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
     {
         return;
     }
@@ -313,80 +245,73 @@ void PlaceLinkMarker(CharacterAgent* character)
         QueueObject(marker);
     }
 
-    marker->flags &= ~ReferencedObject::FlagSphereContact;
+    marker->flags.collisionActive = 0;
 }
 }
 
 void CharacterAgent::CrouchFrame(TimeClock* clock, CharacterPart* part)
 {
-    constexpr u64 CrouchBits = MoveBit(CharacterPart::Crouching) | MoveBit(MoveCrawling);
-
     if (crouch == nullptr || Linked() != 0)
     {
-        part->Bits() &= ~CrouchBits;
+        part->moveBits.crouching = 0;
+        part->moveBits.crawling = 0;
         return;
     }
 
     f32 stick = __builtin_sqrtf(buttons.moveZ * buttons.moveZ + buttons.moveX * buttons.moveX);
     u32 kind = AttackKind(part);
     crouch->Frame(buttons.circle, stick, buttons.turn, clock);
-    u32 state = crouch->bits & CrouchController::StateMask;
+    u32 state = crouch->bits.state;
     kind = KindWhile(kind, state == CrouchController::StateSliding || state == CrouchController::StateSlideEnd, AttackWalkInto,
                      AttackSlide);
-    kind = KindWhile(kind, (crouch->bits & CrouchController::BitSlideKind12) != 0, AttackSlide, AttackSlide2);
-    u64 bits = part->Bits() & ~MoveBit(CharacterPart::Crouching);
-    bits |= u64{(crouch->bits & CrouchController::StateMask) != CrouchController::StateStanding} << 32;
-    part->Bits() = bits;
-    bits &= ~MoveBit(MoveCrawling);
-    u32 crawling = (crouch->bits & CrouchController::StateMask) == CrouchController::StateCrawling;
+    kind = KindWhile(kind, crouch->bits.slideVariantKind != 0, AttackSlide, AttackSlideVariant);
+    part->moveBits.crouching = crouch->bits.state != CrouchController::StateStanding;
+    u32 crawling = crouch->bits.state == CrouchController::StateCrawling;
     AttackKind(part) = kind;
-    part->Bits() = bits | u64{crawling} << 41;
+    part->moveBits.crawling = crawling;
 }
 
 void CharacterAgent::JumpFrame(TimeClock* clock, CharacterPart* part)
 {
     if (jump == nullptr)
     {
-        // Retail leaves bit 35 (the slide jump) as it was
+        // Retail leaves the slide jump as it was
         f32 gravity = properties->GetFloat(JumpController::PropGravity);
-        part->Bits() &= ~(MoveBit(CharacterPart::Jumping) | MoveBit(MoveDoubleJump) | MoveBit(MoveFlyingKick)
-                          | MoveBit(MoveJumpKind8));
-        part->Gravity() = gravity;
+        part->moveBits.jumping = 0;
+        part->moveBits.doubleJump = 0;
+        part->moveBits.flyingKick = 0;
+        part->moveBits.unusedJump = 0;
+        part->gravity = gravity;
         return;
     }
 
     u32 kind = AttackKind(part);
-    u32 mayJump = crouch != nullptr ? (crouch->bits & CrouchController::BitMayJump) != 0 : 1;
+    u32 mayJump = crouch != nullptr ? crouch->bits.mayJump : 1;
     jump->Frame(buttons.cross, buttons.circle, clock, mayJump);
-    u32 state = jump->bits & JumpController::StateMask;
+    u32 state = jump->bits.state;
     kind = KindWhile(kind, state == JumpController::StateKneeDropHang || state == JumpController::StateKneeDrop, AttackWalkInto,
                      AttackSlam);
-    kind = KindWhile(kind, (jump->bits & JumpController::AttackKind11) != 0, AttackSlam, AttackSlam2);
-    part->Bits() = (part->Bits() & ~MoveBit(CharacterPart::Jumping))
-                   | u64{(jump->bits & JumpController::StateMask) != JumpController::StateGrounded} << 33;
-    state = jump->bits & JumpController::StateMask;
+    kind = KindWhile(kind, jump->bits.slamVariantKind != 0, AttackSlam, AttackSlamVariant);
+    part->moveBits.jumping = jump->bits.state != JumpController::StateGrounded;
+    state = jump->bits.state;
     bool doubleJump = state == JumpController::StateRisingDouble || state == JumpController::StateKneeDropHang
                       || state == JumpController::StateKneeDrop || state == JumpController::StateFallingDouble;
-    part->Bits() = (part->Bits() & ~MoveBit(MoveDoubleJump)) | u64{doubleJump} << 34;
-    state = jump->bits & JumpController::StateMask;
+    part->moveBits.doubleJump = doubleJump;
+    state = jump->bits.state;
     bool slideJump = state == JumpController::StateRisingSlide || state == JumpController::StateFallingSlide;
-    u64 bits = (part->Bits() & ~MoveBit(MoveSlideJump)) | u64{slideJump} << 35;
-    part->Bits() = bits;
-    state = jump->bits & JumpController::StateMask;
-    bits = (bits & ~MoveBit(MoveFlyingKick))
-           | u64{state == JumpController::StateFlyingKick || state == JumpController::StateFallingKick} << 40;
-    part->Bits() = bits;
-    state = jump->bits & JumpController::StateMask;
+    part->moveBits.slideJump = slideJump;
+    state = jump->bits.state;
+    part->moveBits.flyingKick = state == JumpController::StateFlyingKick || state == JumpController::StateFallingKick;
+    state = jump->bits.state;
     AttackKind(part) = kind;
-    part->Bits() = (bits & ~MoveBit(MoveJumpKind8))
-                   | u64{state == JumpController::StateRisingKind8 || state == JumpController::StateFallingKind8} << 39;
+    part->moveBits.unusedJump = state == JumpController::StateRisingUnused || state == JumpController::StateFallingUnused;
 }
 
 void CharacterAgent::SpinFrame(TimeClock* clock, CharacterPart* part)
 {
     if (spin == nullptr)
     {
-        part->Bits() &= ~MoveBit(CharacterPart::Spinning);
+        part->moveBits.spinning = 0;
         return;
     }
 
@@ -402,7 +327,7 @@ void CharacterAgent::SpinFrame(TimeClock* clock, CharacterPart* part)
         spin->Frame(buttons.circle, 0.0f, stick, clock);
     }
 
-    u32 state = spin->bits & SpinController::StateMask;
+    u32 state = spin->bits.state;
     AttackKind(part) =
         KindWhile(kind, state == SpinController::StateSpinningTied || state == SpinController::StateSpinning, AttackWalkInto,
                   AttackSpin);
@@ -429,8 +354,7 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
     {
         // Thrown kinds stay while the walk is pushed (retail reads the walk without checking it's there)
         u32 kind = AttackKind(part);
-        if ((kind == AttackThrown || kind == AttackThrownJumping)
-            && (walk->bits & WalkController::StateMask) != WalkController::StatePushed)
+        if ((kind == AttackThrownFromSpin || kind == AttackThrownFromJump) && walk->bits.state != WalkController::StatePushed)
         {
             AttackKind(part) = AttackWalkInto;
         }
@@ -441,20 +365,20 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
     f32 circle = 0.0f;
     bool spinThrow = false;
     bool jumpThrow = false;
-    if ((part->Bits() & MoveBit(CharacterPart::LinkedSecond)) != 0)
+    if (part->moveBits.linkedSecond != 0)
     {
         PlaceLinkMarker(this);
     }
 
-    u64 bits = part->Bits();
-    if ((bits & MoveBit(CharacterPart::LinkedFirst)) != 0)
+    CharacterMoveBits bits = part->moveBits;
+    if (bits.linkedFirst != 0)
     {
         f32 tied = static_cast<s32>(clock->time - linkTime) * g_SecondsPerClockUnit;
         circle = tied > CircleAfter ? buttons.circle : 0.0f;
 
         if (circle != 0.0f)
         {
-            if ((bits & MoveBit(CharacterPart::Jumping)) != 0)
+            if (bits.jumping != 0)
             {
                 jumpThrow = true;
             }
@@ -470,14 +394,15 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
                 Vector4 below = position;
                 below.y = below.y - GroundProbe;
                 Vector4 ground;
-                GetCollisionCheck(instance->chunk, &position, &below, StandSurfaces, nullptr, &ground, nullptr);
+                GetCollisionCheck(instance->chunk, &position, &below, SurfaceFlags::SolidToPlayerProbes, nullptr, &ground,
+                                  nullptr);
             }
         }
     }
 
     link->Frame(circle, clock);
-    bool slamming = (link->bits & CharacterLink::StateMask) == CharacterLink::StateSlamming;
-    AttackKind(part) = KindWhile(AttackKind(this->part), slamming, AttackWalkInto, AttackLinkSlam);
+    bool slamming = link->bits.state == CharacterLink::StateSlamming;
+    AttackKind(part) = KindWhile(AttackKind(this->part), slamming, AttackWalkInto, AttackTied);
     CharacterAgent* second = link->Second();
     if (second == nullptr || (!jumpThrow && !spinThrow))
     {
@@ -499,7 +424,7 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
         low = Sum(Sum(*at, Scaled(*forward, 0.5f)), SpinThrowCheckRaise);
         push = Sum(Scaled(*forward, SpinThrowSpeed), SpinThrowLift);
         strength = SpinThrowStrength;
-        event = ThrowSpinEvent;
+        event = EventThrownFromSpin;
     }
     else
     {
@@ -507,11 +432,11 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
         low = Sum(*at, JumpThrowCheckRaise);
         push = Sum(Scaled(*forward, JumpThrowSpeed), JumpThrowLift);
         strength = JumpThrowStrength;
-        event = ThrowJumpEvent;
+        event = EventThrownFromJump;
     }
 
     walk->BeIdle();
-    if (second->FitsAt(0, 0, nullptr, &high) == 0 || second->FitsAt(0, 0, nullptr, &low) == 0)
+    if (second->FitsAt(FitStanding, 0, nullptr, &high) == 0 || second->FitsAt(FitStanding, 0, nullptr, &low) == 0)
     {
         return;
     }
@@ -523,9 +448,9 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
     Matrix4x4 toSecond = secondPlace->matrix;
     VuInvertRigidInPlace(&toSecond);
     VuRotateVector(&toSecond, &push, &push);
-    CallVirtual<void>(second, second->vtable, AgentLaunchSlot, strength, &push, instance);
-    static_cast<CharacterPart*>(second->part)->flags &= ~CreaturePart::FlagOnGround;
-    second->StateBits() &= ~u64{StandingMask << StandingShift};
+    CallVirtual<void>(second, second->vtable, Agent::LaunchSlot, strength, &push, instance);
+    static_cast<CharacterPart*>(second->part)->flags.onGround = 0;
+    second->state.standing = StandingNothing;
     if (second->standingOn != nullptr && second->standingOn->object != nullptr)
     {
         RemoveReference(&second->standingOn);
@@ -536,23 +461,25 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
     second->standingHull = -1;
     RunAgentEvent(this, event, 0, 0, 0);
     RunAgentEvent(second, event, reinterpret_cast<u32>(instance), 0, 0);
-    u32 kind = KindWhile(AttackKind(second->part), spinThrow, AttackWalkInto, AttackThrown);
-    AttackKind(second->part) = KindWhile(kind, jumpThrow, AttackWalkInto, AttackThrownJumping);
-    static_cast<CharacterPart*>(second->part)->bits |= CharacterPart::Invincible;
+    u32 kind = KindWhile(AttackKind(second->part), spinThrow, AttackWalkInto, AttackThrownFromSpin);
+    AttackKind(second->part) = KindWhile(kind, jumpThrow, AttackWalkInto, AttackThrownFromJump);
+    static_cast<CharacterPart*>(second->part)->bits.invulnerable = 1;
 }
 
 void CharacterAgent::WalkFrame(TimeClock* clock, CharacterPart* part)
 {
     if (walk == nullptr)
     {
-        part->Bits() &= ~(MoveBit(CharacterPart::Walking) | MoveBit(CharacterPart::Running) | MoveBit(MoveStrafing));
+        part->moveBits.walking = 0;
+        part->moveBits.running = 0;
+        part->moveBits.strafing = 0;
         return;
     }
 
     Vector4 stick;
     f32 strafe;
     f32 turn;
-    if ((StateBits() & StateDead) != 0)
+    if (state.dead != 0)
     {
         stick = g_DefaultBox.min;
         stick.w = 1.0f;
@@ -564,7 +491,7 @@ void CharacterAgent::WalkFrame(TimeClock* clock, CharacterPart* part)
         // The shoulder buttons strafe while the character stands
         strafe = 0.0f;
         if (walk->Strafes() != 0
-            && (crouch == nullptr || (crouch->bits & CrouchController::StateMask) == CrouchController::StateStanding))
+            && (crouch == nullptr || crouch->bits.state == CrouchController::StateStanding))
         {
             strafe = buttons.shoulders;
         }
@@ -574,13 +501,9 @@ void CharacterAgent::WalkFrame(TimeClock* clock, CharacterPart* part)
     }
 
     walk->Frame(strafe, turn, clock, &stick);
-    u64 bits = (part->Bits() & ~MoveBit(CharacterPart::Walking))
-               | u64{(walk->bits & WalkController::StateMask) == WalkController::StateWalking} << 42;
-    part->Bits() = bits;
-    bits = (bits & ~MoveBit(CharacterPart::Running))
-           | u64{(walk->bits & WalkController::StateMask) == WalkController::StateRunning} << 43;
-    part->Bits() = bits;
-    part->Bits() = (bits & ~MoveBit(MoveStrafing)) | u64{(walk->bits & WalkController::StrafeHeld) != 0} << 44;
+    part->moveBits.walking = walk->bits.state == WalkController::StateWalking;
+    part->moveBits.running = walk->bits.state == WalkController::StateRunning;
+    part->moveBits.strafing = walk->bits.strafeHeld != 0;
 }
 
 void CharacterAgent::LookFrame(TimeClock* clock)
@@ -590,11 +513,11 @@ void CharacterAgent::LookFrame(TimeClock* clock)
         return;
     }
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     Vector4 point = {0.0f, 0.0f, 0.0f, 1.0f};
     u32 hasPoint = 0;
     HeadTracking* tracking = node->headTracking;
-    if (tracking != nullptr && (tracking->flags & HeadTracking::FlagIgnoredByLook) == 0)
+    if (tracking != nullptr && !tracking->flags.ignoredByLook)
     {
         InstanceContext* target =
             tracking->target != nullptr ? static_cast<InstanceContext*>(tracking->target->object) : nullptr;
@@ -604,9 +527,9 @@ void CharacterAgent::LookFrame(TimeClock* clock)
             CharacterAgent* character = CharacterAgentOf(target);
             if (character != nullptr)
             {
-                auto* model = static_cast<ModelNode*>(GetGameNode(&character->instance->nodes, ModelNodeKind));
+                auto* model = static_cast<ModelNode*>(GetGameNode(&character->instance->nodes, NodeModel));
                 SizedArray<ExitPointAnimation*>* exitPoints = model->animator->exitPoints;
-                ExitPointAnimation* head = exitPoints != nullptr ? exitPoints->data[HeadExitPoint] : nullptr;
+                ExitPointAnimation* head = exitPoints != nullptr ? exitPoints->data[ExitPointHead] : nullptr;
                 hasPoint = 1;
                 point = *RowOf(&UpdateExitPointMatrix(head)->matrix, 3);
             }
@@ -619,16 +542,16 @@ void CharacterAgent::LookFrame(TimeClock* clock)
     }
 
     look->SetLookPoint(&point, hasPoint);
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, FollowNodeKind));
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
     auto* character = static_cast<CharacterPart*>(part);
     f32 lookX = 0.0f;
     f32 lookY = 0.0f;
     if (follow != nullptr)
     {
         // The joints look along the camera's stick but while crouching, body slamming or riding what says no
-        bool follows = (character->moveBits & CharacterPart::Crouching) == 0;
+        bool follows = character->moveBits.crouching == 0;
         u32 kind = AttackKind(character);
-        if (kind == AttackSlam || kind == AttackSlam2)
+        if (kind == AttackSlam || kind == AttackSlamVariant)
         {
             follows = false;
         }
@@ -641,7 +564,7 @@ void CharacterAgent::LookFrame(TimeClock* clock)
         CameraRig* rig = follow->camera.lensRig;
         if (follows && rig != nullptr)
         {
-            CallVirtual<void>(rig, rig->vtable, LookStickSlot, &lookX, &lookY);
+            CallVirtual<void>(rig, rig->vtable, PadCameraRig::LookStickSlot, &lookX, &lookY);
         }
     }
 
@@ -656,17 +579,17 @@ void CharacterAgent::LinkedHits()
     constexpr Vector4 HandMin = {Rounded(-0.4), Rounded(-0.65), Rounded(-0.4), 1.0f};
     constexpr Vector4 HandMax = {Rounded(0.4), 0.0f, Rounded(0.8), 1.0f};
 
-    if ((static_cast<CharacterPart*>(part)->Bits() & MoveBit(CharacterPart::LinkedSecond)) == 0 || link->MidSlam() == 0)
+    if (static_cast<CharacterPart*>(part)->moveBits.linkedSecond == 0 || link->MidSlam() == 0)
     {
         return;
     }
 
     void* results[MostHits];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, results, MostHits, 0);
     ChunkData* chunk = instance->chunk;
-    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind))->animator;
-    ExitPointAnimation* hand = animator->exitPoints != nullptr ? animator->exitPoints->data[HandExitPoint] : nullptr;
+    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel))->animator;
+    ExitPointAnimation* hand = animator->exitPoints != nullptr ? animator->exitPoints->data[ExitPointHand] : nullptr;
     ExitPointAnimation* placed = UpdateExitPointMatrix(hand);
     if (g_BoxHullCache == nullptr)
     {
@@ -676,7 +599,7 @@ void CharacterAgent::LinkedHits()
     Vector4 min = HandMin;
     Vector4 max = HandMax;
     CollisionHull* hull = BoxHullOf(g_BoxHullCache, &min, &max);
-    if (ChunkInstancesInHull(chunk, hull, &placed->matrix, LinkedHitKinds, &query, 0) != 0)
+    if (ChunkInstancesInHull(chunk, hull, &placed->matrix, DamageableNodeKinds, &query, 0) != 0)
     {
         TouchQuery(&query);
     }
@@ -685,19 +608,19 @@ void CharacterAgent::LinkedHits()
 void CharacterAgent::AttackHits()
 {
     auto* character = static_cast<CharacterPart*>(part);
-    if (!IsSpinning(AttackKind(character)) && AttackKind(character) != AttackThrown)
+    if (!IsSpinning(AttackKind(character)) && AttackKind(character) != AttackThrownFromSpin)
     {
         return;
     }
 
     void* results[MostHits];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, results, MostHits, 0);
     ObjectPlace* place = instance->place;
     ChunkData* chunk = instance->chunk;
     RotateAndTranslate(place);
-    u64 bits = character->Bits();
-    if ((bits & MoveBit(CharacterPart::LinkedFirst)) != 0)
+    CharacterMoveBits bits = character->moveBits;
+    if (bits.linkedFirst != 0)
     {
         if (ChunkInstancesInHull(chunk, linkedAttackHull, &place->matrix, AttackHitKinds, &query, 0) != 0)
         {
@@ -707,7 +630,7 @@ void CharacterAgent::AttackHits()
         return;
     }
 
-    if ((bits & MoveBit(CharacterPart::LinkedSecond)) != 0)
+    if (bits.linkedSecond != 0)
     {
         return;
     }
@@ -728,7 +651,7 @@ void CharacterAgent::TouchHits(TimeClock* clock)
     Vector4 sphere = MiddleOf(instance->CollisionBox());
     u32 kind = AttackKind(part);
     void* results[MostHits];
-    InstanceRayHit query;
+    InstanceQuery query;
     if (!IsSpinning(kind))
     {
         StartQuery(&query, results, MostHits, 0);
@@ -754,9 +677,6 @@ void CharacterAgent::TouchHits(TimeClock* clock)
 
 void CharacterAgent::Splash()
 {
-    constexpr f32 SplashRaise = 1.0f;
-    constexpr f32 SplashRadius = Rounded(0.9);
-
     Vector4 centre;
     f32 radius;
     if (vehicle != nullptr)
@@ -766,8 +686,8 @@ void CharacterAgent::Splash()
     else
     {
         Position(&centre);
-        centre.y = centre.y + SplashRaise;
-        radius = SplashRadius;
+        centre.y = centre.y + CharacterSplashRaise;
+        radius = CharacterSplashRadius;
     }
 
     f32 point[3] = {centre.x, centre.y, centre.z};
@@ -780,25 +700,25 @@ void CharacterAgent::Splash()
     place->SyncPosition();
     ContactMessage message;
     message.point = place->position;
-    message.word = SplashKinds;
-    message.byte = SplashDamage;
+    message.hitKinds = SplashKinds;
+    message.damage = SplashDamage;
     message.point.w = 0.0f;
-    CallVirtual<void>(this, vtable, AgentContactSlot, &message, instance, 1u);
+    CallVirtual<void>(this, vtable, ContactSlot, &message, instance, 1u);
 }
 
 void CharacterAgent::TellTrigger(FollowCamera* camera, InstanceContext* trigger, u32 entered)
 {
-    auto* node = static_cast<MessageTriggerNode*>(GetGameNode(NodesOf(trigger), TriggerNodeKind));
-    auto* cameraNode = static_cast<CameraNode*>(GetGameNode(NodesOf(trigger), CameraNodeKind));
+    auto* node = static_cast<MessageTriggerNode*>(GetGameNode(NodesOf(trigger), NodeMessageTrigger));
+    auto* cameraNode = static_cast<CameraNode*>(GetGameNode(NodesOf(trigger), NodeCameraTrigger));
     if (node != nullptr)
     {
         // Only the triggers that aren't polled are checked by the characters inside
-        if ((node->Bits() & TriggerNode::NeverPolled) == 0)
+        if (node->bits.neverPolled == 0)
         {
             return;
         }
 
-        if ((node->messageBits & MessageTriggerNode::BitAnyCharacter) == 0 && instance != PlayerInstance())
+        if (node->messageBits.anyCharacter == 0 && instance != PlayerInstance())
         {
             return;
         }
@@ -807,20 +727,21 @@ void CharacterAgent::TellTrigger(FollowCamera* camera, InstanceContext* trigger,
         return;
     }
 
-    if (cameraNode == nullptr || entered == 0 || (cameraNode->Bits() & TriggerNode::NeverPolled) == 0)
+    if (cameraNode == nullptr || entered == 0 || cameraNode->bits.neverPolled == 0)
     {
         return;
     }
 
-    OfferCamera(camera, cameraNode, cameraNode->unknown18, this);
+    OfferCamera(camera, cameraNode, cameraNode->bits.kind, this);
 }
 
 void CharacterAgent::CheckTriggers()
 {
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, FollowNodeKind));
-    u32 played = G_GameController_00309914->progress.bits >> GameProgress::CharacterShift & GameProgress::FieldMask;
-    s32 character = properties->GetInt(0);
-    if (follow == nullptr || (character == NoCharacter && played != NoCharacter))
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
+    u32 played = g_AgentsGameController->progress.play.character;
+    s32 character = properties->GetInt(CharacterKindProperty);
+    // A character of no kind only checks them while it's the one played
+    if (follow == nullptr || (character == CharacterNone && played != CharacterNone))
     {
         return;
     }
@@ -895,37 +816,35 @@ void CharacterAgent::HurtFrame(TimeClock* clock)
     constexpr u32 SteadyHitPoints = 3;
 
     u32 mode = ModeHurt;
-    if ((StateBits() & (ModeMask << ModeShift)) != (ModeHurt << ModeShift))
+    if (state.mode != ModeHurt)
     {
         modeStart = clock->time;
-        u64 bits = StateBits();
-        bits = (bits & ~u64{ModeMask}) | (bits >> ModeShift & ModeMask);
-        StateBits() = (bits & ~u64{ModeMask << ModeShift}) | u64{ModeHurt << ModeShift};
+        state.previousMode = state.mode;
+        state.mode = ModeHurt;
     }
 
     // Hurt after invincibility: it blinks (unless it has 3 hit points or more) until the mode's time is over
-    if ((state & ModeMask) != ModeInvincible)
+    if (state.previousMode != ModeInvincible)
     {
         return;
     }
 
     auto* character = static_cast<CharacterPart*>(part);
     s32 elapsed = clock->time - modeStart;
-    u64 bits = character->Bits();
-    if ((bits & MoveBit(CharacterPart::Hurt)) != 0 && elapsed >= static_cast<s32>(g_ClockUnitsPerSecond * HurtSeconds))
+    if (character->moveBits.hurt != 0 && elapsed >= static_cast<s32>(g_ClockUnitsPerSecond * HurtSeconds))
     {
-        character->Bits() = bits & ~MoveBit(CharacterPart::Hurt);
+        character->moveBits.hurt = 0;
     }
 
     if (elapsed >= modeTicks)
     {
-        instance->flags |= ReferencedObject::FlagVisible;
+        instance->flags.visible = 1;
         mode = ModeNone;
-        character->bits &= ~CharacterPart::Invincible;
+        character->bits.invulnerable = 0;
     }
     else
     {
-        u32 hitPoints = character->flags >> CreaturePart::HitPointsShift & CreaturePart::HitPointsMask;
+        u32 hitPoints = character->flags.hitPoints;
         if (hitPoints < SteadyHitPoints)
         {
             s32 period = static_cast<s32>(g_ClockUnitsPerSecond * BlinkSeconds);
@@ -937,22 +856,22 @@ void CharacterAgent::HurtFrame(TimeClock* clock)
 
             if (static_cast<f32>(into) * g_SecondsPerClockUnit * BlinksPerSecond <= ShownShare)
             {
-                instance->flags |= ReferencedObject::FlagVisible;
+                instance->flags.visible = 1;
             }
             else
             {
-                instance->flags &= ~ReferencedObject::FlagVisible;
+                instance->flags.visible = 0;
             }
         }
         else
         {
-            instance->flags |= ReferencedObject::FlagVisible;
+            instance->flags.visible = 1;
         }
     }
 
     if (mode != ModeHurt)
     {
-        StateBits() = (StateBits() & ~u64{ModeMask << ModeShift}) | u64{mode} << ModeShift;
+        state.mode = mode;
     }
 }
 
@@ -963,15 +882,15 @@ void CharacterAgent::FindGroundPoint()
     constexpr f32 AboveGround = Rounded(0.02);
 
     void* results[MostGround];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostGround, ReferencedObject::FlagSphereContact);
+    InstanceQuery query;
+    StartQuery(&query, results, MostGround, ReferencedObjectFlags::CollisionActive);
     Vector4 way = Cast;
     SkipInQuery(&query, instance);
     Position(&groundPoint);
     groundPoint.y = groundPoint.y + CastRaise;
-    u32 found = LineOfSight(&groundPoint, &way, StandSurfaces, &query, GroundKinds);
+    u32 found = LineOfSight(&groundPoint, &way, SurfaceFlags::SolidToPlayerProbes, &query, SolidOrProjectileNodeKinds);
     groundPoint.x = groundPoint.x + way.x;
-    StateBits() = (StateBits() & ~u64{StateGroundFound}) | u64{found & 1} << 12;
+    state.groundFound = found;
     groundPoint.y = groundPoint.y + way.y + AboveGround;
     groundPoint.z = groundPoint.z + way.z;
 }
@@ -986,37 +905,46 @@ void CharacterAgent::LiftOntoGround(f32 height, f32 reach)
     Vector4 from = position;
     from.y = from.y + height;
     Vector4 found;
-    if (CastHullDown(height + reach, instance->chunk, &body->standingHull, &from, StandSurfaces, GroundKinds, &found, &leftOut, 1)
+    if (CastHullDown(height + reach, instance->chunk, &body->standingHull, &from, SurfaceFlags::SolidToPlayerProbes,
+                     SolidOrProjectileNodeKinds, &found, &leftOut, 1)
         == 0)
     {
-        static_cast<CharacterPart*>(part)->flags &= ~CreaturePart::FlagOnGround;
+        static_cast<CharacterPart*>(part)->flags.onGround = 0;
         return;
     }
 
     heightOffset = 0.0f;
     MoveInstance(instance, &found);
-    static_cast<CharacterPart*>(part)->flags |= CreaturePart::FlagOnGround;
+    static_cast<CharacterPart*>(part)->flags.onGround = 1;
 }
 
 void CharacterAgent::RefreshCache()
 {
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
+    // The box around its place the cache holds the collision of: so far across, above and below (the Mecha-Bandicoot's bigger)
+    constexpr f32 CacheAcross = 2.0f;
+    constexpr f32 CacheAbove = 3.0f;
+    constexpr f32 CacheBelow = 1.0f;
+    constexpr f32 MechaCacheAcross = 12.0f;
+    constexpr f32 MechaCacheAbove = 13.0f;
+    constexpr f32 MechaCacheBelow = 3.0f;
+
     Box box = {*RowOf(&place->matrix, 3), *RowOf(&place->matrix, 3)};
     f32 across;
     f32 above;
     f32 below;
-    if (properties->GetInt(0) == MechaBandicoot)
+    if (properties->GetInt(CharacterKindProperty) == CharacterMecha)
     {
-        across = 12.0f;
-        above = 13.0f;
-        below = 3.0f;
+        across = MechaCacheAcross;
+        above = MechaCacheAbove;
+        below = MechaCacheBelow;
     }
     else
     {
-        across = 2.0f;
-        above = 3.0f;
-        below = 1.0f;
+        across = CacheAcross;
+        above = CacheAbove;
+        below = CacheBelow;
     }
 
     box.min.x = box.min.x - across;
@@ -1033,11 +961,11 @@ void CharacterAgent::RefreshCache()
 void CharacterAgent::HullHits()
 {
     void* results[MostHullHits];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostHullHits, ReferencedObject::FlagSphereContact);
+    InstanceQuery query;
+    StartQuery(&query, results, MostHullHits, ReferencedObjectFlags::CollisionActive);
     Box box = *instance->CollisionBox();
     SkipInQuery(&query, instance);
-    s32 count = QueryChunkInstances(instance->chunk, &box, HullHitKinds, &query);
+    s32 count = QueryChunkInstances(instance->chunk, &box, SolidNodeKinds, &query);
     if (count > 0)
     {
         CollisionHull* hulls[HullsMost];
@@ -1098,14 +1026,12 @@ void CharacterAgent::HullHits()
 
 void CharacterAgent::Frame(TimeClock* clock)
 {
-    constexpr f32 LiftHeight = 2.0f;
-    constexpr f32 LiftReach = 20.0f;
     constexpr f32 TopSpeed = 60.0f;
 
     // The frame after its state was applied it's lifted onto the ground under it
-    if ((StateBits() & ModeMask) == ModeApplied && properties->GetInt(0) != NoCharacter && body != nullptr)
+    if (state.previousMode == ModeApplied && properties->GetInt(CharacterKindProperty) != CharacterNone && body != nullptr)
     {
-        LiftOntoGround(LiftHeight, LiftReach);
+        LiftOntoGround(CharacterLiftHeight, CharacterLiftReach);
     }
 
     if (crushCount > 0)
@@ -1115,21 +1041,21 @@ void CharacterAgent::Frame(TimeClock* clock)
 
     RefreshCache();
     auto* character = static_cast<CharacterPart*>(part);
-    u32 onGround = (character->flags & CreaturePart::FlagOnGround) != 0;
-    bool frozen = (character->bits & CharacterPart::Frozen) != 0;
-    if (properties->GetInt(0) == MechaBandicoot)
+    u32 onGround = character->flags.onGround != 0;
+    bool frozen = character->bits.frozen != 0;
+    if (properties->GetInt(CharacterKindProperty) == CharacterMecha)
     {
         HullHits();
     }
 
     f32 seconds = static_cast<s32>(clock->advance) * g_SecondsPerClockUnit;
-    u64 bits = StateBits();
-    if ((bits & StateDead) != 0)
+    CharacterState bits = state;
+    if (bits.dead != 0)
     {
         // Dead: moved (unless drowned) or ridden, its joints and its look relaxing
         if (vehicle == nullptr)
         {
-            if ((contact.word & ContactWater) == 0)
+            if ((contact.hitKinds & HitWater) == 0)
             {
                 Move(seconds, character, onGround);
             }
@@ -1167,7 +1093,7 @@ void CharacterAgent::Frame(TimeClock* clock)
         return;
     }
 
-    if ((bits & StateBoxOnly) != 0)
+    if (bits.boxOnly != 0)
     {
         MakeBoxOfExitPoints();
         CheckTriggers();
@@ -1175,9 +1101,9 @@ void CharacterAgent::Frame(TimeClock* clock)
         return;
     }
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-    bool scripted = (node->flags & ObjectNodeBase::FlagMoves) != 0;
-    if (frozen || (instance->flags & ReferencedObject::FlagSphereContact) == 0 || scripted)
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
+    bool scripted = node->flags.moves;
+    if (frozen || !instance->flags.collisionActive || scripted)
     {
         if (proceduralJoints != nullptr)
         {
@@ -1190,34 +1116,33 @@ void CharacterAgent::Frame(TimeClock* clock)
     }
 
     character->ClearTurnRequest();
-    u64 moveBits;
     if (claw == nullptr)
     {
-        moveBits = character->Bits() & ~MoveBit(CharacterPart::Clawing);
+        character->moveBits.clawing = 0;
     }
     else
     {
         claw->Frame(buttons.circle, buttons.cross, clock);
-        u32 clawState = claw->bits & ClawController::StateMask;
-        bool clawing = clawState != ClawReady && clawState != ClawReturning && clawState != ClawAfterSwipe;
-        moveBits = (character->Bits() & ~MoveBit(CharacterPart::Clawing)) | u64{clawing} << 36;
+        // Not clawing while ready, coming back (never entered) and after a swipe
+        u32 clawState = claw->bits.state;
+        bool clawing = clawState != ClawController::StateReady && clawState != ClawController::StateReturning
+                       && clawState != ClawController::StateAfterSwipe;
+        character->moveBits.clawing = clawing;
     }
 
-    character->Bits() = moveBits;
     if (gun == nullptr)
     {
-        character->Bits() &= ~MoveBit(CharacterPart::Shooting);
+        character->moveBits.shooting = 0;
     }
     else
     {
         // No shooting during the radial blast, and no charging while it's blasting or strafing
-        u32 jumpState = jump != nullptr ? jump->bits & JumpController::StateMask : JumpController::StateGrounded;
+        u32 jumpState = jump != nullptr ? jump->bits.state : JumpController::StateGrounded;
         bool blasting = jumpState >= JumpController::StateBlastHang && jumpState <= JumpController::StateBlastFalling;
         f32 square = blasting ? 0.0f : buttons.square;
-        bool strafing = walk != nullptr && (walk->bits & WalkController::StrafeHeld) != 0;
+        bool strafing = walk != nullptr && walk->bits.strafeHeld != 0;
         gun->Frame(square, blasting || strafing ? 0.0f : 1.0f, clock);
-        character->Bits() = (character->Bits() & ~MoveBit(CharacterPart::Shooting))
-                            | u64{(gun->bits & Gun::StateMask) != Gun::StatePutAway} << 37;
+        character->moveBits.shooting = gun->bits.state != Gun::StatePutAway;
     }
 
     WalkFrame(clock, character);
@@ -1272,13 +1197,13 @@ u32 CharacterAgent::IsPlayer()
     return instance == PlayerInstance();
 }
 
-void CharacterAgent::AttractPickups(TimeClock* clock, const InstanceRayHit* query)
+void CharacterAgent::AttractPickups(TimeClock* clock, const InstanceQuery* query)
 {
     for (u32 index = 0; index < query->count; index++)
     {
         auto* found = static_cast<InstanceContext*>(query->results[index]);
-        auto* node = static_cast<ObjectNode*>(GetGameNode(NodesOf(found), ObjectNodeKind));
-        if (CallVirtual<u32>(node, node->vtable, CodeModelSlot) != PickupCodeModel)
+        auto* node = static_cast<ObjectNode*>(GetGameNode(NodesOf(found), NodeObject));
+        if (CallVirtual<u32>(node, node->vtable, ObjectNode::CodeModelKindSlot) != PickupCodeModel)
         {
             RunAgentEvent(node->agent, NearPlayerEvent, 0, 0, 0);
             continue;
@@ -1288,10 +1213,10 @@ void CharacterAgent::AttractPickups(TimeClock* clock, const InstanceRayHit* quer
         node->focusInstance = instance;
         if (instance != nullptr)
         {
-            node->flags |= ObjectNodeBase::FlagFocusInstance;
+            node->flags.focusInstance = 1;
         }
 
-        node->flags &= ~ObjectNodeBase::FlagFocusPosition;
+        node->flags.focusPosition = 0;
         SetPickupState(node, clock, PickupFliesToFocus);
     }
 }
@@ -1299,14 +1224,14 @@ void CharacterAgent::AttractPickups(TimeClock* clock, const InstanceRayHit* quer
 void CharacterAgent::TouchedNothing(InstanceContext* other)
 {
     Vector4 normal = {0.0f, 0.0f, 0.0f, 1.0f};
-    CallVirtual<void>(this, vtable, AgentTouchedSlot, other, &normal);
+    CallVirtual<void>(this, vtable, TouchedSlot, other, &normal);
 }
 
-void CharacterAgent::TouchQuery(const InstanceRayHit* query)
+void CharacterAgent::TouchQuery(const InstanceQuery* query)
 {
     Vector4 normal = {0.0f, 0.0f, 0.0f, 1.0f};
     for (u32 index = 0; index < query->count; index++)
     {
-        CallVirtual<void>(this, vtable, AgentTouchedSlot, static_cast<InstanceContext*>(query->results[index]), &normal);
+        CallVirtual<void>(this, vtable, TouchedSlot, static_cast<InstanceContext*>(query->results[index]), &normal);
     }
 }

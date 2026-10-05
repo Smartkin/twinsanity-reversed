@@ -12,14 +12,10 @@ EABI_EXPORT(FUN_001847b0, ScaleIkTurn);
 
 namespace
 {
-constexpr f32 Pi = 0x1.921fb6p+1f;
 constexpr f32 TwoOverPi = 0x1.45f306p-1f;
 constexpr f32 SquareRootOfHalf = 0x1.6a09e6p-1f;
-// How far off a unit pair a limit's or a turned link's sine and cosine may be before they're made one again, and a multiple's
-constexpr f32 TurnTolerance = 0x1.0624dep-11f;
+// How far off a unit pair a multiple's sine and cosine may be before they're made one again
 constexpr f32 MultipleTolerance = 0x1.5798ecp-29f;
-// Lengths this short have no inverse
-constexpr f32 NoLength = 0x1.b7cdfep-34f;
 
 f32 InverseUnlessWithin(f32 value, f32 epsilon)
 {
@@ -33,7 +29,7 @@ f32 InverseUnlessWithin(f32 value, f32 epsilon)
 
 f32 InverseLengthOf(f32 x, f32 y)
 {
-    return InverseUnlessWithin(Kept(__builtin_sqrtf(x * x + y * y)), NoLength);
+    return InverseUnlessWithin(Kept(__builtin_sqrtf(x * x + y * y)), InverseEpsilon);
 }
 
 // A limit's sine and cosine of its angle (radians), made a unit pair unless they're near enough to one
@@ -43,9 +39,9 @@ void LimitSinCos(f32 radians, f32* sine, f32* cosine)
     AngleFrom(&angle, radians, AngleRadians);
     CosSin16(&angle, cosine, sine);
     f32 off = *cosine * *cosine + *sine * *sine - 1.0f;
-    if (!(off * off <= TurnTolerance))
+    if (!(off * off <= IkTurnTolerance))
     {
-        NormalizePair(sine, cosine, TurnTolerance);
+        NormalizePair(sine, cosine, IkTurnTolerance);
     }
 }
 
@@ -61,7 +57,7 @@ void UpdateIkLinksFrom(IkLink* link)
             continue;
         }
 
-        TurnPair(&link->planeSine, &link->planeCosine, link->previous->planeSine, link->previous->planeCosine, TurnTolerance);
+        TurnPair(&link->planeSine, &link->planeCosine, link->previous->planeSine, link->previous->planeCosine, IkTurnTolerance);
         const IkLink* previous = link->previous;
         link->x = previous->length * previous->planeCosine + previous->x;
         link->y = previous->length * previous->planeSine + previous->y;
@@ -74,7 +70,7 @@ void TurnIkLinkBetween(IkLink* link, f32 fromX, f32 fromY, f32 toX, f32 toY)
 {
     f32 sine = fromX * toY - fromY * toX;
     f32 cosine = fromX * toX + fromY * toY;
-    f32 inverse = InverseUnlessWithin(Kept(__builtin_sqrtf(cosine * cosine + sine * sine)), NoLength);
+    f32 inverse = InverseUnlessWithin(Kept(__builtin_sqrtf(cosine * cosine + sine * sine)), InverseEpsilon);
     if (0.0f < inverse)
     {
         TurnIkLink(link, &link->sine, &link->cosine, sine * inverse, cosine * inverse);
@@ -99,10 +95,10 @@ f32 CosineOf(const s32* angle)
 }
 }
 
-void SetIkLimits(void* chain, u32 link, const f32* low, const f32* high)
+void SetIkLimits(void* chain, u32 linkNumber, const f32* low, const f32* high)
 {
     IkLink* limited = static_cast<IkChain*>(chain)->solver.root.next;
-    for (s32 skipped = 1; skipped < static_cast<s32>(link); skipped++)
+    for (s32 skipped = 1; skipped < static_cast<s32>(linkNumber); skipped++)
     {
         limited = limited->next;
     }
@@ -270,8 +266,8 @@ s32 StepIkSolver(IkSolver* solver, u32 steps, f32 tolerance)
             f32 toInverse = InverseLengthOf(toX, toY);
             f32 fromInverse = InverseLengthOf(fromX, fromY);
             TurnIkLinkBetween(link, fromX * fromInverse, fromY * fromInverse, toX * toInverse, toY * toInverse);
-            NormalizePair(&link->sine, &link->cosine, TurnTolerance);
-            NormalizePair(&link->planeSine, &link->planeCosine, TurnTolerance);
+            NormalizePair(&link->sine, &link->cosine, IkTurnTolerance);
+            NormalizePair(&link->planeSine, &link->planeCosine, IkTurnTolerance);
             UpdateIkLinksFrom(link);
             if (link != solver->root.next)
             {
@@ -292,7 +288,7 @@ s32 StepIkSolver(IkSolver* solver, u32 steps, f32 tolerance)
         f32 alongY = solver->targetY - link->y;
         f32 sine = -alongX * link->planeSine + alongY * link->planeCosine;
         f32 cosine = alongX * link->planeCosine + alongY * link->planeSine;
-        f32 inverse = InverseUnlessWithin(Kept(__builtin_sqrtf(cosine * cosine + sine * sine)), NoLength);
+        f32 inverse = InverseUnlessWithin(Kept(__builtin_sqrtf(cosine * cosine + sine * sine)), InverseEpsilon);
         if (0.0f < inverse)
         {
             TurnIkLink(link, &link->sine, &link->cosine, sine * inverse, cosine * inverse);

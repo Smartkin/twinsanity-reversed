@@ -9,70 +9,66 @@ namespace
 // The animation's size: its values are floats
 u32 DynamicAnimationSize(const AnimationDataInformation* animation)
 {
-    constexpr u32 StaticBytesShift = 9;
-    constexpr u32 StaticBytesMask = 0x1FFC;
     if (animation->frames == 0)
     {
         return 0;
     }
 
-    u32 sections = animation->sections;
-    u32 perFrame = sections >> AnimationDataInformation::FrameValuesShift;
-    return (sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings) +
-           (sections >> StaticBytesShift & StaticBytesMask) + perFrame * animation->frames * sizeof(f32);
+    AnimationLayout layout = animation->layout;
+    return layout.joints * sizeof(JointTrackSettings) + layout.staticValues * sizeof(f32) +
+           layout.frameValues * animation->frames * sizeof(f32);
 }
 }
 
-DynamicSceneryData* ConstructDynamicSceneryData(DynamicSceneryData* data)
+DynamicSceneryData* ConstructDynamicSceneryData(DynamicSceneryData* scenery)
 {
-    constexpr u32 Version = 0x10009;
-    data->version = Version;
-    return data;
+    scenery->version = DynamicSceneryData::Version;
+    return scenery;
 }
 
-void DestroyDynamicSceneryData(DynamicSceneryData* data, u32 destroyFlags)
+void DestroyDynamicSceneryData(DynamicSceneryData* scenery, u32 destroyFlags)
 {
-    if (data->models != nullptr)
+    if (scenery->models != nullptr)
     {
-        DynamicSceneryModel* model = data->models + ArrayCount(data->models);
-        while (model != data->models)
+        DynamicSceneryModel* model = scenery->models + ArrayCount(scenery->models);
+        while (model != scenery->models)
         {
             model--;
             DestroyDynamicSceneryModel(model, 0);
         }
 
-        DeleteArray(data->models);
+        DeleteArray(scenery->models);
     }
 
     if ((destroyFlags & 1) != 0)
     {
-        MemoryDeallocate2_(data);
+        MemoryDeallocate2_(scenery);
     }
 }
 
-void ReadDynamicScenery(DynamicSceneryData* data, Stream* stream)
+void ReadDynamicScenery(DynamicSceneryData* scenery, Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&data->version));
-    stream->ReadS16(reinterpret_cast<s16*>(&data->modelCount));
-    u32 count = data->modelCount;
+    stream->ReadS32(reinterpret_cast<s32*>(&scenery->version));
+    stream->ReadS16(reinterpret_cast<s16*>(&scenery->modelCount));
+    u32 count = scenery->modelCount;
     DynamicSceneryModel* models = NewArray<DynamicSceneryModel>(count);
     for (u32 index = 0; index < count; index++)
     {
         ConstructDynamicSceneryModel(&models[index]);
     }
 
-    data->models = models;
-    for (u32 index = 0; index < data->modelCount; index++)
+    scenery->models = models;
+    for (u32 index = 0; index < scenery->modelCount; index++)
     {
-        ReadDynamicSceneryModel(&data->models[index], stream);
+        ReadDynamicSceneryModel(&scenery->models[index], stream);
     }
 }
 
 DynamicSceneryModel* ConstructDynamicSceneryModel(DynamicSceneryModel* model)
 {
     model->animation.diskHandle = -1;
-    model->meshId = 0xFFFFFFFF;
-    model->animation.sections = 0;
+    model->meshId = DynamicSceneryModel::NoMesh;
+    model->animation.layout.value = 0;
     model->animation.frames = 0;
     model->leftover = -1;
     model->hullCount = 0;
@@ -124,7 +120,7 @@ void ReadDynamicSceneryModel(DynamicSceneryModel* model, Stream* stream)
 
     stream->ReadS32(reinterpret_cast<s32*>(&model->frames));
     AnimationDataInformation* animation = &model->animation;
-    stream->ReadS32(reinterpret_cast<s32*>(&animation->sections));
+    stream->ReadS32(reinterpret_cast<s32*>(&animation->layout.value));
     stream->ReadS16(reinterpret_cast<s16*>(&animation->frames));
     if (animation->diskHandle >= 0)
     {

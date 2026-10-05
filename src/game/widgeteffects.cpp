@@ -6,10 +6,9 @@
 
 namespace
 {
-constexpr f32 TurnRadians = 0x1.921FB6p+2f;
-// The rock's widest turn (radians), the spin's four turns, the slide's distance (4:3 and 16:9)
-constexpr f32 RockTurn = 0x1.921FB6p-2f;
-constexpr f32 FourTurns = 0x1.921FB6p+4f;
+// The rock's widest turn (a sixteenth of a turn, radians), the spin's four turns, the slide's distance (4:3 and 16:9)
+constexpr f32 RockTurn = TwoPi / 16.0f;
+constexpr f32 FourTurns = 4.0f * TwoPi;
 constexpr f32 SlideNarrow = 0x1.70A3D8p-2f;
 constexpr f32 SlideWide = 0x1.C28F5Cp-2f;
 // The sparkle's emitter once reset
@@ -40,7 +39,7 @@ WidgetEffect* StepCycle(WidgetEffect* effect, f32 seconds, bool keepsOverrun)
 void DestroyEffect(WidgetEffect* effect, u32 flags)
 {
     effect->vtable = g_WidgetEffectVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(effect);
     }
@@ -154,7 +153,7 @@ WidgetEffect* RockEffect::Step(f32 seconds, const Vector2*, const Vector2*, u32)
 void RockEffect::Change(Matrix4x4* matrix)
 {
     f32 sinCos[4];
-    Platform::Math::SinCos(fraction * TurnRadians, 0.0f, sinCos);
+    Platform::Math::SinCos(fraction * TwoPi, 0.0f, sinCos);
     s32 angle;
     AngleFrom(&angle, sinCos[0] * RockTurn, 0);
     Turned(angle, matrix);

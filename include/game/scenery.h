@@ -12,7 +12,7 @@ struct ChunkData;
 struct ChunkList;
 struct ChunkLinkData;
 struct InstanceContext;
-struct InstanceRayHit;
+struct InstanceQuery;
 struct ObjectPlace;
 struct RenderView;
 struct RigidModel;
@@ -25,12 +25,40 @@ struct ObjectCollision;
 // What a chunk's things are drawn and culled through (0x110 bytes, its vtable 0x104 bytes in): the renderer view's matrix to the
 // clip space, the matrices VU0's culling worked out for the last model (to the clip space when it's partly out, to the screen),
 // the view's clip vector, where the camera is (in the chunk), the level of detail's distance of the last test, the view, the last
-// tests' outcome (0 out of view, 1 in it, 2 partly out) and the chunk's matrices. Its vtable's functions: 1 the destructor, 2 a
-// box tested, 3 a box under a matrix tested, 4 a point tested, 5 a matrix taken into the chunk's space, 6 whether it's a linked
-// chunk's, 7 1, 8 0, 9 whether
-// a direction faces the camera's way, 10 the view loaded into VU0, 11 a model's matrix loaded, 12 a scenery cell's box tested
+// tests' outcome (Visibility) and the chunk's matrices. Its vtable's functions: 1 the destructor, 2 a box tested, 3 a box under a
+// matrix tested, 4 a point tested, 5 a matrix taken into the chunk's space, 6 whether it's a linked chunk's, 7 and 8 1 and 0
+// (nothing calls them), 9 whether a direction faces the camera's way, 10 the view loaded into VU0, 11 a model's matrix loaded,
+// 12 a scenery cell's box tested
 struct alignas(16) ChunkView
 {
+    // What a test found (a scenery cell's visibility is also how its children are drawn and collected: all of them as they are
+    // when it's wholly in view, each tested when it's partly)
+    enum Visibility : u32
+    {
+        OutOfView = 0,
+        InView = 1,
+        PartlyInView = 2,
+    };
+
+    // Its vtable's slots the scenery calls
+    enum Slot : u32
+    {
+        SlotTestBox = 2,
+        SlotTestBoxAt = 3,
+        SlotLoad = 10,
+        SlotLoadModel = 11,
+        SlotTestCell = 12,
+    };
+
+    // The chunk's matrices (ChunkData's matrix, toScreen, drawMatrix and drawInverse)
+    enum MatrixIndex : u32
+    {
+        CameraMatrix = 0,
+        ToScreenMatrix = 1,
+        DrawMatrix = 2,
+        DrawInverseMatrix = 3,
+    };
+
     Matrix4x4 toClip;
     // The first row is also what the box test scales the corners by for its second clip test
     Matrix4x4 clipped;
@@ -59,8 +87,8 @@ struct alignas(16) ChunkView
     void TestPoint(const Vector4* point) RETAIL(FUN_001f5520);
     const Matrix4x4* ChunkMatrix(const Matrix4x4* matrix) RETAIL(FUN_001f5888);
     u32 IsLinked() RETAIL(FUN_001f5890);
-    u32 Unknown7() RETAIL(FUN_001f58a0);
-    u32 Unknown8() RETAIL(FUN_001f58a8);
+    u32 Unused7() RETAIL(FUN_001f58a0);
+    u32 Unused8() RETAIL(FUN_001f58a8);
     u32 Faces(const Vector4* direction) RETAIL(FUN_001f58b0);
     void Load() RETAIL(FUN_001f55e0);
     void LoadModel(const Matrix4x4* model) RETAIL(FUN_001f6700);
@@ -77,22 +105,22 @@ struct alignas(16) ChunkView
 
     void VirtualTestBox(const Box* box)
     {
-        CallVirtual<void>(this, vtable, 2, box);
+        CallVirtual<void>(this, vtable, SlotTestBox, box);
     }
 
     void VirtualLoad()
     {
-        CallVirtual<void>(this, vtable, 10);
+        CallVirtual<void>(this, vtable, SlotLoad);
     }
 
     void VirtualLoadModel(const Matrix4x4* model)
     {
-        CallVirtual<void>(this, vtable, 11, model);
+        CallVirtual<void>(this, vtable, SlotLoadModel, model);
     }
 
     void VirtualTestCell(const struct SceneryCell* cell)
     {
-        CallVirtual<void>(this, vtable, 12, cell);
+        CallVirtual<void>(this, vtable, SlotTestCell, cell);
     }
 };
 CHECK_OFFSET(ChunkView, clip, 0xC0);
@@ -123,6 +151,10 @@ CHECK_SIZE(LinkedChunkView, 0x150);
 // around its middle), the items (the meshes first) and a matrix per item
 struct SceneryMeshes
 {
+    // Its type in the SM2 (a cell without meshes has NoTypeId)
+    static constexpr s32 TypeId = 0x1613;
+    static constexpr s32 NoTypeId = 3;
+
     u16 meshCount;
     u16 lodCount;
     Box* boxes;
@@ -148,29 +180,72 @@ struct SceneryMeshes
 CHECK_SIZE(SceneryMeshes, 0x10);
 
 // The instances a scenery collection gathers (0x1C bytes): two pools of instances and two of cells (the wholly inside ones
-// first), the flags an instance has all of and none of to be gathered, and a word of the caller's
+// first), the flags an instance has all of and none of to be gathered, and a word of the caller's (0) nothing reads
 struct InstanceCollector
 {
+    enum Pool : u32
+    {
+        WhollyInsidePool = 0,
+        PartlyInsidePool = 1,
+        PoolCount = 2,
+    };
+
+    // A walk's mask of both pools
+    static constexpr u32 BothPools = 1 << WhollyInsidePool | 1 << PartlyInsidePool;
+
     ItemPools<InstanceContext*> instances;
     ItemPools<SceneryCell*> cells;
     u32 wantedFlags;
     u32 unwantedFlags;
-    u32 unknown18;
+    u32 unused18;
 };
 CHECK_SIZE(InstanceCollector, 0x1C);
 
 // A cell of a chunk's scenery (0x50 bytes; TT Lab's scenery types, an octree whose cells hold what's in them): its box, the
-// instances in it (dynamic scenery instances, flag 0x40000, on a list of their own; linked through their cell links), its
-// parent, its meshes, its chunk and its lights' bits. Its vtable's functions (the base's; the tree's add what children need):
+// instances in it (dynamic scenery instances, ReferencedObjectFlags::dynamicScenery, on a list of their own; linked through
+// their previous and next links, which link a sleeping instance into its chunk's list), its parent, its meshes, its chunk and
+// its lights' bits (a bit per ChunkLights reference). Its vtable's functions (the base's; the tree's add what children need):
 //  1 destructor, 2 release (the instances let go of now, or queued with the cell's destruction), 3 drawn, 4 its instances
 //  collected, 5 whether it's a leaf, 6 its cells with instances collected, 7 the cell a box goes in, 8 a child taken out, 9 its
-//  chunk set, 10 collected against a volume, 11 its contents drawn, 12 culled, 13 its meshes let go of (or released), 14-16 0,
-//  17 0.0, 18 its depth (-1 a leaf), 19 its instances added to a query, 20 whether it's empty, 21 whether it holds instances, 22
-//  and 23 its instances put to sleep and released by a filter, 24 its type, 25 read, 26 an instance added at a path, 27 a mesh or
-//  LOD set at a path, 28 the cell at a path, 29 its parent, 30 a child made, 31 a light's bit set, 32-34 its children
+//  chunk set, 10 collected against a volume, 11 its contents drawn, 12 culled, 13 its meshes let go of (or released), 14 to 16
+//  the root's collection and the cells of an instance and a box (nothing and none in the others), 17 0.0 (nothing calls it), 18
+//  its depth (-1 a leaf), 19 its instances added to a query, 20 whether it's empty, 21 whether it holds instances, 22 and 23 its
+//  instances put to sleep and released by a filter (InstanceFilterWord), 24 its type, 25 read, 26 an instance added at a path, 27
+//  a mesh or LOD set at a path, 28 the cell at a path, 29 its parent, 30 a child made, 31 a light's bit set, 32-34 its children.
+//  A cell drawn or collected is given its parent's visibility (ChunkView::Visibility)
 struct alignas(16) SceneryCell
 {
     static constexpr u32 TypeId = 0x1612;
+
+    // Its vtable's slots the cells and the chunks call
+    enum Slot : u32
+    {
+        SlotDestroy = 1,
+        SlotRelease = 2,
+        SlotRender = 3,
+        SlotCollectInstances = 4,
+        SlotCollectCells = 6,
+        SlotFindCell = 7,
+        SlotSetChunk = 9,
+        SlotCollectVisible = 10,
+        SlotDrawContents = 11,
+        SlotDrawContentsCulled = 12,
+        SlotReleaseMeshes = 13,
+        SlotCollect = 14,
+        SlotCellOf = 15,
+        SlotHasInstances = 21,
+        SlotSleepInstances = 22,
+        SlotReleaseInstances = 23,
+        SlotRead = 25,
+        SlotAddInstanceAt = 26,
+        SlotSetItemAt = 27,
+        SlotCellAt = 28,
+        SlotMakeChild = 30,
+        SlotSetLight = 31,
+        SlotChildCount = 32,
+        SlotChildren = 33,
+        SlotOtherChildren = 34,
+    };
 
     Vector4 min;
     Vector4 max;
@@ -186,28 +261,28 @@ struct alignas(16) SceneryCell
     void ConstructBase();
     void Destroy(u32 flags) RETAIL(FUN_001ef660);
     void Release(u32 instances, u32 queue) RETAIL(FUN_001efb40);
-    u32 Render(s32 mode, ChunkView* view, ChunkData* chunk) RETAIL(FUN_001ef920);
-    void CollectInstances(s32 mode, InstanceCollector* collector, u32 kinds, ChunkView* view) RETAIL(FUN_001ef730);
+    u32 Render(s32 visibility, ChunkView* view, ChunkData* chunk) RETAIL(FUN_001ef920);
+    void CollectInstances(s32 visibility, InstanceCollector* collector, u32 kinds, ChunkView* view) RETAIL(FUN_001ef730);
     void CollectCells(InstanceCollector* collector) RETAIL(FUN_001ef6d8);
-    SceneryCell* Self() RETAIL(FUN_001ef2b8);
+    SceneryCell* FindCell() RETAIL(FUN_001ef2b8);
     void SetChunk(ChunkData* chunk) RETAIL(FUN_001ef2c0);
     u32 CollectVisible(BoundingVolume* volume, InstanceCollector* collector) RETAIL(FUN_001ef2e0);
     u32 DrawContents(ChunkView* view) RETAIL(FUN_001ef7e0);
     u32 DrawContentsCulled(ChunkView* view) RETAIL(FUN_001ef880);
     void ReleaseMeshes(u32 keep) RETAIL(FUN_001efae8);
-    u32 None14() RETAIL(FUN_001ef300);
-    u32 None15() RETAIL(FUN_001ef308);
-    u32 None16() RETAIL(FUN_001ef310);
-    f32 NoneFloat() RETAIL(FUN_001ef318);
+    u32 Collect() RETAIL(FUN_001ef300);
+    u32 CellOf() RETAIL(FUN_001ef308);
+    u32 CellOfBox() RETAIL(FUN_001ef310);
+    f32 Unused17() RETAIL(FUN_001ef318);
     s32 Depth() RETAIL(FUN_001ef328);
-    u16 QueryInstances(InstanceRayHit* query) RETAIL(FUN_001ef5f0);
+    u16 QueryInstances(InstanceQuery* query) RETAIL(FUN_001ef5f0);
     u32 HasInstances() RETAIL(FUN_001ef338);
     void SleepInstances(const u32* filter) RETAIL(FUN_001e9d60);
     void ReleaseInstances(const u32* filter) RETAIL(FUN_001e9df8);
     u32 Type() RETAIL(FUN_001ef348);
     void Read(Stream* stream) RETAIL(ReadSceneryBase);
     SceneryCell* AddInstanceAt(const s16* path, InstanceContext* instance) RETAIL(FUN_001ef9d8);
-    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unknown, s32 index) RETAIL(FUN_001efa08);
+    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unused4, s32 index) RETAIL(FUN_001efa08);
     SceneryCell* CellAt() RETAIL(FUN_001efae0);
     SceneryCell* Parent() RETAIL(FUN_001ef350);
     void SetLight() RETAIL(FUN_001ef358);
@@ -219,17 +294,17 @@ struct alignas(16) SceneryCell
 
     void VirtualDestroy(u32 flags)
     {
-        CallVirtual<void>(this, vtable, 1, flags);
+        CallVirtual<void>(this, vtable, SlotDestroy, flags);
     }
 
     void VirtualRelease(u32 instances, u32 queue)
     {
-        CallVirtual<void>(this, vtable, 2, instances, queue);
+        CallVirtual<void>(this, vtable, SlotRelease, instances, queue);
     }
 
-    u32 VirtualRender(s32 mode, ChunkView* view, ChunkData* chunk)
+    u32 VirtualRender(s32 visibility, ChunkView* view, ChunkData* chunk)
     {
-        return CallVirtual<u32>(this, vtable, 3, mode, view, chunk);
+        return CallVirtual<u32>(this, vtable, SlotRender, visibility, view, chunk);
     }
 };
 CHECK_OFFSET(SceneryCell, instances, 0x20);
@@ -250,7 +325,7 @@ struct SceneryLeaf : SceneryCell
     u32 DrawContentsCulled(ChunkView* view) RETAIL(FUN_001efe78);
     u32 IsEmpty() RETAIL(FUN_001f0030);
     u32 Type() RETAIL(FUN_001efdc8);
-    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unknown, s32 index, u32 unknown6, u32 set)
+    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unused4, s32 index, u32 unused6, u32 set)
         RETAIL(FUN_001f0058);
     SceneryCell* MakeChild() RETAIL(FUN_001eff20);
 };
@@ -265,8 +340,8 @@ struct SceneryTree : SceneryCell
     static SceneryTree* ConstructBox(SceneryTree* tree, const Vector4* middle, const Vector4* halfSize, SceneryCell* parent,
                                      s32 depth) RETAIL(FUN_001f3540);
     void Destroy(u32 flags) RETAIL(FUN_001f3750);
-    u32 Render(s32 mode, ChunkView* view, ChunkData* chunk) RETAIL(RenderScenery_);
-    void CollectInstances(s32 mode, InstanceCollector* collector, u32 kinds, ChunkView* view) RETAIL(FUN_001eee88);
+    u32 Render(s32 visibility, ChunkView* view, ChunkData* chunk) RETAIL(RenderScenery_);
+    void CollectInstances(s32 visibility, InstanceCollector* collector, u32 kinds, ChunkView* view) RETAIL(FUN_001eee88);
     u32 IsLeaf() RETAIL(FUN_001f0688);
     void CollectCells(InstanceCollector* collector) RETAIL(FUN_001f37c8);
     void SetChunk(ChunkData* chunk) RETAIL(FUN_001f39a8);
@@ -274,8 +349,8 @@ struct SceneryTree : SceneryCell
     void ReleaseMeshes(u32 keep) RETAIL(FUN_001f3e00);
     s32 Depth() RETAIL(FUN_001f0690);
     u32 HasInstances() RETAIL(FUN_001f3a50);
-    SceneryCell* AddInstanceAt(const s16* path, InstanceContext* instance, u32 unknown) RETAIL(FUN_001f3b18);
-    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unknown, s32 index, u32 unknown6, u32 unknown7)
+    SceneryCell* AddInstanceAt(const s16* path, InstanceContext* instance, u32 unused) RETAIL(FUN_001f3b18);
+    SceneryCell* SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unused4, s32 index, u32 unused6, u32 set)
         RETAIL(FUN_001f3c20);
     SceneryCell* CellAt(const s16* path, u32 make) RETAIL(FUN_001f3d30);
     void SetLight(u32 bit) RETAIL(FUN_001f3ed8);
@@ -287,29 +362,31 @@ struct SceneryTree : SceneryCell
 
     s32 VirtualChildCount()
     {
-        return CallVirtual<s32>(this, vtable, 32);
+        return CallVirtual<s32>(this, vtable, SlotChildCount);
     }
 
     SceneryCell** VirtualChildren()
     {
-        return CallVirtual<SceneryCell**>(this, vtable, 33);
+        return CallVirtual<SceneryCell**>(this, vtable, SlotChildren);
     }
 
     SceneryCell** VirtualOtherChildren()
     {
-        return CallVirtual<SceneryCell**>(this, vtable, 34);
+        return CallVirtual<SceneryCell**>(this, vtable, SlotOtherChildren);
     }
 };
 CHECK_OFFSET(SceneryTree, depth, 0x50);
 CHECK_SIZE(SceneryTree, 0x60);
 
-// A node of the octree (0x80 bytes, the SM2's type 0x1600): its eight children
+// A node of the octree (0x80 bytes, the SM2's type 0x1600): its eight children, one per octant of its box (bit 0 of the octant x,
+// bit 1 y, bit 2 z, a set bit the lower half)
 struct SceneryNode : SceneryTree
 {
     static constexpr u32 TypeId = 0x1600;
+    static constexpr u32 Octants = 8;
 
     // (Aligned so GCC doesn't put them in the tree's tail padding, which GCC 2.9x left alone)
-    alignas(16) SceneryCell* children[8];
+    alignas(16) SceneryCell* children[Octants];
 
     static SceneryNode* Construct(SceneryNode* node) RETAIL(FUN_001f1028);
     void Destroy(u32 flags) RETAIL(FUN_001f1068);
@@ -384,6 +461,15 @@ public:
     void Read(u8* data, u32 size, ReaderStack* readers) RETAIL(FUN_001efc50);
 };
 
+// A filter of instances (three words): the kinds of nodes (a bit per NodeKind) one has any of, the flags (ReferencedObjectFlags)
+// it has all of and the flags it has none of
+enum InstanceFilterWord : u32
+{
+    FilterKinds = 0,
+    FilterWantedFlags = 1,
+    FilterUnwantedFlags = 2,
+};
+
 extern "C"
 {
     extern const GccVTableEntry g_SceneryCellVTable[] RETAIL(SceneryBase_Methods);
@@ -398,7 +484,7 @@ extern "C"
 
     // The SM2's scenery read into the chunk's data: its bits, name, fog colour, root type, a byte, the sky, the lights and the
     // root (its cells queued for the readers)
-    void ReadScenery(ChunkData* data, Stream* stream) RETAIL(ReadScenery);
+    void ReadScenery(ChunkData* chunk, Stream* stream) RETAIL(ReadScenery);
     // A list of instances linked by their cell links: one put in front, one taken out, all of them released
     void CellListAdd(InstanceContext** list, InstanceContext* instance) RETAIL(FUN_001f03a0);
     void CellListRemove(InstanceContext** list, InstanceContext* instance) RETAIL(FUN_001f03d0);
@@ -416,7 +502,7 @@ extern "C"
     // A collector made with two empty pools of each, the flags to match and the caller's word; destroyed with GCC 2.9x's
     // flags; its pools made empty; whether it gathered any instance
     InstanceCollector* InstanceCollectorConstruct(InstanceCollector* collector, u32 wantedFlags, u32 unwantedFlags,
-                                                  u32 unknown) RETAIL(FUN_001f2670);
+                                                  u32 unused) RETAIL(FUN_001f2670);
     void InstanceCollectorDestroy(InstanceCollector* collector, u32 flags) RETAIL(FUN_001ee290);
     void InstanceCollectorClear(InstanceCollector* collector) RETAIL(FUN_001f2780);
     u32 InstanceCollectorFound(const InstanceCollector* collector) RETAIL(FUN_001f2f10);
@@ -425,8 +511,9 @@ extern "C"
     u32 CollectCellInstances(InstanceCollector* collector, u32 kinds) RETAIL(FUN_001ee390);
     // Every chunk's scenery collected: whether any instance was
     u32 CollectChunksInstances(ChunkList* list, u32 kinds, InstanceCollector* collector) RETAIL(FUN_001f1750);
-    // Every chunk of the list made global where a filter matches, the current one first
-    void ChunkListMakeGlobalWhere(ChunkList* list, u32 unknown, const u32* filter) RETAIL(FUN_001f17c8);
+    // Every chunk of the list made global where a filter matches (InstanceFilterWord), the current one first, by a way into the
+    // game (game/progress.h's)
+    void ChunkListMakeGlobalWhere(ChunkList* list, u32 way, const u32* filter) RETAIL(FUN_001f17c8);
 
     // The chunks' collision cells: the level a box goes in, the cell of an instance's place, the cells a volume overlaps (the
     // last cell after them; how many)
@@ -435,24 +522,24 @@ extern "C"
     s32 CellsOfVolume(s32* cells, const BoundingVolume* volume) RETAIL(FUN_001e94e0);
     // A cell list's instances the query takes: in a sphere (or overlapping its box), in a vertical cylinder, touching a hull
     // (or its place inside it), hit by a segment (an instance's hulls cast at, the query's nearest)
-    u16 CellListInSphere(InstanceRayHit* query, InstanceContext* first, const Vector4* sphere, u32 kinds, u32 boxTest)
+    u16 CellListInSphere(InstanceQuery* query, InstanceContext* first, const Vector4* sphere, u32 kinds, u32 boxTest)
         RETAIL(FUN_001ea9d0);
-    u16 CellListInCylinder(f32 height, InstanceRayHit* query, InstanceContext* first, const Vector4* base, u32 kinds)
+    u16 CellListInCylinder(f32 height, InstanceQuery* query, InstanceContext* first, const Vector4* base, u32 kinds)
         RETAIL_N32(FUN_001eac90);
-    u16 CellListInHull(InstanceRayHit* query, InstanceContext* first, BoundingVolume* volume, const CollisionHull* hull,
+    u16 CellListInHull(InstanceQuery* query, InstanceContext* first, BoundingVolume* volume, const CollisionHull* hull,
                        const Matrix4x4* matrix, u32 kinds, u32 points) RETAIL(FUN_001eae50);
-    f32 InstanceRayCast(InstanceRayHit* query, const Box* box, const Vector4* segment, InstanceContext* instance, void* hit)
+    f32 InstanceRayCast(InstanceQuery* query, const Box* box, const Vector4* segment, InstanceContext* instance, void* hit)
         RETAIL(FUN_001eb0b0);
-    f32 CellListRayCast(InstanceRayHit* query, InstanceContext* first, const Vector4* segment, u32 mask, void* hit)
+    f32 CellListRayCast(InstanceQuery* query, InstanceContext* first, const Vector4* segment, u32 kinds, void* hit)
         RETAIL(FUN_001f04c8);
-    // A chunk's instances with the flags in any cell
-    s32 QueryChunkInstancesByFlags(ChunkData* chunk, u32 flags, InstanceRayHit* query) RETAIL(FUN_001f1e40);
+    // A chunk's instances with a node of the kinds (a bit per NodeKind) in any cell
+    s32 QueryChunkInstancesOfKinds(ChunkData* chunk, u32 kinds, InstanceQuery* query) RETAIL(FUN_001f1e40);
     // The levels' first cells worked out at the start (GCC 2.9x's static initialisation), and its constructor
     void InitCellBases(s32 initialise, s32 priority) RETAIL(FUN_001ef018);
     void CellsStaticInit() RETAIL(FUN_001f4540);
-    // Where a box is against a cell's box, axis by axis, by how far their ranges reach together: 0 apart (within the margin's
-    // share of the box), 1 held (within the margin of all of it), 2 partly. The span the retail code measures is the ranges'
-    // union, so any box overlapping the cell is held
+    // Where a box is against a cell's box (CellContainment), axis by axis, by how far their ranges reach together: apart (within
+    // the margin's share of the box), inside (within the margin of all of it), partly. The span the retail code measures is the
+    // ranges' union, so any box overlapping the cell is inside
     u32 CellHoldsBox(f32 margin, SceneryCell* cell, const Vector4* min, const Vector4* max) RETAIL_N32(FUN_001fa4b0);
 
     // An awake instance's collision put in the scenery cell holding its box and its collision cell, moved to another scenery
@@ -462,9 +549,9 @@ extern "C"
     ChunkData* MoveToCell(ObjectCollision* collision, InstanceContext* instance, SceneryCell* cell) RETAIL(FUN_001f0ba8);
     u32 ChunkRemoveInstance(ChunkData* chunk, InstanceContext* instance) RETAIL(FUN_001ed838);
     // The instance moved to the instances of no chunk (put to sleep first when it's awake), and those of a filter, not while the
-    // chunk is being released when the state is checked
-    u32 ChunkMakeGlobal(ChunkData* chunk, u32 checkState, u32 unknown, InstanceContext* instance) RETAIL(FUN_001f22d0);
-    u32 ChunkMakeGlobalWhere(ChunkData* chunk, u32 checkState, u32 unknown, const u32* filter) RETAIL(FUN_001f2380);
+    // chunk is being released when the state is checked; the way into the game is what they're given (game/progress.h's)
+    u32 ChunkMakeGlobal(ChunkData* chunk, u32 checkState, u32 way, InstanceContext* instance) RETAIL(FUN_001f22d0);
+    u32 ChunkMakeGlobalWhere(ChunkData* chunk, u32 checkState, u32 way, const u32* filter) RETAIL(FUN_001f2380);
     // Whether a link takes an instance (through its wall, or into the linked scenery's cells)
     u32 LinkTakesInstance(const ChunkLinkData* link, InstanceContext* instance) RETAIL(FUN_001ea2d8);
     // The scenery told its chunk once it's read

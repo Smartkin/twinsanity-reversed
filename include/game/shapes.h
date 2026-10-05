@@ -15,10 +15,23 @@
 class Shape2D
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        SetMaterialSlot = 2,
+        SetMaterialByIdSlot = 3,
+        ReleaseResourceSlot = 4,
+        DrawSlot = 5,
+        DrawColouredSlot = 6,
+        DrawPlacedSlot = 7,
+        DrawPlacedColouredSlot = 8,
+        ReadSlot = 9,
+    };
+
     Material* material;
     MaterialResource* resource;
     u8 turned;
-    u8 unknown09[3];
+    u8 unused09[3];
     const GccVTableEntry* vtable;
 
     void Destroy(u32 flags) RETAIL(FUN_001ab8a0);
@@ -52,16 +65,29 @@ public:
 };
 CHECK_SIZE(Sprite, 0x20);
 
+// A strip's flags: whether it owns its arrays (nothing sets it)
+union StripFlags
+{
+    u8 value;
+    struct
+    {
+        u8 ownsArrays : 1;
+        u8 unused1 : 7;
+    };
+};
+CHECK_SIZE(StripFlags, 1);
+
 // A triangle strip of coloured vertexes without a texture, its places in pixels from the frame's corner (moved by a matrix when
 // it's drawn through one), its colours tinted by the colour it's drawn in (192 is the full red, green and blue, 128 the full
-// alpha). It frees the arrays it owns
+// alpha). It frees the arrays it owns. A strip has at most MostVertexes (its count is a byte)
 class Strip : public Shape2D
 {
 public:
+    static constexpr u32 MostVertexes = 0x100;
+
     u8 count;
-    // Bit 0: it owns its arrays
-    u8 ownsArrays;
-    u8 unknown12[2];
+    StripFlags flags;
+    u8 unused12[2];
     Vector2* places;
     u32* colours;
 

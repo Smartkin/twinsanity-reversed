@@ -4,6 +4,7 @@
 #include "common.h"
 #include "game/math.h"
 #include "game/properties.h"
+#include "game/resources.h"
 #include "game/string.h"
 #include "gcc2.h"
 
@@ -68,7 +69,7 @@ struct ObjectInstance
     s16 refListIndex;
     s16 spawnScript;
     u8 ownsProperties;
-    u8 unknown57[0x60 - 0x57];
+    u8 unused57[0x60 - 0x57];
 
     // Made empty (lists with room for 10, no IDs), and made then read from a stream
     static ObjectInstance* ConstructEmpty(ObjectInstance* instance) RETAIL(InitGameInstance_);
@@ -95,7 +96,7 @@ struct InstanceTemplate
     s16 objectId;
     s8 objectSubType;
     s8 objectType;
-    u8 unknown12[2];
+    u8 unused12[2];
     IdArray starters;
     PropertyList properties;
 
@@ -106,29 +107,45 @@ CHECK_OFFSET(InstanceTemplate, starters, 0x14);
 CHECK_OFFSET(InstanceTemplate, properties, 0x24);
 CHECK_SIZE(InstanceTemplate, 0x48);
 
+// A trigger's header (TT Lab's TriggerFlags past its kind)
+union TriggerHeader
+{
+    u32 value;
+    struct
+    {
+        // 0 makes the trigger a plain box of its chunk the sound code tests the player against instead (a camera trigger's is its
+        // priority; 50 on most)
+        u32 kind : 8;
+        // Its messages sent: the second to what enters, the third to what enters or stays, the fourth to what leaves, the first to
+        // what enters first since it was reset
+        u32 onEnter : 1;
+        u32 onStay : 1;
+        u32 onExit : 1;
+        u32 onEnterOnce : 1;
+        // Its box is never checked (the characters inside check it)
+        u32 notPolled : 1;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(TriggerHeader, 4);
+
 // A trigger of a layout (the base of the message triggers' and the cameras' classes, 0x60 bytes; vtable 0x50 bytes in: 1 the
-// destructor, 2 the read, 3 its section's item type): its header (its low byte the kind: 0 makes it a plain box of its chunk the
-// sound code tests the player against instead of a trigger), the objects that set it off (a mask), the seconds between two checks
-// of its box, its box's rotation, place and size, and the instances of its layout it tells (by their index)
+// destructor, 2 the read, 3 its section's item type): its header, the objects that set it off (a bit per object type,
+// GameObject::Type), the seconds between two checks of its box, its box's rotation, place and size, and the instances of its layout
+// it tells (by their index)
 class LayoutTrigger
 {
 public:
-    u32 header;
+    TriggerHeader header;
     u32 activators;
     f32 checkInterval;
-    u32 unknown0C;
+    u32 unused0C;
     Vector4 rotation;
     Vector4 position;
     Vector4 scale;
     IdArray instances;
     const GccVTableEntry* vtable;
-    u8 unknown54[0x60 - 0x54];
-
-    // Its kind (the header's low byte)
-    u8 Kind() const
-    {
-        return static_cast<u8>(header);
-    }
+    u8 unused54[0x60 - 0x54];
 
     // Made with no instances (room for 10)
     static LayoutTrigger* Construct(LayoutTrigger* trigger) RETAIL(InitTrigger);
@@ -144,8 +161,10 @@ CHECK_SIZE(LayoutTrigger, 0x60);
 class MessageTrigger : public LayoutTrigger
 {
 public:
+    static constexpr u32 TypeId = 0x1813;
+
     s16 messages[4];
-    u8 unknown68[0x70 - 0x68];
+    u8 unused68[0x70 - 0x68];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00209c78);
     void Read(Stream* stream) RETAIL(ReadTrigger);
@@ -157,8 +176,10 @@ CHECK_SIZE(MessageTrigger, 0x70);
 class CameraTrigger : public LayoutTrigger
 {
 public:
+    static constexpr u32 TypeId = 0x1C00;
+
     struct MainCamera* camera;
-    u8 unknown64[0x70 - 0x64];
+    u8 unused64[0x70 - 0x64];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027e218);
     void Read(Stream* stream) RETAIL(ReadCamera);
@@ -177,7 +198,7 @@ struct SoundBox
     Matrix4x4 matrix;
     Matrix4x4 inverse;
     f32 radiusSquared;
-    u8 unknownB4[0xC0 - 0xB4];
+    u8 unusedB4[0xC0 - 0xB4];
 
     static SoundBox* Construct(SoundBox* box, const LayoutTrigger* trigger) RETAIL(FUN_001dd4f0);
     // Whether a point is in it: within its radius of its position, then inside its box through its inverse matrix
@@ -201,6 +222,14 @@ CHECK_SIZE(LayoutPosition, 0x10);
 class PointList
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ReadSlot = 3,
+    };
+
+    static constexpr u32 TypeId = 0x1511;
+
     s32 count;
     Vector4* points;
     const GccVTableEntry* vtable;
@@ -219,15 +248,17 @@ CHECK_SIZE(PointList, 0xC);
 class LayoutPath : public PointList
 {
 public:
+    static constexpr u32 TypeId = 0x1512;
+
     f32* lengths;
     f32* steps;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
     Vector4 searchPoint;
     Vector4 nearest;
     f32 nearestDistance;
     f32 nearestShare;
-    s32 unknown48;
-    u32 unknown4C;
+    s32 searchSegment;
+    u32 unused4C;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0018e758);
     void Read(Stream* stream) RETAIL(ReadPath);
@@ -235,41 +266,137 @@ public:
 };
 CHECK_OFFSET(LayoutPath, searchPoint, 0x20);
 CHECK_OFFSET(LayoutPath, nearestDistance, 0x40);
-CHECK_OFFSET(LayoutPath, unknown48, 0x48);
+CHECK_OFFSET(LayoutPath, searchSegment, 0x48);
 CHECK_SIZE(LayoutPath, 0x50);
 
 // What a collision surface does on contact, or a damage the scripts' commands deal (0x20 bytes, the tools' two vectors): a point
-// (the default box's corner when made), a word and a byte
+// (the default box's corner when made), the kinds of hit it is (bits the scripts' hit conditions test) and the damage
 struct ContactMessage
 {
     Vector4 point;
-    u32 word;
-    u8 byte;
-    u8 unknown15[0x20 - 0x15];
+    u32 hitKinds;
+    u8 damage;
+    u8 unused15[0x20 - 0x15];
 
     static ContactMessage* Construct(ContactMessage* message) RETAIL(FUN_0011c1e8);
 };
 CHECK_SIZE(ContactMessage, 0x20);
 
-// A collision surface of the default chunk's layout 7 (0x90 bytes, a resource of the game): the objects that collide with it (a
-// bit per ray cast, game/enums), the physics parameters (the tools' list of ten: five volume scales of the contact kinds, -1
-// leaving the volume, then how fast the characters' velocity eases on it (the sixth), the friction (the seventh), how hard steep
-// ground of it pulls downhill (the ninth) and from which slope (the tenth: the ground's normal's y below it), two values made 1,
-// the velocity it carries the characters along with, what a contact does, and the sounds and particles of each kind of contact
-// (the particles index the default chunk's systems)
+// The kinds of hit of a contact message (ContactMessage::hitKinds, TT Lab's ContactKinds; named after what sends them, else
+// after the AgentLab tool's keywords the damage commands add them by): explosions, the fall-through death surfaces, burning
+// (particles, flames, lava; a character's splash into water too), the iceteroid, projectiles, kind 6, electric shocks, kind 8,
+// the generic hit (instant death, what agents hit back with, a crush), a crush, kinds 12 to 14, a bite, the characters' spins and
+// kicks, kind 18, heavy hits (Cortex's blast and laser, the mecha's rockets, the stomp kick), kinds 21 and 22, sinking (lava,
+// drowning), the knee drop's landing and water. The hit conditions test them; nothing in retail sends kinds 18 and 22 (the
+// scripts' CreateDamage could)
+enum HitKind : u32
+{
+    HitExplosion = 1u << 1,
+    HitFallingThrough = 1u << 2,
+    HitBurning = 1u << 3,
+    HitIceteroid = 1u << 4,
+    HitProjectile = 1u << 5,
+    HitKind6 = 1u << 6,
+    HitElectric = 1u << 7,
+    HitKind8 = 1u << 8,
+    HitGeneric = 1u << 10,
+    HitCrush = 1u << 11,
+    HitKind12 = 1u << 12,
+    HitKind13 = 1u << 13,
+    HitKind14 = 1u << 14,
+    HitBite = 1u << 15,
+    HitSpin = 1u << 16,
+    HitKick = 1u << 17,
+    HitKind18 = 1u << 18,
+    HitHeavy = 1u << 19,
+    HitKind21 = 1u << 21,
+    HitKind22 = 1u << 22,
+    HitSinking = 1u << 23,
+    HitKneeDrop = 1u << 24,
+    HitWater = 1u << 25,
+};
+
+// A collision surface's flags (TT Lab's SurfaceCollisionFlags): a bit for the ray casts and box queries that take it as solid
+// (their masks: the player's probes, the follow camera's, objects' and rigid bodies', the lines of sight), what touching it does
+// and the ground it is
+union SurfaceFlags
+{
+    // The masks of the casts and queries that take a surface as solid: the player's probes (the characters' casts, the agents'
+    // and vehicles' collision caches), the follow camera, objects (and rigid bodies), the lines of sight, and the player
+    enum Mask : u32
+    {
+        SolidToPlayerProbes = 0x10,
+        BlocksCamera = 0x20,
+        SolidToObjects = 0x40,
+        BlocksLineOfSight = 0x80,
+        SolidToPlayer = 0x100000,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 unused0 : 4;
+        u32 solidToPlayerProbes : 1;
+        u32 blocksCamera : 1;
+        // (Water otherwise)
+        u32 solidToObjects : 1;
+        u32 blocksLineOfSight : 1;
+        // A rigid body touching it hands its agent the surface's contact message, and so does the player standing on it
+        u32 sendsContactMessageToObjects : 1;
+        u32 sendsContactMessageToPlayer : 1;
+        // The rollerbrawl's wheels stick to it
+        u32 sticky : 1;
+        // Soft ground: footprints and skid marks are left on it, the walls Nina clings to
+        u32 soft : 1;
+        // (Set on every surface)
+        u32 unused12 : 8;
+        u32 solidToPlayer : 1;
+        u32 unused21 : 11;
+    };
+};
+CHECK_SIZE(SurfaceFlags, 4);
+
+// A collision surface's ID of none (a hull's without a surface of its own; the object nodes keep theirs as -1:
+// ObjectNode::NoSurface)
+constexpr u16 NoSurfaceId = 0xFFFF;
+
+// The surfaces of the default chunk the code tells apart by their IDs (TT Lab's SURF_ names): slippy metal, wood, metal, sand
+// (the agents told of landings on it), water and ice (the Humiliskate's board's sounds)
+enum SurfaceId : u16
+{
+    SurfaceSlippyMetal = 7,
+    SurfaceWood = 8,
+    SurfaceMetal = 9,
+    SurfaceSand = 10,
+    SurfaceWater = 12,
+    SurfaceIce = 17,
+};
+
+// A collision surface of the default chunk's layout 7 (0x90 bytes, a resource of the game): its flags, the physics parameters
+// (the tools' list of ten: five volume scales of the contact kinds, -1 leaving the volume, then how much the characters' velocity
+// changes on it a second at most (the sixth: their acceleration on it; a knee slide on it lasts 3.5 over it longer), the friction
+// (the seventh), what rigid bodies' restitution is multiplied by (the eighth), how hard steep ground of it pulls the characters
+// downhill (the ninth) and from which slope (the tenth: the ground's normal's y below it)), what rigid bodies' rolling and
+// spinning friction are multiplied by (1: the RM2 has neither), the velocity it carries the characters along with, what a
+// contact does, and the sounds and particles of each kind of contact (the particles index the default chunk's systems)
 struct CollisionSurface
 {
+    // The tools' physics parameters, of which the volume scales (the impact's, the hard impact's, the scrape's, the steps' and
+    // the landing's)
+    static constexpr u32 PhysicsParameters = 10;
+    static constexpr u32 VolumeScales = 5;
+
     u32 header;
     s32 id;
-    u32 collisionMask;
-    f32 physics5;
+    SurfaceFlags flags;
+    f32 acceleration;
     f32 friction;
-    f32 physics7;
-    f32 unknown18;
-    f32 unknown1C;
-    f32 physics8;
-    f32 physics9;
-    u8 unknown28[0x30 - 0x28];
+    f32 restitution;
+    f32 rollFriction;
+    f32 spinFriction;
+    f32 downhillPull;
+    f32 steepNormalY;
+    u8 unused28[0x30 - 0x28];
     Vector4 flow;
     ContactMessage contact;
     u16 surfaceId;
@@ -282,8 +409,8 @@ struct CollisionSurface
     u16 impactParticles;
     u16 hardImpactParticles;
     u16 stepParticles;
-    f32 volumeScales[5];
-    u8 unknown88[0x90 - 0x88];
+    f32 volumeScales[VolumeScales];
+    u8 unused88[0x90 - 0x88];
 
     void Read(Stream* stream) RETAIL(ReadCollisionSurface);
 };
@@ -307,7 +434,7 @@ extern "C"
 {
     // The game's surfaces (the count is the next symbol, StoredCollisionSurfaces)
     extern SurfaceTable g_CollisionSurfaces RETAIL(G_CollisionSurfaces);
-    // An ID made undefined (0xFFFF)
+    // An ID made undefined (UndefinedId)
     void SetUndefinedId(u16* id) RETAIL(SetUndefinedID_);
     // A list of IDs read whose elements are made with new[]: its count, room and growth, then the count's IDs (what it had freed
     // first)

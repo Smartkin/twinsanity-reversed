@@ -3,6 +3,14 @@
 // libmpeg's video headers: the sequence's, the GOP's, the picture's and the slice's, their extensions, and the reference pictures'
 // memory for the sequence's picture size
 
+namespace
+{
+// extension_start_code_identifier's values libmpeg knows (the others read as 0)
+constexpr u32 ExtensionIdentifiers = 11;
+// MPEG's quantiser matrices: 64 values of a byte
+constexpr u32 QuantiserMatrixBytes = 64;
+}
+
 extern "C"
 {
     extern const char g_MpegSliceCodeOutOfRange[] RETAIL(D_00307768);
@@ -17,23 +25,94 @@ extern "C"
     extern const char g_MpegSpatialScalableExtension[] RETAIL(D_003078B8);
     extern const char g_MpegTemporalScalableExtension[] RETAIL(D_003078F0);
     // The extensions' readers by extension_start_code_identifier
-    extern void (*const g_MpegExtensionReaders[11])(MpegSystem* sys) RETAIL(D_00307928);
+    extern void (*const g_MpegExtensionReaders[ExtensionIdentifiers])(MpegSystem* sys) RETAIL(D_00307928);
     // MPEG's default quantiser matrices, for sequences without their own
-    extern u8 g_MpegDefaultIntraMatrix[64] RETAIL(D_002E8280);
-    extern u8 g_MpegDefaultNonIntraMatrix[64] RETAIL(D_002E82C0);
+    extern u8 g_MpegDefaultIntraMatrix[QuantiserMatrixBytes] RETAIL(D_002E8280);
+    extern u8 g_MpegDefaultNonIntraMatrix[QuantiserMatrixBytes] RETAIL(D_002E82C0);
 }
 
 namespace Libmpeg
 {
 namespace
 {
-constexpr u32 ExtensionIdentifiers = 11;
 // The profiles and levels libmpeg takes: Main profile at Main level, Simple profile at Main level, Main profile at High level
 constexpr u32 MainProfileMainLevel = 0x48;
 constexpr u32 SimpleProfileMainLevel = 0x58;
 constexpr u32 MainProfileHighLevel = 0x44;
 // MPEG-1's matrix coefficients (ITU-R BT.470-2 System B, G)
 constexpr s32 Mpeg1MatrixCoefficients = 5;
+// The largest vertical_size_value libmpeg takes without an error
+constexpr s32 MaximumVerticalSize = 2800;
+// A slice's start code's low byte, slice_vertical_position: its row of macroblocks, from 1
+constexpr u32 SliceVerticalPosition = 0xFF;
+// temporal_reference's range (10 bits)
+constexpr s32 TemporalReferences = 0x400;
+// The reference pictures' memory is 64 byte aligned
+constexpr s32 FrameBufferAlignment = 0x40;
+
+// The headers' values read at once, the first of them in the top bits. NextBits leaves the bits above the ones it reads 0, which
+// the top value takes along
+
+// The sequence header's horizontal_size_value, vertical_size_value, aspect_ratio_information and frame_rate_code
+union SequenceSizes
+{
+    u32 value;
+    struct
+    {
+        u32 frameRateCode : 4;
+        u32 aspectRatio : 4;
+        u32 verticalSize : 12;
+        u32 horizontalSize : 12;
+    };
+};
+
+// The sequence header's bit_rate_value, a marker bit, vbv_buffer_size_value and constrained_parameters_flag
+union SequenceRates
+{
+    u32 value;
+    struct
+    {
+        u32 constrainedParameters : 1;
+        u32 vbvBufferSize : 10;
+        u32 marker : 1;
+        u32 bitRate : 20;
+    };
+};
+
+// The sequence extension's profile_and_level_indication, progressive_sequence, chroma_format, horizontal_size_extension,
+// vertical_size_extension, bit_rate_extension and a marker bit
+union SequenceExtension
+{
+    u32 value;
+    struct
+    {
+        u32 marker : 1;
+        u32 bitRateExtension : 12;
+        u32 verticalSizeExtension : 2;
+        u32 horizontalSizeExtension : 2;
+        u32 chromaFormat : 2;
+        u32 progressiveSequence : 1;
+        u32 profileAndLevel : 12;
+    };
+};
+
+// The rest of it: vbv_buffer_size_extension, low_delay, frame_rate_extension_n and frame_rate_extension_d
+union SequenceExtensionRates
+{
+    u32 value;
+    struct
+    {
+        u32 frameRateExtensionD : 5;
+        u32 frameRateExtensionN : 2;
+        u32 lowDelay : 1;
+        u32 vbvBufferSizeExtension : 24;
+    };
+};
+
+// What the sequence extension extends the sequence header's sizes and rates by
+constexpr s32 SizeExtensionShift = 12;
+constexpr s32 BitRateExtensionShift = 18;
+constexpr s32 VbvBufferSizeExtensionShift = 10;
 
 // A quantiser matrix (SETIQ's intra or non-intra) the IPU loads from the stream
 void ReadQuantiserMatrix(MpegSystem* sys, u32 command)
@@ -47,14 +126,14 @@ void ReadQuantiserMatrix(MpegSystem* sys, u32 command)
 // sent through the toIPU channel
 void SendDefaultMatrix(MpegSystem* sys, u32 command, const u8* matrix)
 {
-    MpegCallbackData data = {MpegCallbackStopDma};
-    DispatchCallback(sys->mpeg, &data);
+    MpegCallbackData dma = {MpegCallbackStopDma};
+    DispatchCallback(sys->mpeg, &dma);
     WaitIpuIdleIfBusyForHeaders(sys);
     *IpuCommand = IpuClearInput;
     WaitIpuIdleIfBusyForHeaders(sys);
     s32 interrupts = DIntr();
     *R_EE_D4_MADR = reinterpret_cast<u32>(matrix) & PhysicalMask;
-    *R_EE_D4_QWC = 64 >> 4;
+    *R_EE_D4_QWC = QuantiserMatrixBytes >> 4;
     *R_EE_D4_CHCR = ChcrFromMemory | ChcrStart;
     if (interrupts != 0)
     {
@@ -63,8 +142,8 @@ void SendDefaultMatrix(MpegSystem* sys, u32 command, const u8* matrix)
 
     SetIpuCommand(sys, command);
     WaitIpuIdleIfBusyForHeaders(sys);
-    data.type = MpegCallbackRestartDma;
-    DispatchCallback(sys->mpeg, &data);
+    dma.type = MpegCallbackRestartDma;
+    DispatchCallback(sys->mpeg, &dma);
 }
 }
 
@@ -76,7 +155,7 @@ s32 ReadSliceHeader(MpegSystem* sys, s32, s32* address, s32* increment, MpegVect
     if (code - FirstSliceStartCode >= SliceStartCodes)
     {
         ErrorValue(sys, g_MpegSliceCodeOutOfRange, code);
-        return 2;
+        return PictureGivenUp;
     }
 
     SkipStartCode(sys);
@@ -97,18 +176,17 @@ s32 ReadSliceHeader(MpegSystem* sys, s32, s32* address, s32* increment, MpegVect
     if (sys->macroblockError != 0)
     {
         Error(sys, g_MpegSliceError);
-        return 1;
+        return SliceGivenUp;
     }
 
-    // The slice's row is its start code's low byte, from 1
-    *address = ((code & 0xFF) - 1) * sys->widthMacroblocks + first - 1;
+    *address = ((code & SliceVerticalPosition) - 1) * sys->widthMacroblocks + first - 1;
     *increment = 1;
     sys->dcReset = 1;
     predictors[0][0] = {};
     predictors[0][1] = {};
     predictors[1][0] = {};
     predictors[1][1] = {};
-    return 0;
+    return SliceHeaderRead;
 }
 
 void InitialiseSequence(Mpeg* mpeg)
@@ -120,7 +198,7 @@ void InitialiseSequence(Mpeg* mpeg)
         sys->framePredFrameDct = 1;
         sys->matrixCoefficients = Mpeg1MatrixCoefficients;
         sys->progressiveSequence = 1;
-        sys->chromaFormat = 1;
+        sys->chromaFormat = MpegChroma420;
         sys->progressiveFrame = 1;
     }
 
@@ -144,11 +222,11 @@ void InitialiseSequence(Mpeg* mpeg)
 
     mpeg->width = width;
     mpeg->height = height;
-    u32 frameBytes = static_cast<u32>(width) * (static_cast<u32>(height) * MacroblockBytes) >> 8;
+    u32 frameBytes = static_cast<u32>(width) * (static_cast<u32>(height) * MacroblockBytes) / MacroblockPixels;
     ArenaRewind(&sys->arena);
     for (s32 i = 0; i < 3; i++)
     {
-        sys->frameBuffers[i] = Allocate(sys, &sys->arena, frameBytes, 0x40);
+        sys->frameBuffers[i] = Allocate(sys, &sys->arena, frameBytes, FrameBufferAlignment);
     }
 
     // The frames and their fields share a frame buffer, the bottom field's macroblocks after the top's. The pictures are written
@@ -165,7 +243,7 @@ void InitialiseSequence(Mpeg* mpeg)
             }
         }
 
-        s32 bottomField = mpeg->width * mpeg->height / 512 * MacroblockBytes;
+        s32 bottomField = mpeg->width * mpeg->height / (2 * MacroblockPixels) * MacroblockBytes;
         for (s32 i = 0; i < 3; i++)
         {
             sys->images[i].pixels = buffers[i];
@@ -195,20 +273,18 @@ void InitialiseSequence(Mpeg* mpeg)
 void ReadSequenceHeader(MpegSystem* sys)
 {
     sys->firstStructure = 0;
-    // horizontal_size_value, vertical_size_value, aspect_ratio_information, frame_rate_code
-    u32 bits = NextBits(sys, 32);
-    sys->horizontalSize = bits >> 20;
-    s32 verticalSize = (bits >> 8) & 0xFFF;
+    SequenceSizes sizes = {NextBits(sys, 32)};
+    sys->horizontalSize = sizes.horizontalSize;
+    s32 verticalSize = sizes.verticalSize;
     sys->verticalSize = verticalSize;
-    if (verticalSize > 2800)
+    if (verticalSize > MaximumVerticalSize)
     {
         Error(sys, g_MpegVerticalSizeTooLarge);
     }
 
-    // bit_rate_value, a marker bit, vbv_buffer_size_value, constrained_parameters_flag
-    bits = NextBits(sys, 30);
-    sys->bitRate = bits >> 12;
-    sys->vbvBufferSize = (bits >> 1) & 0x3FF;
+    SequenceRates rates = {NextBits(sys, 30)};
+    sys->bitRate = rates.bitRate;
+    sys->vbvBufferSize = rates.vbvBufferSize;
     s32 load = NextBits(sys, 1);
     sys->loadIntraQuantiserMatrix = load;
     if (load != 0)
@@ -237,7 +313,7 @@ void ReadSequenceHeader(MpegSystem* sys)
 
 void ReadGroupOfPicturesHeader(MpegSystem* sys)
 {
-    sys->unknownFC = 0;
+    sys->forcedBrokenLink = 0;
     sys->gopStarted = 1;
     sys->temporalReferenceBase = sys->temporalReferenceLast + 1;
     // The time code (drop_frame_flag, hours, minutes, a marker bit, seconds, pictures)
@@ -293,7 +369,7 @@ void ReadPictureHeader(MpegSystem* sys)
     sys->temporalReference = sys->temporalReferenceBase + temporalReference;
     if (wrapped)
     {
-        sys->temporalReference += 0x400;
+        sys->temporalReference += TemporalReferences;
     }
 
     if (sys->temporalReferenceLast < sys->temporalReference)
@@ -305,34 +381,35 @@ void ReadPictureHeader(MpegSystem* sys)
 void ReadSequenceExtension(MpegSystem* sys)
 {
     sys->mpeg2 = 1;
-    *IpuControl = *IpuControl & ~IpuControlMpeg1;
-    // profile_and_level_indication, progressive_sequence, chroma_format, horizontal_size_extension, vertical_size_extension,
-    // bit_rate_extension, a marker bit
-    u32 bits = NextBits(sys, 28);
-    s32 bitRateExtension = (bits >> 1) & 0xFFF;
-    s32 chromaFormat = (bits >> 17) & 3;
-    s32 verticalSizeExtension = (bits >> 13) & 3;
-    s32 horizontalSizeExtension = (bits >> 15) & 3;
+    IpuControlRegister control = {*IpuControl};
+    control.mpeg1 = 0;
+    *IpuControl = control.value;
+    SequenceExtension extension = {NextBits(sys, 28)};
+    s32 bitRateExtension = extension.bitRateExtension;
+    s32 chromaFormat = extension.chromaFormat;
+    s32 verticalSizeExtension = extension.verticalSizeExtension;
+    s32 horizontalSizeExtension = extension.horizontalSizeExtension;
     sys->chromaFormat = chromaFormat;
-    if (chromaFormat != 1)
+    if (chromaFormat != MpegChroma420)
     {
         Error(sys, g_MpegChromaFormatNot420);
     }
 
-    sys->progressiveSequence = (bits >> 19) & 1;
-    u32 profileAndLevel = bits >> 20;
-    // vbv_buffer_size_extension, low_delay, frame_rate_extension_n and _d
-    s32 vbvBufferSizeExtension = NextBits(sys, 16) >> 8;
+    sys->progressiveSequence = extension.progressiveSequence;
+    u32 profileAndLevel = extension.profileAndLevel;
+    s32 vbvBufferSizeExtension = SequenceExtensionRates{NextBits(sys, 16)}.vbvBufferSizeExtension;
     if (profileAndLevel != MainProfileMainLevel && profileAndLevel != SimpleProfileMainLevel &&
         profileAndLevel != MainProfileHighLevel)
     {
         Error(sys, g_MpegUnsupportedProfile);
     }
 
-    sys->horizontalSize = (horizontalSizeExtension << 12) | (sys->horizontalSize & 0xFFF);
-    sys->verticalSize = (verticalSizeExtension << 12) | (sys->verticalSize & 0xFFF);
-    sys->bitRate += bitRateExtension << 18;
-    sys->vbvBufferSize += vbvBufferSizeExtension << 10;
+    // The sizes' low 12 bits are the sequence header's
+    constexpr s32 SizeValueMask = (1 << SizeExtensionShift) - 1;
+    sys->horizontalSize = (horizontalSizeExtension << SizeExtensionShift) | (sys->horizontalSize & SizeValueMask);
+    sys->verticalSize = (verticalSizeExtension << SizeExtensionShift) | (sys->verticalSize & SizeValueMask);
+    sys->bitRate += bitRateExtension << BitRateExtensionShift;
+    sys->vbvBufferSize += vbvBufferSizeExtension << VbvBufferSizeExtensionShift;
 }
 
 void ReadQuantMatrixExtension(MpegSystem* sys)
@@ -454,7 +531,7 @@ void ExtensionAndUserData(MpegSystem* sys)
 
 void WaitIpuIdleIfBusyForHeaders(MpegSystem* sys)
 {
-    if ((*IpuControl & (IpuControlBusy | IpuControlErrorCode)) == IpuControlBusy)
+    if (IpuWorking())
     {
         WaitIpuIdle(sys);
     }
@@ -481,18 +558,18 @@ s32 NextHeader(MpegSystem* sys)
         case PictureStartCode:
         {
             ReadPictureHeader(sys);
-            MpegTimeStampData data = {MpegCallbackTimeStamp, -1, -1};
-            DispatchCallback(sys->mpeg, reinterpret_cast<MpegCallbackData*>(&data));
-            sys->nextDts = data.dts;
-            sys->nextPts = data.pts;
+            MpegTimeStampData timeStamp = {MpegCallbackTimeStamp, -1, -1};
+            DispatchCallback(sys->mpeg, reinterpret_cast<MpegCallbackData*>(&timeStamp));
+            sys->nextDts = timeStamp.dts;
+            sys->nextPts = timeStamp.pts;
             return sys->pictureCodingType;
         }
         case SequenceEndCode:
-            return 0;
+            return MpegSequenceEnded;
         }
     }
 
-    return -1;
+    return MpegHeaderAborted;
 }
 
 void SkipStartCode(MpegSystem* sys)
@@ -503,7 +580,7 @@ void SkipStartCode(MpegSystem* sys)
 void SkipToByte(MpegSystem* sys)
 {
     WaitIpuIdleIfBusyForHeaders(sys);
-    u32 bits = -(*IpuBitPosition & 7) & 7;
+    u32 bits = -IpuBitPositionRegister{*IpuBitPosition}.bitPosition & 7;
     if (bits != 0)
     {
         SkipHeaderBits(sys, bits);

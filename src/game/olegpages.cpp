@@ -15,18 +15,19 @@
 
 extern "C"
 {
-    // The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), 0.01 twice, a black of half
-    // alpha and 45 degrees (65536ths); and its own: (0, 1, -1, 1), (0, 1, 0, 1), 0 and the colour table's 15 and 8
-    extern Vector4 g_OlegPagesUp RETAIL(D_0030BDE0);
-    extern f32 g_OlegPagesSmall RETAIL(D_0030A5D8);
-    extern f32 g_OlegPagesSmall2 RETAIL(D_0030A5DC);
-    extern u32 g_OlegPagesShade RETAIL(D_0030A5E0);
-    extern s32 g_OlegPagesAngle45 RETAIL(D_0030A5E8);
-    extern Vector4 g_OlegPagesUpBack RETAIL(D_0030BDF0);
-    extern Vector4 g_OlegPagesUp2 RETAIL(D_0030BE00);
-    extern u32 g_OlegPagesZero RETAIL(D_0030A5F0);
-    extern u32 g_OlegPagesWhite RETAIL(D_0030A5F8);
-    extern u32 g_OlegPagesColour8 RETAIL(D_0030A5FC);
+    // The header's constants the start-up sets for this file, which nothing reads: up (0, 1, 0, 1), the UI's shadow (its offset
+    // and colour) and 45 degrees (65536ths); and its own: (0, 1, -1, 1), (0, 1, 0, 1), 0, white
+    // and black
+    extern Vector4 g_OlegPagesUnusedUp RETAIL(D_0030BDE0);
+    extern f32 g_OlegPagesUnusedShadowX RETAIL(D_0030A5D8);
+    extern f32 g_OlegPagesUnusedShadowY RETAIL(D_0030A5DC);
+    extern u32 g_OlegPagesUnusedShadowColour RETAIL(D_0030A5E0);
+    extern s32 g_OlegPagesUnusedAngle RETAIL(D_0030A5E8);
+    extern Vector4 g_OlegPagesUnusedUpBack RETAIL(D_0030BDF0);
+    extern Vector4 g_OlegPagesUnusedUp2 RETAIL(D_0030BE00);
+    extern u32 g_OlegPagesUnusedZero RETAIL(D_0030A5F0);
+    extern u32 g_OlegPagesUnusedWhite RETAIL(D_0030A5F8);
+    extern u32 g_OlegPagesUnusedBlack RETAIL(D_0030A5FC);
 }
 
 namespace
@@ -46,16 +47,10 @@ constexpr u32 OptionsText = 0xB;
 constexpr u32 NewGameItem = 0;
 constexpr u32 LoadGameItem = 2;
 constexpr u32 OptionsItem = 0x1E;
-// The pages are the first player's
-constexpr u32 FirstPlayer = 1;
-// OLEG's screens: every screen but the first three, the options, the screen's position, the disable autosave and the quit screens
-constexpr u32 AllButFirstScreens = 0x2B;
-constexpr u32 OptionsScreen = 9;
-constexpr u32 ScreenPositionScreen = 10;
-constexpr u32 DisableAutosaveScreen = 13;
-constexpr u32 QuitScreen = 14;
-// A destructor's flags: a member destroyed
-constexpr u32 Member = 2;
+// A screen of OLEG's is shown over half a second, the others hidden; an item's gallery or movie starts half a second after it's
+// picked
+constexpr f32 ScreenChangeSeconds = 0.5f;
+constexpr f32 ItemDelaySeconds = 0.5f;
 // "continue", the ID of the items going back to a page's parent, and how far a frame moves the screen
 constexpr u32 ContinueText = 5;
 constexpr u32 ParentBackItem = 0x1D;
@@ -65,12 +60,9 @@ constexpr f32 ScreenStepY = Rounded(0.03);
 // The game over page: its title, "continue" (restarting from the save) and "quit game"
 constexpr u32 GameOverTitle = 0x44;
 constexpr u32 RestartItemId = 9;
-constexpr u32 RestartEntry = 2;
 constexpr u32 QuitGameText = 0x1A;
 constexpr u32 QuitGameItem = 0xB;
-// The confirmations: their titles, "yes" and "no" (its ID 0x1C), the quit's yes (its ID 0xB) and the disable autosave's (0xA)
-constexpr u32 DisableAutosaveTitle = 0x60;
-constexpr u32 QuitTitle = 0x45;
+// The confirmations: "yes" and "no" (its ID 0x1C), the quit's yes (its ID 0xB) and the disable autosave's (0xA)
 constexpr u32 YesText = 3;
 constexpr u32 NoText = 2;
 constexpr u32 NoItem = 0x1C;
@@ -78,9 +70,6 @@ constexpr u32 QuitYesItem = 0xB;
 constexpr u32 DisableAutosaveYesItem = 0xA;
 // The notices' "continue" (its ID 0xC)
 constexpr u32 NoticeContinueItem = 0xC;
-// The pause menu's and the main menu's screens
-constexpr u32 PauseMenuScreen = 12;
-constexpr u32 MainMenuScreen = 11;
 // The options: the pages' titles, their links (IDs 6, 7, 8) and back (0x1C on the sub-pages)
 constexpr u32 GraphicOptionsText = 0xD;
 constexpr u32 SoundOptionsText = 0xE;
@@ -105,6 +94,7 @@ constexpr u32 EffectsVolumeItem = 0x17;
 constexpr u32 MusicVolumeText = 0x13;
 constexpr u32 MusicVolumeItem = 0x18;
 constexpr s32 MaxVolume = 10;
+constexpr f32 VolumeStep = Rounded(0.1);
 constexpr u32 OutputTypeText = 0x14;
 constexpr u32 OutputTypeItem = 0x19;
 constexpr u32 OutputTypes = 3;
@@ -123,17 +113,9 @@ constexpr u32 ExtrasTitle = 0x17;
 constexpr u32 GemExtrasTitle = 0x59;
 constexpr u32 GemExtrasLink = 0xE;
 constexpr u32 GemExtrasItems = 16;
-constexpr u32 Gems = 6;
-constexpr u32 BlueGem = 0;
-constexpr u32 ClearGem = 1;
-constexpr u32 GreenGem = 2;
-constexpr u32 PurpleGem = 3;
-constexpr u32 RedGem = 4;
-constexpr u32 YellowGem = 5;
 constexpr u32 CompleteItem = 0x14;
 constexpr u32 CompleteText = 0x61;
 constexpr u32 NotCompleteText = 0x58;
-constexpr u32 CompleteMovie = 18;
 constexpr u32 ExtrasResumeItem = 0x1C;
 // The galleries' first texts and their pictures' names
 constexpr u32 BossesText = 0x62;
@@ -147,10 +129,15 @@ constexpr const char* ConceptName = "Extras\\Concept\\Concept";
 constexpr const char* EnemiesName = "Extras\\Enemies\\Enemy";
 constexpr const char* UnseenName = "Extras\\Unseen\\Unseen";
 // The movies' movies: the bonus movies and the story's
-constexpr u32 ExtrasMovies[GemExtrasItems] = {14, 15, 16, 17, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+constexpr u32 ExtrasMovies[GemExtrasItems] = {
+    GameMovie::FirstBonus, GameMovie::FirstBonus + 1, GameMovie::FirstBonus + 2, GameMovie::FirstBonus + 3,
+    GameMovie::Intro,      GameMovie::Intro + 1,      GameMovie::Intro + 2,      GameMovie::Intro + 3,
+    GameMovie::Intro + 4,  GameMovie::Intro + 5,      GameMovie::Intro + 6,      GameMovie::Intro + 7,
+    GameMovie::Intro + 8,  GameMovie::Intro + 9,      GameMovie::Intro + 10,     GameMovie::Intro + 11,
+};
 // The movies needing the story done: from the 14th, once the story's area is 24
 constexpr u32 FirstStoryEndMovie = 13;
-constexpr u32 StoryDoneArea = 0x18;
+constexpr u32 StoryDoneArea = 24;
 // The levels' storyboards: their pictures' names and how many each has
 struct Storyboard
 {
@@ -167,62 +154,57 @@ constexpr Storyboard Storyboards[GemExtrasItems] = {
     {"Extras\\Storyboards\\13-Twinsanity\\Twinsanity", 5},   {"Extras\\Storyboards\\14-Rockslide\\Rockslide", 6},
     {"Extras\\Storyboards\\15-Pursuit\\Pursuit", 6},         {"Extras\\Storyboards\\16-AntAgony\\AntAgony", 10},
 };
-// The levels pages: each world's layout (the columns' places, the first row's height and the rows' spacing) and its levels
+// The levels pages: each world's layout (the columns' places, the first row's height and the rows' spacing) and its four levels'
+// areas (the items' IDs)
+constexpr u32 LevelsPerWorld = 4;
 struct LevelsLayout
 {
     f32 evenX;
     f32 oddX;
     f32 top;
     f32 spacing;
-    u32 levels[4];
+    u32 levels[LevelsPerWorld];
 };
 constexpr u32 Worlds = 4;
 constexpr LevelsLayout LevelsLayouts[Worlds] = {
-    {Rounded(0.6), Rounded(0.4), Rounded(0.15), Rounded(0.15), {0x00, 0x01, 0x03, 0x04}},
-    {Rounded(0.4), Rounded(0.6), Rounded(0.15), Rounded(0.15), {0x06, 0x07, 0x09, 0x0A}},
-    {Rounded(0.6), Rounded(0.4), Rounded(0.15), Rounded(0.15), {0x0D, 0x0F, 0x11, 0x12}},
-    {Rounded(0.4), Rounded(0.6), Rounded(0.15), Rounded(0.15), {0x14, 0x15, 0x16, 0x17}},
+    {Rounded(0.6), Rounded(0.4), Rounded(0.15), Rounded(0.15), {0, 1, 3, 4}},
+    {Rounded(0.4), Rounded(0.6), Rounded(0.15), Rounded(0.15), {6, 7, 9, 10}},
+    {Rounded(0.6), Rounded(0.4), Rounded(0.15), Rounded(0.15), {13, 15, 17, 18}},
+    {Rounded(0.4), Rounded(0.6), Rounded(0.15), Rounded(0.15), {20, 21, 22, 23}},
 };
 // Past the last world (never asked for): the retail code's layout, with no levels (the retail code's are what its stack held)
 constexpr LevelsLayout NoWorld = {Rounded(0.4), Rounded(0.6), Rounded(0.2), 0.125f, {}};
-// The levels' rings: 4 rings of a segment of 32 steps, their radii; the colour table's white
-constexpr u32 LevelRings = 4;
-constexpr u32 LevelRingSegments = 1;
-constexpr u32 LevelRingSteps = 0x20;
-constexpr u32 WhiteColour = 0xF;
-// The widgets' destructor (their vtable's), and a destructor's flags: an object deleted
-constexpr u32 WidgetDestroySlot = 9;
-constexpr u32 Delete = 3;
+// The levels' and the save slots' rings (panels: AddPanelRings' discs) in the middle of their widgets, the level widgets' size
+// and the levels' discs' radii
+constexpr Vector2 LevelWidgetScale = {Rounded(0.6), Rounded(0.1)};
+constexpr Vector2 LevelPanelRadii = {Rounded(0.3), Rounded(0.05)};
 // The save slots page: a save code item per slot (IDs from 0x100), and a ring panel (0.2 by 0.075) behind each slot's widget, in
 // two staggered columns (the even slots' sliding in from the left)
-constexpr u32 SaveCodeItemSize = 0x20;
 constexpr u32 SlotItemIds = 0x100;
 constexpr f32 SlotEvenX = Rounded(0.3);
 constexpr f32 SlotOddX = Rounded(0.7);
 constexpr f32 SlotsTop = Rounded(0.26);
 constexpr f32 SlotSpacing = Rounded(0.09);
 constexpr Vector2 SlotPanelRadii = {Rounded(0.2), Rounded(0.075)};
-// The volume groups: the effects' (0, 1 and 3) and the music's (2)
-constexpr s32 MusicGroup = 2;
 
 // Every other screen hidden and the screen shown, over half a second
 void ShowScreen(OLEG& oleg, u32 screen)
 {
-    oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-    oleg.Show(oleg.masks[screen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+    oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
+    oleg.Show(oleg.screens[screen], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
 }
 
 // A gallery item of a text and ID: its pictures (first to last) and their name
 GalleryItem* MakeGalleryItem(u32 text, u32 id, const char* name, u32 first, u32 last)
 {
     auto* item = Allocate<GalleryItem>();
-    LinkItem::Construct(item, text, id, nullptr, FirstPlayer);
+    LinkItem::Construct(item, text, id, nullptr, MenuPlayers);
     item->vtable = g_GalleryItemVTable;
     StringConstruct(&item->name, name);
     item->first = 0;
     item->last = 0;
-    item->unknown16[0] = 0;
-    item->unknown16[1] = 0;
+    item->unused16[0] = 0;
+    item->unused16[1] = 0;
     item->first = static_cast<u8>(first);
     item->last = static_cast<u8>(last);
     return item;
@@ -234,7 +216,7 @@ BackItem* StartGemExtras(GemExtrasPage* page, u32 gem, MenuPage* parent, const G
     OlegPage::ConstructTitled(page, GemExtrasTitle + gem, parent);
     page->gem = gem;
     page->vtable = vtable;
-    return BackItem::Construct(Allocate<BackItem>(), BackText, ParentBackItem, parent, FirstPlayer);
+    return BackItem::Construct(Allocate<BackItem>(), BackText, ParentBackItem, parent, MenuPlayers);
 }
 
 // The galleries of a gem extras page: each of so many pictures, numbered on from the last
@@ -254,7 +236,7 @@ void AddGalleries(GemExtrasPage* page, u32 text, const char* name, u32 pictures)
 void AddYesNo(OlegPage* page, u32 yesId, u32 action, MenuPage* parent)
 {
     ActionItem* yes = ActionItem::Construct(Allocate<ActionItem>(), YesText, yesId, action);
-    BackItem* no = BackItem::Construct(Allocate<BackItem>(), NoText, NoItem, parent, FirstPlayer);
+    BackItem* no = BackItem::Construct(Allocate<BackItem>(), NoText, NoItem, parent, MenuPlayers);
     page->Add(yes);
     page->Add(no);
     page->SetFirstItem(no->Id());
@@ -263,7 +245,7 @@ void AddYesNo(OlegPage* page, u32 yesId, u32 action, MenuPage* parent)
 
 OlegPage* OlegPage::Construct(OlegPage* page, const char* name, MenuPage* parent)
 {
-    MenuPage::Construct(page, name, FirstPlayer);
+    MenuPage::Construct(page, name, MenuPlayers);
     page->parent = parent;
     page->vtable = g_OlegPageVTable;
     return page;
@@ -271,7 +253,7 @@ OlegPage* OlegPage::Construct(OlegPage* page, const char* name, MenuPage* parent
 
 OlegPage* OlegPage::ConstructTitled(OlegPage* page, u32 title, MenuPage* parent)
 {
-    MenuPage::ConstructTitled(page, title, FirstPlayer);
+    MenuPage::ConstructTitled(page, title, MenuPlayers);
     page->parent = parent;
     page->vtable = g_OlegPageVTable;
     return page;
@@ -298,7 +280,7 @@ void NewGamePage::Destroy(u32 flags)
 
 void NewGamePage::Entered(u32, u32)
 {
-    G_GameController_00309950->LoadForNewGame();
+    g_OlegGameController->LoadForNewGame();
 }
 
 LoadGamePage* LoadGamePage::Construct(LoadGamePage* page, OlegPage* owner)
@@ -316,12 +298,12 @@ void LoadGamePage::Destroy(u32 flags)
 
 void LoadGamePage::Entered(u32, u32)
 {
-    G_GameController_00309950->LoadSavedGame();
+    g_OlegGameController->LoadSavedGame();
 }
 
 ActionItem* ActionItem::Construct(ActionItem* item, u32 text, u32 id, u32 action)
 {
-    LinkItem::Construct(item, text, id, nullptr, FirstPlayer);
+    LinkItem::Construct(item, text, id, nullptr, MenuPlayers);
     item->action = action;
     item->vtable = g_ActionItemVTable;
     return item;
@@ -334,7 +316,7 @@ void ActionItem::Destroy(u32 flags)
 
 MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
 {
-    GameController* controller = G_GameController_00309950;
+    GameController* controller = g_OlegGameController;
     OLEG& oleg = controller->oleg;
     switch (action)
     {
@@ -342,19 +324,19 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
         controller->ReturnToPauseMenu();
         break;
     case ActionOptions:
-        ShowScreen(oleg, OptionsScreen);
+        ShowScreen(oleg, OLEG::ScreenOptions);
         break;
     case ActionScreenPosition:
-        ShowScreen(oleg, ScreenPositionScreen);
+        ShowScreen(oleg, OLEG::ScreenScreenPosition);
         break;
     case ActionQuit:
-        ShowScreen(oleg, QuitScreen);
+        ShowScreen(oleg, OLEG::ScreenQuit);
         break;
     case ActionTitle:
         controller->QuitToTitle();
         break;
     case ActionDisableAutosave:
-        ShowScreen(oleg, DisableAutosaveScreen);
+        ShowScreen(oleg, OLEG::ScreenDisableAutosave);
         break;
     case ActionStopSaving:
         controller->StopSaving();
@@ -379,9 +361,9 @@ MainMenuPage* MainMenuPage::Construct(MainMenuPage* page)
     NewGamePage::Construct(&page->newGame, page);
     LoadGamePage::Construct(&page->loadGame, page);
     LinkItem* newGame = LinkItem::Construct(Allocate<LinkItem>(), NewGameText, NewGameItem,
-                                            &page->newGame, FirstPlayer);
+                                            &page->newGame, MenuPlayers);
     LinkItem* loadGame = LinkItem::Construct(Allocate<LinkItem>(), LoadGameText, LoadGameItem,
-                                             &page->loadGame, FirstPlayer);
+                                             &page->loadGame, MenuPlayers);
     ActionItem* options = ActionItem::Construct(Allocate<ActionItem>(), OptionsText,
                                                 OptionsItem, ActionItem::ActionOptions);
     page->Add(newGame);
@@ -392,8 +374,8 @@ MainMenuPage* MainMenuPage::Construct(MainMenuPage* page)
 
 void MainMenuPage::Destroy(u32 flags)
 {
-    loadGame.OlegPage::Destroy(Member);
-    newGame.OlegPage::Destroy(Member);
+    loadGame.OlegPage::Destroy(DestroyOnly);
+    newGame.OlegPage::Destroy(DestroyOnly);
     vtable = g_OlegPageVTable;
     MenuPage::Destroy(flags);
 }
@@ -407,7 +389,7 @@ ScreenPositionPage* ScreenPositionPage::Construct(ScreenPositionPage* page, Menu
     OlegPage::Construct(page, "", parent);
     page->vtable = g_ScreenPositionPageVTable;
     BackItem* item = BackItem::Construct(Allocate<BackItem>(), ContinueText, ParentBackItem,
-                                         parent, FirstPlayer);
+                                         parent, MenuPlayers);
     page->Add(item);
     return page;
 }
@@ -446,10 +428,10 @@ void ScreenPositionPage::Frame(u32, MenuInput* input, MenuSounds*)
 
 u32 ScreenPositionPage::Back(u32)
 {
-    GameController* controller = G_GameController_00309950;
+    GameController* controller = g_OlegGameController;
     OLEG& oleg = controller->oleg;
-    oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-    oleg.Show(oleg.masks[OptionsScreen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+    oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
+    oleg.Show(oleg.screens[OLEG::ScreenOptions], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
     return 1;
 }
 
@@ -469,10 +451,11 @@ void UnusedPage::Left(u32, u32)
 
 RestartItem* RestartItem::Construct(RestartItem* item, u32 text, u32 id, u32 entry)
 {
-    ChoiceItem::Construct(item, text, id, 0, 1, 0, FirstPlayer);
+    ChoiceItem::Construct(item, text, id, 0, 1, 0, MenuPlayers);
     item->vtable = g_RestartItemVTable;
-    item->restart = 0;
-    item->restart = ((item->restart | 1) & ~0xFEu) | (entry & 0x7F) << 1;
+    item->restart.value = 0;
+    item->restart.restarts = 1;
+    item->restart.entry = entry;
     return item;
 }
 
@@ -483,9 +466,9 @@ void RestartItem::Destroy(u32 flags)
 
 MenuPage* RestartItem::Activate(u32, MenuPage*)
 {
-    if ((restart & 1) != 0)
+    if (restart.restarts != 0)
     {
-        G_GameController_00309950->RequestRestart(restart >> 1 & 0x7F);
+        g_OlegGameController->RequestRestart(restart.entry);
     }
 
     return nullptr;
@@ -496,7 +479,7 @@ GameOverPage* GameOverPage::Construct(GameOverPage* page)
     OlegPage::ConstructTitled(page, GameOverTitle, nullptr);
     page->vtable = g_GameOverPageVTable;
     RestartItem* restart = RestartItem::Construct(Allocate<RestartItem>(), ContinueText,
-                                                  RestartItemId, RestartEntry);
+                                                  RestartItemId, EntrySaved);
     ActionItem* quit = ActionItem::Construct(Allocate<ActionItem>(), QuitGameText, QuitGameItem,
                                              ActionItem::ActionTitle);
     page->Add(restart);
@@ -512,7 +495,7 @@ void GameOverPage::Destroy(u32 flags)
 
 DisableAutosavePage* DisableAutosavePage::Construct(DisableAutosavePage* page, MenuPage* parent)
 {
-    OlegPage::ConstructTitled(page, DisableAutosaveTitle, parent);
+    OlegPage::ConstructTitled(page, DisableAutosaveTitleText, parent);
     page->vtable = g_DisableAutosavePageVTable;
     AddYesNo(page, DisableAutosaveYesItem, ActionItem::ActionStopSaving, parent);
     return page;
@@ -526,13 +509,13 @@ void DisableAutosavePage::Destroy(u32 flags)
 
 u32 DisableAutosavePage::Back(u32)
 {
-    ShowScreen(G_GameController_00309950->oleg, PauseMenuScreen);
+    ShowScreen(g_OlegGameController->oleg, OLEG::ScreenPauseMenu);
     return 1;
 }
 
 QuitPage* QuitPage::Construct(QuitPage* page, MenuPage* parent)
 {
-    OlegPage::ConstructTitled(page, QuitTitle, parent);
+    OlegPage::ConstructTitled(page, QuitTitleText, parent);
     page->vtable = g_QuitPageVTable;
     AddYesNo(page, QuitYesItem, ActionItem::ActionTitle, parent);
     return page;
@@ -545,7 +528,7 @@ void QuitPage::Destroy(u32 flags)
 
 u32 QuitPage::Back(u32)
 {
-    ShowScreen(G_GameController_00309950->oleg, PauseMenuScreen);
+    ShowScreen(g_OlegGameController->oleg, OLEG::ScreenPauseMenu);
     return 1;
 }
 
@@ -562,7 +545,7 @@ NoticePage* NoticePage::Construct(NoticePage* page, u32 toPauseMenu, MenuPage* p
     else
     {
         item = BackItem::Construct(Allocate<BackItem>(), ContinueText, NoticeContinueItem,
-                                   &g_ResumePage, FirstPlayer);
+                                   &g_ResumePage, MenuPlayers);
     }
 
     page->Add(item);
@@ -607,7 +590,7 @@ void GameOptionsPage::Destroy(u32 flags)
 void GameOptionsPage::Entered(u32 player, u32)
 {
     auto* pads = static_cast<GamePadController*>(G_GamePadController);
-    Find(VibrationItem)->SetFlag(player, pads->flags >> 9 & 1);
+    Find(VibrationItem)->SetFlag(player, pads->flags.vibration != 0);
 }
 
 void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
@@ -617,7 +600,7 @@ void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
     Find(VibrationItem)->GetFlag(player, &vibration);
     if (vibration != 0)
     {
-        pads->flags |= GamePadController::FlagVibration;
+        pads->flags.vibration = 1;
     }
     else
     {
@@ -649,15 +632,15 @@ void GraphicsOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
 
 SoundOptionsPage* SoundOptionsPage::Construct(SoundOptionsPage* page, MenuPage* parent)
 {
-    MenuPage::ConstructTitled(page, SoundOptionsText, FirstPlayer);
+    MenuPage::ConstructTitled(page, SoundOptionsText, MenuPlayers);
     page->parent = parent;
     page->vtable = g_SoundOptionsPageVTable;
     ValueItem* effects = ValueItem::Construct(Allocate<ValueItem>(), EffectsVolumeText, EffectsVolumeItem, 0, MaxVolume, 0, MaxVolume,
-                                              FirstPlayer);
+                                              MenuPlayers);
     ValueItem* music = ValueItem::Construct(Allocate<ValueItem>(), MusicVolumeText, MusicVolumeItem, 0, MaxVolume, 0, MaxVolume,
-                                            FirstPlayer);
-    ChoiceItem* output = ChoiceItem::Construct(Allocate<ChoiceItem>(), OutputTypeText, OutputTypeItem, OutputTypes, 1, 0, FirstPlayer);
-    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, parent, FirstPlayer);
+                                            MenuPlayers);
+    ChoiceItem* output = ChoiceItem::Construct(Allocate<ChoiceItem>(), OutputTypeText, OutputTypeItem, OutputTypes, 1, 0, MenuPlayers);
+    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, parent, MenuPlayers);
     for (u32 choice = 0; choice < OutputTypes; choice++)
     {
         output->SetChoiceText(choice, static_cast<s32>(MonoText + choice));
@@ -681,11 +664,11 @@ void SoundOptionsPage::Entered(u32 player, u32)
     MenuItem* effects = Find(EffectsVolumeItem);
     MenuItem* music = Find(MusicVolumeItem);
     MenuItem* output = Find(OutputTypeItem);
-    f32 effectsLevel = GroupVolumeLevel(0);
+    f32 effectsLevel = GroupVolumeLevel(EffectsGroup);
     f32 musicLevel = GroupVolumeLevel(MusicGroup);
     u32 stereo = g_MusicStereo;
-    effects->SetIntValue(player, static_cast<s32>(effectsLevel * 10.0f + 0.5f));
-    music->SetIntValue(player, static_cast<s32>(musicLevel * 10.0f + 0.5f));
+    effects->SetIntValue(player, static_cast<s32>(effectsLevel * MaxVolume + 0.5f));
+    music->SetIntValue(player, static_cast<s32>(musicLevel * MaxVolume + 0.5f));
     output->SetIntValue(player, static_cast<s32>(stereo));
 }
 
@@ -703,10 +686,10 @@ void SoundOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
         effects->GetIntValue(player, &value);
     }
 
-    f32 level = static_cast<f32>(value) * Rounded(0.1);
-    SetGroupVolume(level, level, 0);
-    SetGroupVolume(level, level, 1);
-    SetGroupVolume(level, level, 3);
+    f32 level = static_cast<f32>(value) * VolumeStep;
+    SetGroupVolume(level, level, EffectsGroup);
+    SetGroupVolume(level, level, SecondEffectsGroup);
+    SetGroupVolume(level, level, MovieGroup);
 }
 
 void SoundOptionsPage::Left(u32 player, u32)
@@ -718,49 +701,49 @@ void SoundOptionsPage::Left(u32 player, u32)
     effects->GetIntValue(player, &values[0]);
     music->GetIntValue(player, &values[1]);
     output->GetIntValue(player, &values[2]);
-    f32 effectsLevel = static_cast<f32>(values[0]) * Rounded(0.1);
-    f32 musicLevel = static_cast<f32>(values[1]) * Rounded(0.1);
-    SetGroupVolume(effectsLevel, effectsLevel, 0);
-    SetGroupVolume(effectsLevel, effectsLevel, 1);
-    SetGroupVolume(effectsLevel, effectsLevel, 3);
+    f32 effectsLevel = static_cast<f32>(values[0]) * VolumeStep;
+    f32 musicLevel = static_cast<f32>(values[1]) * VolumeStep;
+    SetGroupVolume(effectsLevel, effectsLevel, EffectsGroup);
+    SetGroupVolume(effectsLevel, effectsLevel, SecondEffectsGroup);
+    SetGroupVolume(effectsLevel, effectsLevel, MovieGroup);
     SetGroupVolume(musicLevel, musicLevel, MusicGroup);
     SetMusicStereo(static_cast<u32>(values[2]));
 }
 
 OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
 {
-    MenuPage::ConstructTitled(page, OptionsText, FirstPlayer);
+    MenuPage::ConstructTitled(page, OptionsText, MenuPlayers);
     page->parent = parent;
     page->vtable = g_OptionsPageVTable;
 
     GameOptionsPage& game = page->game;
-    MenuPage::ConstructTitled(&game, GameOptionsText, FirstPlayer);
+    MenuPage::ConstructTitled(&game, GameOptionsText, MenuPlayers);
     game.parent = page;
     game.vtable = g_GameOptionsPageVTable;
-    ToggleItem* vibration = ToggleItem::Construct(Allocate<ToggleItem>(), VibrationText, VibrationItem, NoText, YesText, 1, 0, FirstPlayer);
-    BackItem* gameBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, FirstPlayer);
+    ToggleItem* vibration = ToggleItem::Construct(Allocate<ToggleItem>(), VibrationText, VibrationItem, NoText, YesText, 1, 0, MenuPlayers);
+    BackItem* gameBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers);
     game.Add(vibration);
     game.Add(gameBack);
 
     GraphicsOptionsPage& graphics = page->graphics;
-    MenuPage::ConstructTitled(&graphics, GraphicOptionsText, FirstPlayer);
+    MenuPage::ConstructTitled(&graphics, GraphicOptionsText, MenuPlayers);
     graphics.parent = page;
     graphics.vtable = g_GraphicsOptionsPageVTable;
     ActionItem* centre = ActionItem::Construct(Allocate<ActionItem>(), CentreScreenText, CentreScreenItem,
                                                ActionItem::ActionScreenPosition);
     ToggleItem* widescreen = ToggleItem::Construct(Allocate<ToggleItem>(), WidescreenText, WidescreenItem, OffText, OnText, 1, 0,
-                                                   FirstPlayer);
-    BackItem* graphicsBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, FirstPlayer);
+                                                   MenuPlayers);
+    BackItem* graphicsBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers);
     graphics.Add(centre);
     graphics.Add(widescreen);
     graphics.Add(graphicsBack);
 
     SoundOptionsPage::Construct(&page->sound, page);
     LinkItem* graphicsLink = LinkItem::Construct(Allocate<LinkItem>(), GraphicOptionsText, GraphicOptionsItem, &page->graphics,
-                                                 FirstPlayer);
-    LinkItem* soundLink = LinkItem::Construct(Allocate<LinkItem>(), SoundOptionsText, SoundOptionsItem, &page->sound, FirstPlayer);
-    LinkItem* gameLink = LinkItem::Construct(Allocate<LinkItem>(), GameOptionsText, GameOptionsItem, &page->game, FirstPlayer);
-    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, ParentBackItem, parent, FirstPlayer);
+                                                 MenuPlayers);
+    LinkItem* soundLink = LinkItem::Construct(Allocate<LinkItem>(), SoundOptionsText, SoundOptionsItem, &page->sound, MenuPlayers);
+    LinkItem* gameLink = LinkItem::Construct(Allocate<LinkItem>(), GameOptionsText, GameOptionsItem, &page->game, MenuPlayers);
+    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, ParentBackItem, parent, MenuPlayers);
     page->Add(graphicsLink);
     page->Add(soundLink);
     page->Add(gameLink);
@@ -771,22 +754,23 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
 void OptionsPage::Destroy(u32 flags)
 {
     sound.vtable = g_OlegPageVTable;
-    sound.MenuPage::Destroy(Member);
+    sound.MenuPage::Destroy(DestroyOnly);
     graphics.vtable = g_OlegPageVTable;
-    graphics.MenuPage::Destroy(Member);
+    graphics.MenuPage::Destroy(DestroyOnly);
     game.vtable = g_OlegPageVTable;
-    game.MenuPage::Destroy(Member);
+    game.MenuPage::Destroy(DestroyOnly);
     vtable = g_OlegPageVTable;
     MenuPage::Destroy(flags);
 }
 
 u32 OptionsPage::Back(u32)
 {
-    GameController* controller = G_GameController_00309950;
+    GameController* controller = g_OlegGameController;
     OLEG& oleg = controller->oleg;
-    oleg.Hide(oleg.masks[AllButFirstScreens], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
-    u32 screen = G_GameController_00309950->State() == GameController::StateMainMenu ? MainMenuScreen : PauseMenuScreen;
-    oleg.Show(oleg.masks[screen], static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), 0);
+    oleg.Hide(oleg.screens[OLEG::ScreenAllButOverlays], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
+    u32 screen =
+        g_OlegGameController->State() == GameController::StateMainMenu ? OLEG::ScreenMainMenu : OLEG::ScreenPauseMenu;
+    oleg.Show(oleg.screens[screen], static_cast<s32>(g_ClockUnitsPerSecond * ScreenChangeSeconds), 0);
     return 1;
 }
 
@@ -797,7 +781,7 @@ void SaveGamePage::Destroy(u32 flags)
 
 void SaveGamePage::Entered(u32, u32)
 {
-    G_GameController_00309950->SaveFromPause();
+    g_OlegGameController->SaveFromPause();
 }
 
 PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
@@ -814,12 +798,12 @@ PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
     loadGame.vtable = g_LoadGamePageVTable;
     QuitPage::Construct(&page->quit, page);
     ActionItem* options = ActionItem::Construct(Allocate<ActionItem>(), OptionsText, OptionsItem, ActionItem::ActionOptions);
-    LinkItem* save = LinkItem::Construct(Allocate<LinkItem>(), SaveGameText, SaveGameItem, &page->saveGame, FirstPlayer);
-    LinkItem* load = LinkItem::Construct(Allocate<LinkItem>(), LoadGameText, LoadGameItem, &page->loadGame, FirstPlayer);
+    LinkItem* save = LinkItem::Construct(Allocate<LinkItem>(), SaveGameText, SaveGameItem, &page->saveGame, MenuPlayers);
+    LinkItem* load = LinkItem::Construct(Allocate<LinkItem>(), LoadGameText, LoadGameItem, &page->loadGame, MenuPlayers);
     ActionItem* disableAutosave = ActionItem::Construct(Allocate<ActionItem>(), DisableAutosaveText, DisableAutosaveItem,
                                                         ActionItem::ActionDisableAutosave);
     ActionItem* quit = ActionItem::Construct(Allocate<ActionItem>(), QuitGameText, QuitGameItem, ActionItem::ActionQuit);
-    BackItem* resume = BackItem::Construct(Allocate<BackItem>(), ResumeText, ResumeItem, &g_ResumePage, FirstPlayer);
+    BackItem* resume = BackItem::Construct(Allocate<BackItem>(), ResumeText, ResumeItem, &g_ResumePage, MenuPlayers);
     page->Add(options);
     page->Add(save);
     page->Add(load);
@@ -832,9 +816,9 @@ PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
 
 void PausePage::Destroy(u32 flags)
 {
-    quit.OlegPage::Destroy(Member);
-    loadGame.OlegPage::Destroy(Member);
-    saveGame.OlegPage::Destroy(Member);
+    quit.OlegPage::Destroy(DestroyOnly);
+    loadGame.OlegPage::Destroy(DestroyOnly);
+    saveGame.OlegPage::Destroy(DestroyOnly);
     vtable = g_OlegPageVTable;
     MenuPage::Destroy(flags);
 }
@@ -843,15 +827,16 @@ void PausePage::Frame(u32, MenuInput*, MenuSounds*)
 {
     // The disable autosave item is there while an autosave waits or saves, not while its screens show
     MenuItem* disableAutosave = Find(DisableAutosaveItem);
-    u64 saving = G_GameController_00309950->states & u64{0xF} << 60;
-    bool autosaving = saving == u64{1} << 60 || saving == u64{2} << 60 || saving == u64{3} << 60;
+    u32 saving = static_cast<u32>(g_OlegGameController->states.savingStep);
+    bool autosaving = saving == GameController::SavingWait || saving == GameController::SavingSaved ||
+                      saving == GameController::SavingSavedShown;
     bool shown = false;
     if (autosaving)
     {
-        shown = (G_GameController_00309950->states & u64{0xF} << 60) != u64{3} << 60;
+        shown = g_OlegGameController->states.savingStep != GameController::SavingSavedShown;
     }
 
-    disableAutosave->shown = shown ? 0xFF : 0;
+    disableAutosave->shown = shown ? EveryPlayer : 0;
 }
 
 void GalleryItem::Destroy(u32 flags)
@@ -862,13 +847,14 @@ void GalleryItem::Destroy(u32 flags)
 
 MenuPage* GalleryItem::Activate(u32, MenuPage*)
 {
-    G_GameController_00309950->RequestGallery(static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), name.string, first, last);
+    g_OlegGameController->RequestGallery(static_cast<s32>(g_ClockUnitsPerSecond * ItemDelaySeconds), name.string, first,
+                                              last);
     return nullptr;
 }
 
 MovieItem* MovieItem::Construct(MovieItem* item, u32 text, u32 id, u32 movie)
 {
-    LinkItem::Construct(item, text, id, nullptr, FirstPlayer);
+    LinkItem::Construct(item, text, id, nullptr, MenuPlayers);
     item->movie = movie;
     item->vtable = g_MovieItemVTable;
     return item;
@@ -881,17 +867,17 @@ void MovieItem::Destroy(u32 flags)
 
 MenuPage* MovieItem::Activate(u32, MenuPage*)
 {
-    G_GameController_00309950->RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * 0.5f), movie);
+    g_OlegGameController->RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * ItemDelaySeconds), movie);
     return nullptr;
 }
 
 void GemExtrasPage::ShowFound()
 {
-    GameProgress& progress = G_GameController_00309950->progress;
+    GameProgress& progress = g_OlegGameController->progress;
     for (u32 item = 0; item < GemExtrasItems; item++)
     {
         MenuItem* found = Find(item);
-        found->enabled = (static_cast<u8>(progress.levels[item]) & 1u << gem) != 0 ? 0xFF : 0;
+        found->enabled = (progress.levels[item].gems & 1u << gem) != 0 ? EveryPlayer : 0;
     }
 }
 
@@ -968,17 +954,17 @@ void MoviesPage::Destroy(u32 flags)
 
 void MoviesPage::Entered(u32, u32)
 {
-    GameProgress& progress = G_GameController_00309950->progress;
+    GameProgress& progress = g_OlegGameController->progress;
     for (u32 item = 0; item < GemExtrasItems; item++)
     {
         MenuItem* movie = Find(item);
-        bool found = (static_cast<u8>(progress.levels[item]) & 1u << gem) != 0;
+        bool found = (progress.levels[item].gems & 1u << gem) != 0;
         if (item >= FirstStoryEndMovie)
         {
-            found = found && (progress.bits >> 21 & 0x1F) >= StoryDoneArea;
+            found = found && progress.play.story >= StoryDoneArea;
         }
 
-        movie->enabled = found ? 0xFF : 0;
+        movie->enabled = found ? EveryPlayer : 0;
     }
 }
 
@@ -1026,21 +1012,21 @@ ExtrasPage* ExtrasPage::Construct(ExtrasPage* page)
 {
     OlegPage::ConstructTitled(page, ExtrasTitle, &g_ResumePage);
     page->vtable = g_ExtrasPageVTable;
-    BossesPage::Construct(&page->bosses, BlueGem, page);
-    ConceptPage::Construct(&page->conceptArt, PurpleGem, page);
-    EnemiesPage::Construct(&page->enemies, GreenGem, page);
-    MoviesPage::Construct(&page->movies, ClearGem, page);
-    StoryboardsPage::Construct(&page->storyboards, RedGem, page);
-    UnseenPage::Construct(&page->unseen, YellowGem, page);
-    MovieItem* complete = MovieItem::Construct(Allocate<MovieItem>(), CompleteText, CompleteItem, CompleteMovie);
-    BackItem* resume = BackItem::Construct(Allocate<BackItem>(), ResumeText, ExtrasResumeItem, &g_ResumePage, FirstPlayer);
+    BossesPage::Construct(&page->bosses, GemBlue, page);
+    ConceptPage::Construct(&page->conceptArt, GemPurple, page);
+    EnemiesPage::Construct(&page->enemies, GemGreen, page);
+    MoviesPage::Construct(&page->movies, GemClear, page);
+    StoryboardsPage::Construct(&page->storyboards, GemRed, page);
+    UnseenPage::Construct(&page->unseen, GemYellow, page);
+    MovieItem* complete = MovieItem::Construct(Allocate<MovieItem>(), CompleteText, CompleteItem, GameMovie::Complete);
+    BackItem* resume = BackItem::Construct(Allocate<BackItem>(), ResumeText, ExtrasResumeItem, &g_ResumePage, MenuPlayers);
     // Every link made before any is added (adding can grow the page's list)
-    OlegPage* const gemPages[Gems] = {&page->bosses,     &page->movies,      &page->enemies,
-                                      &page->conceptArt, &page->storyboards, &page->unseen};
-    LinkItem* links[Gems];
-    for (u32 gem = 0; gem < Gems; gem++)
+    OlegPage* const gemPages[GameProgress::Gems] = {&page->bosses,     &page->movies,      &page->enemies,
+                                                    &page->conceptArt, &page->storyboards, &page->unseen};
+    LinkItem* links[GameProgress::Gems];
+    for (u32 gem = 0; gem < GameProgress::Gems; gem++)
     {
-        links[gem] = LinkItem::Construct(Allocate<LinkItem>(), GemExtrasTitle + gem, GemExtrasLink + gem, gemPages[gem], FirstPlayer);
+        links[gem] = LinkItem::Construct(Allocate<LinkItem>(), GemExtrasTitle + gem, GemExtrasLink + gem, gemPages[gem], MenuPlayers);
     }
 
     for (LinkItem* link : links)
@@ -1055,35 +1041,35 @@ ExtrasPage* ExtrasPage::Construct(ExtrasPage* page)
 
 void ExtrasPage::Destroy(u32 flags)
 {
-    unseen.OlegPage::Destroy(Member);
-    storyboards.OlegPage::Destroy(Member);
-    movies.OlegPage::Destroy(Member);
-    enemies.OlegPage::Destroy(Member);
-    conceptArt.OlegPage::Destroy(Member);
-    bosses.OlegPage::Destroy(Member);
+    unseen.OlegPage::Destroy(DestroyOnly);
+    storyboards.OlegPage::Destroy(DestroyOnly);
+    movies.OlegPage::Destroy(DestroyOnly);
+    enemies.OlegPage::Destroy(DestroyOnly);
+    conceptArt.OlegPage::Destroy(DestroyOnly);
+    bosses.OlegPage::Destroy(DestroyOnly);
     vtable = g_OlegPageVTable;
     MenuPage::Destroy(flags);
 }
 
 void ExtrasPage::Entered(u32, u32)
 {
-    GameProgress& progress = G_GameController_00309950->progress;
+    GameProgress& progress = g_OlegGameController->progress;
     u32 done = progress.Done();
     MenuItem* complete = Find(CompleteItem);
-    for (u32 gem = 0; gem < Gems; gem++)
+    for (u32 gem = 0; gem < GameProgress::Gems; gem++)
     {
         MenuItem* link = Find(GemExtrasLink + gem);
-        link->shown = progress.GemsFound(gem) != 0 ? 0xFF : 0;
+        link->shown = progress.GemsFound(gem) != 0 ? EveryPlayer : 0;
     }
 
     if (done == 100)
     {
-        complete->id = (complete->id & ~(MenuItem::TextMask << MenuItem::TextShift)) | CompleteText << MenuItem::TextShift;
-        complete->shown = 0xFF;
+        complete->bits.text = CompleteText;
+        complete->shown = EveryPlayer;
     }
     else
     {
-        complete->id = (complete->id & ~(MenuItem::TextMask << MenuItem::TextShift)) | NotCompleteText << MenuItem::TextShift;
+        complete->bits.text = NotCompleteText;
         complete->shown = 0;
     }
 
@@ -1099,9 +1085,9 @@ LevelsPage* LevelsPage::Construct(LevelsPage* page, u32 world, MenuWidget* menu)
     MenuItem* items[Slots] = {};
     if (world < Worlds)
     {
-        for (u32 level = 0; level < 4; level++)
+        for (u32 level = 0; level < LevelsPerWorld; level++)
         {
-            items[level] = LinkItem::ConstructNamed(Allocate<LinkItem>(), "", layout.levels[level], nullptr, FirstPlayer);
+            items[level] = LinkItem::ConstructNamed(Allocate<LinkItem>(), "", layout.levels[level], nullptr, MenuPlayers);
         }
     }
 
@@ -1118,18 +1104,19 @@ LevelsPage* LevelsPage::Construct(LevelsPage* page, u32 world, MenuWidget* menu)
 
         Vector2 place = {(slot & 1) == 0 ? layout.evenX : layout.oddX, layout.top + layout.spacing * static_cast<f32>(slot)};
         Vector2 scale = {1.0f, 1.0f};
-        Vector2 levelScale = {Rounded(0.6), Rounded(0.1)};
+        Vector2 levelScale = LevelWidgetScale;
         Vector2 offset = {place.x < 0.5f ? -1.0f : 1.0f, 0.0f};
-        RingWidget* ring = RingWidget::Construct(Allocate<RingWidget>(), 0.5f, LevelRings, LevelRingSegments, LevelRingSteps, nullptr);
+        RingWidget* ring =
+            RingWidget::Construct(Allocate<RingWidget>(), AnchorMiddle, PanelRings, RingSegments, RingSteps, nullptr);
         page->rings[slot] = ring;
-        LevelWidget* level = LevelWidget::Construct(Allocate<LevelWidget>(), 0.5f, page, item, G_GameController_00309950);
+        LevelWidget* level = LevelWidget::Construct(Allocate<LevelWidget>(), AnchorMiddle, page, item, g_OlegGameController);
         page->levels[slot] = level;
         u32 colour;
-        GetColor(&colour, WhiteColour);
+        GetColor(&colour, ColourWhite);
         ring->SlideIn(colour, &place, &scale, &offset);
-        GetColor(&colour, WhiteColour);
+        GetColor(&colour, ColourWhite);
         level->SlideIn(colour, &place, &levelScale, &offset);
-        Vector2 radii = {Rounded(0.3), Rounded(0.05)};
+        Vector2 radii = LevelPanelRadii;
         AddPanelRings(&radii, ring);
         tail->next = ring;
         ring->next = level;
@@ -1148,12 +1135,12 @@ void LevelsPage::Destroy(u32 flags)
     {
         if (levels[slot] != nullptr)
         {
-            CallVirtual<void>(levels[slot], levels[slot]->vtable, WidgetDestroySlot, Delete);
+            CallVirtual<void>(levels[slot], levels[slot]->vtable, Widget::DestroySlot, u32{DestroyAndFree});
         }
 
         if (rings[slot] != nullptr)
         {
-            CallVirtual<void>(rings[slot], rings[slot]->vtable, WidgetDestroySlot, Delete);
+            CallVirtual<void>(rings[slot], rings[slot]->vtable, Widget::DestroySlot, u32{DestroyAndFree});
         }
     }
 
@@ -1164,31 +1151,33 @@ MenuPage* SaveSlotsPageConstruct(void* memory, SaveManager* manager, MenuWidget*
 {
     auto* page = static_cast<SaveSlotsPage*>(memory);
     SaveCodePage::Construct(page, manager);
-    GameController* controller = G_GameController_00309950;
+    GameController* controller = g_OlegGameController;
     page->vtable = g_SaveSlotsPageVTable;
     Widget* after = menu->next;
-    // The device's flags are its first word (savedevice.h's SaveSummary clashes with OLEG's, so its class can't be included)
-    page->count = *reinterpret_cast<const u32*>(manager->device) & 0xF;
+    // A slot for each of the save's files besides the icons
+    page->count = manager->device->flags.fileCount;
     page->widgets = static_cast<SaveSlotWidget**>(MemoryAllocate2(page->count * sizeof(SaveSlotWidget*)));
     page->rings = static_cast<RingWidget**>(MemoryAllocate2(page->count * sizeof(RingWidget*)));
     Widget* tail = menu;
     for (u32 slot = 0; slot < page->count; slot++)
     {
-        auto* summary = reinterpret_cast<SaveSummary*>(manager->banks[slot]->summary);
-        MenuItem* item = ConstructSaveCodeItem(MemoryAllocate(SaveCodeItemSize), 0, SlotItemIds + slot, 0, manager);
+        SaveSummary* summary = &manager->banks[slot]->summary;
+        MenuItem* item = ConstructSaveCodeItem(MemoryAllocate(sizeof(SaveCodeItem)), 0, SlotItemIds + slot,
+                                               SaveCodeItem::AnswerChoose, manager);
         bool even = (slot & 1) == 0;
         Vector2 place = {even ? SlotEvenX : SlotOddX, static_cast<f32>(slot) * SlotSpacing + SlotsTop};
         Vector2 scale = {1.0f, 1.0f};
         Vector2 offset = {even ? -1.0f : 1.0f, 0.0f};
         RingWidget* ring =
-            RingWidget::Construct(Allocate<RingWidget>(), 0.5f, LevelRings, LevelRingSegments, LevelRingSteps, nullptr);
+            RingWidget::Construct(Allocate<RingWidget>(), AnchorMiddle, PanelRings, RingSegments, RingSteps, nullptr);
         page->rings[slot] = ring;
-        SaveSlotWidget* widget = SaveSlotWidget::Construct(Allocate<SaveSlotWidget>(), 0.5f, page, item, controller, summary);
+        SaveSlotWidget* widget =
+            SaveSlotWidget::Construct(Allocate<SaveSlotWidget>(), AnchorMiddle, page, item, controller, summary);
         page->widgets[slot] = widget;
         u32 colour;
-        GetColor(&colour, WhiteColour);
+        GetColor(&colour, ColourWhite);
         ring->SlideIn(colour, &place, &scale, &offset);
-        GetColor(&colour, WhiteColour);
+        GetColor(&colour, ColourWhite);
         widget->SlideIn(colour, &place, &scale, &offset);
         Vector2 radii = SlotPanelRadii;
         AddPanelRings(&radii, ring);
@@ -1210,12 +1199,12 @@ void SaveSlotsPage::Destroy(u32 destroyFlags)
     {
         if (widgets[slot] != nullptr)
         {
-            CallVirtual<void>(widgets[slot], widgets[slot]->vtable, WidgetDestroySlot, Delete);
+            CallVirtual<void>(widgets[slot], widgets[slot]->vtable, Widget::DestroySlot, u32{DestroyAndFree});
         }
 
         if (rings[slot] != nullptr)
         {
-            CallVirtual<void>(rings[slot], rings[slot]->vtable, WidgetDestroySlot, Delete);
+            CallVirtual<void>(rings[slot], rings[slot]->vtable, Widget::DestroySlot, u32{DestroyAndFree});
         }
     }
 
@@ -1235,36 +1224,33 @@ void SaveSlotsPage::Destroy(u32 destroyFlags)
 
 void InitOlegPagesModule(u32 initialize, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    constexpr f32 Small = Rounded(0.01);
-    constexpr s32 Colour8 = 8;
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
 
-    g_OlegPagesUp.x = 0.0f;
-    g_OlegPagesUp.w = 1.0f;
-    g_OlegPagesSmall2 = Small;
-    g_OlegPagesUp.y = 1.0f;
-    g_OlegPagesUp.z = 0.0f;
-    g_OlegPagesSmall = Small;
-    ColourSet(&g_OlegPagesShade, 0.0f, 0.0f, 0.0f, 0.5f);
-    AngleFrom(&g_OlegPagesAngle45, 0x1.921fb6p-1f, AngleRadians);
-    g_OlegPagesUpBack.x = 0.0f;
-    g_OlegPagesUp2.w = 1.0f;
-    g_OlegPagesUpBack.z = -1.0f;
-    g_OlegPagesUpBack.w = 1.0f;
-    g_OlegPagesUp2.x = 0.0f;
-    g_OlegPagesUp2.z = 0.0f;
-    g_OlegPagesUpBack.y = 1.0f;
-    g_OlegPagesUp2.y = 1.0f;
-    g_OlegPagesZero = 0;
-    GetColor(&g_OlegPagesWhite, WhiteColour);
-    GetColor(&g_OlegPagesColour8, Colour8);
+    g_OlegPagesUnusedUp.x = 0.0f;
+    g_OlegPagesUnusedUp.w = 1.0f;
+    g_OlegPagesUnusedShadowY = UiShadowOffset;
+    g_OlegPagesUnusedUp.y = 1.0f;
+    g_OlegPagesUnusedUp.z = 0.0f;
+    g_OlegPagesUnusedShadowX = UiShadowOffset;
+    ColourSet(&g_OlegPagesUnusedShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
+    AngleFrom(&g_OlegPagesUnusedAngle, QuarterPi, AngleRadians);
+    g_OlegPagesUnusedUpBack.x = 0.0f;
+    g_OlegPagesUnusedUp2.w = 1.0f;
+    g_OlegPagesUnusedUpBack.z = -1.0f;
+    g_OlegPagesUnusedUpBack.w = 1.0f;
+    g_OlegPagesUnusedUp2.x = 0.0f;
+    g_OlegPagesUnusedUp2.z = 0.0f;
+    g_OlegPagesUnusedUpBack.y = 1.0f;
+    g_OlegPagesUnusedUp2.y = 1.0f;
+    g_OlegPagesUnusedZero = 0;
+    GetColor(&g_OlegPagesUnusedWhite, ColourWhite);
+    GetColor(&g_OlegPagesUnusedBlack, ColourBlack);
 }
 
 void ConstructOlegPagesModule()
 {
-    InitOlegPagesModule(1, 0xFFFF);
+    InitOlegPagesModule(1, DefaultInitPriority);
 }

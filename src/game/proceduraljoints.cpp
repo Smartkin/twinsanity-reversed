@@ -56,18 +56,13 @@ FUN_0015f610:
 
 namespace
 {
-constexpr u32 ModelNodeKind = 3;
-// The characters (the first int property): Crash, Cortex, a Crash 2 units high without probes, Nina, none and Mecha-Bandicoot
-constexpr u32 CharacterProperty = 0;
-constexpr s32 Crash = 0;
-constexpr s32 Cortex = 1;
-constexpr s32 TallCrash = 2;
-constexpr s32 Nina = 3;
-constexpr s32 MechaBandicoot = 5;
 // The angles and the lag's components (0 x, 1 y, 2 z)
 constexpr s32 AxisX = 0;
 constexpr s32 AxisY = 1;
 constexpr s32 AxisZ = 2;
+// An anchor at no exit point (the instance's position) and no joint
+constexpr s32 NoAnchorExitPoint = -1;
+constexpr s32 NoAnchorJoint = -1;
 // The legs' joints: the thigh, the shin and the foot of the leg on the instance's -x side (A) and of the +x side's (B)
 constexpr s32 ThighA = 6;
 constexpr s32 ShinA = 7;
@@ -76,6 +71,7 @@ constexpr s32 ThighB = 9;
 constexpr s32 ShinB = 10;
 constexpr s32 FootB = 11;
 constexpr s32 LegJoints[] = {ThighA, ThighB, ShinA, ShinB, FootA, FootB};
+constexpr s32 LegJointCount = 6;
 // Crash's joints tilted to the slope and squashed on landing
 constexpr s32 SlopeTiltJoint = 5;
 constexpr s32 SquashJoint = 28;
@@ -90,11 +86,9 @@ constexpr f32 SquashDamping = 9.0f;
 constexpr f32 SquashMost = 1.3f;
 constexpr f32 SquashLeast = 0.5f;
 // Foot placement: rays from half a unit above to half a unit below each foot (0.23 to either side, its toe 0.15 ahead) against
-// the ground and the instances of node kinds 4, 13, 15, 16 and 18; a leg's stretch from its foot's height (within 0.3 either
-// way), a foot's tilt from its heel's height above its toe's, eased at 5 and 14 a second
-constexpr f32 NoHit = Rounded(1e30);
+// the ground and the instances of dynamic scenery, crates, creatures, generic objects and pay gates; a leg's stretch from its
+// foot's height (within 0.3 either way), a foot's tilt from its heel's height above its toe's, eased at 5 and 14 a second
 constexpr u16 MostFound = 32;
-constexpr u32 FootNodeKinds = 0x5A010;
 constexpr f32 RayReach = 0.5f;
 constexpr f32 FootSide = Rounded(0.23);
 constexpr f32 ToeAhead = Rounded(0.15);
@@ -106,9 +100,6 @@ constexpr f32 MostTilt = 0.25f;
 constexpr f32 TiltRate = 14.0f;
 // The slope tilt turns only when the normal is this far from up
 constexpr f32 LeastTilt = Rounded(0.001);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// The part's move bit of the crouch's state 3 (crawling)
-constexpr u32 MoveCrawling = 0x200;
 constexpr Vector4 Up = {0.0f, 1.0f, 0.0f, 1.0f};
 
 static_assert(offsetof(CharacterAgent, link) == 0xB0);
@@ -137,22 +128,23 @@ Matrix4x4 TurnOf(const Matrix4x4* matrix)
     return turn;
 }
 
-// The height of the ground or of an instance of the kinds within half a unit above or below a point, from the point (NoHit
+// The height of the ground or of an instance of the kinds within half a unit above or below a point, from the point (Infinite
 // without one)
-f32 GroundHeight(InstanceContext* instance, CollisionCache* cache, InstanceRayHit* query, const Vector4* point)
+f32 GroundHeight(InstanceContext* instance, CollisionCache* cache, InstanceQuery* query, const Vector4* point)
 {
     Vector4 start = *point;
     Vector4 end = *point;
     end.y = end.y - RayReach;
     start.y = start.y + RayReach;
-    query->bits &= ~InstanceRayHit::BitFull;
+    query->bits.unused0 = 0;
     query->count = 0;
     query->instance = nullptr;
-    query->distance = NoHit;
+    query->distance = Infinite;
     Vector4 hit;
-    if (SegmentHitsTrianglesOrInstances(instance->chunk, cache, &start, &end, query, FootNodeKinds, nullptr, &hit, nullptr) == 0)
+    if (SegmentHitsTrianglesOrInstances(instance->chunk, cache, &start, &end, query, SolidObjectNodeKinds, nullptr, &hit, nullptr)
+        == 0)
     {
-        return NoHit;
+        return Infinite;
     }
 
     return hit.y - point->y;
@@ -176,7 +168,7 @@ f32 ClampHeight(f32 height)
 // A foot's tilt: its heel's height above its toe's (none when a ray missed)
 f32 FootTilt(f32 heel, f32 toe)
 {
-    if (heel == NoHit || toe == NoHit)
+    if (heel == Infinite || toe == Infinite)
     {
         return 0.0f;
     }
@@ -240,10 +232,10 @@ void ProceduralJoint::Reset()
     angles[AxisY] = 0;
     angles[AxisZ] = 0;
     normal = Up;
-    joint = -1;
+    joint = NoAnchorJoint;
     started = 0;
     normalSpeed = 0.0f;
-    anchorExitPoint = -1;
+    anchorExitPoint = NoAnchorExitPoint;
 }
 
 void ProceduralJoint::MakeDangling(f32 halfLife, f32 slowHalfLife, f32 gain, f32 secondGain, f32 unused, f32 limit,
@@ -296,7 +288,7 @@ void ProceduralJoint::Still(CharacterAgent* unused)
 
 u32 ProceduralJoint::ChangeChunk(ChunkData* from, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -314,10 +306,10 @@ void ProceduralJoint::Step(f32 seconds, CharacterAgent* agent)
     {
         // The anchor's movement this frame smoothed twice: what's between the two, in the anchor's space, swings the joint
         InstanceContext* instance = agent->instance;
-        OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind))->animator;
+        OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel))->animator;
         Vector4 position;
         Matrix4x4 frame;
-        if (anchorExitPoint == -1)
+        if (anchorExitPoint == NoAnchorExitPoint)
         {
             ObjectPlace* place = instance->place;
             place->SyncPosition();
@@ -387,13 +379,14 @@ void ProceduralJoint::Step(f32 seconds, CharacterAgent* agent)
 
         EaseAngle(AngleSlot(this, slot), keep, first);
         EaseAngle(AngleSlot(this, secondSlot), keep, second);
-        *AngleSlot(this, 3 - secondSlot - slot) = 0;
+        // The third angle (the slots are two of 0, 1 and 2)
+        *AngleSlot(this, AxisX + AxisY + AxisZ - secondSlot - slot) = 0;
     }
     else if (kind == KindSlopeTilt)
     {
         // Crouching or crawling the normal moves toward the ground's under the character at its speed, else it's up
-        u32 moveBits = static_cast<CharacterPart*>(agent->part)->moveBits;
-        if ((moveBits & MoveCrawling) == 0 && (moveBits & CharacterPart::Crouching) == 0)
+        CharacterMoveBits moveBits = static_cast<CharacterPart*>(agent->part)->moveBits;
+        if (moveBits.crawling == 0 && moveBits.crouching == 0)
         {
             normal = Up;
             return;
@@ -441,9 +434,10 @@ ProceduralJoints* ProceduralJoints::Construct(ProceduralJoints* joints, Characte
 
 void ProceduralJoints::SetUp()
 {
-    switch (agent->properties->GetInt(CharacterProperty))
+    // Crash's elements: four dangling joints, the legs, the slope tilt and the squash; Cortex's: the legs, two dangling ones
+    switch (agent->properties->GetInt(CharacterKindProperty))
     {
-    case Crash:
+    case CharacterCrash:
         MakeElements(12);
         elements[0].MakeDangling(DanglingHalfLife, DanglingSlowHalfLife, -165.0f, -70.0f, Rounded(3.3), Rounded(2.1),
                                  Rounded(1.6), 1, 20, AxisZ, AxisX, AxisX, AxisZ);
@@ -453,7 +447,7 @@ void ProceduralJoints::SetUp()
                                  Rounded(1.1), 9, 26, AxisY, AxisZ, AxisX, AxisY);
         elements[3].MakeDangling(DanglingHalfLife, DanglingSlowHalfLife, -23.0f, -25.0f, Rounded(3.2), Rounded(1.1),
                                  Rounded(1.1), 10, 27, AxisY, AxisZ, AxisX, AxisY);
-        for (s32 i = 0; i < 6; i++)
+        for (s32 i = 0; i < LegJointCount; i++)
         {
             elements[4 + i].MakeLeg(LegJoints[i]);
         }
@@ -463,9 +457,9 @@ void ProceduralJoints::SetUp()
         squashes = 1;
         placesFeet = 1;
         break;
-    case Cortex:
+    case CharacterCortex:
         MakeElements(8);
-        for (s32 i = 0; i < 6; i++)
+        for (s32 i = 0; i < LegJointCount; i++)
         {
             elements[i].MakeLeg(LegJoints[i]);
         }
@@ -476,17 +470,17 @@ void ProceduralJoints::SetUp()
                                  27, AxisY, AxisZ, AxisX, AxisY);
         placesFeet = 1;
         break;
-    case TallCrash:
-    case Nina:
+    case CharacterTallCrash:
+    case CharacterNina:
         placesFeet = 1;
-        MakeElements(6);
-        for (s32 i = 0; i < 6; i++)
+        MakeElements(LegJointCount);
+        for (s32 i = 0; i < LegJointCount; i++)
         {
             elements[i].MakeLeg(LegJoints[i]);
         }
 
         break;
-    case MechaBandicoot:
+    case CharacterMecha:
         placesFeet = 0;
         break;
     }
@@ -531,7 +525,7 @@ void ProceduralJoints::Destroy(u32 destroyFlags)
     }
 
     vtable = g_JointHookVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -686,7 +680,7 @@ u32 ProceduralJoints::PoseJoint(JointAnimator* animator, Matrix4x4* matrix)
 void ProceduralJoints::Frame(TimeClock* clock)
 {
     InstanceContext* instance = agent->instance;
-    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind))->animator;
+    OgiAnimator* animator = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel))->animator;
     if (attached == 0)
     {
         AttachToModelAnimator(this, instance);
@@ -735,13 +729,13 @@ void ProceduralJoints::PlaceFeet(f32 seconds)
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     void* found[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = found;
     query.most = MostFound;
     query.count = 0;
-    query.distance = NoHit;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.distance = Infinite;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.wantedFlags = 0;
     query.skipped[0] = nullptr;
     query.instance = nullptr;
@@ -756,13 +750,13 @@ void ProceduralJoints::PlaceFeet(f32 seconds)
     f32 heelHeightA = GroundHeight(instance, cache, &query, &heelA);
     f32 heelHeightB = GroundHeight(instance, cache, &query, &heelB);
     f32 stretchA = 1.0f;
-    if (heelHeightA != NoHit)
+    if (heelHeightA != Infinite)
     {
         stretchA = 1.0f - ClampHeight(heelHeightA) * StretchPerHeight;
     }
 
     f32 stretchB = 1.0f;
-    if (heelHeightB != NoHit)
+    if (heelHeightB != Infinite)
     {
         stretchB = 1.0f - ClampHeight(heelHeightB) * StretchPerHeight;
     }
@@ -819,7 +813,7 @@ void ProceduralJoints::Still()
 
 u32 ProceduralJoints::ChangeChunk(ChunkData* from, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }

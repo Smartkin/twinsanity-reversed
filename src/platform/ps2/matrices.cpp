@@ -68,7 +68,6 @@ void MultiplyRotations(Vector4* out, const Vector4* a, const Vector4* b)
 // first vertex is; whether the cross product was longer than 5e-05
 u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* second, const Vector4* third)
 {
-    constexpr f32 NoArea = 0x1.a36e2ep-15f;
     alignas(16) f32 length[4];
     asm volatile("lqc2 $vf8, 0x0(%2)\n\t"
                  "lqc2 $vf9, 0x0(%3)\n\t"
@@ -96,7 +95,7 @@ u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* se
                  :
                  : "r"(plane), "r"(length), "r"(first), "r"(second), "r"(third)
                  : "memory");
-    return NoArea < length[0];
+    return Epsilon < length[0];
 }
 
 void VuTransformByRows(const Matrix4x4* rows, const Vector4* point, Vector4* out)

@@ -15,10 +15,6 @@ EABI_EXPORT(FUN_0015a688, &HoverboardVehicle::Tilt);
 
 namespace
 {
-constexpr u32 BodyNodeKind = 5;
-constexpr u32 FollowNodeKind = 0x16;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-
 // The board's body: a mass of 5 in its ellipsoid's box (twice as wide armed), how soft it is (armed 40), no friction but a
 // little against spinning and rolling; it bounces 0.6 (armed 0.3)
 constexpr f32 BoardMass = 5.0f;
@@ -51,19 +47,20 @@ constexpr f32 KnockThreshold = Rounded(0.1);
 constexpr f32 KnockScale = 4.0f;
 
 // The drive: the stick rooted times 0.7, pulled toward the board's heading when it keeps it; a thrust of 32, armed boards' less
-// the higher they hover (half at 24)
+// the higher above the rest height they hover (by half at the rise height, over the 20.5 between them)
 constexpr f32 StickScale = 0.7f;
 constexpr f32 Thrust = 32.0f;
 constexpr f32 InverseRiseRange = 0x1.8f9c18p-5f;
-// The hover: probes 26 down from the board's corners (half a unit from its middle), a spring toward the hover height (3.5; 24
-// while it can rise and the shoulder or the stick pulled back is held) 20 times the error (armed 8.5, a tenth of it pulling
-// down), at a point 0.3 of the way to the corner; a corner over nothing is pulled down 200
+constexpr f32 RiseThrustLoss = 0.5f;
+// The hover: probes 26 down from the board's four corners (half a unit from its middle) through the surfaces solid to objects
+// and the solid objects (dynamic scenery, crates, creatures, generic objects and pay gates), a spring toward the hover height
+// (3.5; 24 while it can rise and the shoulder or the stick pulled back is held)
+// 20 times the error (armed 8.5, a tenth of it pulling down), at a point 0.3 of the way to the corner; a corner over nothing is
+// pulled down 200
 constexpr s32 MostProbed = 0x20;
+constexpr s32 BoardCorners = 4;
 constexpr f32 ProbeDepth = 26.0f;
 constexpr f32 CornerOffset = 0.5f;
-constexpr f32 NoHitDistance = Rounded(1e30);
-constexpr u32 ProbeSurfaces = 0x40;
-constexpr u32 ProbeKinds = 0x5A010;
 constexpr f32 RestHeight = 3.5f;
 constexpr f32 RiseHeight = 24.0f;
 constexpr f32 RiseShoulder = Rounded(0.1);
@@ -96,11 +93,11 @@ constexpr f32 SpinDragOthers = -2.6f;
 // The character stands 0.76 down and 0.15 back along the board
 constexpr f32 StandDown = 0.76f;
 constexpr f32 StandBack = Rounded(0.15);
-// The tow: circle pressed; the nearest body from 0 to 12 below it within a box 3 across (and 15 down); springs 2.6 long, 50
-// stiff and damped 5 between the two
+// The tow: circle pressed; the nearest body (an instance with a rigid body node) from 0 to 12 below it within a box 3 across
+// (and 15 down); springs 2.6 long, 50 stiff and damped 5 between the two
 constexpr f32 TowPress = Rounded(0.1);
 constexpr s32 MostTowed = 0x20;
-constexpr u32 TowedKinds = 0x20;
+constexpr u32 TowedKinds = 1u << NodeRigidBody;
 constexpr f32 TowReachAcross = 3.0f;
 constexpr f32 TowReachDown = 15.0f;
 constexpr f32 TowDepth = 12.0f;
@@ -110,34 +107,7 @@ constexpr f32 TowDamping = 5.0f;
 
 DynamicBody* BodyOf(InstanceContext* instance)
 {
-    return static_cast<DynamicBody*>(GetGameNode(&instance->nodes, BodyNodeKind));
-}
-
-// When the vehicle's Place says so, the character put at agentMatrix and the other at otherMatrix, each queued when its place
-// changed (retail works out the rotation of agentMatrix first and drops it)
-void PlaceRiders(Vehicle* vehicle)
-{
-    if (vehicle->Place() == 0)
-    {
-        return;
-    }
-
-    Vector4 rotation;
-    GetRotationVec(&rotation, &vehicle->agentMatrix);
-    InstanceContext* instance = vehicle->agent->instance;
-    if (SetPlaceMatrix(instance->place, &vehicle->agentMatrix) != 0)
-    {
-        QueueObject(instance);
-    }
-
-    if (vehicle->other != nullptr)
-    {
-        InstanceContext* otherInstance = vehicle->other->instance;
-        if (SetPlaceMatrix(otherInstance->place, &vehicle->otherMatrix) != 0)
-        {
-            QueueObject(otherInstance);
-        }
-    }
+    return static_cast<DynamicBody*>(GetGameNode(&instance->nodes, NodeRigidBody));
 }
 
 // The instance towed (none without a tow)
@@ -157,22 +127,23 @@ void LetGo(HoverboardVehicle* vehicle)
 }
 
 // The stick's part rooted and scaled (negative for none)
-f32 RootedStick(f32 value)
+f32 RootedStick(f32 stick)
 {
-    f32 rooted = __builtin_sqrtf(__builtin_fabsf(value)) * StickScale;
-    return value <= 0.0f ? -rooted : rooted;
+    f32 rooted = __builtin_sqrtf(__builtin_fabsf(stick)) * StickScale;
+    return stick <= 0.0f ? -rooted : rooted;
 }
 }
 
 HoverboardVehicle* HoverboardVehicle::Construct(HoverboardVehicle* vehicle, CharacterAgent* agent, Agent* board, u32 armed)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->towed = nullptr;
     vehicle->other = board;
     vehicle->vtable = g_HoverboardVehicleVTable;
     vehicle->armed = static_cast<u8>(armed);
-    vehicle->Bits() = (vehicle->Bits() | BitDrives) & ~u64{BitHeld};
+    vehicle->bits.drives = 1;
+    vehicle->bits.held = 0;
     vehicle->hoverHeight = RestHeight;
     vehicle->Start();
     vehicle->cameraRate = StartCameraRate;
@@ -212,7 +183,7 @@ void HoverboardVehicle::Start()
 
     body->SetFriction(0.0f);
     body->SetSpinAndRollFriction(SpinFriction, SpinFriction);
-    *reinterpret_cast<u64*>(&body->bits) &= ~u64{DynamicBody::BitPlacesInstance};
+    body->bits.placesInstance = 0;
 }
 
 // The board at the body's matrix, the character standing on it and the exit upright at the character, facing across the board
@@ -295,7 +266,7 @@ void HoverboardVehicle::Frame(f32 seconds)
     Drive();
     if (tows != 0)
     {
-        if ((agent->state & CharacterAgent::StateDead) != 0)
+        if (agent->state.dead != 0)
         {
             LetGo(this);
         }
@@ -344,7 +315,7 @@ void HoverboardVehicle::Frame(f32 seconds)
             cameraRate = cameraRate * CameraRateKeep + CameraRateGain;
         }
 
-        auto* follow = static_cast<FollowNode*>(GetGameNode(&agent->instance->nodes, FollowNodeKind));
+        auto* follow = static_cast<FollowNode*>(GetGameNode(&agent->instance->nodes, NodeFollow));
         if (follow != nullptr)
         {
             follow->camera.rig.ownPositioner.ownRate = cameraRate;
@@ -425,7 +396,7 @@ void HoverboardVehicle::Drive()
     f32 thrust = Thrust;
     if (armed != 0)
     {
-        thrust = (1.0f - (hoverHeight - RestHeight) * InverseRiseRange * 0.5f) * Thrust;
+        thrust = (1.0f - (hoverHeight - RestHeight) * InverseRiseRange * RiseThrustLoss) * Thrust;
     }
 
     Vector4 force = {drive.x * thrust, drive.y * thrust, drive.z * thrust, 1.0f};
@@ -447,11 +418,12 @@ void HoverboardVehicle::Hover(f32* heightError)
     InstanceContext* towedInstance = TowedOf(this);
     if (towedInstance != nullptr)
     {
-        towedInstance->flags &= ~ReferencedObject::FlagSphereContact;
+        towedInstance->flags.collisionActive = 0;
     }
 
     void* results[MostProbed];
-    for (s32 corner = 0; corner < 4; corner++)
+    // (bit 0 of the corner's index its side along x, bit 1 along z)
+    for (s32 corner = 0; corner < BoardCorners; corner++)
     {
         Vector4 local = {(corner & 1) != 0 ? CornerOffset : -CornerOffset, 0.0f,
                          (corner & 2) != 0 ? CornerOffset : -CornerOffset, 1.0f};
@@ -460,14 +432,14 @@ void HoverboardVehicle::Hover(f32* heightError)
         VuTransformPoint(&body->matrix, &local, &start);
         Vector4 end = start;
         end.y = end.y - ProbeDepth;
-        InstanceRayHit query;
+        InstanceQuery query;
         query.results = results;
         query.count = 0;
         query.most = MostProbed;
-        query.distance = NoHitDistance;
-        query.bits = InstanceRayHit::BitAllWanted;
-        query.wantedFlags = ReferencedObject::FlagSphereContact;
-        query.unwantedFlags = ReferencedObject::FlagAsleep;
+        query.distance = Infinite;
+        query.bits.value = InstanceQueryBits::AllWanted;
+        query.wantedFlags = ReferencedObjectFlags::CollisionActive;
+        query.unwantedFlags = ReferencedObjectFlags::Asleep;
         query.skipped[0] = nullptr;
         query.instance = nullptr;
         query.skipped[1] = nullptr;
@@ -475,7 +447,8 @@ void HoverboardVehicle::Hover(f32* heightError)
         query.skipped[1] = other->instance;
         Vector4 hit;
         f32 push;
-        if (SegmentHitsAnything(agent->instance->chunk, &start, &end, ProbeSurfaces, &query, ProbeKinds, nullptr, &hit, nullptr)
+        if (SegmentHitsAnything(agent->instance->chunk, &start, &end, SurfaceFlags::SolidToObjects, &query, SolidObjectNodeKinds,
+                                nullptr, &hit, nullptr)
             != 0)
         {
             f32 height = start.y - hit.y;
@@ -526,7 +499,7 @@ void HoverboardVehicle::Hover(f32* heightError)
     towedInstance = TowedOf(this);
     if (towedInstance != nullptr)
     {
-        towedInstance->flags |= ReferencedObject::FlagSphereContact;
+        towedInstance->flags.collisionActive = 1;
     }
 }
 
@@ -684,15 +657,15 @@ void HoverboardVehicle::Tow()
     }
 
     void* results[MostTowed];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = results;
     query.count = 0;
     query.most = MostTowed;
-    query.distance = NoHitDistance;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
-    f32 nearest = NoHitDistance;
+    query.distance = Infinite;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
+    f32 nearest = Infinite;
     InstanceContext* found = nullptr;
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.wantedFlags = 0;
     query.skipped[0] = nullptr;
     query.instance = nullptr;

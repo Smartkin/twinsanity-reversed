@@ -6,6 +6,21 @@
 // entries of 63 sizes for what's smaller than 4 KB (MemoryController). Frees can wait for the GPU to be done with the memory
 // (FreeDeferred). The disk manager (game/disk.h) has a pool of its own for the chunks' data.
 
+// Bit 0 of a GCC 2.9x destructor's flags (gcc2.h's DestructorFlags): the object is freed once it's destroyed
+constexpr u32 FreeAfterDestroy = 1;
+
+// A heap block's size: its bytes, and whether it's free
+union HeapBlockSize
+{
+    u32 value;
+    struct
+    {
+        u32 bytes : 31;
+        u32 free : 1;
+    };
+};
+CHECK_SIZE(HeapBlockSize, 4);
+
 // A block of the heap: this header, then its bytes
 struct HeapBlock
 {
@@ -14,9 +29,9 @@ struct HeapBlock
     HeapBlock* previous;
     // The block before it in memory
     HeapBlock* before;
-    // Its bytes; bit 31 while it's free
-    u32 size;
+    HeapBlockSize size;
 };
+CHECK_OFFSET(HeapBlock, size, 0xC);
 CHECK_SIZE(HeapBlock, 0x10);
 
 // Entries of one size in a run of memory, the free ones linked through their first word
@@ -62,6 +77,7 @@ struct DeferredFree
     void* memory;
     DeferredFree* next;
 };
+CHECK_SIZE(DeferredFree, 8);
 
 constexpr u32 DeferredFrames = 3;
 
@@ -82,12 +98,14 @@ struct HeapManager
     s32 ready;
     // The free block made last
     HeapBlock* recentFree;
-    u32 unknown38;
-    u32 unknown3C;
+    u32 unused38;
+    u32 unused3C;
     MemoryController small;
     DeferredFree* deferredFrees[DeferredFrames];
     u32 deferredFrame;
 };
+CHECK_OFFSET(HeapManager, unused38, 0x38);
+CHECK_OFFSET(HeapManager, small, 0x40);
 CHECK_SIZE(HeapManager, 0x180);
 
 extern "C"
@@ -108,22 +126,25 @@ extern "C"
 }
 
 // GCC 2.9x's new[] of a type with a destructor: a cookie of 16 bytes counting the elements before them
+constexpr u32 ArrayCookieSize = 0x10;
+constexpr u32 ArrayCookieWords = ArrayCookieSize / sizeof(u32);
+
 template <typename T>
 T* NewArray(u32 count)
 {
-    auto* block = static_cast<u32*>(MemoryAllocate2(count * sizeof(T) + 0x10));
+    auto* block = static_cast<u32*>(MemoryAllocate2(count * sizeof(T) + ArrayCookieSize));
     block[0] = count;
-    return reinterpret_cast<T*>(block + 4);
+    return reinterpret_cast<T*>(block + ArrayCookieWords);
 }
 
 template <typename T>
 u32 ArrayCount(T* array)
 {
-    return reinterpret_cast<u32*>(array)[-4];
+    return *(reinterpret_cast<u32*>(array) - ArrayCookieWords);
 }
 
 template <typename T>
 void DeleteArray(T* array)
 {
-    MemoryDeallocate_(reinterpret_cast<u32*>(array) - 4);
+    MemoryDeallocate_(reinterpret_cast<u32*>(array) - ArrayCookieWords);
 }

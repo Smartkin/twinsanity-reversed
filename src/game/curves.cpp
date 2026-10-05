@@ -72,11 +72,8 @@ constexpr f32 BasisOne = 0x1.fffff2p-1f;
 constexpr f32 BasisTwoThirds = 0x1.55554cp-1f;
 // The share the chords of a path's segment are walked by
 constexpr f32 ChordStep = 0x1.47ae14p-7f;
-constexpr f32 Far = 0x1.93e594p+99f;
 // A walk's point this much nearer than the segment's ends is refined
 constexpr f32 RefineBelow = 0x1.fef9dcp-1f;
-constexpr s32 RefineSteps = 4;
-constexpr f32 RefineTolerance = 0x1.a36e2ep-15f;
 
 struct PathSegment
 {
@@ -304,7 +301,7 @@ u32 PathSegmentNearest(LayoutPath* path, const Vector4* point, CurveSearch* sear
     Vector4 at = differences[0];
     path->searchPoint = *point;
     path->nearest = at;
-    path->unknown48 = segment;
+    path->searchSegment = segment;
     path->nearestShare = 0.0f;
     path->nearestDistance = DistanceSquared(point, &at);
     const Vector4* points = &path->points[segment];
@@ -374,7 +371,7 @@ f32 PathSegmentDistanceSquared(f32 into, LayoutPath* path)
     Vector4 points[4];
     for (u32 index = 0; index < 4; index++)
     {
-        points[index] = path->points[path->unknown48 + index];
+        points[index] = path->points[path->searchSegment + index];
     }
 
     Vector4 weights;
@@ -386,7 +383,7 @@ f32 PathSegmentDistanceSquared(f32 into, LayoutPath* path)
 
 void PathNearestSearch(LayoutPath* path, const Vector4* point, CurveSearch* search)
 {
-    search->distance = Far;
+    search->distance = Infinite;
     const Vector4* points = path->points;
     s32 nearest = 0;
     f32 nearestDistance = DistanceSquared(&points[0], point);
@@ -548,11 +545,11 @@ u32 BoxFractionsOf(const Vector4* box, const Vector4* point, Vector4* projected,
     if (0.0f <= *across && *across <= size->x && 0.0f <= *along && *along <= size->y)
     {
         // Inside: the point taken into the box's plane
-        f32 a = *across;
-        f32 b = *along;
-        projected->x = (acrossAxis->x * a + alongAxis->x * b) + corner->x;
-        projected->y = (acrossAxis->y * a + alongAxis->y * b) + corner->y;
-        projected->z = (acrossAxis->z * a + alongAxis->z * b) + corner->z;
+        f32 acrossDistance = *across;
+        f32 alongDistance = *along;
+        projected->x = (acrossAxis->x * acrossDistance + alongAxis->x * alongDistance) + corner->x;
+        projected->y = (acrossAxis->y * acrossDistance + alongAxis->y * alongDistance) + corner->y;
+        projected->z = (acrossAxis->z * acrossDistance + alongAxis->z * alongDistance) + corner->z;
         projected->w = 1.0f;
         *across = *across / size->x;
         *along = *along / size->y;
@@ -561,7 +558,7 @@ u32 BoxFractionsOf(const Vector4* box, const Vector4* point, Vector4* projected,
 
     // Outside: the nearest point of its four edges (from the corner across, along from that end, across from the corner's along
     // end and along from the corner) and its fractions
-    f32 nearestDistance = Far;
+    f32 nearestDistance = Infinite;
     Vector4 edge[2];
     Vector4 nearest;
     Vector4 acrossEnd = Along(corner, acrossAxis, size->x);
@@ -646,7 +643,7 @@ u32 SplineSegmentNearest(CameraSpline* spline, const Vector4* point, CurveSearch
     spline->searchPoint = *point;
     spline->nearest = at;
     f32 startDistance = DistanceSquared(point, &at);
-    spline->unknown48 = segment;
+    spline->searchSegment = segment;
     spline->nearestShare = 0.0f;
     spline->nearestDistance = startDistance;
     at = spline->samples[segment * 2 + 2];
@@ -708,7 +705,7 @@ u32 SplineSegmentNearest(CameraSpline* spline, const Vector4* point, CurveSearch
 
 f32 SplineSegmentDistanceSquared(f32 into, CameraSpline* spline)
 {
-    const Vector4* samples = &spline->samples[spline->unknown48 * 2];
+    const Vector4* samples = &spline->samples[spline->searchSegment * 2];
     Vector4 points[4];
     for (u32 index = 0; index < 4; index++)
     {
@@ -724,7 +721,7 @@ f32 SplineSegmentDistanceSquared(f32 into, CameraSpline* spline)
 
 void SplineNearestSearch(CameraSpline* spline, const Vector4* point, CurveSearch* search)
 {
-    search->distance = Far;
+    search->distance = Infinite;
     const Vector4* samples = spline->samples;
     s32 nearest = 0;
     f32 nearestDistance = DistanceSquared(&samples[0], point);
@@ -784,9 +781,9 @@ void ReadSpline(CameraSpline* spline, Stream* stream)
 s32 RefinePathNearest(LayoutPath* path, f32* into, f32* distanceSquared)
 {
     MinimumSearch search;
-    search.steps = RefineSteps;
-    search.tolerance = RefineTolerance;
-    search.closeness = RefineTolerance;
+    search.steps = CurveRefineSteps;
+    search.tolerance = CurveRefineTolerance;
+    search.closeness = CurveRefineTolerance;
     search.low = 0.0f;
     search.high = 1.0f;
     return FindMinimum(&search, path, reinterpret_cast<const void*>(&PathDistanceSquaredEntry), into, distanceSquared, 1);

@@ -1,6 +1,7 @@
 #include "game/vehicles.h"
 
 #include "game/collision.h"
+#include "game/colour.h"
 #include "game/gamecontroller.h"
 #include "game/layout.h"
 #include "game/math.h"
@@ -14,13 +15,10 @@ EABI_EXPORT(FUN_0015bd20, LaySkidMark);
 
 namespace
 {
-constexpr s32 MarkCount = 100;
+// The lists of the screen models freed after the next frame (gamecontroller.h's g_FreedBlocks and g_LastFreedBlocks)
 constexpr s32 FreedListSize = 1024;
 // A trail ends after 4 frames without a mark
 constexpr s32 IdleFramesToEnd = 4;
-// The surfaces that take marks (their bit 11, TT Lab's LeavesFootprints)
-constexpr u32 SurfaceTakesMarks = 0x800;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 
 // A trail fades in over its first 2.5 units: from 0.4 of its length (kept within 0 and 1.1) the width by its 4th root, the depth
 // by its 4th power
@@ -74,23 +72,23 @@ void LayStrip(SkidMarks* marks, const Vector4* nearTop, const Vector4* farTop, c
     }
 
     s32 shade = static_cast<s32>((normal.x * light.x + normal.y * light.y + normal.z * light.z) * ShadeScale - ShadeOffset);
-    u32 alpha = shade < 0 ? 0u - static_cast<u32>(shade) : static_cast<u32>(shade);
-    u32 colour = (alpha << 24) + White;
+    Rgba colour = {White};
+    colour.alpha = shade < 0 ? 0u - static_cast<u32>(shade) : static_cast<u32>(shade);
     Platform::Graphics::SetScreenModelMaterial(shade > 0 ? g_AddingSkidMaterial : g_SubtractingSkidMaterial);
     Platform::Graphics::SetScreenModelColour(marks->edgeColour);
     Platform::Graphics::AddScreenModelVertex(&corners[0]);
-    Platform::Graphics::SetScreenModelColour(colour);
+    Platform::Graphics::SetScreenModelColour(colour.value);
     Platform::Graphics::AddScreenModelVertex(&corners[1]);
     Platform::Graphics::SetScreenModelColour(marks->lowColour);
     Platform::Graphics::AddScreenModelVertex(&corners[2]);
     Platform::Graphics::SetScreenModelColour(White);
     Platform::Graphics::AddScreenModelVertex(&corners[3]);
     marks->lowColour = White;
-    marks->edgeColour = colour;
+    marks->edgeColour = colour.value;
     FreeSkidMark(marks->marks[marks->next]);
     marks->marks[marks->next] = Platform::Graphics::EndScreenModel();
     marks->next++;
-    if (marks->next == MarkCount)
+    if (marks->next == SkidMarks::MarkCount)
     {
         marks->next = 0;
     }
@@ -143,13 +141,13 @@ SkidMarks* ConstructSkidMarks(SkidMarks* marks)
 
 void DestroySkidMarks(SkidMarks* marks, u32 destroyFlags)
 {
-    for (s32 index = 0; index < MarkCount; index++)
+    for (s32 index = 0; index < SkidMarks::MarkCount; index++)
     {
         FreeSkidMark(marks->marks[index]);
         marks->marks[index] = nullptr;
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(marks);
     }
@@ -165,7 +163,7 @@ void FreeSkidMark(ScreenModel* mark)
 
 void ClearSkidMarks(SkidMarks* marks)
 {
-    for (s32 index = 0; index < MarkCount; index++)
+    for (s32 index = 0; index < SkidMarks::MarkCount; index++)
     {
         FreeSkidMark(marks->marks[index]);
         marks->marks[index] = nullptr;
@@ -230,7 +228,7 @@ void LaySkidMark(f32 offset, f32 depth, SkidMarks* marks, const Vector4* point, 
     {
         for (CollisionHit* triangle = FirstCollisionHit(cache); triangle != nullptr; triangle = NextCollisionHit(cache))
         {
-            if ((GetTriangleSurface(triangle)->collisionMask & SurfaceTakesMarks) == 0)
+            if (GetTriangleSurface(triangle)->flags.soft == 0)
             {
                 continue;
             }
@@ -257,9 +255,9 @@ void LaySkidMark(f32 offset, f32 depth, SkidMarks* marks, const Vector4* point, 
     }
 
     marks->active = 1;
-    marks->lastLow = at;
+    marks->unused20 = at;
     marks->lastPoint = at;
-    marks->lastLow.y = marks->lastLow.y - depth;
+    marks->unused20.y = marks->unused20.y - depth;
 }
 
 void DrawSkidMarks(SkidMarks* marks)
@@ -269,7 +267,7 @@ void DrawSkidMarks(SkidMarks* marks)
     Matrix4x4 toClip = view->toClip;
     f32& depth = toScreen.m[3][2];
     depth = depth + depth * DrawnDepthBack;
-    for (s32 index = 0; index < MarkCount; index++)
+    for (s32 index = 0; index < SkidMarks::MarkCount; index++)
     {
         if (marks->marks[index] != nullptr)
         {

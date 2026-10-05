@@ -13,6 +13,14 @@
 namespace
 {
 constexpr u32 MaxArguments = 256;
+// The file streams' channels
+constexpr s32 StreamChannels = 9;
+// The game's clock goes by the display's frames: 50 a second on a PAL TV, 60 on an NTSC one
+constexpr s32 PalFramesPerSecond = 50;
+constexpr s32 NtscFramesPerSecond = 60;
+// One pad, so pad 1's bit (of GamePadController's bit per pad made) is never set
+constexpr s32 PadCount = 1;
+constexpr u32 SecondPadBit = 1u << 1;
 
 bool IsPlayingMovie(const GameMovieController* movie)
 {
@@ -32,26 +40,26 @@ extern "C" int Main(u32 argc, char** argv)
     Platform::System::Initialise();
     GameContext* context = ParseArguments(argc, argv);
     Platform::System::StartServices();
-    InitStreamSystem(9);
+    InitStreamSystem(StreamChannels);
     CreateMusic();
     UpdateStreamSystem(g_StreamSystem);
 
     if (G_GameRendererController == nullptr)
     {
-        G_GameRendererController = GameRendererController::Construct(MemoryAllocate(0x20), g_ScreenWidth, g_ScreenHeight, g_Pal);
+        void* memory = MemoryAllocate(sizeof(GameRendererController));
+        G_GameRendererController = GameRendererController::Construct(memory, g_ScreenWidth, g_ScreenHeight, g_Pal);
     }
 
     if (G_GameClockController == nullptr)
     {
-        G_GameClockController =
-            GameTimeConstruct(static_cast<GameTimeController*>(MemoryAllocate(sizeof(GameTimeController))), g_Pal ? 50 : 60);
+        G_GameClockController = GameTimeConstruct(static_cast<GameTimeController*>(MemoryAllocate(sizeof(GameTimeController))),
+                                                  g_Pal ? PalFramesPerSecond : NtscFramesPerSecond);
     }
 
     if (G_GamePadController == nullptr)
     {
-        GamePadController* pads = GamePadController::Construct(MemoryAllocate(sizeof(GamePadController)), 1);
-        // Pad 1's bit, which one pad never has
-        pads->flags &= ~(1u << 1);
+        GamePadController* pads = GamePadController::Construct(MemoryAllocate(sizeof(GamePadController)), PadCount);
+        pads->flags.pads &= ~SecondPadBit;
         G_GamePadController = pads;
     }
 

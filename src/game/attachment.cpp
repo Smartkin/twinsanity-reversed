@@ -13,12 +13,6 @@ EABI_EXPORT(FUN_00193498, SetAttachmentSpring);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr u32 NoExitPoint = 0xFF;
-// An instance's flags: it hangs from another, and another hangs from it
-constexpr u32 FlagHangs = 0x40;
-constexpr u32 FlagHasHanging = 0x80;
-
 InstanceContext* AttachedInstance(const Attachment* attachment)
 {
     Reference* reference = attachment->instanceReference;
@@ -28,26 +22,21 @@ InstanceContext* AttachedInstance(const Attachment* attachment)
 // The animation of one of an instance's model's exit points (none when its animator has none)
 ExitPointAnimation* ExitPointOf(InstanceContext* instance, u8 exitPoint)
 {
-    auto* node = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNode::NodeKind));
+    auto* node = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     SizedArray<ExitPointAnimation*>* exitPoints = node->animator->exitPoints;
     return exitPoints != nullptr ? exitPoints->data[exitPoint] : nullptr;
 }
 
-void SetExitPointIndex(Attachment* attachment, u8 exitPoint)
+void SetFollow(Attachment* attachment, u32 follow, u32 kind)
 {
-    attachment->bits = (attachment->bits & ~u64{Attachment::ExitPointMask}) | u64{exitPoint} << Attachment::ExitPointShift;
-}
-
-void SetFollow(Attachment* attachment, u64 follow, u64 kind)
-{
-    attachment->bits = (attachment->bits & ~u64{Attachment::FollowMask}) | follow;
-    attachment->bits = (attachment->bits & ~u64{Attachment::KindMask}) | kind;
+    attachment->bits.follow = follow;
+    attachment->bits.kind = kind;
 }
 
 // The instance's matrix to be kept: its place, made up to date
 ObjectPlace* StartKeepingOffset(Attachment* attachment)
 {
-    attachment->bits |= Attachment::BitKeepsOffset;
+    attachment->bits.keepsOffset = 1;
     ObjectPlace* place = AttachedInstance(attachment)->place;
     RotateAndTranslate(place);
     return place;
@@ -79,10 +68,12 @@ Attachment* ConstructAttachment(Attachment* attachment, InstanceContext* holder,
     attachment->instanceReference = nullptr;
     attachment->focus = nullptr;
     AssignReference(&attachment->instanceReference, instance);
-    SetFollow(attachment, 0, 0);
-    SetExitPointIndex(attachment, NoExitPoint);
+    SetFollow(attachment, Attachment::FollowsPlace, Attachment::KindInstance);
+    attachment->bits.exitPoint = GameOGI::NoExitPoint;
     attachment->instance = instance;
-    attachment->bits &= ~u64{Attachment::BitKeepsOffset} & ~u64{Attachment::Bit24} & ~u64{Attachment::BitHangs};
+    attachment->bits.keepsOffset = 0;
+    attachment->bits.joined = 0;
+    attachment->bits.hangs = 0;
     attachment->exitPoint = nullptr;
     attachment->focusExitPoint = nullptr;
     AssignReference(&attachment->focus, nullptr);
@@ -93,10 +84,12 @@ Attachment* ConstructAttachment(Attachment* attachment, InstanceContext* holder,
 Attachment* ConstructPositionAttachment(Attachment* attachment, InstanceContext* holder, AiPosition* position)
 {
     SetFollow(attachment, Attachment::FollowsPosition, Attachment::KindPosition);
-    SetExitPointIndex(attachment, NoExitPoint);
+    attachment->bits.exitPoint = GameOGI::NoExitPoint;
     attachment->holder = holder;
     attachment->position = position;
-    attachment->bits &= ~u64{Attachment::BitKeepsOffset} & ~u64{Attachment::Bit24} & ~u64{Attachment::BitHangs};
+    attachment->bits.keepsOffset = 0;
+    attachment->bits.joined = 0;
+    attachment->bits.hangs = 0;
     attachment->instanceReference = nullptr;
     attachment->focus = nullptr;
     attachment->exitPoint = nullptr;
@@ -106,16 +99,16 @@ Attachment* ConstructPositionAttachment(Attachment* attachment, InstanceContext*
 void DestroyAttachment(Attachment* attachment, u32 destroyFlags)
 {
     // An instance held stops hanging from the holder
-    if ((attachment->bits & Attachment::KindMask) == 0 && AttachedInstance(attachment) != nullptr)
+    if (attachment->bits.kind == Attachment::KindInstance && AttachedInstance(attachment) != nullptr)
     {
-        AttachedInstance(attachment)->flags &= ~FlagHangs;
+        AttachedInstance(attachment)->flags.attached = 0;
         AttachedInstance(attachment)->parent = nullptr;
         AttachedInstance(attachment)->collision.leftOut = nullptr;
     }
 
     RemoveReference(&attachment->focus);
     RemoveReference(&attachment->instanceReference);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(attachment);
     }
@@ -172,7 +165,7 @@ void AttachToHolder(f32 push, Attachment* attachment, u32 keepOffset, Matrix4x4*
 void AttachAtExitPoint(Attachment* attachment, u32 exitPoint, u32 keepOffset, Matrix4x4* matrix)
 {
     u8 index = static_cast<u8>(exitPoint);
-    SetExitPointIndex(attachment, index);
+    attachment->bits.exitPoint = index;
     attachment->exitPoint = ExitPointOf(attachment->holder, index);
     if (AttachedInstance(attachment) == nullptr)
     {
@@ -204,7 +197,7 @@ void SetAttachmentSpring(f32 stiffness, f32 length, Attachment* attachment, cons
     AssignReference(&attachment->focus, focus);
     attachment->stiffness = stiffness;
     attachment->length = length;
-    if (focus != nullptr && exitPoint != NoExitPoint)
+    if (focus != nullptr && exitPoint != GameOGI::NoExitPoint)
     {
         attachment->focusExitPoint = ExitPointOf(focus, exitPoint);
     }
@@ -212,7 +205,7 @@ void SetAttachmentSpring(f32 stiffness, f32 length, Attachment* attachment, cons
     if (offset != nullptr)
     {
         InitIdentityMatrix(&attachment->offset);
-        attachment->bits |= Attachment::BitKeepsOffset;
+        attachment->bits.keepsOffset = 1;
         *RowOf(&attachment->offset, 3) = *offset;
     }
 
@@ -222,8 +215,8 @@ void SetAttachmentSpring(f32 stiffness, f32 length, Attachment* attachment, cons
 void SetAttachmentExitPoint(Attachment* attachment, u32 exitPoint)
 {
     u8 index = static_cast<u8>(exitPoint);
-    SetExitPointIndex(attachment, index);
-    if (index != NoExitPoint)
+    attachment->bits.exitPoint = index;
+    if (index != GameOGI::NoExitPoint)
     {
         attachment->exitPoint = ExitPointOf(attachment->holder, index);
     }
@@ -232,9 +225,9 @@ void SetAttachmentExitPoint(Attachment* attachment, u32 exitPoint)
 void HangFromHolder(Attachment* attachment, InstanceContext* instance)
 {
     AssignReference(&attachment->instanceReference, instance);
-    attachment->bits |= Attachment::BitHangs;
+    attachment->bits.hangs = 1;
     instance->collision.leftOut = attachment->holder;
-    instance->flags |= FlagHangs;
+    instance->flags.attached = 1;
     instance->parent = attachment->holder;
-    attachment->holder->flags |= FlagHasHanging;
+    attachment->holder->flags.hasAttachment = 1;
 }

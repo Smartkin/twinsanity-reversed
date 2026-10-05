@@ -6,15 +6,12 @@
 #include "game/instances.h"
 #include "game/math.h"
 #include "game/memory.h"
+#include "game/objects.h"
 #include "game/place.h"
 #include "game/reference.h"
 #include "game/rigidbody.h"
 
 // An object node's launches, the sync check of a packet's end, and its motion block's cycles, sticking and resets
-
-extern "C"
-{
-}
 
 EABI_EXPORT(FUN_00233988, LaunchWithMotion);
 EABI_EXPORT(FUN_00233d68, LaunchPhysicsBody);
@@ -25,19 +22,10 @@ EABI_EXPORT(FUN_00236728, StepCycleZ);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// 2π / 65536 and its inverse, π and 2π
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-constexpr f32 Pi = 0x1.921fb6p+1f;
-constexpr f32 TwoPi = 0x1.921fb6p+2f;
-// The node's flag 14: launched, its trajectory's step watches its physics body (until it touches something)
-constexpr u32 FlagLaunched = 0x4000;
-// The block's flag 10: the instance launched with it is set upright, keeping its facing
-constexpr u32 UprightsLaunched = 0x400;
-// What sticking to a block attaches with, and the kinds of nodes its message goes to
+// An angle's 65536ths of a turn kept within a turn
+constexpr u32 AngleMask = 0xFFFF;
+// What sticking to a block attaches with
 constexpr u32 StuckFlags = 9;
-constexpr u32 MessageKinds = 2;
 
 // The instance's matrix, its place's made up to date first
 Matrix4x4 PlaceMatrix(InstanceContext* instance)
@@ -96,7 +84,7 @@ bool LevelLeftState(const BehaviourRunner* runner, u32 state)
 // A cycle about an axis (0 x, 1 y, 2 z) stepped
 f32 StepCycle(f32 elapsed, f32 amplitude, const MotionBlock* block, s32* angle, u32 axis)
 {
-    u32 cycle = block->cycles >> (MotionBlock::CycleShift + 3 * axis) & MotionBlock::CycleMask;
+    u32 cycle = block->motion.CycleOf(axis);
     f32 rate = block->cycleRates[axis];
     if (cycle == MotionBlock::CycleAngle)
     {
@@ -107,7 +95,7 @@ f32 StepCycle(f32 elapsed, f32 amplitude, const MotionBlock* block, s32* angle, 
         *angle = *angle + static_cast<s32>(elapsed * rate * RadiansToAngle);
     }
 
-    *angle = *angle & 0xFFFF;
+    *angle = *angle & AngleMask;
     f32 value;
     switch (cycle)
     {
@@ -128,7 +116,7 @@ f32 StepCycle(f32 elapsed, f32 amplitude, const MotionBlock* block, s32* angle, 
         return 0.0f;
     }
 
-    u32 sign = block->cycles >> (MotionBlock::SignShift + 2 * axis) & MotionBlock::SignMask;
+    u32 sign = block->motion.SignOf(axis);
     if (sign == MotionBlock::SignPositive)
     {
         return __builtin_fabsf(value);
@@ -147,17 +135,17 @@ void LaunchWithMotion(f32 spinY, f32 spinX, ObjectNode* node, MotionBlock* motio
 {
     node->ReleaseRigidBody();
     node->rigidBody = ConstructRigidBody(MemoryAllocate(sizeof(ObjectRigidBody)), node);
-    node->flags |= FlagLaunched;
+    node->flags.seeksContact = 1;
     node->ReleaseMotionBlock();
     node->ReleaseTrajectory();
     node->FollowMotionBlock(motion, GetContextClock(node->owner));
     node->motionBlock = motion;
-    node->owner->flags |= ReferencedObject::FlagPhysicsBody;
+    node->owner->flags.physicsBody = 1;
     node->motionBlock->node = node;
     DynamicBody* body = node->rigidBody->physicsBody;
     body->SetVelocity(velocity);
     Matrix4x4 matrix = PlaceMatrix(node->owner);
-    if ((motion->flags & UprightsLaunched) != 0)
+    if (motion->flags.uprightsLaunched)
     {
         Vector4 facing = *RowOf(&matrix, 2);
         f32 scale = InverseLength(&facing, LengthEpsilon);
@@ -207,8 +195,6 @@ u32 LeftSyncState(GameNode* node, u32 state)
 
 s32* CycleStart(s32* angle, MotionBlock*, u32 cycle, u32 falling, f32 value, f32 range)
 {
-    constexpr s32 HalfTurn = 0x8000;
-    constexpr s32 Turn = 0x10000;
     s32 start;
     AngleFrom(&start, 0.0f, AngleRadians);
     switch (cycle)
@@ -218,12 +204,12 @@ s32* CycleStart(s32* angle, MotionBlock*, u32 cycle, u32 falling, f32 value, f32
         AngleOfSine(value / range, &start);
         if (falling != 0)
         {
-            start = HalfTurn - start;
+            start = HalfTurnAngle - start;
         }
 
         if (value < 0.0f)
         {
-            start = start + Turn;
+            start = start + FullTurnAngle;
         }
 
         break;
@@ -234,7 +220,7 @@ s32* CycleStart(s32* angle, MotionBlock*, u32 cycle, u32 falling, f32 value, f32
         AngleFrom(&start, value / range, AngleRadians);
         if (falling != 0)
         {
-            start = start + Turn;
+            start = start + FullTurnAngle;
         }
 
         break;
@@ -268,18 +254,18 @@ u32 SticksToMotionBlock(const MotionBlock* block, InstanceContext* instance)
 {
     if (block->stickyObject == 0)
     {
-        return (instance->nodes.mask & block->stickyFlags) != 0 ? 1 : 0;
+        return (instance->nodes.mask & block->stickyKinds) != 0 ? 1 : 0;
     }
 
-    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, 1));
-    return block->stickyObject == (node->agent->objectId & 0x7FFF) ? 1 : 0;
+    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject));
+    return block->stickyObject == (node->agent->objectId & ResourceIndexMask) ? 1 : 0;
 }
 
 void StickToMotionBlock(MotionBlock* block, InstanceContext* instance)
 {
     InstanceContext* holder = block->node->owner;
     auto* attachments = static_cast<AttachmentsNode*>(AttachmentsOf(holder));
-    attachments->stickiness = block->stickyValue;
+    attachments->stickiness = block->stickyStrength;
     AttachInstance(attachments, holder, instance, StuckFlags, 0);
     if (block->stickyMessage == 0)
     {
@@ -288,34 +274,34 @@ void StickToMotionBlock(MotionBlock* block, InstanceContext* instance)
 
     Reference* sender = holder != nullptr ? AddReference(holder) : nullptr;
     GameEvent* event = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))),
-                                            static_cast<u16>(block->stickyMessage), &sender, MessageKinds);
+                                            static_cast<u16>(block->stickyMessage), &sender, ObjectNodeKinds);
     Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
     QueueEvent(instance, &handle);
 }
 
 void ResetMotionBlock(MotionBlock* block)
 {
-    // The cycles' kinds about x, y and z go, and every flag but the cycles' axes and those from 15 on; bit 31 of the cycles stays
+    // Every flag but the trajectory's cycles about the axes and those from 15 on goes, and the motion bits but bit 31
     constexpr u32 KeptFlags = 0xFFFF8038;
-    constexpr u32 KeptCycles = 0x80000000;
-    block->flags &= KeptFlags;
-    block->cycles &= KeptCycles;
+    constexpr u32 KeptMotion = 0x80000000;
+    block->flags.value &= KeptFlags;
+    block->motion.value &= KeptMotion;
     block->stickyObject = 0;
-    block->stickyFlags = 0;
-    block->stickyValue = 0.0f;
-    block->unknown78 = 0;
+    block->stickyKinds = 0;
+    block->stickyStrength = 0.0f;
+    block->touchMessage = 0;
     block->stickyMessage = 0;
 }
 
 void MakeCyclingMotionBlock(MotionBlock* block)
 {
     // A body's bits 0-19 none but one substep
-    constexpr u32 KeptBits = 0xFFF00000;
-    constexpr u32 OneSubstep = 1 << MotionBlock::SubstepsShift;
+    constexpr u32 KeptBodyBits = 0xFFF00000;
     ResetMotionBlock(block);
-    block->flags |= MotionBlock::KeepsStepping;
+    block->flags.keepsStepping = 1;
     block->constraint[3] = 1.0f;
-    block->bodyBits = (block->bodyBits & KeptBits) | OneSubstep;
+    block->body.value &= KeptBodyBits;
+    block->body.substeps = 1;
     for (f32& value : block->values)
     {
         value = 0.0f;
@@ -323,7 +309,7 @@ void MakeCyclingMotionBlock(MotionBlock* block)
 
     block->grabStrength = 0.0f;
     block->holdStrength = 0.0f;
-    block->bodyUnknown44 = 1.0f;
+    block->knockScale = 1.0f;
     block->turnStrength = 0.0f;
     for (u32 axis = 0; axis < 3; axis++)
     {

@@ -28,30 +28,35 @@ volatile u32 g_TestPadButtons = 0;
 
 namespace
 {
-// The report's pressure bytes of the low byte's buttons (L2, R2, L1, R1, triangle, circle, cross, square) and the directions (up,
-// right, down, left)
-constexpr u8 ButtonPressures[8] = {18, 19, 16, 17, 12, 13, 14, 15};
-constexpr u8 DirectionPressures[4] = {10, 8, 11, 9};
+using namespace Platform::Pads;
+
+// The report's pressure bytes of the low byte's buttons and of the directions (bits 12-15)
+constexpr u32 PressureButtons = 8;
+constexpr u8 ButtonPressures[PressureButtons] = {PressureL2,       PressureR2,     PressureL1,    PressureR1,
+                                                 PressureTriangle, PressureCircle, PressureCross, PressureSquare};
+constexpr u32 FirstDirectionBit = 12;
+constexpr u32 Directions = 4;
+constexpr u8 DirectionPressures[Directions] = {PressureUp, PressureRight, PressureDown, PressureLeft};
+constexpr u8 FullPressure = 0xFF;
 
 void HoldTestButtons(u8* data)
 {
     u32 held = g_TestPadButtons;
-    // The report's buttons are 0 when pressed
-    data[2] &= ~(held >> 8);
-    data[3] &= ~held;
-    for (u32 bit = 0; bit < 8; bit++)
+    data[ReportButtonsHigh] &= ~(held >> 8);
+    data[ReportButtonsLow] &= ~held;
+    for (u32 bit = 0; bit < PressureButtons; bit++)
     {
         if ((held & 1u << bit) != 0)
         {
-            data[ButtonPressures[bit]] = 0xFF;
+            data[ButtonPressures[bit]] = FullPressure;
         }
     }
 
-    for (u32 bit = 0; bit < 4; bit++)
+    for (u32 direction = 0; direction < Directions; direction++)
     {
-        if ((held & 0x1000u << bit) != 0)
+        if ((held & (1u << FirstDirectionBit) << direction) != 0)
         {
-            data[DirectionPressures[bit]] = 0xFF;
+            data[DirectionPressures[direction]] = FullPressure;
         }
     }
 }
@@ -78,12 +83,12 @@ Platform::Pads::RequestState Platform::Pads::GetRequestState(s32 port, s32 slot)
     return static_cast<RequestState>(padGetReqState(port, slot));
 }
 
-s32 Platform::Pads::InfoMode(s32 port, s32 slot, s32 infoMode, s32 index)
+s32 Platform::Pads::InfoMode(s32 port, s32 slot, ModeInfo info, s32 index)
 {
-    return padInfoMode(port, slot, infoMode, index);
+    return padInfoMode(port, slot, info, index);
 }
 
-s32 Platform::Pads::SetMainMode(s32 port, s32 slot, s32 mode, s32 lock)
+s32 Platform::Pads::SetMainMode(s32 port, s32 slot, MainMode mode, ModeLock lock)
 {
     return padSetMainMode(port, slot, mode, lock);
 }

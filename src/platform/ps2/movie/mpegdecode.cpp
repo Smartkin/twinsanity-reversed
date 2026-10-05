@@ -29,40 +29,30 @@ constexpr s32 AddressIncrementEscape = 0x23;
 constexpr s32 AddressIncrementEscaped = 0x21;
 // MPEG-2's stuffing code (0000 0001 111), which the IPU's table doesn't have
 constexpr u32 Mpeg2Stuffing = 0xF;
+constexpr s32 Mpeg2StuffingBits = 11;
+// The output's alignment the IPU's DMA needs
+constexpr u32 OutputAlignment = 0x40;
+// A word of the input, whose bits IPU_TOP holds
+constexpr s32 WordBits = 32;
 
-enum SliceResult : s32
-{
-    SliceEnded = 0,
-    SliceGivenUp = 1,
-    PictureGivenUp = 2,
-    NextStartCodeFound = 3,
-    DecodingAborted = 4,
-};
-
-// The bits read ahead taken from the IPU's TOP: 32 of them once it holds them, else what's left of the input's word
+// The bits read ahead taken from the IPU's TOP: a word of them once it holds them, else what's left of the input's word
 void ReadTop(MpegSystem* sys)
 {
-    u32 bitPosition = *IpuBitPosition;
-    u64 top = *R_EE_IPU_TOP;
-    sys->top = top;
-    sys->topBits = static_cast<s64>(top) >= 0 ? 32 : -(bitPosition & 0x1F) & 0x1F;
+    IpuBitPositionRegister position = {*IpuBitPosition};
+    IpuDataRegister top = {*R_EE_IPU_TOP};
+    sys->top = top.data;
+    sys->topBits = !top.busy ? WordBits : -position.bitPosition & (WordBits - 1);
 }
 
-// A VLC the IPU decodes with a table: the code's value in the low 16 bits, its length above (0: no code matched)
-u32 DecodeVariable(MpegSystem* sys, u32 table)
+// A VLC the IPU decodes with a table (no code matched: a macroblock error)
+IpuVlcResult DecodeVariable(MpegSystem* sys, u32 table)
 {
     WaitIpuIdleIfBusy(sys);
     SetIpuCommand(sys, IpuDecodeVariable | table);
-    u32 result = WaitIpuResult(sys);
+    IpuVlcResult result = {static_cast<u32>(WaitIpuResult(sys))};
     ReadTop(sys);
-    sys->macroblockError = result == 0;
+    sys->macroblockError = result.value == 0;
     return result;
-}
-
-// The value a VLC decoded to (signed)
-s32 ValueOf(u32 result)
-{
-    return static_cast<s16>(result);
 }
 
 // Waits for the fromIPU channel to take what the IPU decoded, the toIPU channel given more of the stream while it's idle, and
@@ -70,7 +60,7 @@ s32 ValueOf(u32 result)
 // found an error
 bool FinishIpuOutput(MpegSystem* sys)
 {
-    if (*R_EE_D3_QWC != 0 && (*IpuControl & IpuControlErrorCode) == 0)
+    if (*R_EE_D3_QWC != 0 && !IpuControlRegister{*IpuControl}.errorFound)
     {
         do
         {
@@ -84,11 +74,11 @@ bool FinishIpuOutput(MpegSystem* sys)
                 StopIpuDma(sys);
                 return false;
             }
-        } while (*R_EE_D3_QWC != 0 && (*IpuControl & IpuControlErrorCode) == 0);
+        } while (*R_EE_D3_QWC != 0 && !IpuControlRegister{*IpuControl}.errorFound);
     }
 
     ReadTop(sys);
-    if ((*IpuControl & IpuControlErrorCode) != 0)
+    if (IpuControlRegister{*IpuControl}.errorFound)
     {
         BlockDecodeError(sys);
         return false;
@@ -97,26 +87,27 @@ bool FinishIpuOutput(MpegSystem* sys)
     return true;
 }
 
-// A vector's component from its predictor, motion code and residual (MPEG-2's 7.6.3.1), wrapped into the f_code's range;
-// MPEG-1's full pixel vectors count in whole pixels
+// A vector's component from its predictor, motion code and residual (MPEG-2's 7.6.3.1), wrapped into the f_code's range (-16 f
+// to 16 f - 1, f = 1 << r_size); MPEG-1's full pixel vectors count in whole pixels
 s32 DecodeComponent(s32 predictor, s32 code, s32 residual, s32 residualSize, s32 fullPel)
 {
-    s32 range = 16 << residualSize;
+    constexpr s32 VectorLimit = 16;
+    s32 limit = VectorLimit << residualSize;
     s32 value = fullPel != 0 ? predictor >> 1 : predictor;
     if (code > 0)
     {
         value += ((code - 1) << residualSize) + residual + 1;
-        if (value >= range)
+        if (value >= limit)
         {
-            value -= range * 2;
+            value -= limit * 2;
         }
     }
     else if (code < 0)
     {
         value -= ((-code - 1) << residualSize) + residual + 1;
-        if (value < -range)
+        if (value < -limit)
         {
-            value += range * 2;
+            value += limit * 2;
         }
     }
 
@@ -128,7 +119,7 @@ s32 GetPicture(Mpeg* mpeg)
 {
     MpegSystem* sys = mpeg->sys;
     sys->ended = 0;
-    if ((reinterpret_cast<u32>(sys->output) & 0x3F) != 0)
+    if ((reinterpret_cast<u32>(sys->output) & (OutputAlignment - 1)) != 0)
     {
         ErrorValue(sys, g_MpegOutputMisaligned, reinterpret_cast<s32>(sys->output));
         return -1;
@@ -146,7 +137,7 @@ s32 GetPicture(Mpeg* mpeg)
     do
     {
         // A field picture without its second field has the next picture's header read already
-        if (decoded != -1)
+        if (decoded != MpegSecondFieldMissing)
         {
             do
             {
@@ -160,25 +151,25 @@ s32 GetPicture(Mpeg* mpeg)
 
         switch (header)
         {
-        case 0:
+        case MpegSequenceEnded:
             Flush(mpeg);
             sys->ended = 1;
             break;
         case MpegPictureI:
-            sys->pictureCounts[2] = 0;
-            sys->pictureCounts[1] = 0;
-            sys->pictureCounts[0] = 0;
-            decoded = DecodeOrSkip(mpeg, 0, sys->decodeLimits[0]);
-            sys->pictureCounts[0]++;
+            sys->pictureCounts[MpegBPictures] = 0;
+            sys->pictureCounts[MpegPPictures] = 0;
+            sys->pictureCounts[MpegIPictures] = 0;
+            decoded = DecodeOrSkip(mpeg, 0, sys->decodeLimits[MpegIPictures]);
+            sys->pictureCounts[MpegIPictures]++;
             break;
         case MpegPictureP:
-            decoded = DecodeOrSkip(mpeg, sys->pictureCounts[1], sys->decodeLimits[1]);
-            sys->pictureCounts[1]++;
+            decoded = DecodeOrSkip(mpeg, sys->pictureCounts[MpegPPictures], sys->decodeLimits[MpegPPictures]);
+            sys->pictureCounts[MpegPPictures]++;
             break;
         case MpegPictureB:
         case MpegPictureD:
-            decoded = DecodeOrSkip(mpeg, sys->pictureCounts[2], sys->decodeLimits[2]);
-            sys->pictureCounts[2]++;
+            decoded = DecodeOrSkip(mpeg, sys->pictureCounts[MpegBPictures], sys->decodeLimits[MpegBPictures]);
+            sys->pictureCounts[MpegBPictures]++;
             break;
         }
 
@@ -199,37 +190,39 @@ s32 UpdateReferences(MpegSystem* sys, s32 secondField)
     s32 decodable = 0;
     if (codingType == MpegPictureB)
     {
-        sys->frames[2] = sys->frames[3];
-        sys->topFields[2] = sys->topFields[3];
-        sys->bottomFields[2] = sys->bottomFields[3];
+        sys->frames[MpegCurrent] = sys->frames[MpegBImage];
+        sys->topFields[MpegCurrent] = sys->topFields[MpegBImage];
+        sys->bottomFields[MpegCurrent] = sys->bottomFields[MpegBImage];
         // With two frames' references (four fields') since the I picture, the B picture's are its GOP's
         s32 ownReferences = structure == MpegFrame ? 2 : 4;
-        if (sys->pictureCounts[0] + sys->pictureCounts[1] >= ownReferences)
+        if (sys->pictureCounts[MpegIPictures] + sys->pictureCounts[MpegPPictures] >= ownReferences)
         {
-            sys->unknownFC = 0;
+            sys->forcedBrokenLink = 0;
             sys->brokenLink = 0;
             sys->closedGop = 0;
         }
 
         // An open GOP's B pictures after a broken link have no past reference
-        if ((sys->unknownFC != 0 || sys->brokenLink != 0) && sys->closedGop == 0)
+        if ((sys->forcedBrokenLink != 0 || sys->brokenLink != 0) && sys->closedGop == 0)
         {
-            sys->frames[0]->holdsPicture = 0;
-            sys->topFields[0]->holdsPicture = 0;
-            sys->bottomFields[0]->holdsPicture = 0;
+            sys->frames[MpegPast]->holdsPicture = 0;
+            sys->topFields[MpegPast]->holdsPicture = 0;
+            sys->bottomFields[MpegPast]->holdsPicture = 0;
             structure = sys->pictureStructure;
         }
 
-        sys->unknownFC = 0;
+        sys->forcedBrokenLink = 0;
         sys->brokenLink = 0;
         if (structure == MpegFrame)
         {
-            decodable = (sys->frames[0]->holdsPicture == 1 || sys->closedGop != 0) && sys->frames[1]->holdsPicture == 1;
+            decodable =
+                (sys->frames[MpegPast]->holdsPicture == 1 || sys->closedGop != 0) && sys->frames[MpegFuture]->holdsPicture == 1;
         }
         else
         {
-            decodable = ((sys->topFields[0]->holdsPicture == 1 && sys->bottomFields[0]->holdsPicture == 1) || sys->closedGop != 0) &&
-                        sys->topFields[1]->holdsPicture == 1 && sys->bottomFields[1]->holdsPicture == 1;
+            decodable = ((sys->topFields[MpegPast]->holdsPicture == 1 && sys->bottomFields[MpegPast]->holdsPicture == 1) ||
+                         sys->closedGop != 0) &&
+                        sys->topFields[MpegFuture]->holdsPicture == 1 && sys->bottomFields[MpegFuture]->holdsPicture == 1;
         }
     }
     else
@@ -237,30 +230,30 @@ s32 UpdateReferences(MpegSystem* sys, s32 secondField)
         // An I or P picture (a frame's first field) becomes the future reference, the future one the past one
         if (secondField == 0)
         {
-            MpegImage* past = sys->frames[0];
-            sys->frames[0] = sys->frames[1];
-            sys->frames[1] = past;
-            past = sys->topFields[0];
-            sys->topFields[0] = sys->topFields[1];
-            sys->topFields[1] = past;
-            past = sys->bottomFields[0];
-            sys->bottomFields[0] = sys->bottomFields[1];
-            sys->bottomFields[1] = past;
+            MpegImage* past = sys->frames[MpegPast];
+            sys->frames[MpegPast] = sys->frames[MpegFuture];
+            sys->frames[MpegFuture] = past;
+            past = sys->topFields[MpegPast];
+            sys->topFields[MpegPast] = sys->topFields[MpegFuture];
+            sys->topFields[MpegFuture] = past;
+            past = sys->bottomFields[MpegPast];
+            sys->bottomFields[MpegPast] = sys->bottomFields[MpegFuture];
+            sys->bottomFields[MpegFuture] = past;
         }
 
-        sys->frames[2] = sys->frames[1];
-        sys->topFields[2] = sys->topFields[1];
-        sys->bottomFields[2] = sys->bottomFields[1];
+        sys->frames[MpegCurrent] = sys->frames[MpegFuture];
+        sys->topFields[MpegCurrent] = sys->topFields[MpegFuture];
+        sys->bottomFields[MpegCurrent] = sys->bottomFields[MpegFuture];
         if (structure == MpegFrame)
         {
-            decodable = codingType != MpegPictureP || sys->frames[0]->holdsPicture == 1;
+            decodable = codingType != MpegPictureP || sys->frames[MpegPast]->holdsPicture == 1;
         }
         else
         {
             // A P picture's second field can take the first field of its frame for a reference
-            MpegImage* firstField = structure == MpegTopField ? sys->bottomFields[1] : sys->topFields[1];
+            MpegImage* firstField = structure == MpegTopField ? sys->bottomFields[MpegFuture] : sys->topFields[MpegFuture];
             decodable = codingType != MpegPictureP || (secondField != 0 && firstField->holdsPicture == 1) ||
-                        (sys->topFields[0]->holdsPicture == 1 && sys->bottomFields[0]->holdsPicture == 1);
+                        (sys->topFields[MpegPast]->holdsPicture == 1 && sys->bottomFields[MpegPast]->holdsPicture == 1);
         }
     }
 
@@ -268,15 +261,15 @@ s32 UpdateReferences(MpegSystem* sys, s32 secondField)
     MpegImage* image = nullptr;
     if (structure == MpegBottomField)
     {
-        image = sys->bottomFields[2];
+        image = sys->bottomFields[MpegCurrent];
     }
     else if (structure == MpegTopField)
     {
-        image = sys->topFields[2];
+        image = sys->topFields[MpegCurrent];
     }
     else if (structure == MpegFrame)
     {
-        image = sys->frames[2];
+        image = sys->frames[MpegCurrent];
     }
 
     image->holdsPicture = 0;
@@ -306,10 +299,10 @@ s32 DecodeOrSkipFrame(Mpeg* mpeg, s32 count, s32 limit)
     s32 decoded;
     if (limit == -1 || count < limit)
     {
-        if (sys->outputState == 0)
+        if (sys->outputState == MpegNothingDecoded)
         {
             mpeg->frameCount = 0;
-            sys->outputState = 1;
+            sys->outputState = MpegPictureDecoded;
         }
 
         decoded = UpdateReferences(sys, 0) != 0 && DecodePicture(sys) != 0;
@@ -348,10 +341,10 @@ s32 DecodeOrSkipFields(Mpeg* mpeg, s32 count, s32 limit)
     MpegSystem* sys = mpeg->sys;
     sys->secondFieldMissing = 0;
     bool decode = limit == -1 || count < limit;
-    if (sys->outputState == 0)
+    if (sys->outputState == MpegNothingDecoded)
     {
         mpeg->frameCount = 0;
-        sys->outputState = 1;
+        sys->outputState = MpegPictureDecoded;
     }
 
     if (UpdateReferences(sys, 0) != 0 && decode)
@@ -365,7 +358,7 @@ s32 DecodeOrSkipFields(Mpeg* mpeg, s32 count, s32 limit)
     }
 
     sys->secondFieldMissing = 1;
-    if (NextHeader(sys) == 0)
+    if (NextHeader(sys) == MpegSequenceEnded)
     {
         Flush(mpeg);
         sys->ended = 1;
@@ -375,7 +368,7 @@ s32 DecodeOrSkipFields(Mpeg* mpeg, s32 count, s32 limit)
     s32 secondStructure = sys->firstStructure == MpegTopField ? MpegBottomField : MpegTopField;
     if (sys->pictureStructure != secondStructure)
     {
-        return -1;
+        return MpegSecondFieldMissing;
     }
 
     s32 decoded = 0;
@@ -424,15 +417,15 @@ s32 DecodePicture(MpegSystem* sys)
     s32 structure = sys->pictureStructure;
     if (structure == MpegBottomField)
     {
-        image = sys->bottomFields[2];
+        image = sys->bottomFields[MpegCurrent];
     }
     else if (structure == MpegTopField)
     {
-        image = sys->topFields[2];
+        image = sys->topFields[MpegCurrent];
     }
     else
     {
-        image = sys->frames[2];
+        image = sys->frames[MpegCurrent];
         if (structure != MpegFrame)
         {
             Error(sys, g_MpegUnknownStructure);
@@ -451,7 +444,7 @@ s32 DecodePicture(MpegSystem* sys)
 s32 DecodePictureData(MpegSystem* sys)
 {
     sys->bufferIndex = 0;
-    sys->unknown824 = 0;
+    sys->unused824 = 0;
     s32 macroblocks = sys->widthMacroblocks * sys->heightMacroblocks;
     if (sys->pictureStructure != MpegFrame)
     {
@@ -523,7 +516,7 @@ s32 DecodeSlice(MpegSystem* sys, s32 macroblocks)
         if (increment == 0)
         {
             // A start code ends the slice
-            if (PeekBits(sys, 23) == 0 || sys->macroblockError != 0)
+            if (PeekBits(sys, StartCodeZeros) == 0 || sys->macroblockError != 0)
             {
                 sys->macroblockError = 0;
                 return NextStartCodeFound;
@@ -582,7 +575,7 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
                      s32 fieldSelect[2][2], s32* dmVector)
 {
     *IpuControl = (*IpuControl & ~IpuControlPictureType) | (sys->pictureCodingType << IpuControlPictureTypeShift);
-    s32 code = ValueOf(DecodeVariable(sys, IpuMacroblockTypeTable));
+    s32 code = DecodeVariable(sys, IpuMacroblockTypeTable).decoded;
     *type = code;
     if (code == 0)
     {
@@ -591,7 +584,8 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
         return 0;
     }
 
-    if ((code & (MacroblockForward | MacroblockBackward)) != 0)
+    MacroblockType macroblock = {static_cast<u32>(code)};
+    if (macroblock.forward || macroblock.backward)
     {
         if (sys->pictureStructure == MpegFrame && sys->framePredFrameDct != 0)
         {
@@ -602,7 +596,7 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
             *motionType = NextBits(sys, 2);
         }
     }
-    else if ((code & MacroblockIntra) != 0 && sys->concealmentMotionVectors != 0)
+    else if (macroblock.intra && sys->concealmentMotionVectors != 0)
     {
         *motionType = sys->pictureStructure == MpegFrame ? MpegMotionFrame : MpegMotionField;
     }
@@ -626,7 +620,7 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
 
     s32 dualPrime = motion == MpegMotionDualPrime;
     s32 halveVertical = frameVectors == 0 && structure == MpegFrame;
-    if (structure == MpegFrame && sys->framePredFrameDct == 0 && (*type & (MacroblockIntra | MacroblockPattern)) != 0)
+    if (structure == MpegFrame && sys->framePredFrameDct == 0 && (macroblock.intra || macroblock.pattern))
     {
         *dctType = NextBits(sys, 1);
     }
@@ -635,12 +629,12 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
         *dctType = 0;
     }
 
-    if ((*type & MacroblockQuantiser) != 0)
+    if (macroblock.quantiser)
     {
         sys->quantiserScale = NextBits(sys, 5);
     }
 
-    if ((*type & MacroblockForward) != 0 || ((*type & MacroblockIntra) != 0 && sys->concealmentMotionVectors != 0))
+    if (macroblock.forward || (macroblock.intra && sys->concealmentMotionVectors != 0))
     {
         if (sys->mpeg2 != 0)
         {
@@ -659,7 +653,7 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
         return 0;
     }
 
-    if ((*type & MacroblockBackward) != 0)
+    if (macroblock.backward)
     {
         if (sys->mpeg2 != 0)
         {
@@ -679,17 +673,17 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
     }
 
     // The marker bit after the concealment vectors
-    if ((*type & MacroblockIntra) != 0 && sys->concealmentMotionVectors != 0)
+    if (macroblock.intra && sys->concealmentMotionVectors != 0)
     {
         SkipMacroblockBits(sys, 1);
     }
 
-    if ((*type & (MacroblockIntra | MacroblockPattern)) != 0)
+    if (macroblock.intra || macroblock.pattern)
     {
-        ReceiveFromIpu(sys->buffers[sys->bufferIndex].macroblocks, MacroblockBytes * 2);
+        ReceiveFromIpu(sys->buffers[sys->bufferIndex].macroblocks, DecodedMacroblockBytes);
         WaitIpuIdleIfBusy(sys);
         SetIpuCommand(sys, IpuDecodeBlock | (sys->quantiserScale << IpuBlockQuantiserShift) |
-                               ((*type & MacroblockIntra) << IpuBlockIntraShift) | (*dctType << IpuBlockDctTypeShift) |
+                               (macroblock.intra << IpuBlockIntraShift) | (*dctType << IpuBlockDctTypeShift) |
                                (sys->dcReset << IpuBlockDcResetShift));
     }
     else
@@ -703,13 +697,13 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
         return 0;
     }
 
-    if ((*type & MacroblockIntra) == 0)
+    if (!macroblock.intra)
     {
         sys->dcReset = 1;
     }
 
     // An intra macroblock without concealment vectors resets the predictors
-    if ((*type & MacroblockIntra) != 0 && sys->concealmentMotionVectors == 0)
+    if (macroblock.intra && sys->concealmentMotionVectors == 0)
     {
         predictors[0][0] = {};
         predictors[0][1] = {};
@@ -718,7 +712,7 @@ s32 DecodeMacroblock(MpegSystem* sys, s32* type, s32* motionType, s32* dctType, 
     }
 
     // A P picture's macroblock without vectors isn't moved
-    if (sys->pictureCodingType == MpegPictureP && (*type & (MacroblockIntra | MacroblockForward)) == 0)
+    if (sys->pictureCodingType == MpegPictureP && !macroblock.intra && !macroblock.forward)
     {
         predictors[0][0] = {};
         predictors[1][0] = {};
@@ -741,7 +735,7 @@ s32 MacroblockAddressIncrement(MpegSystem* sys)
     s32 increment = 0;
     while (true)
     {
-        s32 code = ValueOf(DecodeVariable(sys, 0));
+        s32 code = DecodeVariable(sys, IpuAddressIncrementTable).decoded;
         if (code == AddressIncrementStuffing)
         {
             continue;
@@ -758,7 +752,7 @@ s32 MacroblockAddressIncrement(MpegSystem* sys)
             return increment + code;
         }
 
-        u32 next = PeekBits(sys, 11);
+        u32 next = PeekBits(sys, Mpeg2StuffingBits);
         if (sys->mpeg2 == 0 || next != Mpeg2Stuffing)
         {
             ErrorValue(sys, g_MpegInvalidAddressIncrement, code);
@@ -766,7 +760,7 @@ s32 MacroblockAddressIncrement(MpegSystem* sys)
             return 1;
         }
 
-        SkipMacroblockBits(sys, 11);
+        SkipMacroblockBits(sys, Mpeg2StuffingBits);
     }
 }
 
@@ -798,22 +792,24 @@ s32 SkipMacroblock(MpegSystem* sys, MpegVector predictors[2][2], s32* motionType
         skipped = 0;
     }
 
-    *type &= ~MacroblockIntra;
+    MacroblockType macroblock = {static_cast<u32>(*type)};
+    macroblock.intra = 0;
+    *type = macroblock.value;
     return skipped;
 }
 
 void ReadMotionVector(MpegSystem* sys, MpegVector* vector, s32* dmVector, s32 horizontalSize, s32 verticalSize, s32 dualPrime,
                       s32 halveVertical, s32 fullPel)
 {
-    s32 code = ValueOf(DecodeVariable(sys, IpuMotionCodeTable));
+    s32 code = DecodeVariable(sys, IpuMotionCodeTable).decoded;
     s32 residual = horizontalSize != 0 && code != 0 ? NextBits(sys, horizontalSize) : 0;
     vector->horizontal = DecodeComponent(vector->horizontal, code, residual, horizontalSize, fullPel);
     if (dualPrime != 0)
     {
-        dmVector[0] = ValueOf(DecodeVariable(sys, IpuDmVectorTable));
+        dmVector[0] = DecodeVariable(sys, IpuDmVectorTable).decoded;
     }
 
-    code = ValueOf(DecodeVariable(sys, IpuMotionCodeTable));
+    code = DecodeVariable(sys, IpuMotionCodeTable).decoded;
     residual = verticalSize != 0 && code != 0 ? NextBits(sys, verticalSize) : 0;
     if (halveVertical != 0)
     {
@@ -828,7 +824,7 @@ void ReadMotionVector(MpegSystem* sys, MpegVector* vector, s32* dmVector, s32 ho
 
     if (dualPrime != 0)
     {
-        dmVector[1] = ValueOf(DecodeVariable(sys, IpuDmVectorTable));
+        dmVector[1] = DecodeVariable(sys, IpuDmVectorTable).decoded;
     }
 }
 
@@ -860,7 +856,7 @@ void ReceiveFromIpu(u8* address, s32 size)
 {
     s32 interrupts = DIntr();
     u32 dmaAddress = reinterpret_cast<u32>(address);
-    if (dmaAddress >> 28 == Scratchpad >> 28)
+    if (dmaAddress >> SegmentShift == Scratchpad >> SegmentShift)
     {
         dmaAddress = (dmaAddress & PhysicalMask) | DmaScratchpad;
     }

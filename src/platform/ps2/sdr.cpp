@@ -33,20 +33,26 @@ struct Batch
 
 constexpr u32 SendSize = 0x40;
 constexpr u32 ReplySize = 0x10;
+// The send buffer's arguments after its address
+constexpr u32 RemoteArguments = 6;
+// The callbacks' slots: the two cores' transfers', then the IRQ's
+constexpr u32 IrqCallback = 2;
+// The loops sceSdRemoteInit waits for the server's binding each time it isn't there
+constexpr s32 BindWaitLoops = 10000;
 }
 
 extern "C"
 {
     extern SifRpcClientData_t g_SdrClient RETAIL(D_003C7800);
     // The send buffer: its own address, then the command's arguments
-    extern s32 g_SdrBuffer[16] RETAIL(D_003C77C0);
+    extern s32 g_SdrBuffer[SendSize / sizeof(s32)] RETAIL(D_003C77C0);
     // What a call that doesn't wait ends with, and the $gp it ran with
     extern SifRpcEndFunc_t g_SdrEndFunction RETAIL(D_002EA038);
     extern void* g_SdrEndFunctionGp RETAIL(D_002EA03C);
     // The callbacks registered for the transfers of the two cores and the IRQ, their arguments and $gp
-    extern void* g_SdrCallbacks[3] RETAIL(D_002EA050);
-    extern void* g_SdrCallbackArguments[3] RETAIL(D_002EA05C);
-    extern void* g_SdrCallbackGps[3] RETAIL(D_002EA068);
+    extern void* g_SdrCallbacks[IrqCallback + 1] RETAIL(D_002EA050);
+    extern void* g_SdrCallbackArguments[IrqCallback + 1] RETAIL(D_002EA05C);
+    extern void* g_SdrCallbackGps[IrqCallback + 1] RETAIL(D_002EA068);
 
     int sceSdRemoteInit();
     int sceSdRemote(int wait, int command, ...);
@@ -63,7 +69,7 @@ int sceSdRemoteInit()
             return -1;
         }
 
-        for (s32 wait = 10000; wait != -1; wait--)
+        for (s32 wait = BindWaitLoops; wait != -1; wait--)
         {
             asm volatile("nop; nop; nop; nop");
         }
@@ -80,7 +86,7 @@ int sceSdRemote(int wait, int command, ...)
     g_SdrBuffer[0] = reinterpret_cast<s32>(g_SdrBuffer);
     va_list arguments;
     va_start(arguments, command);
-    for (u32 index = 1; index < 7; index++)
+    for (u32 index = 1; index <= RemoteArguments; index++)
     {
         g_SdrBuffer[index] = va_arg(arguments, s32);
     }
@@ -109,10 +115,10 @@ int sceSdRemote(int wait, int command, ...)
     }
     else if (command == SetIrqCallback)
     {
-        previous = g_SdrCallbacks[2];
-        g_SdrCallbacks[2] = reinterpret_cast<void*>(g_SdrBuffer[1]);
-        g_SdrCallbackArguments[2] = reinterpret_cast<void*>(g_SdrBuffer[2]);
-        g_SdrCallbackGps[2] = gp;
+        previous = g_SdrCallbacks[IrqCallback];
+        g_SdrCallbacks[IrqCallback] = reinterpret_cast<void*>(g_SdrBuffer[1]);
+        g_SdrCallbackArguments[IrqCallback] = reinterpret_cast<void*>(g_SdrBuffer[2]);
+        g_SdrCallbackGps[IrqCallback] = gp;
     }
 
     s32* buffer = g_SdrBuffer;

@@ -3,6 +3,7 @@
 #include "game/animation.h"
 #include "game/chunkloading.h"
 #include "game/clock.h"
+#include "game/colour.h"
 #include "game/controllers.h"
 #include "game/instanceparticles.h"
 #include "game/instances.h"
@@ -20,29 +21,21 @@
 
 extern "C"
 {
-    // The chunk manager's chunk of an index, and a persistent flag of a store
     // A vector's 16 bytes copied (one quadword)
     Vector4* CopyQuadword(Vector4* to, const Vector4* from) RETAIL(MovePositionFromPos2ToPos1);
 }
 
 namespace
 {
-// The music slot the cutscenes' music plays in, the group its requests are in, and the track a queued cutscene asks for
-constexpr u32 MusicSlot = 1;
-constexpr u32 MusicGroup = 3;
+// The track a queued cutscene asks for (its music plays in the context music's slot, in the movie group)
 constexpr u32 QueuedTrack = 1;
-constexpr u32 GroupShift = 16;
-constexpr u32 LoopShift = 20;
-constexpr u32 ObjectNodeKind = 1;
-// The root's animations (not a camera joint's)
-constexpr u32 RootJoint = 0xFF;
-// The agents' vtable slot that unfreezes them, and the instances' that releases them
-constexpr u32 UnfreezeSlot = 16;
-constexpr u32 ReleaseSlot = 4;
-// The colours of the skip hint and the disc error's title (the colour table's)
-constexpr s32 SkipHintColour = 0xC;
-constexpr s32 DiscErrorColour = 0xE;
+// The skip hint and the disc error's title: their colours (the colour table's), size and places (the hint's further left)
+constexpr ColourIndex SkipHintColour = ColourYellow;
+constexpr ColourIndex DiscErrorColour = ColourMagenta;
 constexpr f32 TextScale = 0.5f;
+constexpr f32 SkipHintX = Rounded(0.83);
+constexpr f32 DiscErrorX = Rounded(0.85);
+constexpr f32 CutsceneTextY = Rounded(0.12);
 
 // A track's place made the origin's (its w kept)
 void PlaceAtOrigin(Vector4* position)
@@ -54,7 +47,7 @@ void PlaceAtOrigin(Vector4* position)
 
 const Matrix4x4* TrackSpace(VideoController* controller)
 {
-    return (controller->bits & VideoController::BitRelative) != 0 ? &controller->origin : nullptr;
+    return controller->bits.relative != 0 ? &controller->origin : nullptr;
 }
 }
 
@@ -67,22 +60,27 @@ u32 QueueObjectMovie(VideoController* controller, GameObject* object, InstanceCo
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     controller->origin = place->matrix;
-    controller->bits |= VideoController::BitRelative;
+    controller->bits.relative = 1;
     controller->chunk = instance->chunk;
     Cutscene* cutscene = ConstructCutscene(static_cast<Cutscene*>(MemoryAllocate(sizeof(Cutscene))));
     controller->cutscene = cutscene;
     LoadCutscenePart(controller, cutscene, number, static_cast<s32>(controller->readPart));
-    controller->bits &= ~(VideoController::BitFirstPartRead | VideoController::BitNextPartRead | VideoController::BitWaitingForMusic |
-                          VideoController::BitStopped | VideoController::BitMusicOnly);
+    controller->bits.firstPartRead = 0;
+    controller->bits.nextPartRead = 0;
+    controller->bits.waitingForMusic = 0;
+    controller->bits.stopped = 0;
+    controller->bits.musicOnly = 0;
     controller->state = VideoController::StateQueued;
     // Retail bug: the request's bits 20-31 are what the stack held, its loop bit (20) among them: the music loops or not by
     // chance (here it doesn't)
     MusicRequest request;
-    request.bits = QueuedTrack | MusicGroup << GroupShift;
+    request.bits.value = 0;
+    request.bits.track = QueuedTrack;
+    request.bits.group = MovieGroup;
     request.left = 1.0f;
     request.right = 1.0f;
     request.fadeTime = 0.0f;
-    PlayMusicRequest(MusicSlot, &request);
+    PlayMusicRequest(ContextMusicSlot, &request);
     return 1;
 }
 
@@ -90,15 +88,19 @@ u32 QueueMovie(VideoController* controller, s32 track, TimeClock* clock, u32 loo
 {
     // The request's bits 21-31 are what the stack held in retail (the music doesn't read them)
     MusicRequest request;
-    request.bits = (static_cast<u32>(track) & 0xFFFF) | MusicGroup << GroupShift | (loops & 1) << LoopShift;
+    request.bits.value = 0;
+    request.bits.track = static_cast<u32>(track);
+    request.bits.group = MovieGroup;
+    request.bits.loops = loops;
     request.left = 1.0f;
     request.right = 1.0f;
     request.fadeTime = 0.0f;
-    u32 asked = static_cast<u32>(PlayMusicRequest(MusicSlot, &request)) & 1;
-    controller->bits = (controller->bits & ~VideoController::BitMusicAsked) | (asked != 0 ? VideoController::BitMusicAsked : 0);
+    u32 asked = static_cast<u32>(PlayMusicRequest(ContextMusicSlot, &request)) & 1;
+    controller->bits.musicAsked = asked != 0;
     if (asked != 0)
     {
-        controller->bits = (controller->bits | VideoController::BitMusicOnly) & ~VideoController::BitWaitingForMusic;
+        controller->bits.musicOnly = 1;
+        controller->bits.waitingForMusic = 0;
         controller->state = VideoController::StateQueued;
         controller->clock = clock;
     }
@@ -108,52 +110,52 @@ u32 QueueMovie(VideoController* controller, s32 track, TimeClock* clock, u32 loo
 
 u32 VideoReady(VideoController* controller)
 {
-    if ((controller->bits & VideoController::BitMusicOnly) == 0)
+    if (controller->bits.musicOnly == 0)
     {
         return 0;
     }
 
-    return MusicSlotPrepared(MusicSlot);
+    return MusicSlotPrepared(ContextMusicSlot);
 }
 
 u32 StartQueuedMovie(VideoController* controller, TimeClock* clock)
 {
-    if ((controller->bits & VideoController::BitMusicAsked) == 0)
+    if (controller->bits.musicAsked == 0)
     {
         return 0;
     }
 
-    if (MusicSlotPrepared(MusicSlot) == 0)
+    if (MusicSlotPrepared(ContextMusicSlot) == 0)
     {
-        controller->bits |= VideoController::BitWaitingForMusic;
+        controller->bits.waitingForMusic = 1;
         controller->waitedFrames++;
         return 0;
     }
 
     controller->clock = clock;
-    controller->bits &= ~VideoController::BitWaitingForMusic;
+    controller->bits.waitingForMusic = 0;
     controller->startTime = clock->time;
     controller->frameShare = 0.0f;
     controller->partFrame = 0;
     controller->frame = 0;
     controller->part = 0;
     controller->now = clock->time;
-    PlayPreparedMusic(1.0f, 1.0f, 0.0f, MusicSlot);
-    controller->bits &= ~VideoController::BitMusicAsked;
+    PlayPreparedMusic(1.0f, 1.0f, 0.0f, ContextMusicSlot);
+    controller->bits.musicAsked = 0;
     controller->state = VideoController::StatePlaying;
     return 1;
 }
 
 u32 CutsceneSeen(VideoController* controller)
 {
-    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&controller->instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&controller->instance->nodes, NodeObject));
     ChunkEntry* chunk = ChunkOfIndex(g_ChunkManager, node->agent->chunkIndex);
-    return GetPersistentFlag(chunk->flags, node->agent->id);
+    return GetPersistentFlag(chunk->savedFlags, node->agent->id);
 }
 
 void StopScriptMovie(VideoController* controller)
 {
-    controller->bits |= VideoController::BitStopped;
+    controller->bits.stopped = 1;
     if (controller->state == VideoController::StateReady)
     {
         if (controller->cutscene != nullptr)
@@ -179,7 +181,7 @@ void CutscenePartRead(VideoController* controller, Cutscene* cutscene)
 {
     u32 state = controller->state;
     if (state == VideoController::StateIdle || state == VideoController::StateFinished ||
-        (controller->bits & VideoController::BitStopped) != 0)
+        controller->bits.stopped != 0)
     {
         if (controller->cutscene != nullptr)
         {
@@ -201,9 +203,9 @@ void CutscenePartRead(VideoController* controller, Cutscene* cutscene)
 
     if (cutscene == controller->cutscene)
     {
-        controller->bits |= VideoController::BitFirstPartRead;
+        controller->bits.firstPartRead = 1;
         controller->state = VideoController::StateReady;
-        if ((controller->bits & VideoController::BitWaitingForMusic) != 0)
+        if (controller->bits.waitingForMusic != 0)
         {
             StartReadCutscene(controller, GetContextClock(controller->instance));
         }
@@ -215,13 +217,13 @@ void CutscenePartRead(VideoController* controller, Cutscene* cutscene)
     if (cutscene == controller->nextPart)
     {
         controller->waitedFrames = 0;
-        controller->bits |= VideoController::BitNextPartRead;
+        controller->bits.nextPartRead = 1;
     }
 }
 
 void StopCutsceneMusic(VideoController*)
 {
-    FadeOutMusicSlot(0.0f, MusicSlot);
+    FadeOutMusicSlot(0.0f, ContextMusicSlot);
 }
 
 InstanceContext* ModelInstance(VideoController* controller, u16 model)
@@ -263,7 +265,7 @@ void GiveBackInstances(VideoController* controller)
     for (u32 index = 0; index < controller->cutscene->instanceTrackCount; index++)
     {
         PlayedInstanceTrack* track = &controller->instanceTracks[index];
-        if ((track->bits & PlayedInstanceTrack::BitGiven) != 0)
+        if (track->bits.given != 0)
         {
             GiveBackInstance(controller, track->instance);
         }
@@ -272,12 +274,12 @@ void GiveBackInstances(VideoController* controller)
 
 void GiveBackInstance(VideoController*, InstanceContext* instance)
 {
-    Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, ObjectNodeKind))->agent;
-    CallVirtual<void>(agent, agent->vtable, UnfreezeSlot);
+    Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject))->agent;
+    CallVirtual<void>(agent, agent->vtable, Agent::UnfreezeSlot);
     auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     if (model->animator != nullptr)
     {
-        StopOgiAnimation(model->animator, 0, RootJoint);
+        StopOgiAnimation(model->animator, 0, OgiAnimator::RootJoint);
     }
 }
 
@@ -289,7 +291,7 @@ void DrawSkipHint(VideoController* controller)
     u32 colour;
     GetColor(&colour, SkipHintColour);
     renderer->colour = colour;
-    QueueText(renderer, controller->skipHint.string, Rounded(0.83), Rounded(0.12));
+    QueueText(renderer, controller->skipHint.string, SkipHintX, CutsceneTextY);
 }
 
 void DrawDiscError(VideoController* controller)
@@ -300,7 +302,7 @@ void DrawDiscError(VideoController* controller)
     u32 colour;
     GetColor(&colour, DiscErrorColour);
     renderer->colour = colour;
-    QueueText(renderer, controller->discErrorTitle.string, Rounded(0.85), Rounded(0.12));
+    QueueText(renderer, controller->discErrorTitle.string, DiscErrorX, CutsceneTextY);
 }
 
 void VideoController::Pause()
@@ -342,7 +344,7 @@ void VideoController::Update()
 void VideoController::Reset()
 {
     StopCutscene(this);
-    bits &= ~BitMusicOnly;
+    bits.musicOnly = 0;
     state = StateIdle;
     currentPart = -1;
     pausedState = StateIdle;
@@ -360,7 +362,7 @@ void UpdateReadyCutscene(VideoController*)
 void UpdatePausedCutscene(VideoController* controller)
 {
     TimeClock* clock = controller->clock;
-    if (clock != nullptr && (clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock != nullptr && clock->flags.running == 0)
     {
         controller->state = controller->pausedState;
     }
@@ -447,7 +449,7 @@ PlayedInstanceTrack* ConstructInstanceTrack(PlayedInstanceTrack* track)
 void ResetInstanceTrack(PlayedInstanceTrack* track)
 {
     track->track = nullptr;
-    track->bits &= ~u64{PlayedInstanceTrack::BitGiven};
+    track->bits.given = 0;
     track->values = nullptr;
     track->instance = nullptr;
     track->animation = nullptr;
@@ -467,9 +469,9 @@ void ReleaseInstanceTrack(PlayedInstanceTrack* track)
     }
 
     InstanceContext* instance = track->instance;
-    if (instance != nullptr && (track->bits & PlayedInstanceTrack::BitGiven) == 0)
+    if (instance != nullptr && track->bits.given == 0)
     {
-        CallVirtual<u32>(instance, instance->vtable, ReleaseSlot);
+        CallVirtual<u32>(instance, instance->vtable, InstanceContext::ReleaseSlot);
     }
 
     ResetInstanceTrack(track);
@@ -478,12 +480,12 @@ void ReleaseInstanceTrack(PlayedInstanceTrack* track)
 void SetTrackInstance(PlayedInstanceTrack* track, InstanceContext* instance, u32 given)
 {
     track->instance = instance;
-    track->bits = (track->bits & ~u64{PlayedInstanceTrack::BitGiven}) | (given & 1);
+    track->bits.given = given;
 }
 
 PlayedEmitterTrack* ConstructEmitterTrack(PlayedEmitterTrack* track)
 {
-    track->emitter = -1;
+    track->emitter = NoEmitter;
     track->track = nullptr;
     track->values = nullptr;
     for (s32& angle : track->angles)
@@ -497,12 +499,12 @@ PlayedEmitterTrack* ConstructEmitterTrack(PlayedEmitterTrack* track)
 
 void ReleaseEmitterTrack(PlayedEmitterTrack* track)
 {
-    if (track->emitter != -1)
+    if (track->emitter != NoEmitter)
     {
         StopEmitter(track->emitter);
     }
 
-    track->emitter = -1;
+    track->emitter = NoEmitter;
 }
 
 PlayedSoundTrack* ConstructSoundTrack(PlayedSoundTrack* track)
@@ -514,7 +516,7 @@ PlayedSoundTrack* ConstructSoundTrack(PlayedSoundTrack* track)
 void ResetSoundTrack(PlayedSoundTrack* track)
 {
     track->track = nullptr;
-    track->unknown00 = -1;
+    track->unused00 = -1;
     track->values = nullptr;
     PlaceAtOrigin(&track->position);
     track->volume = -1.0f;

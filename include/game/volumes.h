@@ -16,7 +16,7 @@ struct CapsuleVolume;
 // where a point is, 5 where a sphere is, 6 where a segment is, 7 the share of a segment where it crosses the volume's surface, 8
 // the same, 0 when the segment starts inside, 9 none, 10 where another volume is, 11 a copy moved by a matrix (none of a box), 12
 // another volume of its type made this one moved by a matrix, 13 a contact with another volume, 14 its type, 15 read, 16
-// nothing. Where something is: 0 apart, 1 wholly inside, 2 partly; -1 another volume of a type it doesn't test
+// nothing. Where something is: Volume::Placement
 enum VolumeType : u32
 {
     VolumeTypeBox = 0x1601,
@@ -34,10 +34,16 @@ enum SegmentMode : s32
     SegmentBounded = 2,
 };
 
-// A contact with another volume (slot 13): the plane of a box's face nearest where it touched (kind 1), or the way from the
-// other sphere's centre to a sphere's (w 1, kind 2)
+// A contact with another volume (slot 13): the plane of a box's face nearest where it touched, or the way from the other sphere's
+// centre to a sphere's (w 1)
 struct alignas(16) VolumeContact
 {
+    enum Kind : u32
+    {
+        BoxFace = 1,
+        BetweenSpheres = 2,
+    };
+
     Vector4 normal;
     u32 kind;
 };
@@ -45,6 +51,16 @@ CHECK_OFFSET(VolumeContact, kind, 0x10);
 
 struct alignas(16) Volume
 {
+    // Where something is against a volume (or a cell's box against what's collected, VolumeHoldsCell): apart, wholly inside it,
+    // partly; and another volume of a type it doesn't test
+    enum Placement : s32
+    {
+        Apart = 0,
+        Inside = 1,
+        Partly = 2,
+        Untested = -1,
+    };
+
     Vector4 sphere;
     const GccVTableEntry* vtable;
 
@@ -95,8 +111,8 @@ struct alignas(16) BoundingVolume : Volume
 
     // The tests behind the slots (this unused by the first four): a segment against a box (the outcodes of its ends), a
     // segment's shares (none), a point's squared distance to a box's nearest face (when it's inside on every axis), a volume of a
-    // box's type against this one (1 when it's strictly inside), a sphere's, a capsule's (its segment's squared distance to the
-    // box, or its ends' spheres when the segment touches it), and a volume of type 0x1608 moved (nothing)
+    // box's type against this one (Inside when it's strictly inside), a sphere's, a capsule's (its segment's squared distance to
+    // the box, or its ends' spheres when the segment touches it), and a volume of type 0x1608 moved (nothing)
     u32 SegmentInBox(const Vector4* low, const Vector4* high, const Vector4* segment) RETAIL(FUN_001f70f8);
     u32 SegmentCrossingBox(const Vector4* low, const Vector4* high, const Vector4* segment, s32 mode, f32* share)
         RETAIL(FUN_001ff698);
@@ -232,8 +248,8 @@ extern "C"
                          f32* squared) RETAIL(FUN_001f8100);
     void LineBoxThreeZeros(const BoundingVolume* box, Vector4* point, f32* squared) RETAIL(FUN_001f8248);
 
-    // Where a scenery cell's box is against what's collected against it: 0 apart, 1 strictly inside the cell, 2 partly. What it's
-    // given is read as a box (its min first, its max 16 bytes in), not as a volume's sphere and vtable
+    // Where a scenery cell's box is against what's collected against it (Volume::Placement, Inside when it's strictly inside the
+    // cell). What it's given is read as a box (its min first, its max 16 bytes in), not as a volume's sphere and vtable
     u32 VolumeHoldsCell(SceneryCell* cell, BoundingVolume* volume) RETAIL(FUN_001fa640);
 }
 

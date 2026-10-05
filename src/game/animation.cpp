@@ -1,6 +1,7 @@
 #include "game/animation.h"
 
 #include "gcc2.h"
+#include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/chunkfiles.h"
 #include "game/clock.h"
@@ -25,13 +26,9 @@ EABI_EXPORT(FUN_00297f98, ConstructAnimationSettings);
 
 namespace
 {
-// A track's turns: 16 bits of a turn shifted up to 65536ths, as radians
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr s32 HalfTurn = 0x8000;
-constexpr s32 Turn = 0x10000;
-
-// Translations and scales in 4096ths
+// Translations and scales in 4096ths; turns in 4096ths of a turn, shifted up to 65536ths
 constexpr f32 TrackUnit = 0x1p-12f;
+constexpr u32 TrackTurnShift = 4;
 
 // A value moved a share of the way toward another
 f32 Toward(f32 from, f32 to, f32 share)
@@ -60,14 +57,14 @@ void ReadChannels(TrackReader* reader, f32* now, f32* next)
         }
 
         reader->statics >>= 1;
-        reader->statics2 >>= 1;
+        reader->unused02 >>= 1;
     }
 }
 
 // The joint a share of the way toward its bind pose (at once from 1 on: the bind rotation, translation and the joints' scale)
 void PoseAtBind(f32 share, JointAnimator* animator)
 {
-    JointStruct* joint = animator->joint;
+    OgiJoint* joint = animator->joint;
     if (share < 1.0f)
     {
         Vector4 rotation;
@@ -78,13 +75,13 @@ void PoseAtBind(f32 share, JointAnimator* animator)
         return;
     }
 
-    animator->flags |= JointAnimator::HasRotation;
+    animator->flags.hasRotation = 1;
     animator->rotation.x = joint->bindRotation.x;
     animator->rotation.y = joint->bindRotation.y;
     animator->rotation.z = joint->bindRotation.z;
     animator->rotation.w = joint->bindRotation.w;
-    animator->flags |= JointAnimator::HasScale;
-    animator->flags |= JointAnimator::HasTranslation;
+    animator->flags.hasScale = 1;
+    animator->flags.hasTranslation = 1;
     animator->scale = g_JointScale;
     animator->translation = joint->bindPosition;
 }
@@ -93,13 +90,13 @@ void PoseAtBind(f32 share, JointAnimator* animator)
 void RotateJoint(f32 share, JointAnimator* animator, const Vector4* to, Vector4* out)
 {
     alignas(16) Vector4 from;
-    if ((animator->flags & JointAnimator::HasRotation) != 0)
+    if (animator->flags.hasRotation != 0)
     {
         from = animator->rotation;
     }
     else
     {
-        animator->flags |= JointAnimator::HasRotation;
+        animator->flags.hasRotation = 1;
         from = animator->joint->bindRotation;
     }
 
@@ -138,11 +135,11 @@ void DoAnimation(f32 weight, JointAnimator* animator, AnimationChain* chain)
 
 void AnimateJoint(f32 weight, f32 frameShare, JointAnimator* animator, const AnimationData* data)
 {
-    JointStruct* joint = animator->joint;
+    OgiJoint* joint = animator->joint;
     const JointTrackSettings* settings = &data->settings[joint->index];
     TrackReader reader;
     reader.statics = settings->statics;
-    reader.statics2 = (1 << (settings->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask)) - 1;
+    reader.unused02 = (1 << settings->flags.channels) - 1;
     reader.staticValues = data->statics + settings->staticIndex;
     reader.current = data->current + settings->frameIndex;
     reader.next = data->next + settings->frameIndex;
@@ -164,14 +161,14 @@ void AnimateJoint(f32 weight, f32 frameShare, JointAnimator* animator, const Ani
     Vector4 scaleNow = {};
     Vector4 scaleNext = {};
     ReadChannels(&reader, &scaleNow.x, &scaleNext.x);
-    if ((settings->flags & JointTrackSettings::IndependentScaling) != 0)
+    if (settings->flags.independentScaling != 0)
     {
-        animator->flags |= JointAnimator::ParentScale;
+        animator->flags.independentScaling = 1;
     }
 
     Vector4 scale;
     Platform::Math::Lerp(&scaleNow, &scaleNext, frameShare, &scale);
-    if ((settings->flags & JointTrackSettings::AdditionalRotation) != 0)
+    if (settings->flags.additionalRotation != 0)
     {
         Platform::Math::TurnRotation(&animator->joint->additionalRotation, &rotation);
     }
@@ -188,17 +185,18 @@ void AnimateJoint(f32 weight, f32 frameShare, JointAnimator* animator, const Ani
 
     animator->scale = scale;
     animator->translation = move;
-    animator->flags |= JointAnimator::HasScale | JointAnimator::HasTranslation;
+    animator->flags.hasScale = 1;
+    animator->flags.hasTranslation = 1;
     animator->rotation.x = rotation.x;
     animator->rotation.y = rotation.y;
     animator->rotation.z = rotation.z;
     animator->rotation.w = rotation.w;
-    animator->flags |= JointAnimator::HasRotation;
+    animator->flags.hasRotation = 1;
 }
 
 void ScaleJoint(f32 share, JointAnimator* animator, const Vector4* scale)
 {
-    if ((animator->flags & JointAnimator::HasScale) != 0)
+    if (animator->flags.hasScale != 0)
     {
         animator->scale.x = Toward(animator->scale.x, scale->x, share);
         animator->scale.y = Toward(animator->scale.y, scale->y, share);
@@ -211,12 +209,12 @@ void ScaleJoint(f32 share, JointAnimator* animator, const Vector4* scale)
     animator->scale.y = Toward(g_JointScale.y, scale->y, share);
     animator->scale.w = 1.0f;
     animator->scale.z = Toward(g_JointScale.z, scale->z, share);
-    animator->flags |= JointAnimator::HasScale;
+    animator->flags.hasScale = 1;
 }
 
 void TranslateJoint(f32 share, JointAnimator* animator, const Vector4* translation)
 {
-    if ((animator->flags & JointAnimator::HasTranslation) != 0)
+    if (animator->flags.hasTranslation != 0)
     {
         animator->translation.x = Toward(animator->translation.x, translation->x, share);
         animator->translation.y = Toward(animator->translation.y, translation->y, share);
@@ -230,24 +228,24 @@ void TranslateJoint(f32 share, JointAnimator* animator, const Vector4* translati
     animator->translation.y = Toward(bind->y, translation->y, share);
     animator->translation.w = 1.0f;
     animator->translation.z = Toward(bind->z, translation->z, share);
-    animator->flags |= JointAnimator::HasTranslation;
+    animator->flags.hasTranslation = 1;
 }
 
 void ReadJointAngle(TrackReader* reader, f32* now, f32* next)
 {
     if ((reader->statics & 1) == 0)
     {
-        s32 current = *reader->current << 4;
-        s32 coming = *reader->next << 4;
+        s32 current = *reader->current << TrackTurnShift;
+        s32 coming = *reader->next << TrackTurnShift;
         s32 difference = current - coming;
         // This frame's turn taken round to the next's side
-        if (HalfTurn < difference)
+        if (HalfTurnAngle < difference)
         {
-            current = current + -Turn;
+            current = current + -FullTurnAngle;
         }
-        else if (difference < -HalfTurn)
+        else if (difference < -HalfTurnAngle)
         {
-            current = current + Turn;
+            current = current + FullTurnAngle;
         }
 
         *now = static_cast<f32>(current) * AngleToRadians;
@@ -257,24 +255,24 @@ void ReadJointAngle(TrackReader* reader, f32* now, f32* next)
     }
     else
     {
-        f32 value = static_cast<f32>(*reader->staticValues << 4) * AngleToRadians;
+        f32 value = static_cast<f32>(*reader->staticValues << TrackTurnShift) * AngleToRadians;
         *now = value;
         *next = value;
         reader->staticValues++;
     }
 
     reader->statics >>= 1;
-    reader->statics2 >>= 1;
+    reader->unused02 >>= 1;
 }
 
 void ClearJointAnimator(JointAnimator* animator)
 {
-    animator->flags = 0;
+    animator->flags.value = 0;
 }
 
 void CreateJointTransform(JointAnimator* animator, JointAnimation* parent, u32 markDone, Matrix4x4* out)
 {
-    if ((animator->flags & JointAnimator::Done) != 0)
+    if (animator->flags.done != 0)
     {
         return;
     }
@@ -282,15 +280,15 @@ void CreateJointTransform(JointAnimator* animator, JointAnimation* parent, u32 m
     const Vector4* rotation = nullptr;
     const Vector4* parentScale = nullptr;
     const Vector4* scale = nullptr;
-    if ((animator->flags & JointAnimator::HasRotation) != 0)
+    if (animator->flags.hasRotation != 0)
     {
         rotation = &animator->rotation;
-        if ((animator->flags & JointAnimator::ParentScale) != 0 && parent != nullptr)
+        if (animator->flags.independentScaling != 0 && parent != nullptr)
         {
             parentScale = &parent->scale;
         }
 
-        if ((animator->flags & JointAnimator::HasScale) != 0)
+        if (animator->flags.hasScale != 0)
         {
             scale = &animator->scale;
         }
@@ -298,7 +296,7 @@ void CreateJointTransform(JointAnimator* animator, JointAnimation* parent, u32 m
 
     // The scale its children take as their parent's: its own, else its parent's, else 1
     JointAnimation* animation = animator->animation;
-    if ((animator->flags & JointAnimator::HasScale) != 0)
+    if (animator->flags.hasScale != 0)
     {
         animation->scale = animator->scale;
     }
@@ -311,13 +309,12 @@ void CreateJointTransform(JointAnimator* animator, JointAnimation* parent, u32 m
         animation->scale = parent->scale;
     }
 
-    animation->bits |= JointAnimation::HasScale;
-    u32 flags = animator->flags;
-    const Vector4* translation = (flags & JointAnimator::HasTranslation) != 0 ? &animator->translation : nullptr;
-    const Matrix4x4* parentMatrix = parent != nullptr && (flags & JointAnimator::NoParent) == 0 ? &parent->transform : nullptr;
+    animation->bits.unused0 = 1;
+    const Vector4* translation = animator->flags.hasTranslation != 0 ? &animator->translation : nullptr;
+    const Matrix4x4* parentMatrix = parent != nullptr && animator->flags.noParent == 0 ? &parent->transform : nullptr;
     if (markDone != 0)
     {
-        animator->flags = flags | JointAnimator::Done;
+        animator->flags.done = 1;
     }
 
     Platform::Math::JointMatrix(rotation, parentScale, scale, translation, parentMatrix, out);
@@ -325,7 +322,6 @@ void CreateJointTransform(JointAnimator* animator, JointAnimation* parent, u32 m
 
 void TransformJoints(JointAnimation* joint, AnimationChain* chain, JointAnimation* parent, JointMatrices* matrices)
 {
-    constexpr u32 CallbackSlot = 4;
     if (joint->chain != nullptr)
     {
         chain = joint->chain;
@@ -340,7 +336,8 @@ void TransformJoints(JointAnimation* joint, AnimationChain* chain, JointAnimatio
     for (JointCallback* callback = joint->callbacks; callback != nullptr; callback = callback->next)
     {
         void* object = callback->object;
-        CallVirtual<void>(object, *static_cast<const GccVTableEntry* const*>(object), CallbackSlot, &animator, &matrix);
+        CallVirtual<void>(object, *static_cast<const GccVTableEntry* const*>(object), JointHook::PoseJointSlot, &animator,
+                          &matrix);
     }
 
     CreateJointTransform(&animator, parent, 1, &matrix);
@@ -348,12 +345,12 @@ void TransformJoints(JointAnimation* joint, AnimationChain* chain, JointAnimatio
     Matrix4x4* written = matrices->end;
     *written = joint->transform;
     matrices->end = written + 1;
-    if ((joint->joint->detail >> 4) < matrices->detail)
+    if (joint->joint->detail.level < matrices->detail)
     {
         return;
     }
 
-    for (u32 child = 0; child < joint->ChildCount(); child++)
+    for (u32 child = 0; child < joint->bits.childCount; child++)
     {
         TransformJoints(joint->children[child], chain, joint, matrices);
     }
@@ -362,7 +359,7 @@ void TransformJoints(JointAnimation* joint, AnimationChain* chain, JointAnimatio
 namespace
 {
 // A joint's animation of its own (its scale and matrix's values the heap's until it's worked out)
-JointAnimation* NewJointAnimation(JointStruct* joint, JointAnimation* parent)
+JointAnimation* NewJointAnimation(OgiJoint* joint, JointAnimation* parent)
 {
     auto* animation = static_cast<JointAnimation*>(MemoryAllocate(sizeof(JointAnimation)));
     animation->joint = joint;
@@ -374,11 +371,10 @@ JointAnimation* NewJointAnimation(JointStruct* joint, JointAnimation* parent)
 }
 }
 
-JointAnimation* GetJointAnimationFromParentJoint(JointAnimation* parent, JointStruct* joint)
+JointAnimation* GetJointAnimationFromParentJoint(JointAnimation* parent, OgiJoint* joint)
 {
-    constexpr u32 MostChildren = 12;
-    u32 count = parent->ChildCount();
-    if (!(count < MostChildren))
+    u32 count = parent->bits.childCount;
+    if (!(count < JointAnimation::MostChildren))
     {
         return nullptr;
     }
@@ -392,28 +388,25 @@ JointAnimation* GetJointAnimationFromParentJoint(JointAnimation* parent, JointSt
     }
 
     JointAnimation* animation = NewJointAnimation(joint, parent);
-    animation->bits = 0;
-    parent->children[parent->ChildCount()] = animation;
-    u32 grown = parent->ChildCount() + 1;
-    parent->bits = (parent->bits & ~(JointAnimation::ChildrenMask << JointAnimation::ChildrenShift)) |
-                   (grown & JointAnimation::ChildrenMask) << JointAnimation::ChildrenShift;
+    animation->bits.value = 0;
+    parent->children[parent->bits.childCount] = animation;
+    parent->bits.childCount++;
     return animation;
 }
 
 void SetJointAnimations(OgiAnimator* animator, u32 jointCount)
 {
-    constexpr u8 NoParent = 0xFF;
     for (u32 index = 0; index < jointCount; index++)
     {
-        JointStruct* joint = &animator->ogi->joints[index];
+        OgiJoint* joint = &animator->ogi->joints[index];
         JointAnimation* animation;
-        if (joint->parent == NoParent)
+        if (joint->parent == GameOGI::NoJoint)
         {
             if (animator->root == nullptr)
             {
                 JointAnimation* root = NewJointAnimation(joint, nullptr);
                 animator->root = root;
-                root->bits = 0;
+                root->bits.value = 0;
             }
 
             animation = animator->root;
@@ -429,23 +422,23 @@ void SetJointAnimations(OgiAnimator* animator, u32 jointCount)
 
 void BlendShapesFrame(f32 weight, f32 frameShare, BlendShapeWeights* weights, const AnimationData* data)
 {
-    constexpr u32 RingSize = sizeof(g_BlendShapeRing);
+    constexpr u32 RingBytes = sizeof(g_BlendShapeRing);
     // The channels of the first joint's settings are the shapes
     const JointTrackSettings* settings = data->settings;
     TrackReader reader;
     reader.statics = settings->statics;
-    u32 count = settings->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask;
-    reader.statics2 = (1 << (settings->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask)) - 1;
+    u32 count = settings->flags.channels;
+    reader.unused02 = (1 << settings->flags.channels) - 1;
     reader.staticValues = data->statics + settings->staticIndex;
     reader.current = data->current + settings->frameIndex;
     weights->current = weights->next;
     reader.next = data->next + settings->frameIndex;
     if (weights->count < count)
     {
-        u8* end = reinterpret_cast<u8*>(g_BlendShapeRing) + RingSize;
+        u8* end = reinterpret_cast<u8*>(g_BlendShapeRing) + RingBytes;
         if (end < reinterpret_cast<u8*>(g_BlendShapeRingNext + count))
         {
-            g_BlendShapeRingNext = reinterpret_cast<f32*>(end - RingSize);
+            g_BlendShapeRingNext = reinterpret_cast<f32*>(end - RingBytes);
         }
 
         weights->count = count;
@@ -478,7 +471,7 @@ void BlendShapesFrame(f32 weight, f32 frameShare, BlendShapeWeights* weights, co
         }
 
         reader.statics >>= 1;
-        reader.statics2 >>= 1;
+        reader.unused02 >>= 1;
         if (weights->current == nullptr)
         {
             value = value * weight;
@@ -545,16 +538,13 @@ void FindFrames(AnimationData* data, u32 frame, u32 next)
     AnimationDataInformation* information = data->information;
     u8* base = DiskLoadedMemory(GetDiskManager(), &information->diskHandle);
     data->settings = reinterpret_cast<const JointTrackSettings*>(base);
-    u8* statics = base + (information->sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings);
-    data->statics = reinterpret_cast<const s16*>(statics);
-    u32 sections = information->sections;
-    u32 perFrame = sections >> AnimationDataInformation::FrameValuesShift;
-    u32 staticBytes = sections >> AnimationDataInformation::StaticBytesShift & AnimationDataInformation::StaticBytesMask;
-    data->current = reinterpret_cast<const s16*>(statics + staticBytes + frame * perFrame * 2);
-    sections = data->information->sections;
-    perFrame = sections >> AnimationDataInformation::FrameValuesShift;
-    staticBytes = sections >> AnimationDataInformation::StaticBytesShift & AnimationDataInformation::StaticBytesMask;
-    data->next = reinterpret_cast<const s16*>(statics + staticBytes + next * perFrame * 2);
+    const s16* statics = reinterpret_cast<const s16*>(base + information->layout.joints * sizeof(JointTrackSettings));
+    data->statics = statics;
+    // The frames' values follow the static values
+    AnimationLayout layout = information->layout;
+    data->current = statics + layout.staticValues + frame * layout.frameValues;
+    layout = data->information->layout;
+    data->next = statics + layout.staticValues + next * layout.frameValues;
 }
 
 void SetAnimationData(AnimationStatus* status, u32 main)
@@ -566,10 +556,10 @@ void SetAnimationData(AnimationStatus* status, u32 main)
     }
 
     f32 through = static_cast<f32>(status->time) * g_SecondsPerClockUnit / (static_cast<f32>(status->length) * g_SecondsPerClockUnit);
-    u32 frames = status->bits >> AnimationStatus::FramesShift & AnimationStatus::FramesMask;
+    u32 frames = status->bits.frames;
     u32 last = frames - 1;
     f32 position;
-    if ((status->bits & AnimationStatus::Loops) != 0)
+    if (status->bits.loops != 0)
     {
         position = static_cast<f32>(static_cast<s32>(frames)) * through;
     }
@@ -583,14 +573,14 @@ void SetAnimationData(AnimationStatus* status, u32 main)
     u32 next;
     if (frame == last)
     {
-        next = (status->bits & AnimationStatus::Loops) != 0 ? 0 : frame;
+        next = status->bits.loops != 0 ? 0 : frame;
     }
     else
     {
         next = frame + 1;
     }
 
-    if ((status->bits & AnimationStatus::Reversed) != 0)
+    if (status->bits.reversed != 0)
     {
         u32 reversed = last - next;
         status->frameShare = 1.0f - status->frameShare;
@@ -611,10 +601,9 @@ void SetAnimationData(AnimationStatus* status, u32 main)
 
 void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
 {
-    u32 bits = status->bits;
-    if ((bits & AnimationStatus::Ended) == 0)
+    if (status->bits.ended == 0)
     {
-        if ((bits & AnimationStatus::Started) != 0)
+        if (status->bits.started != 0)
         {
             s32 began = status->began;
             s32 length = status->length;
@@ -622,7 +611,7 @@ void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
             status->time = time;
             if (!(time < length))
             {
-                if ((bits & AnimationStatus::Loops) != 0)
+                if (status->bits.loops != 0)
                 {
                     s32 loops = static_cast<s32>(static_cast<f32>(time) * g_SecondsPerClockUnit /
                                                  (static_cast<f32>(length) * g_SecondsPerClockUnit));
@@ -633,13 +622,13 @@ void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
                 else
                 {
                     status->time = length;
-                    status->bits = bits | AnimationStatus::Ended;
+                    status->bits.ended = 1;
                 }
             }
         }
         else
         {
-            if ((bits & AnimationStatus::StartsPartWay) != 0)
+            if (status->bits.startsPartWay != 0)
             {
                 f32 start = status->start;
                 f32 seconds = ClockUnitsToSeconds(&status->length);
@@ -650,9 +639,8 @@ void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
                 status->began = now;
             }
 
-            bits = status->bits | AnimationStatus::Started;
-            status->bits = bits;
-            if ((bits & AnimationStatus::BlendsIn) != 0)
+            status->bits.started = 1;
+            if (status->bits.blendsIn != 0)
             {
                 status->blendStart = now;
             }
@@ -660,8 +648,7 @@ void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
     }
 
     SetAnimationData(status, main);
-    bits = status->bits;
-    if ((bits & AnimationStatus::BlendsIn) == 0)
+    if (status->bits.blendsIn == 0)
     {
         return;
     }
@@ -674,7 +661,7 @@ void ProgressAnimation(AnimationStatus* status, s32 now, u32 main)
     }
     else
     {
-        status->bits = bits & ~AnimationStatus::BlendsIn;
+        status->bits.blendsIn = 0;
         status->weight = 1.0f;
     }
 }
@@ -691,7 +678,7 @@ void DestroyAnimationStatus(AnimationStatus* status, u32 destroyFlags)
         MemoryDeallocate2_(status->blendShapes);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(status);
     }
@@ -719,19 +706,20 @@ void ClearAnimationStatuses(AnimationChain* chain, u32 main)
 
 void ContinueAnimationStatus(AnimationStatus* status, const AnimationStatus* from)
 {
-    if ((from->bits & AnimationStatus::Started) == 0)
+    if (from->bits.started == 0)
     {
         return;
     }
 
     f32 share = static_cast<f32>(from->time) * g_SecondsPerClockUnit / (static_cast<f32>(from->length) * g_SecondsPerClockUnit);
     status->start = share;
-    if ((status->bits & AnimationStatus::Reversed) != (from->bits & AnimationStatus::Reversed))
+    if (status->bits.reversed != from->bits.reversed)
     {
         status->start = 1.0f - share;
     }
 
-    status->bits = (status->bits & ~AnimationStatus::Started) | AnimationStatus::StartsPartWay;
+    status->bits.started = 0;
+    status->bits.startsPartWay = 1;
 }
 
 u32 SameAnimations(const AnimationStatus* status, const AnimationStatus* other)
@@ -755,13 +743,13 @@ JointMatrices* ConstructJointMatrices(JointMatrices* matrices)
     matrices->frame = 0;
     matrices->start = nullptr;
     matrices->end = nullptr;
-    *reinterpret_cast<u32*>(&matrices->detail) = 0;
+    matrices->detailWord = 0;
     return matrices;
 }
 
 void DestroyJointMatrices(JointMatrices* matrices, u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(matrices);
     }
@@ -770,7 +758,7 @@ void DestroyJointMatrices(JointMatrices* matrices, u32 destroyFlags)
 void StartJointMatrices(JointMatrices* matrices, const GameOGI* ogi)
 {
     u32 count = ogi->jointCount;
-    *reinterpret_cast<u32*>(&matrices->detail) = 0;
+    matrices->detailWord = 0;
     matrices->frame = 0;
     auto* room = static_cast<Matrix4x4*>(Platform::Graphics::AllocFrameMemory(count, sizeof(Matrix4x4)));
     matrices->end = room;
@@ -790,7 +778,7 @@ BlendShapeWeights* ConstructBlendShapeWeights(BlendShapeWeights* weights)
 
 void DestroyBlendShapeWeights(BlendShapeWeights* weights, u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(weights);
     }
@@ -804,7 +792,7 @@ void ResetBlendShapeWeights(BlendShapeWeights* weights)
 
 u32 ForgetJointMatrices(OgiAnimator* animator)
 {
-    animator->bits &= ~1u;
+    animator->bits.animated = 0;
     return 0;
 }
 
@@ -826,11 +814,11 @@ void ProgressAnimationChain(AnimationChain* chain, u32 main, s32 now)
         if (next == nullptr)
         {
             const AnimationData* data = main != 0 ? status->main : status->blendShapes;
-            gone = (status->bits & AnimationStatus::BlendsIn) == 0 && data == nullptr;
+            gone = status->bits.blendsIn == 0 && data == nullptr;
         }
         else
         {
-            gone = (next->bits & AnimationStatus::BlendsIn) == 0;
+            gone = next->bits.blendsIn == 0;
         }
 
         if (gone)
@@ -860,7 +848,7 @@ void ProgressAnimationChain(AnimationChain* chain, u32 main, s32 now)
 
 void ProgressJointChains(JointAnimation* joint, s32 now, u32 detail, AnimationChain* parentChain)
 {
-    u32 own = joint->joint->detail >> 4;
+    u32 own = joint->joint->detail.level;
     AnimationChain* chain = joint->chain;
     if (chain != nullptr)
     {
@@ -890,7 +878,7 @@ void ProgressJointChains(JointAnimation* joint, s32 now, u32 detail, AnimationCh
         return;
     }
 
-    for (u32 child = 0; child < joint->ChildCount(); child++)
+    for (u32 child = 0; child < joint->bits.childCount; child++)
     {
         ProgressJointChains(joint->children[child], now, detail, parentChain);
     }
@@ -903,14 +891,13 @@ void ProgressAnimator(OgiAnimator* animator, s32 now, u32 detail)
 
 f32 GetAnimationProgress(const OgiAnimator* animator, u32 joint)
 {
-    constexpr u8 Root = 0xFF;
-    if ((joint & 0xFF) == Root)
+    if (static_cast<u8>(joint) == OgiAnimator::RootJoint)
     {
         AnimationChain* chain = animator->root->chain;
         return chain != nullptr ? CalculateProgress(chain) : 0.0f;
     }
 
-    for (JointAnimation* animation = animator->cameraJoints->data[joint & 0xFF]; animation != nullptr;
+    for (JointAnimation* animation = animator->reactJoints->data[static_cast<u8>(joint)]; animation != nullptr;
          animation = animation->parent)
     {
         f32 left = animation->chain != nullptr ? CalculateProgress(animation->chain) : 0.0f;
@@ -928,12 +915,12 @@ void CopyJointMatrices(const JointAnimation* joint, JointMatrices* matrices)
     Matrix4x4* written = matrices->end;
     *written = joint->transform;
     matrices->end = written + 1;
-    if ((joint->joint->detail >> 4) < matrices->detail)
+    if (joint->joint->detail.level < matrices->detail)
     {
         return;
     }
 
-    for (u32 child = 0; child < joint->ChildCount(); child++)
+    for (u32 child = 0; child < joint->bits.childCount; child++)
     {
         CopyJointMatrices(joint->children[child], matrices);
     }
@@ -946,9 +933,9 @@ void CopyAnimatorMatrices(const OgiAnimator* animator, JointMatrices* matrices)
 
 JointAnimation* FindChildJoint(JointAnimation* joint, u32 id, u32 deep)
 {
-    u32 wanted = id & 0xFF;
+    u32 wanted = static_cast<u8>(id);
     JointAnimation* found = nullptr;
-    for (u32 child = 0; child < joint->ChildCount(); child++)
+    for (u32 child = 0; child < joint->bits.childCount; child++)
     {
         JointAnimation* animation = joint->children[child];
         if (animation->joint->id == wanted)
@@ -974,12 +961,12 @@ AnimationSettings* ConstructAnimationSettings(f32 speed, AnimationSettings* sett
     settings->start = 0.0f;
     settings->animation = animation;
     settings->blendTime = 0;
-    settings->bits = 0;
+    settings->bits.value = 0;
     f32 seconds;
     if (animation != nullptr)
     {
-        u32 rate = animation->bits >> GameAnimation::RateShift & GameAnimation::RateMask;
-        u32 frames = animation->bits >> GameAnimation::FramesShift & GameAnimation::FramesMask;
+        u32 rate = animation->bits.rate;
+        u32 frames = animation->bits.frames;
         seconds = static_cast<f32>(static_cast<s32>(frames)) / static_cast<f32>(static_cast<s32>(rate)) / speed;
     }
     else
@@ -993,7 +980,7 @@ AnimationSettings* ConstructAnimationSettings(f32 speed, AnimationSettings* sett
 
 void DestroyAnimationSettings(AnimationSettings* settings, u32 destroyFlags)
 {
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(settings);
     }
@@ -1001,12 +988,13 @@ void DestroyAnimationSettings(AnimationSettings* settings, u32 destroyFlags)
 
 AnimationStatus* ConstructAnimationStatus(AnimationStatus* status, GameAnimation* animation, s32 length, s32 blendTime)
 {
-    u32 blends = blendTime != 0 ? AnimationStatus::BlendsIn : 0;
+    bool blends = blendTime != 0;
     status->length = length;
     status->weight = 1.0f;
     status->blendTime = blendTime;
     status->next = nullptr;
-    status->bits = blends;
+    status->bits.value = 0;
+    status->bits.blendsIn = blends;
     status->time = 0;
     status->began = 0;
     status->blendStart = 0;
@@ -1014,13 +1002,13 @@ AnimationStatus* ConstructAnimationStatus(AnimationStatus* status, GameAnimation
     {
         status->main = nullptr;
         status->blendShapes = nullptr;
-        status->bits = blends | (blends == 0 ? AnimationStatus::Ended : 0);
+        status->bits.ended = !blends;
         return status;
     }
 
-    status->bits = blends | (animation->bits >> GameAnimation::FramesShift & GameAnimation::FramesMask) << AnimationStatus::FramesShift;
+    status->bits.frames = animation->bits.frames;
     AnimationData* main = nullptr;
-    if ((animation->bits & GameAnimation::HasMain) != 0)
+    if (animation->bits.hasMain != 0)
     {
         main = static_cast<AnimationData*>(MemoryAllocate(sizeof(AnimationData)));
         main->information = &animation->main;
@@ -1028,7 +1016,7 @@ AnimationStatus* ConstructAnimationStatus(AnimationStatus* status, GameAnimation
 
     status->main = main;
     AnimationData* shapes = nullptr;
-    if ((animation->bits & GameAnimation::HasBlendShapes) != 0)
+    if (animation->bits.hasBlendShapes != 0)
     {
         shapes = static_cast<AnimationData*>(MemoryAllocate(sizeof(AnimationData)));
         shapes->information = &animation->blendShapes;
@@ -1043,15 +1031,15 @@ void PlayAnimationOnChain(AnimationChain* chain, u32 main, const AnimationSettin
     AnimationStatus* playing = main != 0 ? chain->main : chain->blendShapes;
     auto* status = ConstructAnimationStatus(static_cast<AnimationStatus*>(MemoryAllocate(sizeof(AnimationStatus))),
                                             settings->animation, settings->length, settings->blendTime);
-    status->bits = (status->bits & ~AnimationStatus::Loops) | (settings->bits & AnimationSettings::Loops) << 2;
-    status->bits = (status->bits & ~AnimationStatus::Reversed) | (settings->bits << 1 & AnimationStatus::Reversed);
-    if ((settings->bits & AnimationSettings::StartsPartWay) != 0)
+    status->bits.loops = settings->bits.loops;
+    status->bits.reversed = settings->bits.backward;
+    if (settings->bits.startsPartWay != 0)
     {
-        status->start = (settings->bits & AnimationSettings::StartsPartWay) != 0 ? settings->start : 0.0f;
-        status->bits |= AnimationStatus::StartsPartWay;
+        status->start = settings->bits.startsPartWay != 0 ? settings->start : 0.0f;
+        status->bits.startsPartWay = 1;
     }
 
-    if (queues == 0 || (settings->bits & AnimationSettings::Queued) == 0)
+    if (queues == 0 || settings->bits.queued == 0)
     {
         ClearAnimationStatuses(chain, main);
         if (main != 0)
@@ -1087,17 +1075,15 @@ void PlayAnimationOnChain(AnimationChain* chain, u32 main, const AnimationSettin
     }
 
     // The same animation played the same way again isn't queued
-    u32 bits = settings->bits;
-    if ((bits & AnimationSettings::QueuedAlways) == 0 &&
-        ((last->bits & AnimationStatus::Loops) != 0) == ((settings->bits & AnimationSettings::Loops) != 0) &&
-        ((last->bits & AnimationStatus::Reversed) != 0) == ((bits & AnimationSettings::Backward) != 0) && SameAnimations(last, status) != 0)
+    if (settings->bits.queuedAlways == 0 && last->bits.loops == settings->bits.loops &&
+        last->bits.reversed == settings->bits.backward && SameAnimations(last, status) != 0)
     {
         DestroyAnimationStatus(status, DestroyAndFree);
         return;
     }
 
     last->next = status;
-    if ((settings->bits & AnimationSettings::Continues) != 0)
+    if (settings->bits.continues != 0)
     {
         ContinueAnimationStatus(status, last);
     }
@@ -1105,21 +1091,21 @@ void PlayAnimationOnChain(AnimationChain* chain, u32 main, const AnimationSettin
 
 u32 GetJointIndexByID(const GameOGI* ogi, u32 id)
 {
-    u32 wanted = id & 0xFF;
+    u32 wanted = static_cast<u8>(id);
     for (u32 index = 0; index < ogi->jointCount; index++)
     {
         if (ogi->joints[index].id == wanted)
         {
-            return index & 0xFF;
+            return static_cast<u8>(index);
         }
     }
 
-    return 0xFF;
+    return GameOGI::NoJoint;
 }
 
 void DestroyJointTree(JointAnimation* joint, u32 destroyFlags)
 {
-    for (u32 child = 0; child < joint->ChildCount(); child++)
+    for (u32 child = 0; child < joint->bits.childCount; child++)
     {
         if (joint->children[child] != nullptr)
         {
@@ -1135,22 +1121,22 @@ void DestroyJointTree(JointAnimation* joint, u32 destroyFlags)
         MemoryDeallocate2_(chain);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(joint);
     }
 }
 
-void ClearCameraJoints(OgiAnimator* animator)
+void ClearReactJoints(OgiAnimator* animator)
 {
-    if (animator->cameraJoints == nullptr)
+    if (animator->reactJoints == nullptr)
     {
         return;
     }
 
-    for (u32 index = 0; index < static_cast<u32>(animator->cameraJoints->size); index++)
+    for (u32 index = 0; index < static_cast<u32>(animator->reactJoints->size); index++)
     {
-        animator->cameraJoints->data[index] = nullptr;
+        animator->reactJoints->data[index] = nullptr;
     }
 }
 
@@ -1169,7 +1155,6 @@ void ClearJointCallbacks(OgiAnimator* animator)
 
 void BindExitPoints(OgiAnimator* animator)
 {
-    constexpr u8 NoJoint = 0xFF;
     SizedArray<ExitPointAnimation*>* exitPoints = animator->exitPoints;
     if (exitPoints == nullptr)
     {
@@ -1183,7 +1168,7 @@ void BindExitPoints(OgiAnimator* animator)
         if (index < own)
         {
             OgiExitPoint* exitPoint = &animator->ogi->exitPoints[index];
-            if (exitPoint->joint != NoJoint)
+            if (exitPoint->joint != GameOGI::NoJoint)
             {
                 ExitPointAnimation* animation = animator->exitPoints->data[index];
                 animation->exitPoint = exitPoint;
@@ -1210,18 +1195,17 @@ SizedArray<T>* NewSizedArray(u32 size)
     return array;
 }
 
-// The fewer of the animator's camera joints and the OGI's
-s32 CameraJointCount(const OgiAnimator* animator)
+// The fewer of the animator's react joints and the OGI's
+s32 ReactJointCount(const OgiAnimator* animator)
 {
-    s32 own = animator->ogi->cameraJointCount;
-    s32 room = animator->cameraJoints->size;
+    s32 own = animator->ogi->reactJointCount;
+    s32 room = animator->reactJoints->size;
     return own < room ? own : room;
 }
 }
 
-void SetAnimatorOgi(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 exitPoints)
+void SetAnimatorOgi(OgiAnimator* animator, GameOGI* ogi, u32 reactJoints, u32 exitPoints)
 {
-    constexpr u8 NoJoint = 0xFF;
     if (animator->ogi == ogi)
     {
         return;
@@ -1266,7 +1250,7 @@ void SetAnimatorOgi(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 e
         }
     }
 
-    ClearCameraJoints(animator);
+    ClearReactJoints(animator);
     if (animator->joints != nullptr)
     {
         for (u32 index = 0; index < static_cast<u32>(animator->joints->size); index++)
@@ -1276,17 +1260,17 @@ void SetAnimatorOgi(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 e
     }
 
     SetJointAnimations(animator, count);
-    if (cameraJoints != 0)
+    if (reactJoints != 0)
     {
-        if (animator->cameraJoints == nullptr)
+        if (animator->reactJoints == nullptr)
         {
-            animator->cameraJoints = NewSizedArray<JointAnimation*>(cameraJoints);
-            ClearCameraJoints(animator);
+            animator->reactJoints = NewSizedArray<JointAnimation*>(reactJoints);
+            ClearReactJoints(animator);
         }
 
         if (animator->callbacks == nullptr)
         {
-            animator->callbacks = NewSizedArray<JointCallback*>(cameraJoints);
+            animator->callbacks = NewSizedArray<JointCallback*>(reactJoints);
             ClearJointCallbacks(animator);
         }
     }
@@ -1297,65 +1281,63 @@ void SetAnimatorOgi(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 e
         for (u32 index = 0; index < exitPoints; index++)
         {
             auto* animation = static_cast<ExitPointAnimation*>(MemoryAllocate(sizeof(ExitPointAnimation)));
-            animation->bits = 0;
+            animation->bits.value = 0;
             ClearExitPointLinks(animation);
             InitIdentityMatrix(&animation->matrix);
-            animation->bits |= ExitPointAnimation::Normalized;
+            animation->bits.normalizes = 1;
             animator->exitPoints->data[index] = animation;
         }
     }
 
     BindExitPoints(animator);
-    if (animator->cameraJoints != nullptr)
+    if (animator->reactJoints != nullptr)
     {
-        s32 cameraCount = CameraJointCount(animator);
-        for (s32 id = 0; id < cameraCount; id++)
+        s32 reactCount = ReactJointCount(animator);
+        for (s32 id = 0; id < reactCount; id++)
         {
-            u32 index = GetJointIndexByID(animator->ogi, id & 0xFF);
-            animator->cameraJoints->data[id] = index == NoJoint ? nullptr : animator->joints->data[index];
+            u32 index = GetJointIndexByID(animator->ogi, static_cast<u8>(id));
+            animator->reactJoints->data[id] = index == GameOGI::NoJoint ? nullptr : animator->joints->data[index];
         }
     }
 
-    animator->bits &= ~(OgiAnimator::CameraJointsMask << OgiAnimator::CameraJointsShift);
-    if (animator->cameraJoints == nullptr)
+    animator->bits.unused1 = 0;
+    if (animator->reactJoints == nullptr)
     {
         return;
     }
 
-    s32 cameraCount = CameraJointCount(animator);
-    for (s32 id = 0; id < cameraCount; id++)
+    s32 reactCount = ReactJointCount(animator);
+    for (s32 id = 0; id < reactCount; id++)
     {
-        JointAnimation* joint = animator->cameraJoints->data[id];
+        JointAnimation* joint = animator->reactJoints->data[id];
         JointCallback* callbacks = animator->callbacks->data[id];
         if (joint != nullptr)
         {
             joint->callbacks = callbacks;
         }
 
-        u32 bits = animator->bits;
-        u32 counted = ((bits >> OgiAnimator::CameraJointsShift) + 1) & OgiAnimator::CameraJointsMask;
-        animator->bits = (bits & ~(OgiAnimator::CameraJointsMask << OgiAnimator::CameraJointsShift)) | counted << OgiAnimator::CameraJointsShift;
+        animator->bits.unused1++;
     }
 }
 
-OgiAnimator* ConstructOgiAnimatorBase(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 exitPoints)
+OgiAnimator* ConstructOgiAnimatorBase(OgiAnimator* animator, GameOGI* ogi, u32 reactJoints, u32 exitPoints)
 {
     animator->ogi = nullptr;
     animator->root = nullptr;
     animator->place = nullptr;
     animator->exitPoints = nullptr;
-    animator->cameraJoints = nullptr;
+    animator->reactJoints = nullptr;
     animator->joints = nullptr;
     animator->callbacks = nullptr;
-    animator->bits = 0;
-    animator->bits |= OgiAnimator::Animates;
-    SetAnimatorOgi(animator, ogi, cameraJoints, exitPoints);
+    animator->bits.value = 0;
+    animator->bits.animated = 1;
+    SetAnimatorOgi(animator, ogi, reactJoints, exitPoints);
     return animator;
 }
 
-OgiAnimator* InitOgiAnimatorService(OgiAnimator* animator, GameOGI* ogi, u32 cameraJoints, u32 exitPoints)
+OgiAnimator* InitOgiAnimatorService(OgiAnimator* animator, GameOGI* ogi, u32 reactJoints, u32 exitPoints)
 {
-    ConstructOgiAnimatorBase(animator, ogi, cameraJoints, exitPoints);
+    ConstructOgiAnimatorBase(animator, ogi, reactJoints, exitPoints);
     ConstructJointMatrices(&animator->matrices);
     ConstructBlendShapeWeights(&animator->blendShapes);
     return animator;
@@ -1391,7 +1373,8 @@ void UpdateExitPoints(OgiAnimator* animator, u32 moved)
         }
 
         animation->place = animator->place;
-        animation->bits = ((animation->bits | ExitPointAnimation::InUse) & ~ExitPointAnimation::Moved) | (moved & 1) << 1;
+        animation->bits.outdated = 1;
+        animation->bits.jointsMoved = moved;
     }
 }
 
@@ -1407,7 +1390,7 @@ u32 AnimateOgi(OgiAnimator* animator, const GameOGI* ogi, const TimeClock* clock
     }
 
     UpdateExitPoints(animator, animate);
-    animator->bits = (animator->bits & ~OgiAnimator::Animates) | (animate & 1);
+    animator->bits.animated = animate;
     return animate != 0 ? 1 : 0;
 }
 
@@ -1422,14 +1405,13 @@ u32 ReuseJointMatrices(OgiAnimator* animator, const GameOGI* ogi, u32 animate, u
     }
 
     UpdateExitPoints(animator, 0);
-    animator->bits = (animator->bits & ~OgiAnimator::Animates) | (animate & 1);
+    animator->bits.animated = animate;
     return animate != 0 ? 1 : 0;
 }
 
 ExitPointAnimation* UpdateExitPointMatrix(ExitPointAnimation* animation)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    if ((animation->bits & (ExitPointAnimation::InUse | ExitPointAnimation::Moved)) == 0)
+    if (animation->bits.outdated == 0 && animation->bits.jointsMoved == 0)
     {
         return animation;
     }
@@ -1439,14 +1421,14 @@ ExitPointAnimation* UpdateExitPointMatrix(ExitPointAnimation* animation)
     OgiExitPoint* exitPoint = animation->exitPoint;
     if (exitPoint == nullptr)
     {
-        if ((animation->bits & ExitPointAnimation::InUse) != 0)
+        if (animation->bits.outdated != 0)
         {
             animation->matrix = place->matrix;
         }
     }
     else if (animation->joint == nullptr)
     {
-        if ((animation->bits & ExitPointAnimation::InUse) != 0)
+        if (animation->bits.outdated != 0)
         {
             VuMultiplyMatrices(&exitPoint->matrix, &place->matrix, &animation->matrix);
         }
@@ -1458,7 +1440,7 @@ ExitPointAnimation* UpdateExitPointMatrix(ExitPointAnimation* animation)
         VuMultiplyMatrices(&onJoint, &place->matrix, &animation->matrix);
     }
 
-    if ((animation->bits & ExitPointAnimation::Normalized) != 0)
+    if (animation->bits.normalizes != 0)
     {
         for (u32 axis = 0; axis < 3; axis++)
         {
@@ -1470,7 +1452,8 @@ ExitPointAnimation* UpdateExitPointMatrix(ExitPointAnimation* animation)
         }
     }
 
-    animation->bits = animation->bits & ~ExitPointAnimation::InUse & ~ExitPointAnimation::Moved;
+    animation->bits.outdated = 0;
+    animation->bits.jointsMoved = 0;
     return animation;
 }
 
@@ -1482,12 +1465,10 @@ void ClearExitPointLinks(ExitPointAnimation* animation)
 
 namespace
 {
-constexpr u8 RootJoint = 0xFF;
-
-// The joint an animator's animation calls name: its root, or a camera joint
+// The joint an animator's animation calls name: its root, or a react joint
 JointAnimation* NamedJoint(const OgiAnimator* animator, u32 joint)
 {
-    return (joint & 0xFF) == RootJoint ? animator->root : animator->cameraJoints->data[joint & 0xFF];
+    return static_cast<u8>(joint) == OgiAnimator::RootJoint ? animator->root : animator->reactJoints->data[static_cast<u8>(joint)];
 }
 
 // Settings played on a joint's chain (made the first time when they play an animation), its main and blend shapes' both
@@ -1510,7 +1491,7 @@ void PlayOnJoint(const OgiAnimator* animator, JointAnimation* joint, const Anima
         }
     }
 
-    u32 queues = animator->bits & 1;
+    u32 queues = animator->bits.animated;
     PlayAnimationOnChain(chain, 1, settings, queues);
     PlayAnimationOnChain(chain, 0, settings, queues);
 }
@@ -1528,13 +1509,13 @@ void StopOgiAnimation(OgiAnimator* animator, s32 blendTime, u32 joint)
     settings.start = 0.0f;
     settings.animation = nullptr;
     settings.length = 0;
-    settings.bits = 0;
+    settings.bits.value = 0;
     PlayOnJoint(animator, NamedJoint(animator, joint), &settings);
 }
 
 u32 AddJointCallback(OgiAnimator* animator, u32 joint, void* object)
 {
-    u32 index = joint & 0xFF;
+    u32 index = static_cast<u8>(joint);
     JointCallback* previous = nullptr;
     for (JointCallback* callback = animator->callbacks->data[index]; callback != nullptr; callback = callback->next)
     {
@@ -1555,11 +1536,11 @@ u32 AddJointCallback(OgiAnimator* animator, u32 joint, void* object)
         return 1;
     }
 
-    JointAnimation* cameraJoint = animator->cameraJoints->data[index];
+    JointAnimation* reactJoint = animator->reactJoints->data[index];
     animator->callbacks->data[index] = added;
-    if (cameraJoint != nullptr)
+    if (reactJoint != nullptr)
     {
-        cameraJoint->callbacks = added;
+        reactJoint->callbacks = added;
     }
 
     return 1;
@@ -1572,7 +1553,7 @@ void DestroyJointCallbacks(JointCallback* callback, u32 destroyFlags)
         DestroyJointCallbacks(callback->next, DestroyAndFree);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(callback);
     }
@@ -1580,7 +1561,7 @@ void DestroyJointCallbacks(JointCallback* callback, u32 destroyFlags)
 
 void AddJointRotation(JointAnimator* animator, const Vector4* rotation)
 {
-    if ((animator->flags & JointAnimator::HasRotation) != 0)
+    if (animator->flags.hasRotation != 0)
     {
         Vector4 turned;
         MultiplyRotations(&turned, rotation, &animator->rotation);
@@ -1591,7 +1572,7 @@ void AddJointRotation(JointAnimator* animator, const Vector4* rotation)
         return;
     }
 
-    animator->flags |= JointAnimator::HasRotation;
+    animator->flags.hasRotation = 1;
     animator->rotation.x = rotation->x;
     animator->rotation.y = rotation->y;
     animator->rotation.z = rotation->z;
@@ -1613,14 +1594,13 @@ u32 CopyJointTransform(const OgiAnimator* animator, u32 index, Matrix4x4* out)
 namespace
 {
 // The animator of an instance's model node, when it has one
-void* ModelAnimator(InstanceContext* instance)
+OgiAnimator* ModelAnimator(InstanceContext* instance)
 {
-    constexpr u32 ModelNodeKind = 3;
-    auto* node = static_cast<u8*>(GetGameNode(&instance->nodes, ModelNodeKind));
-    return node != nullptr ? *reinterpret_cast<void**>(node + 0x24) : nullptr;
+    auto* node = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
+    return node != nullptr ? node->animator : nullptr;
 }
 
-void TellObject(void* object, u32 slot, void* animator)
+void TellObject(void* object, u32 slot, OgiAnimator* animator)
 {
     CallVirtual<void>(object, *static_cast<const GccVTableEntry* const*>(object), slot, animator);
 }
@@ -1628,30 +1608,25 @@ void TellObject(void* object, u32 slot, void* animator)
 
 void AttachToModelAnimator(void* object, InstanceContext* instance)
 {
-    constexpr u32 AttachSlot = 2;
-    void* animator = ModelAnimator(instance);
+    OgiAnimator* animator = ModelAnimator(instance);
     if (animator != nullptr)
     {
-        TellObject(object, AttachSlot, animator);
+        TellObject(object, JointHook::AttachSlot, animator);
     }
 }
 
 void DetachFromModelAnimator(void* object, InstanceContext* instance)
 {
-    constexpr u32 DetachSlot = 3;
-    void* animator = ModelAnimator(instance);
+    OgiAnimator* animator = ModelAnimator(instance);
     if (animator != nullptr)
     {
-        TellObject(object, DetachSlot, animator);
+        TellObject(object, JointHook::DetachSlot, animator);
     }
 }
 
 GameOGI* InitOGI(GameOGI* ogi)
 {
-    constexpr u32 ReadBits = 0x30000;
-    *reinterpret_cast<u16*>(&ogi->bits) = 0;
-    ogi->id = 0xFFFFFFFF;
-    ogi->bits &= ~ReadBits;
+    ConstructResourceHeader(ogi);
     ogi->name.string = nullptr;
     ogi->name.capacity = 0;
     ogi->name.length = 0;
@@ -1665,10 +1640,9 @@ GameOGI* InitOGI(GameOGI* ogi)
     ogi->rigidModels = nullptr;
     ogi->hulls = nullptr;
     ogi->hullJoints = nullptr;
-    auto* counts = reinterpret_cast<u32*>(&ogi->jointCount);
-    for (u32 word = 0; word < 4; word++)
+    for (u32& word : ogi->countWords)
     {
-        counts[word] = 0;
+        word = 0;
     }
 
     return ogi;
@@ -1676,17 +1650,14 @@ GameOGI* InitOGI(GameOGI* ogi)
 
 GameAnimation* InitAnimation(GameAnimation* animation)
 {
-    constexpr u32 ReadBits = 0x30000;
-    *reinterpret_cast<u16*>(&animation->unknown00) = 0;
-    animation->unknown00 &= ~ReadBits;
-    animation->id = 0xFFFFFFFF;
+    ConstructResourceHeader(animation);
     animation->blendShapes.diskHandle = -1;
     animation->main.diskHandle = -1;
-    animation->main.sections = 0;
+    animation->main.layout.value = 0;
     animation->main.frames = 0;
-    animation->blendShapes.sections = 0;
+    animation->blendShapes.layout.value = 0;
     animation->blendShapes.frames = 0;
-    animation->bits = 0;
+    animation->bits.value = 0;
     return animation;
 }
 
@@ -1697,16 +1668,14 @@ u32 AnimationDataSize(const AnimationDataInformation* information)
         return 0;
     }
 
-    u32 sections = information->sections;
-    u32 perFrame = sections >> AnimationDataInformation::FrameValuesShift;
-    return (sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings) +
-           (sections >> AnimationDataInformation::StaticBytesShift & AnimationDataInformation::StaticBytesMask) +
-           perFrame * information->frames * 2;
+    AnimationLayout layout = information->layout;
+    return layout.joints * sizeof(JointTrackSettings) + layout.staticValues * sizeof(s16) +
+           layout.frameValues * information->frames * sizeof(s16);
 }
 
 void ReadAnimationData(AnimationDataInformation* information, Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&information->sections));
+    stream->ReadS32(reinterpret_cast<s32*>(&information->layout.value));
     stream->ReadS16(reinterpret_cast<s16*>(&information->frames));
     if (information->diskHandle >= 0)
     {
@@ -1727,12 +1696,12 @@ void ReadAnimationData(AnimationDataInformation* information, Stream* stream)
 
 void ReadAnimation(GameAnimation* animation, Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&animation->bits));
+    stream->ReadS32(reinterpret_cast<s32*>(&animation->bits.value));
     ReadAnimationData(&animation->main, stream);
     ReadAnimationData(&animation->blendShapes, stream);
 }
 
-void ReadJoint(JointStruct* joint, Stream* stream)
+void ReadJoint(OgiJoint* joint, Stream* stream)
 {
     s32 words[5];
     for (s32& word : words)
@@ -1743,7 +1712,8 @@ void ReadJoint(JointStruct* joint, Stream* stream)
     joint->id = words[0];
     joint->index = words[1];
     joint->parent = words[2];
-    joint->detail = (words[3] & 0xF) | (words[4] & 0xF) << 4;
+    joint->detail.unused0 = words[3];
+    joint->detail.level = words[4];
     stream->Read(&joint->bindPosition, sizeof(Vector4), 1);
     stream->Read(&joint->worldPosition, sizeof(Vector4), 1);
     stream->Read(&joint->bindRotation, sizeof(Vector4), 1);
@@ -1751,14 +1721,31 @@ void ReadJoint(JointStruct* joint, Stream* stream)
     stream->Read(&joint->additionalRotation, sizeof(Vector4), 1);
 }
 
+namespace
+{
+// What the older layout has after each hull (0x10 bytes): "Surf" and the hull's surface
+struct OlderHullSurface
+{
+    static constexpr u32 Mark = 0x66727553;
+
+    u32 mark;
+    u16 surface;
+    u8 unused06[0x10 - 0x6];
+};
+CHECK_SIZE(OlderHullSurface, 0x10);
+}
+
 void ReadOgi(GameOGI* ogi, Stream* stream)
 {
-    // What the older layout has that's skipped, and its hulls' surfaces ("Surf", then the surface)
-    constexpr u32 SurfaceMark = 0x66727553;
-    alignas(16) u8 older[0x100];
+    // What the older layout has that's skipped: the bytes before each rigid model's ID, the record after each hull
+    alignas(16) union
+    {
+        u8 bytes[0x100];
+        OlderHullSurface hull;
+    } older;
     if (g_Rm2Queued != 0)
     {
-        stream->Read(&ogi->jointCount, 0x10, 1);
+        stream->Read(ogi->countWords, sizeof(ogi->countWords), 1);
     }
     else
     {
@@ -1770,9 +1757,9 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
 
         ogi->jointCount = counts[0];
         ogi->exitPointCount = counts[1];
-        ogi->cameraJointCount = counts[2];
-        ogi->unknown43[0] = counts[3];
-        ogi->unknown43[1] = counts[4];
+        ogi->reactJointCount = counts[2];
+        ogi->unused43[0] = counts[3];
+        ogi->unused43[1] = counts[4];
         ogi->rigidModelCount = counts[5];
         ogi->hasSkin = counts[6];
         ogi->hasBlendSkin = counts[7];
@@ -1785,7 +1772,7 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
     ogi->bounds = bounds;
     if (g_Rm2Queued == 0)
     {
-        stream->Read(ogi->olderBytes, sizeof(ogi->olderBytes), 1);
+        stream->Read(ogi->unused10, sizeof(ogi->unused10), 1);
     }
 
     if (ogi->jointCount == 0)
@@ -1794,7 +1781,7 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
     }
     else
     {
-        ogi->joints = NewArray<JointStruct>(ogi->jointCount);
+        ogi->joints = NewArray<OgiJoint>(ogi->jointCount);
         for (u32 index = 0; index < ogi->jointCount; index++)
         {
             ReadJoint(&ogi->joints[index], stream);
@@ -1839,7 +1826,7 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
             {
                 s32 size;
                 stream->ReadS32(&size);
-                stream->Read(older, size, 1);
+                stream->Read(older.bytes, size, 1);
             }
 
             stream->ReadS32(reinterpret_cast<s32*>(&ogi->rigidModelIds[index]));
@@ -1863,7 +1850,7 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
         ogi->hulls = NewArray<CollisionHull>(1);
         HullConstruct(ogi->hulls);
         ogi->hullJoints = static_cast<u8*>(MemoryAllocate2(ogi->hullCount));
-        ogi->hullJoints[0] = 0xFF;
+        ogi->hullJoints[0] = GameOGI::NoJoint;
         BuildBoxHull(ogi->hulls, &bounds.min, &bounds.max);
         return;
     }
@@ -1890,10 +1877,10 @@ void ReadOgi(GameOGI* ogi, Stream* stream)
 
     for (u32 index = 0; index < ogi->hullCount; index++)
     {
-        stream->Read(older, 0x10, 1);
-        if (*reinterpret_cast<u32*>(older) == SurfaceMark)
+        stream->Read(&older.hull, sizeof(older.hull), 1);
+        if (older.hull.mark == OlderHullSurface::Mark)
         {
-            ogi->hulls[index].surface = *reinterpret_cast<u16*>(older + 4);
+            ogi->hulls[index].surface = older.hull.surface;
         }
     }
 }
@@ -1910,7 +1897,7 @@ void DestroyAnimation(GameAnimation* animation, u32 destroyFlags)
         DiskRelease(GetDiskManager(), &animation->main.diskHandle);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(animation);
     }
@@ -1982,7 +1969,7 @@ void DestroyOgi(GameOGI* ogi, u32 destroyFlags)
     }
 
     StringDestroy(&ogi->name);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(ogi);
     }
@@ -2047,17 +2034,17 @@ void DestroyOgiAnimator(OgiAnimator* animator, u32 destroyFlags)
         animator->callbacks = nullptr;
     }
 
-    if (animator->cameraJoints != nullptr)
+    if (animator->reactJoints != nullptr)
     {
-        if (animator->cameraJoints->data != nullptr)
+        if (animator->reactJoints->data != nullptr)
         {
-            MemoryDeallocate_(animator->cameraJoints->data);
+            MemoryDeallocate_(animator->reactJoints->data);
         }
 
-        MemoryDeallocate2_(animator->cameraJoints);
+        MemoryDeallocate2_(animator->reactJoints);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(animator);
     }
@@ -2078,14 +2065,15 @@ void SetAnimatorPlace(OgiAnimator* animator, void* place)
         if (point != nullptr)
         {
             point->place = animator->place;
-            point->bits |= ExitPointAnimation::InUse | ExitPointAnimation::Moved;
+            point->bits.outdated = 1;
+            point->bits.jointsMoved = 1;
         }
     }
 }
 
 u32 RemoveJointCallback(OgiAnimator* animator, u32 joint, void* object)
 {
-    u32 index = joint & 0xFF;
+    u32 index = static_cast<u8>(joint);
     JointCallback* previous = nullptr;
     for (JointCallback* callback = animator->callbacks->data[index]; callback != nullptr; callback = callback->next)
     {
@@ -2102,11 +2090,11 @@ u32 RemoveJointCallback(OgiAnimator* animator, u32 joint, void* object)
         }
         else
         {
-            JointAnimation* cameraJoint = animator->cameraJoints->data[index];
+            JointAnimation* reactJoint = animator->reactJoints->data[index];
             animator->callbacks->data[index] = next;
-            if (cameraJoint != nullptr)
+            if (reactJoint != nullptr)
             {
-                cameraJoint->callbacks = next;
+                reactJoint->callbacks = next;
             }
         }
 
@@ -2120,7 +2108,7 @@ u32 RemoveJointCallback(OgiAnimator* animator, u32 joint, void* object)
 
 u32 MoveAnimatorThroughLink(OgiAnimator* animator, ChunkData*, const ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -2141,7 +2129,7 @@ u32 MoveAnimatorThroughLink(OgiAnimator* animator, ChunkData*, const ChunkLinkDa
         }
 
         u32 movable = 0;
-        if ((link->flags & ChunkLinkData::LinkedRm2Loaded) != 0)
+        if (link->flags.linkedRm2Loaded != 0)
         {
             TransformThroughLink(link, &point->matrix, 1);
             movable = 1;
@@ -2160,13 +2148,10 @@ AnimationDataInformation* CopyAnimationData(AnimationDataInformation* informatio
         DiskRelease(GetDiskManager(), &information->diskHandle);
     }
 
-    u32 layout = source->layout;
-    u32 joints = layout & AnimationDataSource::JointsMask;
-    u32 channels = layout >> AnimationDataSource::ChannelsShift & AnimationDataSource::ChannelsMask;
-    u32 statics = layout >> AnimationDataSource::StaticsShift & AnimationDataSource::StaticsMask;
+    AnimationLayout layout = source->layout;
     information->frames = source->frames;
-    information->sections = joints | channels << AnimationDataSource::ChannelsShift | statics << AnimationDataSource::StaticsShift |
-                            (joints * channels - statics) << AnimationDataInformation::FrameValuesShift;
+    layout.frameValues = layout.joints * layout.channels - layout.staticValues;
+    information->layout = layout;
     if (information->diskHandle >= 0)
     {
         DiskRelease(GetDiskManager(), &information->diskHandle);
@@ -2192,26 +2177,23 @@ AnimationDataInformation* CopyAnimationData(AnimationDataInformation* informatio
 
 GameAnimation* MakeAnimation(GameAnimation* animation, const AnimationDataSource* main, const AnimationDataSource* blendShapes)
 {
-    constexpr u32 ReadBits = 0x30000;
-    *reinterpret_cast<u16*>(&animation->unknown00) = 0;
-    animation->id = 0xFFFFFFFF;
+    ConstructResourceHeader(animation);
     animation->main.diskHandle = -1;
-    animation->main.sections = 0;
-    animation->unknown00 &= ~ReadBits;
+    animation->main.layout.value = 0;
     animation->main.frames = 0;
     animation->blendShapes.diskHandle = -1;
-    animation->blendShapes.sections = 0;
+    animation->blendShapes.layout.value = 0;
     animation->blendShapes.frames = 0;
-    animation->bits = 0;
+    animation->bits.value = 0;
     if (main != nullptr)
     {
-        animation->bits = GameAnimation::HasMain;
+        animation->bits.hasMain = 1;
         CopyAnimationData(&animation->main, main);
     }
 
     if (blendShapes != nullptr)
     {
-        animation->bits |= GameAnimation::HasBlendShapes;
+        animation->bits.hasBlendShapes = 1;
         CopyAnimationData(&animation->blendShapes, blendShapes);
     }
 

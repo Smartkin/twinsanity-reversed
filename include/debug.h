@@ -2,10 +2,16 @@
 
 #include "common.h"
 
+// The test hooks' lists: results to watch, game controller states logged, frames of random numbers kept, inputs given
+constexpr u32 DebugValueCount = 16;
+constexpr u32 DebugStateCount = 64;
+constexpr u32 DebugRandomFrames = 4096;
+constexpr u32 DebugInputCount = 16;
+
 // A word the code writes as it gets along, for tools/run_pcsx2.py --watch g_DebugStep to follow over PINE
 extern "C" volatile u32 g_DebugStep;
 // Results worth a look, for --watch g_DebugValues+N
-extern "C" volatile s32 g_DebugValues[16];
+extern "C" volatile s32 g_DebugValues[DebugValueCount];
 
 #define DEBUG_STEP(step) (g_DebugStep = (step))
 
@@ -32,10 +38,10 @@ struct DebugInput
 extern "C" volatile u32 g_DebugFrame;
 extern "C" volatile u32 g_DebugFreezeFrame;
 // The game controller's states as they changed: the frame << 8 | the state (tools/run_pcsx2.py prints them at the end)
-extern "C" volatile u32 g_DebugStates[64];
+extern "C" volatile u32 g_DebugStates[DebugStateCount];
 // Every frame's state of the C library's random numbers (rand's), by frame, for comparing runs
-extern "C" volatile u32 g_DebugRandom[4096];
-extern "C" volatile DebugInput g_DebugInputs[16];
+extern "C" volatile u32 g_DebugRandom[DebugRandomFrames];
+extern "C" volatile DebugInput g_DebugInputs[DebugInputCount];
 // Pad 1's buttons held for tests (the report's button word, pressed 1), which a platform's pad layer defines and applies
 extern "C" volatile u32 g_TestPadButtons;
 

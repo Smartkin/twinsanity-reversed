@@ -7,6 +7,7 @@
 #include "game/memory.h"
 #include "game/place.h"
 #include "game/resources.h"
+#include "game/scripttokens.h"
 #include "game/stream.h"
 #include "game/string.h"
 #include "platform/graphics.h"
@@ -20,9 +21,9 @@ extern "C"
     extern const char g_ShadowMaterialsPackage[] RETAIL(D_002F9A38);
     extern const char g_ShadowModelsPackage[] RETAIL(D_002F9A60);
     extern const char g_ShadowModelsFolder[] RETAIL(D_002F9A88);
-    extern const char* const g_ShadowMeshNames[8] RETAIL(D_002E78F8);
+    extern const char* const g_ShadowMeshNames[ShadowShapeCount] RETAIL(D_002E78F8);
     extern const char g_MeshExtension[] RETAIL(D_00309D90);
-    // The C library's character classes (bit 1 lower case)
+    // The C library's character classes
     extern const u8 CasingTable[];
     // The graphics tables' and their readers' functions of the kinds the files have
     ModelTable::Entry* ModelFind(ModelTable* table, u32 id) RETAIL(FUN_001c74a0);
@@ -46,16 +47,13 @@ extern "C"
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // How faint a shadow may be and still be cast
-constexpr f32 Faintest = Rounded(5e-05);
+constexpr f32 Faintest = Epsilon;
 // A capsule is cast while its axis is no closer to the way to the light than this cosine
 constexpr f32 MostAlong = Rounded(0.996);
 // The cross product of the up axis and the shadow's axis is used while its length squared is above it
 constexpr f32 Crossing = Rounded(0.03);
 constexpr u32 MostJoints = 0x40;
-// The lighting constants' direction shadows are cast from (above), its fourth word w
-constexpr u32 ShadowDirection = 0x20;
 
 void DeleteSlot(ShadowSlot* slot)
 {
@@ -74,19 +72,26 @@ void DeleteSlot(ShadowSlot* slot)
     MemoryDeallocate2_(slot);
 }
 
-// The bits of a distance: it and its square
-u32 DistanceBits(u32 bits, f32 distance)
+// A reach of a distance: it and its square
+void SetReach(ShadowReach* reach, f32 distance)
 {
-    bits = (bits & ~ShadowShapes::DistanceMask) | (static_cast<u32>(static_cast<s32>(distance)) & ShadowShapes::DistanceMask);
-    u32 near = bits & ShadowShapes::DistanceMask;
-    return (bits & 0xC00003FF) | (near * near) << ShadowShapes::SquaredShift;
+    reach->distance = static_cast<u32>(static_cast<s32>(distance));
+    u32 near = reach->distance;
+    reach->squared = near * near;
 }
 
 void ConstructShapes(ShadowShapes* shapes, f32 distance, f32 strength)
 {
     shapes->strength = strength;
-    RetailLibc::MemorySet(&shapes->bits, 0, sizeof(shapes->bits));
-    shapes->bits = DistanceBits(shapes->bits, distance);
+    RetailLibc::MemorySet(&shapes->reach, 0, sizeof(shapes->reach));
+    SetReach(&shapes->reach, distance);
+}
+
+// A joint's bit among the shapes' joints: a word's bit sign-extended, as the retail code makes it (a joint past 31 sets the bit
+// of its low 5 bits, 31 every bit from 31 up)
+u64 JointBit(u8 joint)
+{
+    return static_cast<u64>(static_cast<s64>(1 << (joint & ShiftMask)));
 }
 
 // The way from a point to where the shadow is cast from and how far it is; the unit way is worked out and dropped by the circles'
@@ -261,7 +266,7 @@ void ShadowShapes::AddCircle(ShadowCircle* circle)
     u8 joint = circle->joint;
     circle->next = circles;
     circles = circle;
-    joints |= static_cast<u64>(static_cast<s64>(1 << (joint & 0x1F)));
+    joints |= JointBit(joint);
 }
 
 void ShadowShapes::AddCapsule(ShadowCapsule* capsule)
@@ -270,15 +275,14 @@ void ShadowShapes::AddCapsule(ShadowCapsule* capsule)
     capsule->next = capsules;
     u8 secondJoint = capsule->secondJoint;
     capsules = capsule;
-    joints = static_cast<u64>(static_cast<s64>(1 << (secondJoint & 0x1F))) | static_cast<u64>(static_cast<s64>(1 << (joint & 0x1F))) |
-             joints;
+    joints = JointBit(secondJoint) | JointBit(joint) | joints;
 }
 
 ShadowSlot* ShadowSlot::Construct(f32 strength, ShadowSlot* slot, ShadowShapes* shapes)
 {
     slot->strength = strength;
     slot->shapes = shapes;
-    slot->reachSquared = shapes != nullptr ? shapes->bits >> ShadowShapes::SquaredShift & ShadowShapes::SquaredMask : 0;
+    slot->reachSquared = shapes != nullptr ? shapes->reach.squared : 0;
     return slot;
 }
 
@@ -308,7 +312,7 @@ void ShadowNode::Destroy(u32 destroyFlags)
 
 u32 ShadowNode::Kind()
 {
-    return NodeKind;
+    return NodeShadow;
 }
 
 u32 ShadowNode::GetClassId()
@@ -331,20 +335,19 @@ void ShadowNode::SetSlot(u32 slot, ShadowSlot* shadow)
 u32 ShadowNode::Update(TimeClock* clock)
 {
     InstanceContext* instance = owner;
-    u32 flags = instance->flags;
-    if ((flags & ReferencedObject::FlagShadow) == 0 || (flags & ReferencedObject::FlagVisible) == 0 ||
-        (flags & ReferencedObject::FlagInDrawnCell) == 0)
+    ReferencedObjectFlags flags = instance->flags;
+    if (!flags.shadowActive || !flags.visible || !flags.inDrawnCell)
     {
         return GameNode::Update(clock);
     }
 
-    ShadowSlot* slot = slots[bits & 0xFF];
+    ShadowSlot* slot = slots[bits.slot];
     if (slot == nullptr)
     {
         return GameNode::Update(clock);
     }
 
-    u32 stamp = instance->seen[0] | instance->seen[1] << 8 | instance->seen[2] << 16;
+    u32 stamp = instance->seen;
     if (!(stamp < slot->reachSquared))
     {
         return GameNode::Update(clock);
@@ -356,7 +359,7 @@ u32 ShadowNode::Update(TimeClock* clock)
     u32 near = 0;
     for (ShadowShapes* shapes = slot->shapes; shapes != nullptr; shapes = shapes->next)
     {
-        u32 far = shapes->bits & ShadowShapes::DistanceMask;
+        u32 far = shapes->reach.distance;
         f32 strength = shapes->strength;
         if (distance < far)
         {
@@ -405,8 +408,9 @@ void CastShadow(f32 strength, ShadowShapes* shapes, InstanceContext* instance)
                     continue;
                 }
 
-                SizedArray<JointAnimation*>* table = animator->cameraJoints;
-                auto* jointMatrix = table != nullptr ? reinterpret_cast<const Matrix4x4*>(table->data[joint & 0xFF]) : nullptr;
+                SizedArray<JointAnimation*>* table = animator->reactJoints;
+                JointAnimation* animation = table != nullptr ? table->data[static_cast<u8>(joint)] : nullptr;
+                auto* jointMatrix = reinterpret_cast<const Matrix4x4*>(animation);
                 if (jointMatrix != nullptr)
                 {
                     VuMultiplyMatrices(jointMatrix, &place->matrix, &matrices[joint]);
@@ -726,26 +730,26 @@ void DrawShadowEntry(const ShadowEntry* entry, const Matrix4x4* toScreen, const 
     Platform::Graphics::DrawShadowMesh(mesh, &screen, &camera, &placed);
 }
 
-s32 ShadowShapeOfToken(u32 kind)
+s32 ShadowShapeOfToken(u32 keyword)
 {
-    switch (kind)
+    switch (keyword)
     {
-    case 0xBB:
-        return 0;
-    case 0xBC:
-        return 2;
-    case 0xBD:
-        return 1;
-    case 0xBE:
-        return 3;
-    case 0x10D:
-        return 4;
-    case 0x10E:
-        return 6;
-    case 0x10F:
-        return 5;
-    case 0x110:
-        return 7;
+    case KeywordShadowCylinder:
+        return ShadowCylinder;
+    case KeywordShadowRoundedCube:
+        return ShadowRoundedCube;
+    case KeywordShadowCube:
+        return ShadowCube;
+    case KeywordShadowOctagon:
+        return ShadowOctagon;
+    case KeywordShadowTaperedCylinder:
+        return ShadowTaperedCylinder;
+    case KeywordShadowTaperedRoundedCube:
+        return ShadowTaperedRoundedCube;
+    case KeywordShadowTaperedCube:
+        return ShadowTaperedCube;
+    case KeywordShadowTaperedOctagon:
+        return ShadowTaperedOctagon;
     default:
         return -1;
     }
@@ -759,9 +763,11 @@ void InitShadows(u32 fromFiles)
 
 namespace
 {
-constexpr u32 ShadowMeshKinds = 8;
-constexpr u32 ShadowModelIds = 0x67;
-constexpr u32 AcquireSlot = 4;
+// The shapes' models' IDs from the development tools' files, a shape's this plus the shape
+constexpr u32 FirstShadowModelId = 0x67;
+// The renderer's model and mesh (its RigidModelData and RigidModel)
+constexpr u32 ModelSize = 0x1C;
+constexpr u32 MeshSize = 0x20;
 
 // The table's folder, a backslash and the name, upper cased (by the signed character, as the retail code indexes the table)
 void ShadowFilePath(String* path, const String* folder, const String* name)
@@ -778,9 +784,9 @@ void ShadowFilePath(String* path, const String* folder, const String* name)
     for (s32 index = 0; index < path->length; index++)
     {
         s8 character = path->string[index];
-        if ((CasingTable[character] & 2) != 0)
+        if ((CasingTable[character] & RetailLibc::CasingLowerCase) != 0)
         {
-            path->string[index] = static_cast<char>(character - 0x20);
+            path->string[index] = static_cast<char>(character - ('a' - 'A'));
         }
     }
 }
@@ -800,12 +806,12 @@ RigidModelData* LoadShadowModel(ModelTable* table, const String* name, u32 id)
     {
         File file;
         File::Construct(&file);
-        model = ModelConstruct(MemoryAllocate(0x1C), id);
+        model = ModelConstruct(MemoryAllocate(ModelSize), id);
         TakeReference(model);
         ModelInsert(table, &model, id);
         file.Open(path.string, File::ModeRead);
         ModelRead(model, &file);
-        file.Destroy(2);
+        file.Destroy(DestroyOnly);
     }
 
     StringDestroy(&path);
@@ -826,28 +832,29 @@ RigidModel* LoadShadowMesh(MeshTable* table, const String* name, u32 id)
     {
         File file;
         File::Construct(&file);
-        mesh = MeshConstruct(MemoryAllocate(0x20), id);
+        mesh = MeshConstruct(MemoryAllocate(MeshSize), id);
         TakeReference(mesh);
         MeshInsert(table, &mesh, id);
         file.Open(path.string, File::ModeRead);
         MeshRead(mesh, &file);
-        file.Destroy(2);
+        file.Destroy(DestroyOnly);
     }
 
     StringDestroy(&path);
     return mesh;
 }
 
-// From the files: their materials and models read, then each kind's model (ID 0x67 on) and mesh (by its kind) from the models'
-// folder, the tables' folders put back after. Else the meshes of the default chunk's
+// From the files: their materials and models read, then each shape's model (FirstShadowModelId on) and mesh (by its shape) from
+// the models' folder, the tables' folders put back after. Else the meshes of the default chunk's
 void LoadShadowMeshes(u32 fromFiles)
 {
     if (fromFiles == 0)
     {
-        for (u32 kind = 0; kind < ShadowMeshKinds; kind++)
+        for (u32 kind = 0; kind < ShadowShapeCount; kind++)
         {
             u32 id = kind;
-            g_ShadowMeshes[kind] = CallVirtual<RigidModel*>(&g_MeshTable, g_MeshTable.vtable, AcquireSlot, &id, nullptr);
+            g_ShadowMeshes[kind] =
+                CallVirtual<RigidModel*>(&g_MeshTable, g_MeshTable.vtable, MeshTable::AcquireSlot, &id, nullptr);
         }
 
         return;
@@ -873,7 +880,7 @@ void LoadShadowMeshes(u32 fromFiles)
     StringConstruct(&folder, g_ShadowModelsFolder);
     StringAssign(&g_ModelTable.name, folder.string);
     StringDestroy(&folder);
-    for (u32 kind = 0; kind < ShadowMeshKinds; kind++)
+    for (u32 kind = 0; kind < ShadowShapeCount; kind++)
     {
         const char* name = g_ShadowMeshNames[kind];
         if (name == nullptr)
@@ -884,7 +891,7 @@ void LoadShadowMeshes(u32 fromFiles)
 
         String file;
         StringConstruct(&file, name);
-        LoadShadowModel(&g_ModelTable, &file, kind + ShadowModelIds);
+        LoadShadowModel(&g_ModelTable, &file, kind + FirstShadowModelId);
         StringAppend(&file, g_MeshExtension);
         g_ShadowMeshes[kind] = LoadShadowMesh(&g_MeshTable, &file, kind);
         StringDestroy(&file);
@@ -900,7 +907,7 @@ void LoadShadowMeshes(u32 fromFiles)
 
 void LightingConstantsStaticInit()
 {
-    InitLightingConstants(1, 0xFFFF);
+    InitLightingConstants(1, DefaultInitPriority);
 }
 
 EABI_EXPORT(FUN_001ccbb8, ShadowCircle::Construct);

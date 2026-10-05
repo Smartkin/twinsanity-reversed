@@ -8,17 +8,33 @@ extern "C"
     // The bits the PES header's optional fields take by their 4 flags (ES rate, DSM trick mode, additional copy info, CRC)
     extern const u8 g_PesOptionalBits[16] RETAIL(D_00307590);
     // sceMpegAddStrCallback's stream types (M2V, IPU, PCM, ADPCM, DATA, MPEG audio, AC-3, LPCM, DTS, SDDS)
-    extern const MpegStreamType g_MpegStreamTypes[MpegStreamTypes] RETAIL(D_002E8198);
+    extern const MpegStreamType g_MpegStreamTypes[MpegStreamKinds] RETAIL(D_002E8198);
 }
 
 namespace
 {
-// The bits loaded into the window until it holds at least 57 (the bytes taken from the ring)
+constexpr s32 WindowBits = 64;
+// The window holds at least that many bits, a byte less one: the next byte doesn't fit
+constexpr s32 WindowMinimumBits = WindowBits - 7;
+constexpr s32 StartCodeBits = 32;
+// A start code's prefix, 0x000001
+constexpr s32 StartCodePrefixBits = 24;
+constexpr u64 StartCodePrefix = 1;
+// The parts of a PTS, DTS or SCR: 3 bits, then 15 and 15
+constexpr s32 TimeStampPartBits = 15;
+constexpr s32 TimeStampTopBitShift = 2;
+// PTS_DTS_flags: a PTS, or a PTS and a DTS
+constexpr u32 HasPts = 0x2;
+constexpr u32 HasPtsAndDts = 0x3;
+// The bytes of a PES packet's header after its length (its flags and PES_header_data_length)
+constexpr s32 PesHeaderFlagsBytes = 3;
+
+// The bits loaded into the window until it holds at least WindowMinimumBits (the bytes taken from the ring)
 void Refill(PssReader* reader)
 {
-    while (reader->loaded < 57)
+    while (reader->loaded < WindowMinimumBits)
     {
-        reader->window |= static_cast<u64>(*reader->next) << (56 - reader->loaded);
+        reader->window |= static_cast<u64>(*reader->next) << (WindowBits - 8 - reader->loaded);
         reader->next++;
         if (reader->next >= reader->ringEnd)
         {
@@ -31,7 +47,7 @@ void Refill(PssReader* reader)
 
 u32 Peek(PssReader* reader, s32 bits)
 {
-    return static_cast<u32>(reader->window >> (64 - bits));
+    return static_cast<u32>(reader->window >> (WindowBits - bits));
 }
 
 void Skip(PssReader* reader, s32 bits)
@@ -72,12 +88,18 @@ void SkipBytes(PssReader* reader, s32 bytes)
 
 u32 StartCode(PssReader* reader)
 {
-    return static_cast<u32>(reader->window >> 32);
+    return static_cast<u32>(reader->window >> (WindowBits - StartCodeBits));
 }
 
 bool AtStartCode(PssReader* reader)
 {
-    return reader->window >> 40 == 1;
+    return reader->window >> (WindowBits - StartCodePrefixBits) == StartCodePrefix;
+}
+
+// A time stamp's 33 bits from its parts (its top bit apart)
+u32 TimeStampLow(u32 high, u32 middle, u32 low)
+{
+    return high << (2 * TimeStampPartBits) | middle << TimeStampPartBits | low;
 }
 
 // A PES header's PTS or DTS after its 4 bits of prefix: 33 bits in parts of 3, 15 and 15, each followed by a marker
@@ -85,35 +107,35 @@ u64 ReadTimeStamp(PssReader* reader)
 {
     u32 high = Read(reader, 3);
     Skip(reader, 1);
-    u32 middle = Read(reader, 15);
+    u32 middle = Read(reader, TimeStampPartBits);
     Skip(reader, 1);
-    u32 low = Read(reader, 15);
+    u32 low = Read(reader, TimeStampPartBits);
     Skip(reader, 1);
-    return static_cast<u64>(high >> 2) << 32 | static_cast<u32>(high << 30 | middle << 15 | low);
+    return static_cast<u64>(high >> TimeStampTopBitShift) << 32 | TimeStampLow(high, middle, low);
 }
 
 // Where a part of the packet is in the ring, by its position in bits
 u8* InRing(PssReader* reader, s32 position)
 {
-    u8* data = reader->start + (position >> 3);
-    if (data >= reader->ringEnd)
+    u8* bytes = reader->start + (position >> 3);
+    if (bytes >= reader->ringEnd)
     {
-        data -= reader->ringSize;
+        bytes -= reader->ringSize;
     }
 
-    return data;
+    return bytes;
 }
 
 s32 CallStream(Mpeg* mpeg, PssReader* reader, PesPacket* packet, MpegCallback function, void* user, u32 globalPointer)
 {
-    MpegStreamData data;
-    data.type = MpegCallbackStream;
-    data.header = InRing(reader, packet->position);
-    data.data = InRing(reader, packet->dataPosition);
-    data.pts = packet->pts;
-    data.length = packet->dataLength;
-    data.dts = packet->dts;
-    return CallWithGlobalPointer(globalPointer, function, mpeg, &data, user);
+    MpegStreamData stream;
+    stream.type = MpegCallbackStream;
+    stream.header = InRing(reader, packet->position);
+    stream.data = InRing(reader, packet->dataPosition);
+    stream.pts = packet->pts;
+    stream.length = packet->dataLength;
+    stream.dts = packet->dts;
+    return CallWithGlobalPointer(globalPointer, function, mpeg, &stream, user);
 }
 }
 
@@ -124,8 +146,8 @@ s32 SkipSystemHeader(PssReader* reader)
     // The start code, header_length, the rates and bounds and flags
     Skip(reader, 56);
     Skip(reader, 40);
-    // Each stream's P-STD buffer bound
-    while (reader->window >> 63 == 1)
+    // Each stream's P-STD buffer bound (its stream_id's top bit is set)
+    while (reader->window >> (WindowBits - 1) == 1)
     {
         Skip(reader, 24);
     }
@@ -139,16 +161,16 @@ s32 ReadPackHeader(PssReader* reader, PssPack* pack)
     Skip(reader, 34);
     u32 high = Read(reader, 3);
     Skip(reader, 1);
-    u32 middle = Read(reader, 15);
+    u32 middle = Read(reader, TimeStampPartBits);
     Skip(reader, 1);
-    u32 low = Read(reader, 15);
+    u32 low = Read(reader, TimeStampPartBits);
     Skip(reader, 1);
     pack->scrExtension = Read(reader, 9);
     // A marker, program_mux_rate, two markers and the reserved bits
     Skip(reader, 30);
     u32 stuffing = Read(reader, 3);
-    pack->scr = high << 30 | middle << 15 | low;
-    pack->scrHigh = high >> 2;
+    pack->scr = TimeStampLow(high, middle, low);
+    pack->scrHigh = high >> TimeStampTopBitShift;
     for (u32 i = 0; i < stuffing; i++)
     {
         Skip(reader, 8);
@@ -170,12 +192,14 @@ s32 ReadPackHeader(PssReader* reader, PssPack* pack)
 s32 ReadPesPacket(MpegSystem* sys, PssReader* reader, PesPacket* packet)
 {
     packet->position = static_cast<s32>(reader->position);
-    Skip(reader, 24);
-    packet->streamId = static_cast<u64>(Read(reader, 8)) << 32;
+    Skip(reader, StartCodePrefixBits);
+    MpegStreamId id = {};
+    id.streamId = Read(reader, 8);
+    packet->streamId = id;
     packet->length = Read(reader, 16);
     packet->pts = -1;
     packet->dts = -1;
-    u64 streamId = packet->streamId;
+    u32 streamId = packet->streamId.streamId;
     if (streamId != ProgramStreamMap && streamId != PaddingStream && streamId != PrivateStream2 && streamId != EcmStream &&
         streamId != EmmStream && streamId != ProgramStreamDirectory && streamId != DsmccStream &&
         streamId != H2221TypeEStream)
@@ -191,13 +215,13 @@ s32 ReadPesPacket(MpegSystem* sys, PssReader* reader, PesPacket* packet)
         u32 extensionFlag = Read(reader, 1);
         s32 headerLength = Read(reader, 8);
         s64 headerStart = static_cast<s32>(reader->position);
-        if ((ptsDtsFlags & 0x2) != 0)
+        if ((ptsDtsFlags & HasPts) != 0)
         {
             Skip(reader, 4);
             packet->pts = ReadTimeStamp(reader);
         }
 
-        if (ptsDtsFlags == 0x3)
+        if (ptsDtsFlags == HasPtsAndDts)
         {
             Skip(reader, 4);
             packet->dts = ReadTimeStamp(reader);
@@ -262,16 +286,16 @@ s32 ReadPesPacket(MpegSystem* sys, PssReader* reader, PesPacket* packet)
             SkipBytes(reader, stuffing);
         }
 
-        s32 dataLength = packet->length - headerLength - 3;
+        s32 dataLength = packet->length - headerLength - PesHeaderFlagsBytes;
         packet->dataLength = dataLength;
         packet->dataPosition = static_cast<s32>(reader->position);
         // A private stream's sub-stream: its first 4 bytes, still in the callback's data
-        if (packet->streamId == PrivateStream1)
+        if (packet->streamId.streamId == PrivateStream1)
         {
-            u32 subStream = Peek(reader, 32);
-            Skip(reader, 32);
-            dataLength = packet->length - headerLength - 7;
-            packet->streamId |= subStream;
+            u32 subStream = Peek(reader, SubStreamBytes * 8);
+            Skip(reader, SubStreamBytes * 8);
+            dataLength = packet->length - headerLength - (PesHeaderFlagsBytes + SubStreamBytes);
+            packet->streamId.subStream = subStream;
         }
 
         if (dataLength != 0)
@@ -285,10 +309,10 @@ s32 ReadPesPacket(MpegSystem* sys, PssReader* reader, PesPacket* packet)
         s32 length = packet->length;
         if (streamId == PrivateStream2)
         {
-            u32 subStream = Peek(reader, 32);
-            Skip(reader, 32);
-            length -= 4;
-            packet->streamId |= subStream;
+            u32 subStream = Peek(reader, SubStreamBytes * 8);
+            Skip(reader, SubStreamBytes * 8);
+            length -= SubStreamBytes;
+            packet->streamId.subStream = subStream;
         }
 
         if (length != 0)
@@ -366,7 +390,7 @@ s32 sceMpegDemuxPssRing(Mpeg* mpeg, u8* pss, s32 size, u8* ringStart, s32 ringSi
             for (i = 0; i < sys->streamCallbackCount; i++)
             {
                 MpegStreamCallback* callback = &callbacks[i];
-                if ((pack.packet.streamId & callback->mask) == callback->id)
+                if ((pack.packet.streamId.value & callback->mask) == callback->id)
                 {
                     taken = CallStream(mpeg, &reader, &pack.packet, callback->function, callback->user,
                                        callback->globalPointer);
@@ -404,19 +428,19 @@ void* sceMpegAddStrCallback(Mpeg* mpeg, s32 type, s32 channel, MpegCallback call
     MpegCallback previous = nullptr;
     // The stream's ID with the channel in the byte below its mask's top one
     u64 id = 0;
-    if (static_cast<u32>(type) < MpegStreamTypes)
+    if (static_cast<u32>(type) < MpegStreamKinds)
     {
         const MpegStreamType* streamType = &g_MpegStreamTypes[type];
         u64 channelBits = static_cast<u64>(static_cast<s64>(channel));
         switch (streamType->mask)
         {
-        case 0xFFFF000000ull:
-            id = streamType->id | channelBits << 24;
+        case MatchSubStreamType:
+            id = streamType->id | channelBits << SubStreamTypeShift;
             break;
-        case 0xFF00000000ull:
-            id = streamType->id | channelBits << 32;
+        case MatchStreamId:
+            id = streamType->id | channelBits << PesStreamIdShift;
             break;
-        case 0xFFFFFFFFFFull:
+        case MatchSubStream:
             id = streamType->id | channelBits;
             break;
         }

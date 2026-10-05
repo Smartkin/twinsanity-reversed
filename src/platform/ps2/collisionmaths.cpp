@@ -194,7 +194,7 @@ void GroupPoints(Vector4* points, s32 groups)
                  : "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "memory");
 }
 
-// The least and the most of the grouped points' dot products with the axis (from 2^66 and -2^66), into the range. The groups are
+// The least and the most of the grouped points' dot products with the axis (from 2^65 and -2^65), into the range. The groups are
 // read one past the last
 void GroupsRange(const Vector4* groups, s32 count, const Vector4* axis, f32* range)
 {
@@ -301,7 +301,7 @@ void SixteenGroupsRange(const Vector4* groups, const Vector4* axis, f32* range)
 void LoadTriangleHullSupport(const CollisionHit* triangle, const Vector4* hullVertices)
 {
     // One group: four differences in vf16-vf19 (the first in the register given) made the xs, ys and zs of three registers
-#define GROUP(first, a, b, c)                                                                                                      \
+#define GROUP(first, xs, ys, zs)                                                                                                   \
     "qmfc2.ni $10, " first "\n\t"                                                                                                 \
     "qmfc2.ni $11, $vf17\n\t"                                                                                                     \
     "qmfc2.ni $12, $vf18\n\t"                                                                                                     \
@@ -313,9 +313,9 @@ void LoadTriangleHullSupport(const CollisionHit* triangle, const Vector4* hullVe
     "pcpyld $10, $11, $14\n\t"                                                                                                    \
     "pcpyud $11, $14, $11\n\t"                                                                                                    \
     "pcpyld $12, $24, $15\n\t"                                                                                                    \
-    "qmtc2.ni $10, " a "\n\t"                                                                                                     \
-    "qmtc2.ni $11, " b "\n\t"                                                                                                     \
-    "qmtc2.ni $12, " c "\n\t"
+    "qmtc2.ni $10, " xs "\n\t"                                                                                                    \
+    "qmtc2.ni $11, " ys "\n\t"                                                                                                    \
+    "qmtc2.ni $12, " zs "\n\t"
     asm volatile("lqc2 $vf20, 0x0(%0)\n\t"
                  "lqc2 $vf21, 0x10(%0)\n\t"
                  "lqc2 $vf22, 0x20(%0)\n\t"

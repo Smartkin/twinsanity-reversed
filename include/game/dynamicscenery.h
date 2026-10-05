@@ -13,10 +13,13 @@ struct SceneryMeshes;
 struct TimeClock;
 
 // A model of a chunk's dynamic scenery (0x50 bytes, TT Lab's TwinDynamicSceneryModel): a leftover word (8, never read), its
-// collision hulls, its frames, its animation (joints' settings like an animation's, its values floats: bits 9-21 of its sections
-// the static values' bytes, bits 22-31 the values a frame), whether it draws by its LOD, its mesh's ID and its bounds
+// collision hulls, its frames, its animation (joints' settings like an animation's, its values floats), whether it draws by its
+// LOD, its mesh's ID and its bounds
 struct DynamicSceneryModel
 {
+    // A new model's mesh ID
+    static constexpr u32 NoMesh = 0xFFFFFFFF;
+
     s32 leftover;
     u32 hullCount;
     CollisionHull* hulls;
@@ -24,7 +27,7 @@ struct DynamicSceneryModel
     AnimationDataInformation animation;
     bool usesLod;
     u32 meshId;
-    u8 unknown24[0x30 - 0x24];
+    u8 unused24[0x30 - 0x24];
     Box bounds;
 };
 CHECK_OFFSET(DynamicSceneryModel, animation, 0x10);
@@ -35,6 +38,8 @@ CHECK_SIZE(DynamicSceneryModel, 0x50);
 // and never checked) and its models
 struct DynamicSceneryData
 {
+    static constexpr u32 Version = 0x10009;
+
     u32 version;
     u16 modelCount;
     DynamicSceneryModel* models;
@@ -43,10 +48,10 @@ CHECK_SIZE(DynamicSceneryData, 0xC);
 
 extern "C"
 {
-    DynamicSceneryData* ConstructDynamicSceneryData(DynamicSceneryData* data) RETAIL(FUN_00299748);
+    DynamicSceneryData* ConstructDynamicSceneryData(DynamicSceneryData* scenery) RETAIL(FUN_00299748);
     // Its models destroyed, last to first
-    void DestroyDynamicSceneryData(DynamicSceneryData* data, u32 destroyFlags) RETAIL(FUN_00299760);
-    void ReadDynamicScenery(DynamicSceneryData* data, Stream* stream);
+    void DestroyDynamicSceneryData(DynamicSceneryData* scenery, u32 destroyFlags) RETAIL(FUN_00299760);
+    void ReadDynamicScenery(DynamicSceneryData* scenery, Stream* stream);
     DynamicSceneryModel* ConstructDynamicSceneryModel(DynamicSceneryModel* model) RETAIL(FUN_00299900);
     // Its hulls destroyed (last to first) and its animation's disk manager node let go
     void DestroyDynamicSceneryModel(DynamicSceneryModel* model, u32 destroyFlags) RETAIL(FUN_00299930);
@@ -60,7 +65,7 @@ extern "C"
 struct ChunkDynamicScenery
 {
     ChunkData* chunk;
-    u32 unknown04;
+    u32 unused04;
     DynamicSceneryData data;
 };
 CHECK_SIZE(ChunkDynamicScenery, 0x14);
@@ -69,6 +74,10 @@ CHECK_SIZE(ChunkDynamicScenery, 0x14);
 // settings, its static values, and this frame's and the next frame's values, found again in the disk manager every frame
 struct DynamicAnimationData
 {
+    // The bytes its static values take in its information's sections: their count (bits 11-21) times a float's size
+    static constexpr u32 StaticBytesShift = 9;
+    static constexpr u32 StaticBytesMask = 0x1FFC;
+
     AnimationDataInformation* information;
     const JointTrackSettings* settings;
     const f32* statics;
@@ -90,25 +99,28 @@ struct DynamicTrackReader
 };
 CHECK_SIZE(DynamicTrackReader, 0x10);
 
+// A joint's channel of whether it's shown shows its instance above this and hides it below (the cutscenes' tracks' too, whose
+// emitters are kept above it)
+constexpr f32 ShownAbove = 0.5f;
+
 // A dynamic scenery instance's node (kind 4, class 0x1617, 0x30 bytes, its vtable D_002FC430): its model, two words nothing reads,
 // the seconds into its animation, the animation it plays and the meshes the model is drawn with (a mesh or a LOD of the model's
 // mesh ID, at its instance's place). The model's first joint's channels move the instance: its position (x, y, z), its turns
 // about x, y and z, then whether it's shown (above a half)
 struct DynamicSceneryNode : GameNode
 {
-    static constexpr u32 NodeKind = 4;
     static constexpr u32 ClassId = 0x1617;
 
     DynamicSceneryModel* model;
-    u32 unknown1C;
-    u32 unknown20;
+    u32 unused1C;
+    u32 unused20;
     f32 time;
     DynamicAnimationData* animation;
     SceneryMeshes* meshes;
 
-    // Its vtable's slots: 2 the destructor (its animation and meshes with it), 3 given its instance (marked dynamic scenery, the
-    // instance's flag 0x40000), 5 its kind, 8 its update (its animation played on by the clock's last advance while the clock
-    // runs; returns 1), 10 its class
+    // Its vtable's slots: 2 the destructor (its animation and meshes with it), 3 given its instance (marked dynamic scenery,
+    // ReferencedObjectFlags::dynamicScenery), 5 its kind, 8 its update (its animation played on by the clock's last advance while
+    // the clock runs; returns 1), 10 its class
     void Destroy(u32 destroyFlags) RETAIL(FUN_002017c0);
     void SetOwner(InstanceContext* instance) RETAIL(FUN_002019a8);
     u32 Kind() RETAIL(GetNodeIndex_002017A8);

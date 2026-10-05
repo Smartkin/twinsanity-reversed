@@ -16,7 +16,7 @@ void Platform::Files::Reset()
 s32 Platform::Files::Open(const char* path, s32 flags)
 {
     constexpr const char* Device = "cdrom0:\\";
-    constexpr const char* Version = ";1";
+    static constexpr char Version[] = ";1";
     constexpr u32 MaxPath = 256;
     char devicePath[MaxPath];
     u32 length = 0;
@@ -25,7 +25,8 @@ s32 Platform::Files::Open(const char* path, s32 flags)
         devicePath[length++] = *character;
     }
 
-    for (const char* character = path; *character != '\0' && length < MaxPath - 3; character++)
+    // Room is left for the version and the terminator
+    for (const char* character = path; *character != '\0' && length < MaxPath - sizeof(Version); character++)
     {
         char converted = *character;
         if (converted >= 'a' && converted <= 'z')

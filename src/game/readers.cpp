@@ -14,8 +14,11 @@
 
 namespace
 {
+// How many readers a storage's queue and stack have room for, and the blocks its stream reads in
 constexpr u32 BufferCapacity = 0x5DC;
 constexpr s16 StackCapacity = 0x800;
+constexpr u32 FileReadersBlock = 0x10000;
+constexpr u32 MainReadersBlock = 0x20000;
 
 void PushFront(GameReadersStorage* storage, GenericItemReader* reader)
 {
@@ -37,15 +40,15 @@ bool FinishCurrent(GameReadersStorage* storage)
         return false;
     }
 
-    storage->bits |= 8;
+    storage->bits.finishing = 1;
     storage->current->Finish(&storage->stack);
     if (storage->current != nullptr)
     {
-        storage->current->Destroy(3);
+        storage->current->Destroy(DestroyAndFree);
     }
 
     storage->current = nullptr;
-    storage->bits &= ~8u;
+    storage->bits.finishing = 0;
     return true;
 }
 
@@ -57,7 +60,7 @@ bool AnythingLeft(GameReadersStorage* storage)
 // A movie lent the sound away: everything's read with it back
 void ReclaimMovieSound()
 {
-    if (G_GameMovieController != nullptr && (G_GameMovieController->flags & GameMovieController::SoundLent) != 0)
+    if (G_GameMovieController != nullptr && G_GameMovieController->flags.soundLent != 0)
     {
         G_GameMovieController->ReclaimSound();
     }
@@ -77,19 +80,19 @@ extern "C"
         storage->bufferCapacity = BufferCapacity;
         storage->bufferCount = 0;
         storage->bufferStart = 0;
-        storage->buffer = static_cast<GenericItemReader**>(MemoryAllocate2(0x1770));
+        storage->buffer = static_cast<GenericItemReader**>(MemoryAllocate2(BufferCapacity * sizeof(GenericItemReader*)));
         storage->current = nullptr;
         storage->stack.items = nullptr;
         storage->stack.capacity = StackCapacity;
         storage->stack.count = 0;
-        storage->stack.items = static_cast<GenericItemReader**>(MemoryAllocate2(0x2000));
-        storage->bits = 0;
-        u32 bufferSize = index == 1 ? 0x10000 : 0x20000;
-        storage->bits = (storage->bits & ~7u) | (index & 7);
-        storage->stream = OpenFileStream(g_StreamSystem, bufferSize, 0, 0);
-        FileStreamCreateReader(storage->stream, bufferSize);
+        storage->stack.items = static_cast<GenericItemReader**>(MemoryAllocate2(StackCapacity * sizeof(GenericItemReader*)));
+        storage->bits.value = 0;
+        u32 blockSize = index == FileReaders ? FileReadersBlock : MainReadersBlock;
+        storage->bits.unused0 = index;
+        storage->stream = OpenFileStream(g_StreamSystem, blockSize, 0, 0);
+        FileStreamCreateReader(storage->stream, blockSize);
         g_ReadersStorages[index] = storage;
-        g_ReadersMode = 0;
+        g_ReadersMode = ReadersReading;
         return g_ReadersStorages[index];
     }
 
@@ -100,13 +103,13 @@ extern "C"
             return;
         }
 
-        if (front != 0)
+        if (front != QueueBack)
         {
             PushFront(storage, reader);
             return;
         }
 
-        if ((storage->bits & 8) != 0)
+        if (storage->bits.finishing != 0)
         {
             storage->stack.items[storage->stack.count++] = reader;
             return;
@@ -124,7 +127,7 @@ extern "C"
 
     bool StorageStartNext(GameReadersStorage* storage)
     {
-        if (g_ReadersMode != 0)
+        if (g_ReadersMode != ReadersReading)
         {
             return false;
         }
@@ -159,7 +162,7 @@ extern "C"
     {
         switch (g_ReadersMode)
         {
-        case 0:
+        case ReadersReading:
             // Test time (debug.h): what's being read is waited for, so it's there at the same frame however long frames took
             while (g_DebugFixedTime != 0 && storage->current != nullptr && !FinishCurrent(storage))
             {
@@ -174,7 +177,7 @@ extern "C"
 
             *started = StorageStartNext(storage);
             break;
-        case 1:
+        case ReadersHeldByMovie:
             // The one reading is waited for
             while (storage->current != nullptr && !FinishCurrent(storage))
             {
@@ -182,7 +185,7 @@ extern "C"
             }
 
             break;
-        case 2:
+        case ReadersAfterMovie:
             if (storage->current != nullptr)
             {
                 FileStreamEmptyReader(storage->stream);
@@ -202,9 +205,9 @@ extern "C"
     {
         s32 mode = g_ReadersMode;
         bool started;
-        if (mode == 1)
+        if (mode == ReadersHeldByMovie)
         {
-            for (u32 index = 0; index < 2; index++)
+            for (u32 index = 0; index < ReadersStorageCount; index++)
             {
                 if (g_ReadersStorages[index] != nullptr)
                 {
@@ -217,26 +220,27 @@ extern "C"
             return;
         }
 
-        if (mode < 0 || mode > 2)
+        if (mode < ReadersReading || mode > ReadersAfterMovie)
         {
             g_ReadersMode = mode;
             return;
         }
 
-        if (mode == 2)
+        // Cleared once everything's read: the steps see the mode as it was
+        if (mode == ReadersAfterMovie)
         {
-            mode = 0;
+            mode = ReadersReading;
             ReclaimMovieSound();
         }
 
         bool busy;
         do
         {
-            // Storage 1's readers first, storage 0's once it has none
-            busy = g_ReadersStorages[1] != nullptr && StorageStep(g_ReadersStorages[1], &started);
+            // The file readers first, the main ones once they have none
+            busy = g_ReadersStorages[FileReaders] != nullptr && StorageStep(g_ReadersStorages[FileReaders], &started);
             if (!busy)
             {
-                busy = g_ReadersStorages[0] != nullptr && StorageStep(g_ReadersStorages[0], &started);
+                busy = g_ReadersStorages[MainReaders] != nullptr && StorageStep(g_ReadersStorages[MainReaders], &started);
             }
 
             if (g_ReadersCompact != 0)
@@ -244,7 +248,7 @@ extern "C"
                 DiskCompactAll(GetDiskManager());
             }
 
-            for (u32 index = 0; index < 2; index++)
+            for (u32 index = 0; index < ReadersStorageCount; index++)
             {
                 FileStream* stream = g_ReadersStorages[index] != nullptr ? g_ReadersStorages[index]->stream : nullptr;
                 if (stream != nullptr)
@@ -263,25 +267,26 @@ extern "C"
         s32 mode = g_ReadersMode;
         *started = false;
         u32 busy = 0;
-        if (g_ReadersMode < 0)
+        if (g_ReadersMode < ReadersReading)
         {
             g_ReadersMode = mode;
             return 0;
         }
 
-        if (g_ReadersMode >= 2)
+        // The readers that were reading start over this step, the readers read on from the next
+        if (g_ReadersMode >= ReadersAfterMovie)
         {
-            if (g_ReadersMode != 2)
+            if (g_ReadersMode != ReadersAfterMovie)
             {
                 g_ReadersMode = mode;
                 return 0;
             }
 
-            mode = 0;
+            mode = ReadersReading;
             ReclaimMovieSound();
         }
 
-        for (u32 index = 0; index < 2; index++)
+        for (u32 index = 0; index < ReadersStorageCount; index++)
         {
             if (g_ReadersStorages[index] == nullptr)
             {
@@ -301,16 +306,24 @@ extern "C"
 
 namespace
 {
+// What FileStreamRead is told: to wait for the bytes, or to have the stream read them in the background
+constexpr s32 WaitForRead = 1;
+constexpr s32 ReadInBackground = 0;
+// The size a file close reader hands its section reader
+constexpr u32 FileClosedSize = 0xFFFFFFFF;
+// A sub items reader's disk handle of its memory let go of by a restart
+constexpr s32 ReleasedDiskHandle = -2;
+
 // The base's destructor, which every reader's ends with
 void DestroyReader(GenericItemReader* reader, u32 flags)
 {
     reader->vtable = g_GenericItemReaderVTable;
     if (reader->sectionReader != nullptr)
     {
-        reader->sectionReader->Destroy(3);
+        reader->sectionReader->Destroy(DestroyAndFree);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(reader);
     }
@@ -328,17 +341,17 @@ bool IsOpenFile(const String* path, const FileStream* stream)
     return path->length == 0 || !StringNotEqual(path, stream->path.string);
 }
 
-// The reader's done once the stream is
-bool PollRead(u32* bits, FileStream* stream)
+// The reader's done once the stream is (or when it found nothing to read)
+template <typename Bits>
+bool PollRead(Bits* bits, FileStream* stream)
 {
-    if ((*bits & 3) != 1)
+    if (bits->found == 0 || bits->read != 0)
     {
         return true;
     }
 
-    bool reading = FileStreamPoll(stream);
-    *bits = (*bits & ~2u) | (reading ? 0 : 1) << 1;
-    return (*bits >> 1 & 1) != 0;
+    bits->read = FileStreamPoll(stream) ? 0 : 1;
+    return bits->read != 0;
 }
 }
 
@@ -384,7 +397,7 @@ void FileCloseReader::Finish(ReaderStack* stack)
 {
     if (sectionReader != nullptr)
     {
-        sectionReader->Read(nullptr, 0xFFFFFFFF, stack);
+        sectionReader->Read(nullptr, FileClosedSize, stack);
     }
 }
 
@@ -432,7 +445,7 @@ void WaitingPartReader::Destroy(u32 flags)
 void WaitingPartReader::Begin(FileStream* stream)
 {
     u32 read;
-    FileStreamRead(stream, offset, size, data, 1, &read);
+    FileStreamRead(stream, offset, size, data, WaitForRead, &read);
 }
 
 bool WaitingPartReader::IsDone()
@@ -468,7 +481,7 @@ void PolledPartReader::Begin(FileStream* fileStream)
     }
 
     u32 got;
-    if (FileStreamRead(fileStream, offset, size, data, 0, &got))
+    if (FileStreamRead(fileStream, offset, size, data, ReadInBackground, &got))
     {
         read = 1;
         return;
@@ -492,21 +505,40 @@ void PolledPartReader::Finish(ReaderStack* stack)
 
 namespace
 {
-// The constructors' flags: bit 0 release, 1 ..., 2 and 1 together ..., 3 on the disk manager, 5 clamp to the file
-u32 SubItemsBits(u32 flags)
+// The bits the options make in every constructor: on the disk manager its memory is released once read, a file of the archive
+// isn't closed
+SubItemsReaderBits BitsOf(u32 flags)
 {
-    u32 onDisk = flags >> 3 & 1;
-    return onDisk << 3 | (flags & 1) << 4 | (flags << 4 & 0x20) | static_cast<u32>((flags & 6) == 4) << 6 | onDisk << 7;
+    SubItemsReaderOptions options;
+    options.value = flags;
+    SubItemsReaderBits bits;
+    bits.value = 0;
+    bits.onDisk = options.onDisk;
+    bits.unused4 = options.unused0;
+    bits.fromArchive = options.fromArchive;
+    bits.closesFile = options.closesFile != 0 && options.fromArchive == 0;
+    bits.releases = options.onDisk;
+    return bits;
 }
 
-void SetUpSubItems(SubItemsReader* reader, u32 bits, u32 offset, u32 size)
+void SetUpSubItems(SubItemsReader* reader, SubItemsReaderBits bits, u32 offset, u32 size)
 {
     reader->size = size;
     reader->offset = offset;
-    reader->diskIndex = -1;
-    reader->diskHandle = (bits & SubItemsReader::OnDisk) != 0 ? &reader->diskIndex : nullptr;
+    reader->diskIndex = NoDiskHandle;
+    reader->diskHandle = bits.onDisk != 0 ? &reader->diskIndex : nullptr;
     reader->data = nullptr;
     reader->bits = bits;
+}
+
+// A part's bits: its options' and the size cut to the file when they say so
+SubItemsReaderBits PartBitsOf(u32 flags)
+{
+    SubItemsReaderOptions options;
+    options.value = flags;
+    SubItemsReaderBits bits = BitsOf(flags);
+    bits.clampsToFile = options.clampsToFile;
+    return bits;
 }
 }
 
@@ -515,7 +547,9 @@ SubItemsReader* SubItemsReader::ConstructFile(SubItemsReader* reader, const char
     GenericItemReader::Construct(reader, sectionReader);
     reader->vtable = g_SubItemsReaderVTable;
     StringConstruct(&reader->path, path);
-    SetUpSubItems(reader, SubItemsBits(flags) | WholeFile, 0, 0);
+    SubItemsReaderBits bits = BitsOf(flags);
+    bits.wholeFile = 1;
+    SetUpSubItems(reader, bits, 0, 0);
     return reader;
 }
 
@@ -525,7 +559,7 @@ SubItemsReader* SubItemsReader::ConstructPart(SubItemsReader* reader, const char
     GenericItemReader::Construct(reader, sectionReader);
     reader->vtable = g_SubItemsReaderVTable;
     StringConstruct(&reader->path, path);
-    SetUpSubItems(reader, SubItemsBits(flags) | (flags << 3 & ClampToFile), offset, size);
+    SetUpSubItems(reader, PartBitsOf(flags), offset, size);
     return reader;
 }
 
@@ -536,7 +570,7 @@ SubItemsReader* SubItemsReader::ConstructOpen(SubItemsReader* reader, SectionRea
     reader->path.string = nullptr;
     reader->path.capacity = 0;
     reader->path.length = 0;
-    SetUpSubItems(reader, SubItemsBits(flags) | (flags << 3 & ClampToFile), offset, size);
+    SetUpSubItems(reader, PartBitsOf(flags), offset, size);
     return reader;
 }
 
@@ -547,13 +581,13 @@ SubItemsReader* SubItemsReader::ConstructOnDisk(SubItemsReader* reader, s32* dis
     reader->path.string = nullptr;
     reader->path.capacity = 0;
     reader->path.length = 0;
-    // On the disk manager always, with the handle given
-    u32 bits = (flags & 1) << 4 | OnDisk | (flags << 4 & 0x20) | static_cast<u32>((flags & 6) == 4) << 6 | (flags << 4 & Release) |
-               (flags << 3 & ClampToFile);
+    // On the disk manager always, with the handle given: the option only says whether it's released
+    SubItemsReaderBits bits = PartBitsOf(flags);
+    bits.onDisk = 1;
     reader->size = size;
     reader->offset = offset;
     reader->diskHandle = diskHandle;
-    reader->diskIndex = -1;
+    reader->diskIndex = NoDiskHandle;
     reader->bits = bits;
     reader->data = nullptr;
     return reader;
@@ -570,35 +604,35 @@ void SubItemsReader::Begin(FileStream* fileStream)
 {
     stream = fileStream;
     ArchiveEntry* entry = nullptr;
-    if ((bits & FromArchive) != 0)
+    if (bits.fromArchive != 0)
     {
         if (HasOwnFile(fileStream))
         {
             entry = ArchiveFind(g_CurrentArchive, path.string);
-            bits = (bits & ~Found) | (entry != nullptr ? Found : 0);
+            bits.found = entry != nullptr ? 1 : 0;
         }
         else
         {
-            bits &= ~Found;
+            bits.found = 0;
         }
     }
-    else if ((bits & WholeFile) != 0)
+    else if (bits.wholeFile != 0)
     {
         bool found = FileStreamOpen(fileStream, path.string);
         offset = 0;
-        bits = (bits & ~Found) | (found ? Found : 0);
+        bits.found = found ? 1 : 0;
         size = fileStream->size;
     }
     else if (HasOwnFile(fileStream))
     {
-        bits = (bits & ~Found) | (IsOpenFile(&path, fileStream) ? Found : 0);
+        bits.found = IsOpenFile(&path, fileStream) ? 1 : 0;
     }
     else
     {
-        bits = (bits & ~Found) | (FileStreamOpen(fileStream, path.string) ? Found : 0);
+        bits.found = FileStreamOpen(fileStream, path.string) ? 1 : 0;
     }
 
-    if ((bits & ClampToFile) != 0)
+    if (bits.clampsToFile != 0)
     {
         u32 left = fileStream->size - offset;
         if (left < size)
@@ -607,24 +641,24 @@ void SubItemsReader::Begin(FileStream* fileStream)
         }
     }
 
-    if ((bits & Found) == 0)
+    if (bits.found == 0)
     {
         return;
     }
 
-    if ((bits & NothingToRead) != 0)
+    if (bits.nothingToRead != 0)
     {
-        bits |= Read;
+        bits.read = 1;
         return;
     }
 
-    if ((bits & FromArchive) != 0)
+    if (bits.fromArchive != 0)
     {
         offset = entry->start;
         size = entry->size;
     }
 
-    if ((bits & OnDisk) != 0)
+    if (bits.onDisk != 0)
     {
         s32 handle[4];
         DiskAllocate(handle, GetDiskManager(), size, true, 0);
@@ -633,12 +667,12 @@ void SubItemsReader::Begin(FileStream* fileStream)
     }
     else
     {
-        data = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), size, 0x40));
+        data = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), size, MemoryStream::FileAlignment));
     }
 
     u32 read;
-    bool done = FileStreamRead(fileStream, offset, size, data, 0, &read);
-    bits = (bits & ~Read) | (done ? Read : 0);
+    bool done = FileStreamRead(fileStream, offset, size, data, ReadInBackground, &read);
+    bits.read = done ? 1 : 0;
 }
 
 bool SubItemsReader::IsDone()
@@ -648,18 +682,18 @@ bool SubItemsReader::IsDone()
 
 void SubItemsReader::Finish(ReaderStack* stack)
 {
-    if ((bits & NothingToRead) != 0)
+    if (bits.nothingToRead != 0)
     {
         FileStreamClose(stream);
         return;
     }
 
-    if ((bits & CloseFile) != 0)
+    if (bits.closesFile != 0)
     {
         FileStreamClose(stream);
     }
 
-    if ((bits & Found) == 0)
+    if (bits.found == 0)
     {
         if (sectionReader != nullptr)
         {
@@ -674,9 +708,9 @@ void SubItemsReader::Finish(ReaderStack* stack)
         sectionReader->Read(data, size, stack);
     }
 
-    if ((bits & Release) != 0)
+    if (bits.releases != 0)
     {
-        if ((bits & OnDisk) != 0)
+        if (bits.onDisk != 0)
         {
             DiskRelease(GetDiskManager(), diskHandle);
         }
@@ -685,7 +719,7 @@ void SubItemsReader::Finish(ReaderStack* stack)
             FreeMemory(GetHeapManager(), data);
         }
     }
-    else if ((bits & OnDisk) != 0)
+    else if (bits.onDisk != 0)
     {
         DiskMarkLoaded(GetDiskManager(), diskHandle);
     }
@@ -693,7 +727,7 @@ void SubItemsReader::Finish(ReaderStack* stack)
 
 void SubItemsReader::Restart()
 {
-    if ((bits & OnDisk) == 0)
+    if (bits.onDisk == 0)
     {
         FreeMemory(GetHeapManager(), data);
         data = nullptr;
@@ -701,7 +735,7 @@ void SubItemsReader::Restart()
     }
 
     DiskRelease(GetDiskManager(), diskHandle);
-    diskIndex = -2;
+    diskIndex = ReleasedDiskHandle;
     diskHandle = &diskIndex;
 }
 
@@ -716,7 +750,7 @@ SoundBankReader* SoundBankReader::Construct(SoundBankReader* reader, SoundBankEn
     reader->offset = offset;
     reader->size = size;
     reader->stream = nullptr;
-    reader->bits = 0;
+    reader->bits.value = 0;
     return reader;
 }
 
@@ -729,28 +763,28 @@ void SoundBankReader::Destroy(u32 flags)
 s32 SoundBankReader::Begin(FileStream* fileStream)
 {
     stream = fileStream;
-    if ((bits & 4) != 0)
+    if (bits.wholeFile != 0)
     {
         bool found = FileStreamOpen(fileStream, path.string);
         offset = 0;
-        bits = (bits & ~1u) | (found ? 1 : 0);
+        bits.found = found ? 1 : 0;
         size = fileStream->size;
     }
     else if (HasOwnFile(fileStream))
     {
-        bits = (bits & ~1u) | (IsOpenFile(&path, fileStream) ? 1 : 0);
+        bits.found = IsOpenFile(&path, fileStream) ? 1 : 0;
     }
     else
     {
-        bits = (bits & ~1u) | (FileStreamOpen(fileStream, path.string) ? 1 : 0);
+        bits.found = FileStreamOpen(fileStream, path.string) ? 1 : 0;
     }
 
-    if ((bits & 1) == 0)
+    if (bits.found == 0)
     {
         return 0;
     }
 
-    return FileStreamReadSoundBank(fileStream, bank->id, offset, size, 0);
+    return FileStreamReadSoundBank(fileStream, bank->header.id, offset, size, ReadInBackground);
 }
 
 bool SoundBankReader::IsDone()
@@ -760,9 +794,9 @@ bool SoundBankReader::IsDone()
 
 void SoundBankReader::Finish(ReaderStack*)
 {
-    Platform::Audio::SoundBankLoaded(static_cast<u16>(bank->id));
-    bank->flags |= 1;
-    if ((bits & 8) != 0)
+    Platform::Audio::SoundBankLoaded(static_cast<u16>(bank->header.id));
+    bank->flags.samplesLoaded = 1;
+    if (bits.closesFile != 0)
     {
         FileStreamClose(stream);
     }
@@ -772,7 +806,7 @@ void SoundBankReader::Restart()
 {
 }
 
-BdReader* BdReader::Construct(BdReader* reader, String* path, SectionReader* sectionReader, u8 inArchive, u8 unknown16)
+BdReader* BdReader::Construct(BdReader* reader, String* path, SectionReader* sectionReader, u8 inArchive, u8 unused)
 {
     GenericItemReader::Construct(reader, sectionReader);
     reader->path.string = nullptr;
@@ -781,7 +815,7 @@ BdReader* BdReader::Construct(BdReader* reader, String* path, SectionReader* sec
     reader->path.capacity = 0;
     StringAssign(&reader->path, path->string);
     reader->inArchive = inArchive;
-    reader->unknown16 = unknown16;
+    reader->unused16 = unused;
     reader->found = 0;
     return reader;
 }
@@ -837,38 +871,39 @@ void BdReader::Restart()
 
 extern "C"
 {
-    ItemHeader* SetNextItem(ItemHeader* header, const ItemHeader* next, u32 start)
+    ItemHeader* ItemHeaderInFile(ItemHeader* header, const ItemHeader* entry, u32 start)
     {
-        header->offset = next->offset + start;
-        header->size = next->size;
-        header->id = next->id;
+        header->offset = entry->offset + start;
+        header->size = entry->size;
+        header->id = entry->id;
         return header;
     }
 
-    u32 GetItemsAmountInItem(const u8* section)
+    u32 SectionItemCount(const u8* section)
     {
-        return reinterpret_cast<const u32*>(section)[1];
+        return reinterpret_cast<const SectionHeader*>(section)->itemCount;
     }
 
     u32 GetSectionSize(const u8* section)
     {
-        return reinterpret_cast<const u32*>(section)[2];
+        return reinterpret_cast<const SectionHeader*>(section)->size;
     }
 
     void ReadSectionHeader(const u8* data, ItemInterface* item, u32 start)
     {
-        u32 header = *reinterpret_cast<const u32*>(data);
-        if ((header >> 16) >= 2 || !item->CanRead(header & 0xFFFF))
+        const auto* header = reinterpret_cast<const SectionHeader*>(data);
+        SectionFormat format = header->format;
+        if (format.version >= SectionVersions || !item->CanRead(format.type))
         {
             return;
         }
 
-        GameReadersStorage* storage = g_ReadersStorages[0];
-        u32 tableSize = reinterpret_cast<const u32*>(data)[1] * sizeof(ItemHeader);
+        GameReadersStorage* storage = g_ReadersStorages[MainReaders];
+        u32 tableSize = header->itemCount * sizeof(ItemHeader);
         auto* reader = static_cast<ItemSectionReader*>(MemoryAllocate(sizeof(ItemSectionReader)));
         reader->item = item;
         reader->vtable = g_ItemSectionReaderVTable;
-        reader->count = GetItemsAmountInItem(data);
+        reader->count = SectionItemCount(data);
         reader->size = GetSectionSize(data);
         reader->start = start;
         reader->path.string = nullptr;
@@ -880,7 +915,8 @@ extern "C"
         {
             // The table follows the header
             table = SubItemsReader::ConstructOpen(static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))),
-                                                  sectionReader, 8, start + 0xC, tableSize);
+                                                  sectionReader, SubItemsReaderOptions::OnDisk, start + sizeof(SectionHeader),
+                                                  tableSize);
         }
         else
         {
@@ -888,49 +924,50 @@ extern "C"
                                             nullptr, 0);
         }
 
-        AddItemReaderToReaderStorage(storage, table, 0);
+        AddItemReaderToReaderStorage(storage, table, QueueBack);
     }
 
-    void AddResourcePackageToLoadQueue(ItemInterface* item, const char* path, s32 keepOpen)
+    void AddResourcePackageToLoadQueue(ItemInterface* item, const char* path, s32 inArchive)
     {
-        u32 flags = keepOpen != 0 ? 0x2A : 0x28;
-        GameReadersStorage* storage = g_ReadersStorages[0];
+        constexpr u32 PackageOptions = SubItemsReaderOptions::OnDisk | SubItemsReaderOptions::ClampsToFile;
+        u32 flags = inArchive != 0 ? PackageOptions | SubItemsReaderOptions::FromArchive : PackageOptions;
+        GameReadersStorage* storage = g_ReadersStorages[MainReaders];
         auto* package = static_cast<PackageSectionReader*>(MemoryAllocate(sizeof(PackageSectionReader)));
         package->vtable = g_PackageSectionReaderVTable;
         package->item = item;
         package->start = 0;
-        package->keepOpen = static_cast<u8>(keepOpen);
+        package->unused0C = static_cast<u8>(inArchive);
         GenericItemReader* header = SubItemsReader::ConstructPart(
             static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))), path,
-            reinterpret_cast<SectionReader*>(package), flags, 0, 0xC);
-        AddItemReaderToReaderStorage(storage, header, 0);
-        if (keepOpen == 0)
+            reinterpret_cast<SectionReader*>(package), flags, 0, sizeof(SectionHeader));
+        AddItemReaderToReaderStorage(storage, header, QueueBack);
+        if (inArchive == 0)
         {
             AddItemReaderToReaderStorage(
                 storage, FileCloseReader::Construct(static_cast<FileCloseReader*>(MemoryAllocate(sizeof(FileCloseReader))), nullptr),
-                0);
+                QueueBack);
         }
     }
 
     void AddSectionToLoadQueue(ItemInterface* item, u32 start)
     {
-        GameReadersStorage* storage = g_ReadersStorages[0];
+        GameReadersStorage* storage = g_ReadersStorages[MainReaders];
         auto* package = static_cast<PackageSectionReader*>(MemoryAllocate(sizeof(PackageSectionReader)));
         package->item = item;
         package->vtable = g_PackageSectionReaderVTable;
         package->start = start;
-        package->keepOpen = 0;
+        package->unused0C = 0;
         GenericItemReader* header = SubItemsReader::ConstructOpen(
-            static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))), reinterpret_cast<SectionReader*>(package), 8,
-            start, 0xC);
-        AddItemReaderToReaderStorage(storage, header, 0);
+            static_cast<SubItemsReader*>(MemoryAllocate(sizeof(SubItemsReader))), reinterpret_cast<SectionReader*>(package),
+            SubItemsReaderOptions::OnDisk, start, sizeof(SectionHeader));
+        AddItemReaderToReaderStorage(storage, header, QueueBack);
     }
 }
 
 void PackageSectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -945,19 +982,21 @@ void ItemSectionReader::Destroy(u32 flags)
 {
     StringDestroy(&path);
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
 }
 
+// The data is the section's table of items
 void ItemSectionReader::Read(u8* data, u32, ReaderStack*)
 {
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
+    auto* table = reinterpret_cast<ItemHeader*>(data);
     u32 end = start;
     if (data != nullptr)
     {
-        end += *reinterpret_cast<u32*>(data);
+        end += table->offset;
     }
 
     item->SetCount(count);
@@ -965,7 +1004,7 @@ void ItemSectionReader::Read(u8* data, u32, ReaderStack*)
     for (u32 index = 0; index < count; index++)
     {
         ItemHeader header;
-        SetNextItem(&header, reinterpret_cast<ItemHeader*>(data) + index, start);
+        ItemHeaderInFile(&header, table + index, start);
         s32 itemSize = header.size;
         end = header.offset;
         SectionReader* reader = item->GetReader(read, &header, &itemSize);
@@ -975,15 +1014,17 @@ void ItemSectionReader::Read(u8* data, u32, ReaderStack*)
             GenericItemReader* added;
             if (path.length == 0)
             {
-                added = SubItemsReader::ConstructOpen(itemReader, reader, 8, end, static_cast<u32>(itemSize));
+                added = SubItemsReader::ConstructOpen(itemReader, reader, SubItemsReaderOptions::OnDisk, end,
+                                                      static_cast<u32>(itemSize));
             }
             else
             {
-                added = SubItemsReader::ConstructPart(itemReader, path.string, reader, 8, end, static_cast<u32>(itemSize));
+                added = SubItemsReader::ConstructPart(itemReader, path.string, reader, SubItemsReaderOptions::OnDisk, end,
+                                                      static_cast<u32>(itemSize));
             }
 
             read++;
-            AddItemReaderToReaderStorage(storage, added, 0);
+            AddItemReaderToReaderStorage(storage, added, QueueBack);
         }
 
         end += header.size;
@@ -1000,13 +1041,13 @@ void ItemSectionReader::Read(u8* data, u32, ReaderStack*)
         storage,
         MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), reinterpret_cast<SectionReader*>(done),
                                 nullptr, 0),
-        0);
+        QueueBack);
 }
 
 void ItemsReadSectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -1021,7 +1062,7 @@ void ItemsReadSectionReader::Read(u8*, u32, ReaderStack*)
 // terminator after it when asked for), other memory is read into as it is
 bool MemoryStream::LoadFile(const char* path, bool terminate)
 {
-    FileStream* stream = g_ReadersStorages[1]->stream;
+    FileStream* stream = g_ReadersStorages[FileReaders]->stream;
     if (!FileStreamOpen(stream, path))
     {
         return false;
@@ -1029,7 +1070,7 @@ bool MemoryStream::LoadFile(const char* path, bool terminate)
 
     u32 fileSize = stream->size;
     u32 needed = terminate ? fileSize + 1 : fileSize;
-    if ((flags & FlagOwnsMemory) != 0)
+    if (flags.ownsMemory)
     {
         FreeMemory(GetHeapManager(), begin);
         begin = nullptr;
@@ -1038,12 +1079,12 @@ bool MemoryStream::LoadFile(const char* path, bool terminate)
         auto* memory = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), needed, alignment));
         begin = memory;
         position = memory;
-        flags |= FlagOwnsMemory;
+        flags.ownsMemory = 1;
         size = memory != nullptr ? needed : 0;
     }
 
     u32 read;
-    FileStreamRead(stream, 0, fileSize, begin, 1, &read);
+    FileStreamRead(stream, 0, fileSize, begin, WaitForRead, &read);
     FileStreamClose(stream);
     if (terminate)
     {
@@ -1057,7 +1098,7 @@ bool MemoryStream::LoadFile(const char* path, bool terminate)
 void ItemInterface::BaseDestroy(u32 flags)
 {
     vtable = g_ItemInterfaceVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }

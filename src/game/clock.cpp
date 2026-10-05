@@ -30,23 +30,24 @@ extern "C"
     void TimeClockReset(TimeClock* clock)
     {
         clock->advance = 0;
-        clock->flags = TimeClock::FlagRestart;
+        clock->flags.value = 0;
+        clock->flags.restarts = 1;
         clock->time = 0;
     }
 
     bool TimeClockAdvance(TimeClock* clock, u32 units)
     {
-        if ((clock->flags & TimeClock::FlagRunning) == 0)
+        if (clock->flags.running == 0)
         {
             clock->advance = 0;
             return false;
         }
 
-        if ((clock->flags & TimeClock::FlagRestart) != 0)
+        if (clock->flags.restarts != 0)
         {
             clock->time = units;
             clock->advance = 0;
-            clock->flags &= ~TimeClock::FlagRestart;
+            clock->flags.restarts = 0;
         }
         else
         {
@@ -90,7 +91,7 @@ extern "C"
     {
         for (u32 i = 0; i < GameClockCount; i++)
         {
-            clocks[i].flags |= TimeClock::FlagRunning;
+            clocks[i].flags.running = 1;
         }
     }
 
@@ -98,7 +99,7 @@ extern "C"
     {
         for (u32 i = 0; i < GameClockCount; i++)
         {
-            clocks[i].flags &= ~TimeClock::FlagRunning;
+            clocks[i].flags.running = 0;
         }
     }
 
@@ -114,7 +115,7 @@ extern "C"
     void ResetGlobalClock()
     {
         TimeClockReset(&g_GlobalClock);
-        g_GlobalClock.flags |= TimeClock::FlagRunning;
+        g_GlobalClock.flags.running = 1;
     }
 
     bool AdvanceGlobalClock(GameTimeController* controller)

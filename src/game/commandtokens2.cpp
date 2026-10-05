@@ -1,64 +1,69 @@
 #include "game/commands.h"
 
 #include "game/math.h"
+#include "game/objectnode.h"
 #include "game/progress.h"
 #include "game/properties.h"
 #include "game/scripttokens.h"
 
 // More of the commands' development tools parsers (their vtables' slot 2, game/commandtokens.cpp has the others): each token's
-// kind names an argument, its value goes into the command's field. The retail game never calls them
+// tag names an argument, its value goes into the command's field. The retail game never calls them
 
 namespace
 {
 // The vtable's parser of one token, which the commands sharing a class have each of their own
 constexpr u32 ParseTokenSlot = 7;
 
-// A setting's given bit (in the word's low half) and its value (the high half): a token of 0 sets it, 1 clears it, any other
-// changes neither
-u32 GivenSetting(u32 word, const ScriptToken* token, u32 bit)
+// Every bit of what Keep keeps (KeepFlags')
+constexpr u32 EveryKept = 0x3F;
+
+// A priority above the most: the starter's own (SetBehaviourPriority's execution)
+constexpr u32 StarterPriority = 0xFF;
+
+// A setting a token gives: On gives it on, Off gives it off, any other value neither
+void GiveSetting(GivenSettings* settings, const ScriptToken* token, u32 bit)
 {
-    if (token->value == 0)
+    if (token->value == KeywordOn)
     {
-        return word | bit | bit << 16;
+        settings->given |= bit;
+        settings->values |= bit;
     }
-
-    if (token->value == 1)
+    else if (token->value == KeywordOff)
     {
-        return (word | bit) & ~(bit << 16);
+        settings->given |= bit;
+        settings->values &= ~bit;
     }
-
-    return word;
 }
 
 // A tagged value's type set, the rest of it kept
 void SetTaggedType(TaggedValue* value, TaggedValue::Type type)
 {
-    value->raw = (value->raw & ~TaggedValue::TypeMask) | static_cast<s32>(type << TaggedValue::TypeShift);
+    value->type = type;
 }
 }
 
-void FinalBossInitWeaponsCommand::ParseTokens(const ScriptTokenList* tokens)
+void FinalBossWeaponsCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     // The mode tells the commands sharing the class apart, each with arguments of its own
     ScriptTokenReader reader;
     switch (mode)
     {
-    case 0:
+    case ModeHookJoints:
         ScriptTokenReader::Construct(&reader, tokens);
         reader.First();
         while (!reader.AtEnd())
         {
             const ScriptToken* token = reader.Current();
-            switch (token->kind)
+            switch (token->tag)
             {
-            case 0x133:
-                slots = (slots & ~0xFFu) | (token->value & 0xFF);
+            case TagFirstWeaponJoint:
+                joints[0] = static_cast<u8>(token->value);
                 break;
-            case 0x134:
-                slots = (slots & ~0xFF00u) | ((token->value & 0xFF) << 8);
+            case TagSecondWeaponJoint:
+                joints[1] = static_cast<u8>(token->value);
                 break;
-            case 0x135:
-                slots = (slots & ~0xFF0000u) | ((token->value & 0xFF) << 16);
+            case TagThirdWeaponJoint:
+                joints[2] = static_cast<u8>(token->value);
                 break;
             default:
                 break;
@@ -68,25 +73,25 @@ void FinalBossInitWeaponsCommand::ParseTokens(const ScriptTokenList* tokens)
         }
 
         break;
-    case 1:
-    case 2:
+    case ModeReturn:
+    case ModeRaise:
         ScriptTokenReader::Construct(&reader, tokens);
         reader.First();
         while (!reader.AtEnd())
         {
             const ScriptToken* token = reader.Current();
-            if (token->kind == 0xFFFF)
+            if (token->tag == TagNone)
             {
                 switch (token->value)
                 {
-                case 0x123:
-                    weapons |= 0x1;
+                case KeywordFirstWeapon:
+                    weapons.first = 1;
                     break;
-                case 0x124:
-                    weapons |= 0x2;
+                case KeywordSecondWeapon:
+                    weapons.second = 1;
                     break;
-                case 0x125:
-                    weapons |= 0x4;
+                case KeywordThirdWeapon:
+                    weapons.third = 1;
                     break;
                 default:
                     break;
@@ -97,51 +102,51 @@ void FinalBossInitWeaponsCommand::ParseTokens(const ScriptTokenList* tokens)
         }
 
         break;
-    case 3:
+    case ModeTarget:
         ScriptTokenReader::Construct(&reader, tokens);
         reader.First();
         while (!reader.AtEnd())
         {
             const ScriptToken* token = reader.Current();
-            if (token->kind == 0xC7)
+            if (token->tag == TagSourceDesignator)
             {
-                target = (target & ~0xFFu) | (TokenDesignator(token, target & 0xFF) & 0xFF);
+                target.designator = TokenDesignator(token, target.designator);
             }
 
             reader.Next();
         }
 
         break;
-    case 4:
+    case ModeScaleAndRate:
         ScriptTokenReader::Construct(&reader, tokens);
         reader.First();
         while (!reader.AtEnd())
         {
             const ScriptToken* token = reader.Current();
-            switch (token->kind)
+            switch (token->tag)
             {
-            case 0xFFFF:
+            case TagNone:
                 switch (token->value)
                 {
-                case 0x123:
-                    weapons |= 0x1;
+                case KeywordFirstWeapon:
+                    weapons.first = 1;
                     break;
-                case 0x124:
-                    weapons |= 0x2;
+                case KeywordSecondWeapon:
+                    weapons.second = 1;
                     break;
-                case 0x125:
-                    weapons |= 0x4;
+                case KeywordThirdWeapon:
+                    weapons.third = 1;
                     break;
                 default:
                     break;
                 }
 
                 break;
-            case 0x59:
-                value1 = __builtin_bit_cast(s32, token->Float());
+            case TagScale:
+                scale = token->Float();
                 break;
-            case 0xD6:
-                value2 = __builtin_bit_cast(s32, token->Float());
+            case TagRate:
+                turnRate = token->Float();
                 break;
             default:
                 break;
@@ -164,35 +169,35 @@ void SetSplineControllerValuesCommand::ParseTokens(const ScriptTokenList* tokens
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x0:
-            SetTaggedType(&x, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &x);
+        case TagX:
+            SetTaggedType(&offsetX, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &offsetX);
             break;
-        case 0x1:
-            SetTaggedType(&y, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &y);
+        case TagY:
+            SetTaggedType(&offsetY, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &offsetY);
             break;
-        case 0x2:
-            SetTaggedType(&z, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &z);
+        case TagZ:
+            SetTaggedType(&offsetZ, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &offsetZ);
             break;
-        case 0x18:
-            SetTaggedType(&value4, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &value4);
+        case TagAcceleration:
+            SetTaggedType(&pull, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &pull);
             break;
-        case 0x78:
-            SetTaggedType(&value5, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &value5);
+        case TagHomingPower:
+            SetTaggedType(&turnRate, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &turnRate);
             break;
-        case 0x13D:
-            SetTaggedType(&value6, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &value6);
+        case TagUnused13D:
+            SetTaggedType(&unusedValue, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &unusedValue);
             break;
-        case 0x13E:
-            SetTaggedType(&value7, TaggedValue::TypeFloat);
-            ParseTaggedValueRecord(token, &value7);
+        case TagDrop:
+            SetTaggedType(&drop, TaggedValue::TypeFloat);
+            ParseTaggedValueRecord(token, &drop);
             break;
         default:
             break;
@@ -210,28 +215,29 @@ void SetSkateControllerIdsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x15:
+        case TagParticle:
         {
-            // A list of halfwords from ids1 on, its count in the counts' bits 0-3 (past the twelfth, into the sounds)
-            u32 count = counts & 0xF;
-            counts = (counts & ~0xFu) | ((count + 1) & 0xF);
-            reinterpret_cast<u16*>(&ids1)[count] = static_cast<u16>(token->value);
+            // Past the twelfth, the IDs go into the sounds
+            u32 count = counts.ids;
+            counts.ids = count + 1;
+            u16* given = ids;
+            given[count] = static_cast<u16>(token->value);
             break;
         }
-        case 0x16:
+        case TagSound:
         {
-            // A list of halfwords from sounds1 on (the unused words are its rest), its count in the counts' bits 4-8
-            u32 count = (counts >> 4) & 0x1F;
-            counts = (counts & ~0x1F0u) | (((count + 1) & 0x1F) << 4);
-            reinterpret_cast<u16*>(&sounds1)[count] = static_cast<u16>(token->value);
+            u32 count = counts.sounds;
+            counts.sounds = count + 1;
+            u16* slots = soundSlots;
+            slots[count] = static_cast<u16>(token->value);
             break;
         }
-        case 0xFFFF:
-            if (token->value == 0x128)
+        case TagNone:
+            if (token->value == KeywordAddAgain)
             {
-                counts |= 0x200;
+                counts.addsAgain = 1;
             }
 
             break;
@@ -251,46 +257,46 @@ void SetPlayerInputCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x229:
-            inputFlags = GivenSetting(inputFlags, token, 0x1);
+        case TagRotation:
+            GiveSetting(&settings, token, 1u << SettingTurn);
             break;
-        case 0x22A:
-            inputFlags = GivenSetting(inputFlags, token, 0x2);
+        case TagForwardMovement:
+            GiveSetting(&settings, token, 1u << SettingMoveZ);
             break;
-        case 0x22B:
-            inputFlags = GivenSetting(inputFlags, token, 0x4);
+        case TagLateralMovement:
+            GiveSetting(&settings, token, 1u << SettingMoveX);
             break;
-        case 0x22C:
-            inputFlags = GivenSetting(inputFlags, token, 0x8);
+        case TagJumpKey:
+            GiveSetting(&settings, token, 1u << SettingCross);
             break;
-        case 0x22D:
-            inputFlags = GivenSetting(inputFlags, token, 0x10);
+        case TagCrouchKey:
+            GiveSetting(&settings, token, 1u << SettingSquare);
             break;
-        case 0x22E:
-            inputFlags = GivenSetting(inputFlags, token, 0x20);
+        case TagSpinKey:
+            GiveSetting(&settings, token, 1u << SettingCircle);
             break;
-        case 0x20D:
-            inputFlags = GivenSetting(inputFlags, token, 0x40);
+        case TagInput:
+            GiveSetting(&settings, token, 1u << SettingAllInputs);
             break;
-        case 0x230:
-            inputFlags = GivenSetting(inputFlags, token, 0x80);
+        case TagAffectedByGravity:
+            GiveSetting(&settings, token, 1u << SettingResting);
             break;
-        case 0x237:
-            inputFlags = GivenSetting(inputFlags, token, 0x100);
+        case TagVulnerable:
+            GiveSetting(&settings, token, 1u << SettingVulnerable);
             break;
-        case 0x81:
-            unknown2 = (unknown2 & ~0x2u) | (static_cast<u32>(!TokenIsZero(token)) << 1);
+        case TagUpdate:
+            controls.boxOnly = !TokenIsOn(token);
             break;
-        case 0xFFFF:
-            if (token->value == 0xB4)
+        case TagNone:
+            if (token->value == KeywordPadDriven)
             {
-                unknown2 &= ~0x1u;
+                controls.motionDriven = 0;
             }
-            else if (token->value == 0xB5)
+            else if (token->value == KeywordMotionDriven)
             {
-                unknown2 |= 0x1;
+                controls.motionDriven = 1;
             }
 
             break;
@@ -302,7 +308,7 @@ void SetPlayerInputCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void CharacterOp578Command::ParseTokens(const ScriptTokenList* tokens)
+void CountPlayerCirclingCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -310,23 +316,23 @@ void CharacterOp578Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6E:
-            value = (value & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagCounter:
+            counter.counter = token->value;
             break;
-        case 0xB2:
-            value = (value & ~0xFFFFu) | (token->value & 0xFFFF);
-            value |= 0x10000;
+        case TagAgentCounter:
+            counter.counter = token->value;
+            counter.agentCounter = 1;
             break;
-        case 0xFFFF:
-            if (token->value == 0xA3)
+        case TagNone:
+            if (token->value == KeywordToTheRight)
             {
-                value |= 0x20000;
+                counter.toTheRight = 1;
             }
-            else if (token->value == 0xA4)
+            else if (token->value == KeywordToTheLeft)
             {
-                value &= ~0x20000u;
+                counter.toTheRight = 0;
             }
 
             break;
@@ -338,7 +344,7 @@ void CharacterOp578Command::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetPlayerFlag57Command::ParseTokens(const ScriptTokenList* tokens)
+void SetPlayerScriptFlagCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -346,15 +352,15 @@ void SetPlayerFlag57Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
-            if (token->value == 0)
+            if (token->value == KeywordOn)
             {
-                value |= 0x1;
+                clears.on = 1;
             }
-            else if (token->value == 1)
+            else if (token->value == KeywordOff)
             {
-                value &= ~0x1u;
+                clears.on = 0;
             }
         }
 
@@ -362,7 +368,7 @@ void SetPlayerFlag57Command::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void TriggerCharacterEvent12Command::ParseTokens(const ScriptTokenList* tokens)
+void MakeCharactersIdleCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -370,21 +376,21 @@ void TriggerCharacterEvent12Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
             switch (token->value)
             {
-            case 0x3E:
-                characters |= 0x1;
+            case KeywordAll:
+                characters.every = 1;
                 break;
-            case 0x232:
-                characters |= 0x2;
+            case KeywordCrash:
+                characters.crash = 1;
                 break;
-            case 0x233:
-                characters |= 0x4;
+            case KeywordCortex:
+                characters.cortex = 1;
                 break;
-            case 0x29E:
-                characters |= 0x8;
+            case KeywordMecha:
+                characters.mecha = 1;
                 break;
             default:
                 break;
@@ -403,26 +409,26 @@ void SwitchCharacterCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x72:
-            value1 = (value1 & ~0xFu) | ((token->value - 1) & 0xF) | 0x10;
+        case TagLinked:
+            target.linked = token->value - 1;
+            target.byLinked = 1;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                // Bits 5-12 a designator: the focus object, AgentRef1
-                if (token->value == 0x1C)
+                if (token->value == KeywordFocus)
                 {
-                    value1 = (value1 & ~0x1FE0u) | 0xFB << 5;
+                    target.designator = DesignatesFocus;
                 }
-                else if (token->value == 0x74)
+                else if (token->value == KeywordAgentRef1)
                 {
-                    value1 = (value1 & ~0x1FE0u) | 0xF8 << 5;
+                    target.designator = DesignatesAgentRef1;
                 }
                 else
                 {
-                    value2 = static_cast<s32>(TokenCharacter(token->value));
+                    character = static_cast<s32>(TokenCharacter(token->value));
                 }
             }
 
@@ -443,37 +449,37 @@ void SetAgentCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x207:
-            agentFlags = GivenSetting(agentFlags, token, 0x1);
+        case TagActive:
+            GiveSetting(&settings, token, 1u << SettingAwake);
             break;
-        case 0x208:
-            agentFlags = GivenSetting(agentFlags, token, 0x2);
+        case TagVisible:
+            GiveSetting(&settings, token, 1u << SettingVisible);
             break;
-        case 0x20B:
-            agentFlags = GivenSetting(agentFlags, token, 0x4);
+        case TagCollidable:
+            GiveSetting(&settings, token, 1u << SettingCollision);
             break;
-        case 0x20A:
-            agentFlags = GivenSetting(agentFlags, token, 0x8);
+        case TagTangible:
+            GiveSetting(&settings, token, 1u << SettingTriggerSignals);
             break;
-        case 0x209:
-            agentFlags = GivenSetting(agentFlags, token, 0x10);
+        case TagShadow:
+            GiveSetting(&settings, token, 1u << SettingShadow);
             break;
-        case 0x20F:
-            agentFlags = GivenSetting(agentFlags, token, 0x20);
+        case TagClamping:
+            GiveSetting(&settings, token, 1u << SettingSnapsToGround);
             break;
-        case 0x216:
-            agentFlags = GivenSetting(agentFlags, token, 0x40);
+        case TagHarmful:
+            GiveSetting(&settings, token, 1u << SettingCanDamageCharacter);
             break;
-        case 0x237:
-            agentFlags = GivenSetting(agentFlags, token, 0x80);
+        case TagVulnerable:
+            GiveSetting(&settings, token, 1u << SettingVulnerable);
             break;
-        case 0x238:
-            agentFlags = GivenSetting(agentFlags, token, 0x100);
+        case TagBulletsBounceBack:
+            GiveSetting(&settings, token, 1u << SettingBulletsBounceBack);
             break;
-        case 0x244:
-            agentFlags = GivenSetting(agentFlags, token, 0x200);
+        case TagTargettable:
+            GiveSetting(&settings, token, 1u << SettingTargettable);
             break;
         default:
             break;
@@ -504,16 +510,16 @@ void NowGoBackCollidableCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x59)
+        if (token->tag == TagScale)
         {
-            ParseTaggedValueRecord(token, &value1);
+            ParseTaggedValueRecord(token, &scale);
         }
 
         reader.Next();
     }
 }
 
-void SetNode120FlagCommand::ParseTokens(const ScriptTokenList* tokens)
+void StopStickingCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -521,9 +527,9 @@ void SetNode120FlagCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4 && token->value == 0xFD)
+        if (token->tag == TagNone && token->type == TokenKeyword && token->value == KeywordKeep)
         {
-            value |= 0x1;
+            keepsStuck.on = 1;
         }
 
         reader.Next();
@@ -538,7 +544,7 @@ void ReduceHitPointsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x204)
+        if (token->tag == TagHitPoints)
         {
             hitPoints = static_cast<s32>(token->value);
         }
@@ -555,7 +561,7 @@ void SetHitPointsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x204)
+        if (token->tag == TagHitPoints)
         {
             hitPoints = token->value;
         }
@@ -564,7 +570,7 @@ void SetHitPointsCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetNodeValue174Command::ParseTokens(const ScriptTokenList* tokens)
+void SetCountedValueCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -572,7 +578,7 @@ void SetNodeValue174Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x136)
+        if (token->tag == TagCountedValue)
         {
             value = token->Float();
         }
@@ -596,23 +602,22 @@ void CreateDamageCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void SetCameraCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // value1's bits 0 and 1 say which of the others were given
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x76:
-            SetTaggedType(&value2, TaggedValue::TypeAngle);
-            ParseTaggedValueRecord(token, &value2);
-            value1.raw |= 0x1;
+        case TagElevation:
+            SetTaggedType(&pitch, TaggedValue::TypeAngle);
+            ParseTaggedValueRecord(token, &pitch);
+            given.pitch = 1;
             break;
-        case 0x77:
-            value1.raw |= 0x2;
-            value3 = __builtin_bit_cast(s32, token->Float());
+        case TagZoom:
+            given.distance = 1;
+            distance = token->Float();
             break;
         default:
             break;
@@ -622,7 +627,7 @@ void SetCameraCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetGlobalProgressionCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetPlayAreaCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -630,14 +635,14 @@ void SetGlobalProgressionCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xC3:
-            SetTaggedType(&value, TaggedValue::TypeInt);
-            ParseTaggedValueRecord(token, &value);
+        case TagValue:
+            SetTaggedType(&areaValue, TaggedValue::TypeInt);
+            ParseTaggedValueRecord(token, &areaValue);
             break;
-        case 0xFFFF:
-            value1 = static_cast<u32>(TokenArea(token->value));
+        case TagNone:
+            area = TokenArea(token->value);
             break;
         default:
             break;
@@ -647,7 +652,7 @@ void SetGlobalProgressionCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetGlobalProgression2Command::ParseTokens(const ScriptTokenList* tokens)
+void RaiseStoryAreaCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -655,14 +660,14 @@ void SetGlobalProgression2Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xC3:
-            SetTaggedType(&value, TaggedValue::TypeInt);
-            ParseTaggedValueRecord(token, &value);
+        case TagValue:
+            SetTaggedType(&taggedArea, TaggedValue::TypeInt);
+            ParseTaggedValueRecord(token, &taggedArea);
             break;
-        case 0xFFFF:
-            value1 = TokenArea(token->value);
+        case TagNone:
+            area = TokenArea(token->value);
             break;
         default:
             break;
@@ -680,9 +685,9 @@ void CutsceneStartCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xC)
+        if (token->tag == TagDuration)
         {
-            value1 = token->Float();
+            seconds = token->Float();
         }
 
         reader.Next();
@@ -697,9 +702,9 @@ void CutsceneEndCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xC)
+        if (token->tag == TagDuration)
         {
-            value1 = token->Float();
+            seconds = token->Float();
         }
 
         reader.Next();
@@ -714,16 +719,16 @@ void EnableBossModeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x11:
-            animSlots = static_cast<s32>(token->value);
+        case TagAnimation:
+            iconSlot = static_cast<s32>(token->value);
             break;
-        case 0x204:
-            ParseTaggedValueRecord(token, &hitPoints);
+        case TagHitPoints:
+            ParseTaggedValueRecord(token, &health);
             break;
-        case 0xE6:
-            value3 = token->Float();
+        case TagWidth:
+            barLength = token->Float();
             break;
         default:
             break;
@@ -741,9 +746,9 @@ void DamageBossCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF)
+        if (token->tag == TagNone)
         {
-            value1 = token->value;
+            healthChange = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -758,16 +763,16 @@ void StartWhackawormCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x11:
-            animSlots = static_cast<s32>(token->value);
+        case TagAnimation:
+            iconSlot = static_cast<s32>(token->value);
             break;
-        case 0xC:
-            ParseTaggedValueRecord(token, &value2);
+        case TagDuration:
+            ParseTaggedValueRecord(token, &seconds);
             break;
-        case 0x204:
-            ParseTaggedValueRecord(token, &hitPoints);
+        case TagHitPoints:
+            ParseTaggedValueRecord(token, &total);
             break;
         default:
             break;
@@ -785,9 +790,9 @@ void ProgressWhackawormCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF)
+        if (token->tag == TagNone)
         {
-            value1 = token->value;
+            countChange = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -802,9 +807,9 @@ void ShowBottomTextCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xC)
+        if (token->tag == TagDuration)
         {
-            value1 = token->Float();
+            seconds = token->Float();
         }
 
         reader.Next();
@@ -819,16 +824,16 @@ void HideBottomTextCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xC)
+        if (token->tag == TagDuration)
         {
-            value1 = token->Float();
+            seconds = token->Float();
         }
 
         reader.Next();
     }
 }
 
-void RequestOgiSlotCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetGaugeIconCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -836,9 +841,9 @@ void RequestOgiSlotCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x11)
+        if (token->tag == TagAnimation)
         {
-            slot = (slot & ~0xFFu) | (token->value & 0xFF);
+            slot.index = token->value;
         }
 
         reader.Next();
@@ -853,16 +858,16 @@ void SetFocusToGameActorCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x239)
+        if (token->tag == TagCharacter)
         {
-            actorIndex = (actorIndex & ~0xFFu) | (TokenCharacter(token->value) & 0xFF);
+            character.character = TokenCharacter(token->value);
         }
 
         reader.Next();
     }
 }
 
-void DUMMY_586Command::ParseTokens(const ScriptTokenList* tokens)
+void NoOp586Command::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -870,9 +875,9 @@ void DUMMY_586Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xE9)
+        if (token->tag == TagText)
         {
-            value1 = (value1 & ~0xFFFFu) | (token->value & 0xFFFF);
+            unused1.low = token->value;
         }
 
         reader.Next();
@@ -887,13 +892,14 @@ void SetMaskControllerIdsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x15)
+        if (token->tag == TagParticle)
         {
-            // A list of halfwords from ids1 on (the unused words are its rest), its count in the count's bits 0-3. A retail bug: the
-            // count goes up to 15, and past the twelfth the halfwords overwrite the count and then what follows the command
-            u32 index = count & 0xF;
-            count = (count & ~0xFu) | ((index + 1) & 0xF);
-            reinterpret_cast<u16*>(&ids1)[index] = static_cast<u16>(token->value);
+            // A retail bug: the count goes up to 15, and past the twelfth the IDs overwrite the count and then what follows the
+            // command
+            u32 index = count.ids;
+            count.ids = index + 1;
+            u16* given = ids;
+            given[index] = static_cast<u16>(token->value);
         }
 
         reader.Next();
@@ -908,16 +914,16 @@ void AddGemCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF)
+        if (token->tag == TagNone)
         {
-            value1 = TokenGem(token->value);
+            gem = TokenGem(token->value);
         }
 
         reader.Next();
     }
 }
 
-void CA_PickUpWumpaCommand::ParseTokens(const ScriptTokenList* tokens)
+void PickUpWumpaCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -925,9 +931,9 @@ void CA_PickUpWumpaCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x200)
+        if (token->tag == TagQuantity)
         {
-            value1 = static_cast<s32>(token->value);
+            wumpaFruit = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -942,13 +948,13 @@ void SetPlayerRespawnPositionCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x205:
-            value1 = (value1 & ~0xFFu) | (token->value == 0 ? 1u : 0u);
+        case TagRadius:
+            respawn.unused0 = token->value == KeywordOn ? 1u : 0u;
             break;
-        case 0x23B:
-            value1 = (value1 & ~0xFF00u) | (token->value == 0 ? 1u : 0u) << 8;
+        case TagSaves:
+            respawn.saves = token->value == KeywordOn ? 1u : 0u;
             break;
         default:
             break;
@@ -966,15 +972,15 @@ void LinkToFocusCharacterCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x8A)
+        if (token->tag == TagBecome)
         {
-            if (token->value == 0x56)
+            if (token->value == KeywordMaster)
             {
-                value1 &= ~0x1u;
+                link.focusLeads = 0;
             }
-            else if (token->value == 0x57)
+            else if (token->value == KeywordSlave)
             {
-                value1 |= 0x1;
+                link.focusLeads = 1;
             }
         }
 
@@ -990,9 +996,9 @@ void AddLivesCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x22F)
+        if (token->tag == TagLives)
         {
-            value1 = static_cast<s32>(token->value);
+            lives = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -1007,9 +1013,9 @@ void DismissCharacterCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x239)
+        if (token->tag == TagCharacter)
         {
-            value1 = static_cast<s32>(TokenCharacter(token->value));
+            character = static_cast<s32>(TokenCharacter(token->value));
         }
 
         reader.Next();
@@ -1024,7 +1030,7 @@ void PlaceCharacterInChunkCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x239)
+        if (token->tag == TagCharacter)
         {
             character = static_cast<s32>(TokenCharacter(token->value));
         }
@@ -1033,7 +1039,7 @@ void PlaceCharacterInChunkCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetPlayerVehicleValueCommand::ParseTokens(const ScriptTokenList* tokens)
+void PushPlayerVehicleCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1041,9 +1047,9 @@ void SetPlayerVehicleValueCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 0)
+        if (token->tag == TagNone && token->type == TokenFloat)
         {
-            value = token->Float();
+            push = token->Float();
         }
 
         reader.Next();
@@ -1058,9 +1064,9 @@ void SetCrateCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x20E)
+        if (token->tag == TagRedWumpaCount)
         {
-            value2 = token->value;
+            wumpaFruit = token->value;
         }
 
         reader.Next();
@@ -1069,25 +1075,25 @@ void SetCrateCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void ApplyVelocityToHeldBodyCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // The velocity starts as the zero point (w 1)
-    *reinterpret_cast<Vector4*>(&x) = g_DefaultBox.min;
-    w = 1.0f;
+    // The impulse starts as the zero point (w 1)
+    impulse = g_DefaultBox.min;
+    impulse.w = 1.0f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x49:
-            x = token->Float();
+        case TagVelocityX:
+            impulse.x = token->Float();
             break;
-        case 0x4A:
-            y = token->Float();
+        case TagVelocityY:
+            impulse.y = token->Float();
             break;
-        case 0x4B:
-            z = token->Float();
+        case TagVelocityZ:
+            impulse.z = token->Float();
             break;
         default:
             break;
@@ -1097,7 +1103,7 @@ void ApplyVelocityToHeldBodyCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void CA_SetPickupCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetCustomPickupCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1105,49 +1111,49 @@ void CA_SetPickupCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x220:
-            hitPoints = (hitPoints & ~0x1u) | static_cast<u32>(TokenIsZero2(token));
+        case TagHitCrates:
+            flags.unused0 = TokenIsOn2(token);
             break;
-        case 0x221:
-            hitPoints = (hitPoints & ~0x2u) | static_cast<u32>(TokenIsZero2(token)) << 1;
+        case TagHitCreatures:
+            flags.unused1 = TokenIsOn2(token);
             break;
-        case 0x222:
-            hitPoints = (hitPoints & ~0x4u) | static_cast<u32>(TokenIsZero2(token)) << 2;
+        case TagHitFurniture:
+            flags.unused2 = TokenIsOn2(token);
             break;
-        case 0x223:
-            hitPoints = (hitPoints & ~0x8u) | static_cast<u32>(TokenIsZero2(token)) << 3;
+        case TagHitPlayer:
+            flags.unused3 = TokenIsOn2(token);
             break;
-        case 0x225:
-            hitPoints = (hitPoints & ~0x10u) | static_cast<u32>(TokenIsZero2(token)) << 4;
+        case TagHitAgents:
+            flags.unused4 = TokenIsOn2(token);
             break;
-        case 0x226:
-            hitPoints = (hitPoints & ~0x10u) | static_cast<u32>(TokenIsZero2(token)) << 4;
-            hitPoints = (hitPoints & ~0x20u) | static_cast<u32>(TokenIsZero2(token)) << 5;
+        case TagHitAll:
+            flags.unused4 = TokenIsOn2(token);
+            flags.unused5 = TokenIsOn2(token);
             break;
-        case 0x224:
-            hitPoints = (hitPoints & ~0x20u) | static_cast<u32>(TokenIsZero2(token)) << 5;
+        case TagHitScenery:
+            flags.unused5 = TokenIsOn2(token);
             break;
-        case 0x21C:
-            hitPoints = (hitPoints & ~0x40u) | static_cast<u32>(TokenIsZero2(token)) << 6;
+        case TagWumpaHover:
+            flags.spins = TokenIsOn2(token);
             break;
-        case 0x21D:
-            hitPoints = (hitPoints & ~0x80u) | static_cast<u32>(TokenIsZero2(token)) << 7;
+        case TagChainSuck:
+            flags.unused7 = TokenIsOn2(token);
             break;
-        case 0x204:
-            hitPoints = (hitPoints & ~0x300u) | (token->value & 0x3) << 8;
+        case TagHitPoints:
+            flags.unused8 = token->value;
             break;
-        case 0x21E:
-            value1 = token->Float();
-            hitPoints |= 0x400;
+        case TagSuckRange:
+            radius = token->Float();
+            flags.unused10 = 1;
             break;
-        case 0x21F:
-            value2 = token->Float();
-            hitPoints |= 0x400;
+        case TagSuckPower:
+            pull = token->Float();
+            flags.unused10 = 1;
             break;
-        case 0x227:
-            value3 = token->Float();
+        case TagFlySpeed:
+            fleeSpeed = token->Float();
             break;
         default:
             break;
@@ -1157,7 +1163,7 @@ void CA_SetPickupCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void CA_SetProjectileCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetCustomProjectileCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1165,33 +1171,33 @@ void CA_SetProjectileCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x227:
+        case TagFlySpeed:
             speed = token->Float();
             break;
-        case 0x90:
-            value4 = token->Float();
+        case TagFlatMultiplier:
+            sideTurnScale = token->Float();
             break;
-        case 0x78:
-            hitPoints |= 0x10;
-            value3 = __builtin_bit_cast(s32, token->Float());
+        case TagHomingPower:
+            settings.homes = 1;
+            turn = token->Float();
             break;
-        case 0x7A:
-            hitPoints |= 0x40;
-            value5 = __builtin_bit_cast(s32, token->Float());
+        case TagTurnLimit:
+            settings.homesForATime = 1;
+            homingTime = token->Float();
             break;
-        case 0x6A:
-            ParseTaggedValueRecord(token, &radius);
-            hitPoints |= 0x20;
+        case TagGravity:
+            ParseTaggedValueRecord(token, &gravity);
+            settings.falls = 1;
             break;
-        case 0x204:
-            hitPoints = (hitPoints & ~0xFu) | (token->value & 0xF);
+        case TagHitPoints:
+            settings.unused0 = token->value;
             break;
-        case 0xFFFF:
-            if (token->value == 0x82)
+        case TagNone:
+            if (token->value == KeywordPlayersShot)
             {
-                hitPoints |= 0x80;
+                settings.playersShot = 1;
             }
 
             break;
@@ -1206,60 +1212,59 @@ void CA_SetProjectileCommand::ParseTokens(const ScriptTokenList* tokens)
 void ShootCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     // An offset that isn't 0 sets its bit
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        TokenVectorComponent(token, &offset.x);
+        switch (token->tag)
         {
-        case 0x89:
-            objectAndMessage = (objectAndMessage & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagChildActor:
+            object.id = token->value;
             break;
-        case 0x6D:
-            objectAndMessage = (objectAndMessage & 0xFFFF) | token->value << 16;
+        case TagMessage:
+            object.message = token->value;
             break;
-        case 0x12:
-            shot = (shot & ~ExitPointMask) | (token->value & ExitPointMask);
+        case TagExitPoint:
+            shot.exitPoint = token->value;
             break;
-        case 0x39:
-            shot |= HasSpeed;
+        case TagMetresPerSecond:
+            shot.speedGiven = 1;
             speed = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x2A:
-                    shot &= ~0x700u;
+                case KeywordUp:
+                    shot.unused8 = 0;
                     break;
-                case 0x2B:
-                    shot = (shot & ~0x700u) | 0x100;
+                case KeywordDown:
+                    shot.unused8 = 1;
                     break;
-                case 0x26:
-                    shot = (shot & ~0x700u) | 0x200;
+                case KeywordForward:
+                    shot.unused8 = 2;
                     break;
-                case 0x27:
-                    shot = (shot & ~0x700u) | 0x300;
+                case KeywordBack:
+                    shot.unused8 = 3;
                     break;
-                case 0x28:
-                    shot = (shot & ~0x700u) | 0x400;
+                case KeywordLeft:
+                    shot.unused8 = 4;
                     break;
-                case 0x29:
-                    shot = (shot & ~0x700u) | 0x500;
+                case KeywordRight:
+                    shot.unused8 = 5;
                     break;
-                case 0x17:
-                    shot |= 0x1000;
+                case KeywordOrient:
+                    shot.unused12 = 1;
                     break;
-                case 0x79:
-                    shot |= AtTarget;
+                case KeywordPassAgentRef1:
+                    shot.atAgentRef1 = 1;
                     break;
-                case 0x299:
-                    shot |= Bit15;
+                case KeywordNoBounce:
+                    shot.noBounce = 1;
                     break;
                 default:
                     break;
@@ -1274,13 +1279,13 @@ void ShootCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!(__builtin_fabsf(x) <= Epsilon && __builtin_fabsf(y) <= Epsilon && __builtin_fabsf(z) <= Epsilon))
+    if (!(__builtin_fabsf(offset.x) <= Epsilon && __builtin_fabsf(offset.y) <= Epsilon && __builtin_fabsf(offset.z) <= Epsilon))
     {
-        shot |= Offset;
+        shot.offsetGiven = 1;
     }
 }
 
-void DUMMY_568Command::ParseTokens(const ScriptTokenList* tokens)
+void NoOp568Command::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1288,37 +1293,37 @@ void DUMMY_568Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x39:
-            distance = __builtin_bit_cast(s32, token->Float());
+        case TagMetresPerSecond:
+            unused1 = token->Float();
             break;
-        case 0xA2:
-            value1 = __builtin_bit_cast(s32, token->Float());
+        case TagUnusedA2:
+            unused2 = token->Float();
             break;
-        case 0xA3:
-            value2 = __builtin_bit_cast(s32, token->Float());
+        case TagUnusedA3:
+            unused3 = token->Float();
             break;
-        case 0x1C:
-            value3 = __builtin_bit_cast(s32, token->Float());
+        case TagTurn:
+            unused4 = token->Float();
             break;
-        case 0x7A:
-            value4 = __builtin_bit_cast(s32, token->Float());
+        case TagTurnLimit:
+            unused5 = token->Float();
             break;
-        case 0x231:
-            shorts1 = (shorts1 & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagUnused231:
+            unused6.low = token->value;
             break;
-        case 0x232:
-            shorts1 = (shorts1 & 0xFFFF) | token->value << 16;
+        case TagUnused232:
+            unused6.high = token->value;
             break;
-        case 0x233:
-            shorts2 = (shorts2 & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagUnused233:
+            unused7.low = token->value;
             break;
-        case 0x235:
-            shorts2 = (shorts2 & 0xFFFF) | token->value << 16;
+        case TagUnused235:
+            unused7.high = token->value;
             break;
-        case 0x234:
-            shorts3 = (shorts3 & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagUnused234:
+            unused8.low = token->value;
             break;
         default:
             break;
@@ -1330,30 +1335,32 @@ void DUMMY_568Command::ParseTokens(const ScriptTokenList* tokens)
 
 void SetVehicleHumiliskateCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // Floats of 25 and 35 unless the tokens give others
-    SetTaggedType(&value2, TaggedValue::TypeFloat);
-    value2.SetFloat(25.0f);
-    SetTaggedType(&value3, TaggedValue::TypeFloat);
-    value3.SetFloat(35.0f);
+    // These speeds unless the tokens give others
+    constexpr f32 DefaultTopSpeed = 25.0f;
+    constexpr f32 DefaultCrouchedSpeed = 35.0f;
+    SetTaggedType(&topSpeed, TaggedValue::TypeFloat);
+    topSpeed.SetFloat(DefaultTopSpeed);
+    SetTaggedType(&crouchedSpeed, TaggedValue::TypeFloat);
+    crouchedSpeed.SetFloat(DefaultCrouchedSpeed);
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x10C:
-            ParseTaggedValueRecord(token, &value2);
+        case TagTopSpeed:
+            ParseTaggedValueRecord(token, &topSpeed);
             break;
-        case 0x10B:
-            ParseTaggedValueRecord(token, &value3);
+        case TagCrouchedSpeed:
+            ParseTaggedValueRecord(token, &crouchedSpeed);
             break;
-        case 0x249:
-            value1 = (value1 & ~0xFFu) | (TokenCharacter(token->value) & 0xFF);
+        case TagFirstCharacter:
+            characters.first = TokenCharacter(token->value);
             break;
-        case 0x248:
-            value1 = (value1 & ~0xFF00u) | (TokenCharacter(token->value) & 0xFF) << 8;
+        case TagSecondCharacter:
+            characters.second = TokenCharacter(token->value);
             break;
         default:
             break;
@@ -1371,15 +1378,15 @@ void SetVehicleHoverboardCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6:
-            value1 = (value1 & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            rider.receiver = token->value;
             break;
-        case 0xFFFF:
-            if (token->value == 0x297)
+        case TagNone:
+            if (token->value == KeywordBoardControls)
             {
-                value1 |= 0x100;
+                rider.boardControls = 1;
             }
 
             break;
@@ -1399,25 +1406,25 @@ void SetMotionCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x65:
-        case 0xA6:
-            range = __builtin_bit_cast(s32, token->Float());
+        case TagRange:
+        case TagAvoidFocus:
+            block.halfWidth = token->Float();
             break;
-        case 0xAE:
-            value2 = __builtin_bit_cast(s32, token->Float());
+        case TagHalfHeight:
+            block.halfHeight = token->Float();
             break;
-        case 0xA7:
-            value3 = __builtin_bit_cast(s32, token->Float());
+        case TagNearFocus:
+            block.exposureWeight = token->Float();
             break;
-        case 0xA8:
-            value4 = __builtin_bit_cast(s32, token->Float());
+        case TagDistanceWeight:
+            block.distanceWeight = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x83)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordSearchInBox)
             {
-                flags = (flags & ~0x1Fu) | 0x1;
+                block.search.kind = MotionBlock::SearchInBox;
             }
 
             break;
@@ -1437,13 +1444,13 @@ void SetLinkedObjectNearestPlayerCommand::ParseTokens(const ScriptTokenList* tok
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x12F:
-            range = (range & ~0xFFu) | (token->value & 0xFF);
+        case TagRangeFirst:
+            range.first = token->value;
             break;
-        case 0x12E:
-            range = (range & ~0xFF00u) | (token->value & 0xFF) << 8;
+        case TagRangeEnd:
+            range.end = token->value;
             break;
         default:
             break;
@@ -1453,9 +1460,9 @@ void SetLinkedObjectNearestPlayerCommand::ParseTokens(const ScriptTokenList* tok
     }
 }
 
-void DUMMY_NowGoForwardCollidableCommand::ParseTokens(const ScriptTokenList* tokens)
+void NoOpNowGoForwardCollidableCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    ParseTaggedValueTokens(tokens, &angleValue);
+    ParseTaggedValueTokens(tokens, &unused1);
 }
 
 void AttachAllLinkedAgentsCommand::ParseTokens(const ScriptTokenList* tokens)
@@ -1466,9 +1473,10 @@ void AttachAllLinkedAgentsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x12)
+        if (token->tag == TagExitPoint)
         {
-            value1 = ((value1 | 0x1) & ~0x7Eu) | (token->value & 0x3F) << 1;
+            settings.exitPointGiven = 1;
+            settings.exitPoint = token->value;
         }
 
         reader.Next();
@@ -1483,13 +1491,13 @@ void SetVehicleRollerbrawlCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x249:
-            value1 = (value1 & ~0xFFu) | (TokenCharacter(token->value) & 0xFF);
+        case TagFirstCharacter:
+            characters.first = TokenCharacter(token->value);
             break;
-        case 0x248:
-            value1 = (value1 & ~0xFF00u) | (TokenCharacter(token->value) & 0xFF) << 8;
+        case TagSecondCharacter:
+            characters.second = TokenCharacter(token->value);
             break;
         default:
             break;
@@ -1507,9 +1515,9 @@ void ExitVehicleModeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x249)
+        if (token->tag == TagFirstCharacter)
         {
-            value1 = static_cast<s32>(TokenCharacter(token->value));
+            character = static_cast<s32>(TokenCharacter(token->value));
         }
 
         reader.Next();
@@ -1524,9 +1532,9 @@ void AddAmmoCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x200)
+        if (token->tag == TagQuantity)
         {
-            value1 = static_cast<s32>(token->value);
+            ammo = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -1541,23 +1549,23 @@ void SetBehaviourPriorityCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x64:
-            if (token->type != 4)
+        case TagPriority:
+            if (token->type != TokenKeyword)
             {
-                priorityValue = (priorityValue & ~0xFFu) | (token->value & 0xFF);
+                priority.priority = token->value;
             }
-            else if (token->value == 0x2F)
+            else if (token->value == KeywordDefault)
             {
-                priorityValue |= 0xFF;
+                priority.priority = StarterPriority;
             }
 
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x2F)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordDefault)
             {
-                priorityValue |= 0xFF;
+                priority.priority = StarterPriority;
             }
 
             break;
@@ -1577,30 +1585,30 @@ void KeepCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
             switch (token->value)
             {
-            case 0x52:
-                flags.raw |= 0x1;
+            case KeywordTrail:
+                keeps.particles = 1;
                 break;
-            case 0x53:
-                flags.raw |= 0x2;
+            case KeywordWobble:
+                keeps.trajectory = 1;
                 break;
-            case 0x54:
-                flags.raw |= 0x4;
+            case KeywordCollider:
+                keeps.unused2 = 1;
                 break;
-            case 0x3C:
-                flags.raw |= 0x8;
+            case KeywordAttach:
+                keeps.unused3 = 1;
                 break;
-            case 0x1C:
-                flags.raw |= 0x10;
+            case KeywordFocus:
+                keeps.unused4 = 1;
                 break;
-            case 0xB2:
-                flags.raw |= 0x20;
+            case KeywordPerception:
+                keeps.perception = 1;
                 break;
-            case 0x55:
-                flags.raw &= ~0x3F;
+            case KeywordNothing:
+                keeps.value &= ~EveryKept;
                 break;
             default:
                 break;
@@ -1619,19 +1627,19 @@ void StoreCurrentSpaceCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6:
-            targetAndSpace = (targetAndSpace & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            request.receiver = token->value;
             break;
-        case 0x7:
-            targetAndSpace = (targetAndSpace & ~0xFF00u) | (token->value & 0xFF) << 8;
+        case TagKey:
+            request.designator = token->value;
             break;
-        case 0xFFFF:
+        case TagNone:
             // The focus object's designator
-            if (token->type == 4 && token->value == 0x1C)
+            if (token->type == TokenKeyword && token->value == KeywordFocus)
             {
-                targetAndSpace = (targetAndSpace & ~0xFF00u) | 0xFB << 8;
+                request.designator = DesignatesFocus;
             }
 
             break;
@@ -1651,21 +1659,21 @@ void DestroyMeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 4)
+        if (token->tag == TagNone && token->type == TokenKeyword)
         {
             switch (token->value)
             {
-            case 0x60:
-                mode = (mode & ~0x7u) | 0x1;
+            case KeywordHard:
+                settings.mode = 1;
                 break;
-            case 0x6D:
-                mode = (mode & ~0x7u) | 0x2;
+            case KeywordForever:
+                settings.mode = 2;
                 break;
-            case 0x5F:
-                mode = (mode & ~0x38u) | 0x8;
+            case KeywordNodal:
+                settings.unused3 = 1;
                 break;
-            case 0x5E:
-                mode = (mode & ~0x38u) | 0x10;
+            case KeywordZonal:
+                settings.unused3 = 2;
                 break;
             default:
                 break;
@@ -1684,48 +1692,49 @@ void SetObjectCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x7E:
-            flags = (flags & ~0x3u) | (TokenIsZero(token) ? 1 : 2);
+        case TagBusy:
+            switches.busy = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x7F:
-            flags = (flags & ~0xCu) | (TokenIsZero(token) ? 1 : 2) << 2;
+        case TagRender:
+            switches.visible = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x80:
-            flags = (flags & ~0x30u) | (TokenIsZero(token) ? 1 : 2) << 4;
+        case TagCollide:
+            switches.collision = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x81:
-            flags = (flags & ~0xC0u) | (TokenIsZero(token) ? 1 : 2) << 6;
+        case TagUpdate:
+            switches.asleep = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x86:
-            flags = (flags & ~0x300u) | (TokenIsZero(token) ? 1 : 2) << 8;
+        case TagLandable:
+            switches.unused8 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x120:
-            flags = (flags & ~0xC00u) | (TokenIsZero(token) ? 1 : 2) << 10;
+        case TagPushable:
+            switches.pushable20 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x121:
-            flags2 = (flags2 & ~0x3u) | (TokenIsZero(token) ? 1 : 2);
+        case TagPushableToo:
+            bodySwitches.pushable40 = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x12D:
-            flags2 = (flags2 & ~0xCu) | (TokenIsZero(token) ? 1 : 2) << 2;
+        case TagCarries:
+            bodySwitches.carries = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x138:
-            flags2 = (flags2 & ~0x30u) | (TokenIsZero(token) ? 1 : 2) << 4;
+        case TagSolid:
+            bodySwitches.solid = TokenIsOn(token) ? SwitchOn : SwitchOff;
             break;
-        case 0x9B:
-            flags |= 0x40000000 | 0x20000000;
-            flags = (flags & ~0x1FE00000u) | (token->value & 0xFF) << 21;
-            flags = (flags & ~0x1FE000u) | (token->value & 0xFF) << 13;
+        case TagLodBoost:
+            switches.nodeDistanceGiven = 1;
+            switches.modelDistanceGiven = 1;
+            switches.nodeDistance = token->value;
+            switches.modelDistance = token->value;
             break;
-        case 0xCA:
-            // Bits 21-28 and then, falling through, bits 13-20: the same as 0x9B
-            flags |= 0x40000000;
-            flags = (flags & ~0x1FE00000u) | (token->value & 0xFF) << 21;
+        case TagNodeDistance:
+            // The node's distance and then, falling through, the model's: the same as TagLodBoost
+            switches.nodeDistanceGiven = 1;
+            switches.nodeDistance = token->value;
             [[fallthrough]];
-        case 0xC9:
-            flags |= 0x20000000;
-            flags = (flags & ~0x1FE000u) | (token->value & 0xFF) << 13;
+        case TagModelDistance:
+            switches.modelDistanceGiven = 1;
+            switches.modelDistance = token->value;
             break;
         default:
             break;
@@ -1752,11 +1761,11 @@ void SetCharacterHomeChunkCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void GameControllerOp612Command::ParseTokens(const ScriptTokenList*)
+void EnablePlayerControlCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void ClearPlayerFlag14Command::ParseTokens(const ScriptTokenList*)
+void ClearCharacterDeadCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
@@ -1768,7 +1777,7 @@ void ClearBottomTextCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void ClearNodeValue174Command::ParseTokens(const ScriptTokenList*)
+void ClearCountedValueCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
@@ -1788,11 +1797,11 @@ void CameraStopFocusObjectCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void DUMMY_FuelPayGateCommand::ParseTokens(const ScriptTokenList*)
+void NoOpFuelPayGateCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void DUMMY_536Command::ParseTokens(const ScriptTokenList*)
+void NoOp536Command::ParseTokens(const ScriptTokenList*)
 {
 }
 
@@ -1800,6 +1809,6 @@ void SetVehicleWrestleCreatureCommand::ParseTokens(const ScriptTokenList*)
 {
 }
 
-void LinkedObjectNearestPlayerOp637Command::ParseTokens(const ScriptTokenList*)
+void SetFocusToLinkedObjectInViewCommand::ParseTokens(const ScriptTokenList*)
 {
 }

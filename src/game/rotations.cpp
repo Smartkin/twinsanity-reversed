@@ -15,31 +15,8 @@ EABI_EXPORT(FUN_00188a90, TurnToward);
 
 namespace
 {
-// A 65536th of a turn in radians, and the other way round
-constexpr f32 TurnStep = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-constexpr f32 HalfTurn = 0x1.921fb6p+1f;
-constexpr s32 QuarterTurnAngle = 0x4000;
-constexpr s32 HalfTurnAngle = 0x8000;
-// The tangent of a right angle
-constexpr f32 Infinite = 0x1.93e594p+99f;
-// An axis this short has no direction, a cross product this short on an axis no sign there
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 NoSign = 0x1.a36e2ep-15f;
-// Rotations this near each other (1 less their cosine) are slerped along a straight line, and lengths this short have no
-// inverse
+// Rotations this near each other (1 less their cosine) are slerped along a straight line
 constexpr f32 StraightWithin = 0x1.99999ap-5f;
-constexpr f32 NoLength = 0x1.b7cdfep-34f;
-
-// Abramowitz and Stegun's 4.4.45: the arc cosine of a value from 0 to 1 is about the square root of 1 less it times this cubic
-f32 ArcCosineOfPositive(f32 value)
-{
-    constexpr f32 A3 = -0x1.32dc6p-6f;
-    constexpr f32 A2 = 0x1.302c4ep-4f;
-    constexpr f32 A1 = 0x1.b26908p-3f;
-    constexpr f32 A0 = 0x1.921b48p+0f;
-    return ((value * A3 + A2) * value - A1) * value + A0;
-}
 
 // The arc cosine of any value (radians), by its magnitude's
 f32 ArcCosine(f32 cosine)
@@ -54,7 +31,7 @@ f32 ArcCosine(f32 cosine)
     f32 radians = ArcCosineOfPositive(value) * __builtin_sqrtf(complement);
     if (cosine < 0.0f)
     {
-        radians = HalfTurn - radians;
+        radians = Pi - radians;
     }
 
     return radians;
@@ -63,13 +40,13 @@ f32 ArcCosine(f32 cosine)
 // The sine and the cosine of half an angle (65536ths of a turn)
 void SinCosOfHalf(s32 angle, f32* sinCos)
 {
-    SinCosRadians(static_cast<f32>(angle) * TurnStep * 0.5f, sinCos);
+    SinCosRadians(static_cast<f32>(angle) * AngleToRadians * 0.5f, sinCos);
 }
 
 // Half an angle (65536ths of a turn) in radians
 f32 HalfRadians(s32 angle)
 {
-    return static_cast<f32>(angle) * TurnStep * 0.5f;
+    return static_cast<f32>(angle) * AngleToRadians * 0.5f;
 }
 
 void NoRotation(Vector4* rotation)
@@ -89,7 +66,7 @@ void SnapToYaw(Vector4* rotation, f32 step)
     s32 yaw;
     s32 roll;
     EulerAnglesOfMatrix(&matrix, &pitch, &yaw, &roll);
-    f32 steps = (static_cast<f32>(yaw) * TurnStep + step * 0.5f) / step;
+    f32 steps = (static_cast<f32>(yaw) * AngleToRadians + step * 0.5f) / step;
     AngleFrom(&yaw, step * static_cast<f32>(static_cast<s32>(steps)), AngleRadians);
     if (yaw == 0)
     {
@@ -123,17 +100,17 @@ s32* AngleBetweenDirections(s32* angle, const Vector4* from, const Vector4* to)
         cross.x = from->y * to->z - from->z * to->y;
         cross.y = from->z * to->x - from->x * to->z;
         cross.z = from->x * to->y - from->y * to->x;
-        if (__builtin_fabsf(cross.x) <= NoSign && __builtin_fabsf(cross.y) <= NoSign && __builtin_fabsf(cross.z) <= NoSign)
+        if (__builtin_fabsf(cross.x) <= Epsilon && __builtin_fabsf(cross.y) <= Epsilon && __builtin_fabsf(cross.z) <= Epsilon)
         {
             // Parallel: none or a half turn
-            AngleFrom(&turned, turned < QuarterTurnAngle ? 0.0f : HalfTurn, AngleRadians);
+            AngleFrom(&turned, turned < QuarterTurnAngle ? 0.0f : Pi, AngleRadians);
         }
         else
         {
             f32 by = cross.y;
-            if (__builtin_fabsf(cross.y) <= NoSign)
+            if (__builtin_fabsf(cross.y) <= Epsilon)
             {
-                by = __builtin_fabsf(cross.x) <= NoSign ? cross.z : cross.x;
+                by = __builtin_fabsf(cross.x) <= Epsilon ? cross.z : cross.x;
             }
 
             f32 sign = by < 0.0f ? -1.0f : 1.0f;
@@ -282,7 +259,7 @@ void SlerpRotations(f32 t, Vector4* out, const Vector4* from, const Vector4* to)
         out->y = (to->y - start.y) * t + start.y;
         out->z = (to->z - start.z) * t + start.z;
         out->w = (to->w - start.w) * t + start.w;
-        f32 inverse = InverseLength4(0.0f, NoLength, out);
+        f32 inverse = InverseLength4(0.0f, InverseEpsilon, out);
         out->x = out->x * inverse;
         out->y = out->y * inverse;
         out->z = out->z * inverse;

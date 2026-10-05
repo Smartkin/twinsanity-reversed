@@ -10,12 +10,21 @@ class CameraTarget;
 class Stream;
 struct TimeClock;
 
-// The splines the spline cameras follow (0x50 bytes, its vtable 0x10 bytes in: 2 its read): how many segments, the samples at their
-// ends (one more than the segments, a point and a tangent each: their Ws hold flags and values in their bits), the length of a
-// segment and 1 over it, every segment's arc length from the start and 1 over the steps it takes, and a nearest point search's state
-// as a path has it
+// The splines the spline cameras follow (0x50 bytes, its vtable 0x10 bytes in: 1 the destructor, 2 its read): how many segments,
+// the samples at their ends (one more than the segments, a point and a tangent each: the points' Ws are CameraSplineKeys), the
+// length of a segment and 1 over it, every segment's arc length from the start and 1 over the steps it takes, and a nearest point
+// search's state as a path has it (the segment searched -1 at first)
 struct CameraSpline
 {
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ReadSlot = 2,
+    };
+
+    // A sample's vectors: its point, then its tangent
+    static constexpr s32 VectorsPerSample = 2;
+
     s32 count;
     Vector4* samples;
     f32 step;
@@ -23,51 +32,97 @@ struct CameraSpline
     const GccVTableEntry* vtable;
     f32* lengths;
     f32* steps;
-    u8 unknown1C[4];
+    u8 unused1C[4];
     Vector4 searchPoint;
     Vector4 nearest;
     f32 nearestDistance;
     f32 nearestShare;
-    s32 unknown48;
-    u32 unknown4C;
+    s32 searchSegment;
+    u32 unused4C;
+
+    void DestroyVirtual(u32 destroyFlags)
+    {
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
+    }
 
     void Read(Stream* stream)
     {
-        CallVirtual<void>(this, vtable, 2, stream);
+        CallVirtual<void>(this, vtable, ReadSlot, stream);
     }
 };
 CHECK_OFFSET(CameraSpline, searchPoint, 0x20);
-CHECK_OFFSET(CameraSpline, unknown48, 0x48);
+CHECK_OFFSET(CameraSpline, searchSegment, 0x48);
 CHECK_SIZE(CameraSpline, 0x50);
+
+// The W of a spline camera's sample's point (TT Lab's): a key of where the camera goes there (interpolated between the keys), or
+// none
+union CameraSplineKey
+{
+    u32 value;
+    struct
+    {
+        // The share of the way from the spline toward the target (from -5 by 5/128ths) and the offset along the spline (from -50
+        // by 100/65536ths of a unit)
+        u32 towardTarget : 8;
+        u32 offset : 16;
+        // Not a key: the keys around it are taken
+        u32 passedOver : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(CameraSplineKey, 4);
 
 // Where a nearest point search over a path or a spline stands (0x30 bytes): the nearest point so far 0x10 bytes in and its
 // distance squared, then the share of its segment and the segment (-1 at first)
 struct CurveSearch
 {
-    u8 unknown00[0x10];
+    u8 unused00[0x10];
     Vector4 nearest;
     f32 distance;
     f32 share;
     s32 segment;
-    u32 unknown2C;
+    u32 unused2C;
 };
 CHECK_SIZE(CurveSearch, 0x30);
 
+// How the camera rig's point followers move to the points a camera's subtype gives (TT Lab's FollowMode)
+union CameraSubtypeFlags
+{
+    u32 value;
+    struct
+    {
+        // Its CameraSubtype::Follows
+        u32 follow : 2;
+        u32 unused2 : 30;
+    };
+};
+CHECK_SIZE(CameraSubtypeFlags, 4);
+
 // A camera's subtype (retail's GameCameraSubtypeBase, vtable 0xC bytes in: 1 the destructor, 2 where the camera goes for a target
 // (the parameter along its geometry it took, 1 or 0 for the ones without), 3 the point at a parameter (the offset added along its
-// line, path or spline first), 4 (the boss camera's: the last place taken through the arena), 5 its type, 6 the read): how the
-// camera's point followers move to the points it gives (its flags), the rate they move at, and the offset along its geometry the
-// camera keeps from the target's nearest point
+// line, path or spline first), 4 the last place taken (only the boss camera's takes it, through the arena), 5 its type, 6 the
+// read): how the camera's point followers move to the points it gives (its flags), the rate they move at, and the offset along
+// its geometry the camera keeps from the target's nearest point
 class CameraSubtype
 {
 public:
-    enum Flags : u32
+    enum Slot : u32
     {
-        // The followers' own way (their default way and rate), at its rate (the share of the way a second); straight there
-        // otherwise
-        FollowMask = 0x3,
-        FollowOwnWay = 0x1,
-        FollowAtRate = 0x2,
+        DestroySlot = 1,
+        AtSlot = 2,
+        AtParameterSlot = 3,
+        TakeLastSlot = 4,
+        TypeSlot = 5,
+        ReadSlot = 6,
+    };
+
+    // How the followers move: straight there (3 as well), their own way (their default way and rate), or at its rate (the share
+    // of the way a second)
+    enum Follows : u32
+    {
+        FollowStraight = 0,
+        FollowOwnWay = 1,
+        FollowAtRate = 2,
     };
 
     enum Types : u32
@@ -78,54 +133,55 @@ public:
         TypePath = 0x1C04,
         TypeMain = 0x1C05,
         TypeSpline = 0x1C06,
-        Type1C09 = 0x1C09,
+        TypeSplineArm = 0x1C09,
         TypePoint2 = 0x1C0B,
-        Type1C0C = 0x1C0C,
+        TypeOrbit = 0x1C0C,
         TypeLine2 = 0x1C0D,
-        Type1C0E = 0x1C0E,
+        TypeKeyed = 0x1C0E,
         TypeZone = 0x1C0F,
         // In a main camera's file: no subtype
         TypeNone = 3,
     };
 
-    u32 flags;
+    CameraSubtypeFlags flags;
     f32 rate;
     f32 offset;
     const GccVTableEntry* vtable;
 
     static CameraSubtype* Construct(CameraSubtype* camera) RETAIL(FUN_0027cda8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027cdc8);
-    void Nothing() RETAIL(FUN_0027b9d0);
+    // (The base's takes nothing)
+    void TakeLast() RETAIL(FUN_0027b9d0);
     void Read(Stream* stream) RETAIL(ReadBaseSubtypeCamera);
 
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out)
     {
-        return CallVirtual<f32>(this, vtable, 2, point, target, out);
+        return CallVirtual<f32>(this, vtable, AtSlot, point, target, out);
     }
 
     void AtParameter(f32 along, Vector4* out)
     {
-        CallVirtual<void>(this, vtable, 3, along, out);
+        CallVirtual<void>(this, vtable, AtParameterSlot, along, out);
     }
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void TakeLastVirtual(const Vector4* position, const Vector4* point)
     {
-        CallVirtual<void>(this, vtable, 4, position, point);
+        CallVirtual<void>(this, vtable, TakeLastSlot, position, point);
     }
 
     u32 TypeVirtual()
     {
-        return CallVirtual<u32>(this, vtable, 5);
+        return CallVirtual<u32>(this, vtable, TypeSlot);
     }
 
     void ReadVirtual(Stream* stream)
     {
-        CallVirtual<void>(this, vtable, 6, stream);
+        CallVirtual<void>(this, vtable, ReadSlot, stream);
     }
 };
 CHECK_SIZE(CameraSubtype, 0x10);
@@ -188,23 +244,25 @@ public:
     // The ceiling, the radius, the height above the target
     Vector4 orbit;
     u8 curves;
-    u8 unknownA1[3];
+    u8 unusedA1[3];
     // The share of the radius it has at the axis, the heights at the axis and at the radius, the turn limit (radians a unit of
     // radius; none within 5e-05 of 0)
     f32 radiusShare;
     f32 middleHeight;
     f32 edgeHeight;
     f32 turnLimit;
-    u8 unknownB4[0xC0 - 0xB4];
+    u8 unusedB4[0xC0 - 0xB4];
+    // The camera's last place in the arena
     Vector4 last;
     // The radius' curve goes by the distance in every direction (else across)
     u8 curveAllAxes;
-    u8 unknownD1[0xF];
+    u8 unusedD1[0xF];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027ba30);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(BossCameraAt);
     void AtParameter(f32 along, Vector4* out) RETAIL_N32(FUN_0027cef0);
-    void TakeLast(const Vector4* point) RETAIL(FUN_0027cfb8);
+    // The camera's place taken into the arena as its last
+    void TakeLast(const Vector4* place) RETAIL(FUN_0027cfb8);
     u32 Type() RETAIL(FUN_0027ba58);
     void Read(Stream* stream) RETAIL(ReadBossCamera);
     // The radius and the height for a place in the arena, and a camera place turned no further from the last than the limit
@@ -217,43 +275,51 @@ CHECK_OFFSET(BossCamera, orbit, 0x90);
 CHECK_OFFSET(BossCamera, last, 0xC0);
 CHECK_SIZE(BossCamera, 0xE0);
 
-// A sampled spline the camera slides along (the offset further only when its flags say so; its samples' Ws say where along it the
-// camera goes between them)
+// A spline camera's flags (its read takes the low half; TT Lab's SplineCameraFlags, the rest the tools' leftovers)
+union CameraSplineFlags
+{
+    u32 value;
+    struct
+    {
+        // Its offset along the spline is the subtype's (else its samples' keys')
+        u32 takesOffset : 1;
+        u32 unused1 : 31;
+    };
+};
+CHECK_SIZE(CameraSplineFlags, 4);
+
+// A sampled spline the camera slides along (the offset further, the subtype's when its flags say so, else its samples' keys'),
+// then the keys' share of the way toward the target
 class CameraSplineCamera : public CameraSubtype
 {
 public:
-    enum Flags : u32
-    {
-        FlagTakesOffset = 0x1,
-    };
-
     CameraSpline* spline;
-    u32 splineFlags;
+    CameraSplineFlags splineFlags;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027ba60);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(CameraSplineAt);
     void AtParameter(f32 along, Vector4* out) RETAIL_N32(CameraSplineAtParameter);
     u32 Type() RETAIL(FUN_0027bac8);
     void Read(Stream* stream) RETAIL(ReadCameraSpline);
-    // The share of the way along its samples the camera is at for a parameter (the offset when its flags say), and the point a
-    // parameter puts the camera at between the samples' points
+    // The offset along the spline for a parameter (the subtype's when its flags say, else the keys' around it), and the point a
+    // parameter puts the camera at: from the spline's point (given in out) the keys' share of the way toward the target
     f32 OffsetAt(f32 along) RETAIL_N32(FUN_00279f80);
     void PointBetween(f32 along, const Vector4* target, Vector4* out) RETAIL_N32(FUN_00279d78);
-    // The value a sample's W keeps (from a sample, walking forwards or backwards past the ones flagged in its bit 24) in its low
-    // byte and in its bits 8-23, and the sample it was in
-    void SampleByte(u32 sample, f32* value, u32* found, u32 backwards) RETAIL(FUN_0027d1c0);
-    void SampleShort(u32 sample, f32* value, u32* found, u32 backwards) RETAIL(FUN_0027d1f8);
-    void SampleWord(u32 sample, u32* word, u32* found, u32 backwards) RETAIL(FUN_0027d230);
+    // The key at a sample (its point's index among the samples' vectors; walking back from it, or forward from the next sample,
+    // past the samples that aren't keys) and the index it was at: its share toward the target, its offset and the key itself
+    void KeyShareAt(u32 index, f32* share, u32* found, u32 backwards) RETAIL(FUN_0027d1c0);
+    void KeyOffsetAt(u32 index, f32* offset, u32* found, u32 backwards) RETAIL(FUN_0027d1f8);
+    void KeyAt(u32 index, u32* key, u32* found, u32 backwards) RETAIL(FUN_0027d230);
 };
 CHECK_OFFSET(CameraSplineCamera, splineFlags, 0x14);
 CHECK_SIZE(CameraSplineCamera, 0x18);
 
-// A rotation key of the 0x1C09 cameras: the rotation and when
+// A rotation key of the spline arm and keyed cameras: the rotation and when
 struct CameraRotationKey
 {
     Vector4 rotation;
     f32 time;
-    u8 unknown14[0xC];
+    u8 unused14[0xC];
 };
 CHECK_SIZE(CameraRotationKey, 0x20);
 
@@ -264,14 +330,18 @@ struct CameraRotationKeys
     u16 count;
     u16 capacity;
     u16 growth;
-    u8 unknown0A[2];
+    u8 unused0A[2];
     u8 eases;
-    u8 unknown0D[3];
+    u8 unused0D[3];
+
+    // The room the subtypes' keys grow by
+    static constexpr u16 Growth = 0x40;
 };
 CHECK_SIZE(CameraRotationKeys, 0x10);
 
-// A spline the camera goes along, 5 units out along the rotation the keys give for the parameter (no data has one)
-class Camera1C09 : public CameraSubtype
+// A spline the camera goes along at the end of an arm (5 units out along the rotation the keys give for the parameter, from the
+// spline's point; retail's 0x1C09, no data has one)
+class SplineArmCamera : public CameraSubtype
 {
 public:
     CameraRotationKeys rotations;
@@ -282,16 +352,25 @@ public:
     void AtParameter(f32 along, Vector4* out) RETAIL_N32(FUN_0027a248);
     u32 Type() RETAIL(FUN_0027bb80);
 };
-CHECK_SIZE(Camera1C09, 0x70);
+CHECK_SIZE(SplineArmCamera, 0x70);
 
-// A point the camera stays a share or a distance of the way between the target and (mode 0: the share of the way from the
-// point, 1: the distance from the point toward the target, 2: the same, but no further than the target)
+// A point the camera stays a share or a distance of the way from the target toward (by its mode; any other leaves the camera where
+// it was)
 class CameraPoint2 : public CameraPoint
 {
 public:
+    enum Modes : u32
+    {
+        // The share of the way from the target toward the point, the distance from the target toward it, the same no further
+        // than the point
+        ModeShareOfTheWay = 0,
+        ModeFromTheTarget = 1,
+        ModeNoFurtherThanThePoint = 2,
+    };
+
     f32 distance;
     u32 mode;
-    u8 unknown28[8];
+    u8 unused28[8];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027bb98);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(CameraPoint2At);
@@ -301,9 +380,10 @@ public:
 };
 CHECK_SIZE(CameraPoint2, 0x30);
 
-// A camera around a point at the target's height plus one between two by the target's flat distance (its read takes four bytes
-// over its flags, nothing sets the rest: no data has one)
-class Camera1C0C : public CameraSubtype
+// A camera around a centre (retail's 0x1C0C, the scripts' top-down mode's; its read takes four bytes over its flags, no data has
+// one): the radius beyond the target the way the target is from the centre (beyond the extra while the target is within it), at
+// the target's height plus one between two by the target's flat distance
+class OrbitCamera : public CameraSubtype
 {
 public:
     f32 radius;
@@ -312,9 +392,9 @@ public:
     f32 farHeight;
     f32 farDistance;
     f32 nearDistance;
-    u8 unknown28[8];
+    u8 unused28[8];
     Vector4 centre;
-    u8 unknown40[0x10];
+    u8 unused40[0x10];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027bbd0);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(FUN_0027a770);
@@ -322,7 +402,7 @@ public:
     u32 Type() RETAIL(FUN_0027bc00);
     void Read(Stream* stream) RETAIL(FUN_0027da28);
 };
-CHECK_SIZE(Camera1C0C, 0x50);
+CHECK_SIZE(OrbitCamera, 0x50);
 
 // A line the camera slides along by the target's flat distance from its start (at the start up to the near distance, at the end
 // from the far one on, and in between the share past the near distance plus the near distance itself)
@@ -331,7 +411,7 @@ class CameraLine2 : public CameraLine
 public:
     f32 nearDistance;
     f32 farDistance;
-    u8 unknown38[8];
+    u8 unused38[8];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027bc18);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(CameraLine2At);
@@ -341,8 +421,9 @@ public:
 };
 CHECK_SIZE(CameraLine2, 0x40);
 
-// A camera of an object and keys that does nothing (no data has one)
-class Camera1C0E : public CameraSubtype
+// A camera the follow camera plays along a spline with rotation keys (retail's 0x1C0E; as a subtype it does nothing, no data has
+// one)
+class KeyedCamera : public CameraSubtype
 {
 public:
     // A spline it plays along (none: its read takes nothing) and the rotation keys
@@ -351,10 +432,10 @@ public:
     // It plays (it started), it finished, how far it got (0 to 1) and how fast it goes (a share a second)
     u8 playing;
     u8 finished;
-    u8 unknown26[2];
+    u8 unused26[2];
     f32 time;
     f32 rate;
-    u8 unknown30[0xC];
+    u8 unused30[0xC];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0027bc48);
     f32 At(const Vector4* point, CameraTarget* target, Vector4* out) RETAIL(FUN_0027dbe8);
@@ -365,8 +446,8 @@ public:
     // at the share played): whether it was done already
     u32 Play(TimeClock* clock, Vector4* position, Vector4* rotation) RETAIL(FUN_0027dc00);
 };
-CHECK_OFFSET(Camera1C0E, playing, 0x24);
-CHECK_SIZE(Camera1C0E, 0x3C);
+CHECK_OFFSET(KeyedCamera, playing, 0x24);
+CHECK_SIZE(KeyedCamera, 0x3C);
 
 // Two boxes (axes, corner and sizes, the tools'): where the target is in the target box is where the camera goes in the camera box
 // (its read takes the boxes only)
@@ -384,49 +465,107 @@ public:
 };
 CHECK_SIZE(CameraZone, 0xB0);
 
-// A camera trigger's camera (0x90 bytes; TT Lab's names): what the camera controller takes from it, its switches, its blend time,
-// the tools' leftovers, the fov, pitch and yaw blenders' ends (65536ths of a turn) and the distance's, the two subtypes' values,
-// the yaw's extra and the blend-in values, its group and its two subtypes
-struct MainCamera
+// What the camera controller and the follow camera take from a camera trigger's camera (TT Lab's CameraFlags)
+union MainCameraFlags
 {
-    enum Flags : u32
+    u32 value;
+    struct
     {
         // The second subtype gives its place at the value along the geometry (else for the target)
-        FlagSecondAtParameter = 0x1,
-        // The follow camera's switch back may blend to its rig (nothing reaches that)
-        FlagAllowsSwitchBack = 0x2,
-        // The follow camera steers around walls with it (made so)
-        FlagSteers = 0x10,
-        // Its second and its first value given to the rig's point followers as their rate (the camera's place's and where it
-        // looks)
-        FlagPassesSecondValue = 0x1000,
-        FlagPassesFirstValue = 0x2000,
-        // Its yaw extra given to the yaw blender
-        FlagSetsYawExtra = 0x8000,
+        u32 secondAtParameter : 1;
+        // The follow camera's switch back may blend to its rig (nothing starts one)
+        u32 allowsSwitchBack : 1;
+        // The pitch's and the distance's blenders take its ends
+        u32 setsPitch : 1;
+        u32 setsDistance : 1;
+        // The follow camera steers around walls with it (its probes stay on)
+        u32 steers : 1;
+        // It cuts in instead of blending in over its blend time
+        u32 noBlendIn : 1;
+        // The yaw's and the field of view's blenders take its ends
+        u32 setsYaw : 1;
+        u32 setsFov : 1;
+        // The follow camera's target takes its target box, and moves toward the middle of the trigger's instances (its framing
+        // share of the way, up to its framing distance)
+        u32 givesTargetBox : 1;
+        u32 framesInstances : 1;
+        // Its ends are the values at the start and the end of its geometry (taken by how far along it the target is), not a
+        // blend's over time
+        u32 valuesAlongGeometry : 1;
+        // The follow camera takes its values even while it ignores cameras' values
+        u32 alwaysTakesValues : 1;
+        // The rig's point followers move the camera's place and where it looks at its rates
+        u32 setsPositionFollowRate : 1;
+        u32 setsTargetFollowRate : 1;
+        u32 unused14 : 1;
+        // The yaw blender turns at its yaw speed (slowed by the sine of what it has left to turn)
+        u32 setsYawSpeed : 1;
+        // The yaw, the pitch and the distance go to its blend-in values while the yaw is at least as near its blend-in yaw as
+        // its yaw's start
+        u32 blendsInFromYaw : 1;
+        u32 blendsInFromPitch : 1;
+        u32 blendsInFromDistance : 1;
+        // The follow camera only turns to look at the target, keeps its height looking at it, doesn't move, tilts toward the way
+        // the target faces, has its probes off
+        u32 onlyLooksAtTarget : 1;
+        u32 keepsHeight : 1;
+        u32 holdsStill : 1;
+        u32 tilts : 1;
+        u32 noProbes : 1;
+        // It cuts in when the camera it replaces has this too
+        u32 cutsFromSameKind : 1;
+        // The follow camera's target blends to its point even when it's near
+        u32 blendsWhenNear : 1;
         // The follow camera takes it only after another the step before; and on foot whatever the character does
-        FlagNeedsRunningCamera = 0x4000000,
-        FlagIgnoresPlayerState = 0x8000000,
+        u32 needsRunningCamera : 1;
+        u32 ignoresPlayerState : 1;
+        // The target box isn't turned with the followed object
+        u32 targetBoxUnturned : 1;
+        // The follow camera blends its place along the line from where the blend started, doesn't check its view of the target,
+        // adds its own extra yaw
+        u32 blendsAlongLine : 1;
+        u32 skipsViewCheck : 1;
+        u32 addsExtraYaw : 1;
     };
+};
+CHECK_SIZE(MainCameraFlags, 4);
 
-    enum Switches : u16
+// A camera trigger's camera's switches (TT Lab's CameraSwitches, 0 on nearly every camera)
+union MainCameraSwitches
+{
+    u16 value;
+    struct
     {
-        // Kept apart by the follow camera, which takes it once the character died
-        SwitchSecondSlot = 0x1,
+        // A camera for the character's death: the follow camera takes it only once the character died, keeps it apart and
+        // switches to it while the character is dead
+        u16 secondSlot : 1;
+        // With noProbes, the follow camera's probes stay on while it ignores cameras' values
+        u16 keepsProbesWhileIgnoring : 1;
         // Taking it sets the follow camera back to its own camera
-        SwitchResetsController = 0x4,
+        u16 resetsController : 1;
+        u16 unused3 : 13;
     };
+};
+CHECK_SIZE(MainCameraSwitches, 2);
 
-    u32 flags;
-    u16 switches;
-    u16 unknown06;
+// A camera trigger's camera (0x90 bytes; TT Lab's names): what the camera controller takes from it, its switches, its blend time,
+// the follow camera's target box and framing (the tools' leftovers without their flags), the fov, pitch and yaw blenders' ends
+// (65536ths of a turn) and the distance's, the rates of the rig's point followers (shares of the way a second), the yaw blender's
+// speed (65536ths of a turn a second), the blend-in values, its group (cameras of two groups don't replace each other while both
+// are nonzero) and its two subtypes
+struct MainCamera
+{
+    MainCameraFlags flags;
+    MainCameraSwitches switches;
+    u16 unused06;
     CameraSubtype* first;
     CameraSubtype* second;
     f32 blendTime;
-    u8 unknown14[0xC];
-    Vector4 leftoverVector1;
-    Vector4 leftoverVector2;
-    f32 leftoverFloat1;
-    f32 leftoverFloat2;
+    u8 unused14[0xC];
+    Vector4 targetBoxMin;
+    Vector4 targetBoxMax;
+    f32 framingDistance;
+    f32 framingShare;
     u32 fovStart;
     u32 fovEnd;
     u32 pitchStart;
@@ -435,14 +574,14 @@ struct MainCamera
     u32 yawEnd;
     f32 distanceStart;
     f32 distanceEnd;
-    f32 secondValue;
-    f32 firstValue;
-    u32 yawExtra;
+    f32 positionFollowRate;
+    f32 targetFollowRate;
+    u32 yawSpeed;
     u32 blendInYaw;
     u32 blendInPitch;
     f32 blendInDistance;
     s8 group;
-    u8 unknown81[0xF];
+    u8 unused81[0xF];
 
     static MainCamera* Construct(MainCamera* camera) RETAIL(FUN_00279488);
     // Its subtypes destroyed (itself freed when the flags say)
@@ -451,7 +590,9 @@ struct MainCamera
     // Whether a yaw is at least as near its blend-in yaw as its yaw's start
     u32 NearerBlendIn(const s32* yaw) RETAIL(FUN_00279788);
 };
+CHECK_OFFSET(MainCamera, targetBoxMin, 0x20);
 CHECK_OFFSET(MainCamera, fovStart, 0x48);
+CHECK_OFFSET(MainCamera, positionFollowRate, 0x68);
 CHECK_OFFSET(MainCamera, group, 0x80);
 CHECK_SIZE(MainCamera, 0x90);
 
@@ -463,11 +604,11 @@ extern "C"
     extern const GccVTableEntry g_CameraPathVTable[] RETAIL(CameraSubtype_0x1C04_Methods);
     extern const GccVTableEntry g_BossCameraVTable[] RETAIL(CameraSubtype_0xA19_Methods);
     extern const GccVTableEntry g_CameraSplineCameraVTable[] RETAIL(CameraSubtype_0x1C06_Methods);
-    extern const GccVTableEntry g_Camera1C09VTable[] RETAIL(CameraSubtype_0x1C09_Methods);
+    extern const GccVTableEntry g_SplineArmCameraVTable[] RETAIL(CameraSubtype_0x1C09_Methods);
     extern const GccVTableEntry g_CameraPoint2VTable[] RETAIL(CameraSubtype_0x1C0B_Methods);
-    extern const GccVTableEntry g_Camera1C0CVTable[] RETAIL(CameraSubtype_0x1C0C_Methods);
+    extern const GccVTableEntry g_OrbitCameraVTable[] RETAIL(CameraSubtype_0x1C0C_Methods);
     extern const GccVTableEntry g_CameraLine2VTable[] RETAIL(CameraSubtype_0x1C0D_Methods);
-    extern const GccVTableEntry g_Camera1C0EVTable[] RETAIL(CameraSubtype_0x1C0E_Methods);
+    extern const GccVTableEntry g_KeyedCameraVTable[] RETAIL(CameraSubtype_0x1C0E_Methods);
     extern const GccVTableEntry g_CameraZoneVTable[] RETAIL(CameraSubtype_0x1C0F_Methods);
     extern const GccVTableEntry g_CameraSplineVTable[] RETAIL(D_002F5C58);
     extern const GccVTableEntry g_SplineSamplesVTable[] RETAIL(D_002F5C78);
@@ -476,9 +617,9 @@ extern "C"
     // none for another, and its destructor
     CameraSubtype* MakeCameraSubtype(void* factory, u32 type) RETAIL(FUN_0026fa58);
     void DestroyCameraItemBuilder(void* factory, u32 destroyFlags) RETAIL(FUN_0027b9a0);
-    // A sample W's values: its low byte from -5 by 0.0390625s, its bits 8-23 from -50 by 100/65536ths
-    f32 SampleByteValue(const u32* word) RETAIL(FUN_0027d960);
-    f32 SampleShortValue(const u32* word) RETAIL(FUN_0027d9b8);
+    // A spline camera's key's share toward the target and offset along the spline
+    f32 KeyShare(const u32* key) RETAIL(FUN_0027d960);
+    f32 KeyOffset(const u32* key) RETAIL(FUN_0027d9b8);
     // An ease between 0 and 1 of a sharpness (half a sine's turn of it, scaled to reach both)
     f32 EaseInOut(f32 share, const f32* sharpness) RETAIL_N32(FUN_0027e148);
     // The rotation keys' rotation at a parameter (the first key's from 1 on, else between the two keys it's between, eased when

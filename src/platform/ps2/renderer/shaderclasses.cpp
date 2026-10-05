@@ -5,6 +5,8 @@
 #include "game/shaderanimation.h"
 #include "game/stream.h"
 
+#include <libgs.h>
+
 // The shader classes' making, reading and comparing: the base constructor, each type's set-up (its vtable's function 13, which
 // gives the shader its type number), reader (14: the base's fields, some types' own before them), sameness (15, the base's 11
 // with the type's own fields first; 16 and 12 their opposites, 11 of the types with fields of their own goes to 15) and the
@@ -40,38 +42,26 @@ extern "C"
 
 namespace
 {
-constexpr u32 ShaderSettingsSlot = 5;
-constexpr u32 ShaderSameSlot = 11;
-constexpr u32 ShaderReadSlot = 14;
-constexpr u32 ShaderTypeSameSlot = 15;
-// What a new shader keeps of its settings and gets: no blending, alpha test, destination test, texture, fog, scrolls, own alpha
-// formula, anti-aliasing or animation; depth test GEQUAL, Gouraud shading, linear filtering, the FBA, depth writes
-constexpr u64 ConstructedKept = 0xC0FFFF809797FFDE;
-constexpr u64 ConstructedSettings = 0x80000004400000;
 // The settings two equal shaders have the same (all but bits 31 and 57-63; 58-61 are compared last)
 constexpr u64 ComparedSettings = 0x1FFFFFF7FFFFFFF;
 constexpr u64 ComparedLastSettings = 0x3C00000000000000;
 constexpr u32 AnimationSize = 0x40;
-constexpr u32 TextureLookup = 0;
-// The cloth shaders' defaults: mode 0, a turn a second, an amplitude of 0.1
+constexpr u32 NoTexture = 0;
+// What the shader factory allocates of the screen copies and the cloth shaders (type 0x17's ends after its first amplitude),
+// and the cloth shaders' defaults: sines, a turn a second, an amplitude of 0.1
+constexpr u32 ScreenCopyShaderSize = 0x80;
+constexpr u32 ClothShaderSize = 0x280;
+constexpr u32 ClothShader2Size = 0x290;
 constexpr f32 ClothSpeed = 1.0f;
 constexpr f32 ClothAmplitude = 0x1.99999Ap-4f;
 
-// The settings' fields in the order the files have them, a byte each: their first bit and width
-struct SettingField
+// The settings' fields in the order the files have them, a byte each
+u8 ReadSettingField(Stream* stream)
 {
-    u8 shift;
-    u8 width;
-};
-
-constexpr SettingField FileFields[] = {
-    {SettingBlends, 1}, {SettingPreset, 4}, {SettingAlphaTest, 1}, {SettingAlphaMethod, 3}, {SettingAlphaReference, 8},
-    {SettingAlphaFail, 2}, {SettingDestinationTest, 1}, {SettingDestinationMode, 1}, {SettingDepthTest, 2}, {23, 3},
-    {SettingGouraud, 1}, {SettingTextured, 1}, {SettingStq, 1}, {SettingFog, 1}, {SettingSecondContext, 1},
-    {SettingUScroll, 3}, {SettingVScroll, 3}, {SettingOwnAlpha, 1}, {SettingAlphaFormula, 2}, {SettingAlphaFormula + 2, 2},
-    {SettingAlphaFormula + 4, 2}, {SettingAlphaFormula + 6, 2}, {SettingAlphaFix, 8}, {SettingLinear, 1}, {SettingNoFba, 1},
-    {57, 1}, {SettingAntiAliased, 1}, {SettingNoDepthWrites, 1}, {SettingAnimatedColour, 1}, {SettingAnimation, 1},
-};
+    s8 value;
+    stream->ReadS8(&value);
+    return static_cast<u8>(value);
+}
 
 // A shader's vtable read from its place in it, also for none (retail reads address 0x6C then)
 const GccVTableEntry* VTableOf(const Shader* shader)
@@ -92,11 +82,30 @@ u32 Opposite(u32 same)
 
 extern "C"
 {
+    // A new shader keeps the rest of its settings from what the memory held
     Shader* ShaderConstruct(Shader* shader)
     {
         shader->vtable = g_ShaderBaseVTable;
-        shader->settings = (shader->settings & ConstructedKept) | ConstructedSettings;
-        shader->textureId = 0;
+        ShaderSettings& settings = shader->settings;
+        settings.blends = 0;
+        settings.alphaTest = 0;
+        settings.destinationTest = 0;
+        settings.depthTest = GS_ZBUFF_GEQUAL;
+        settings.gouraud = 1;
+        settings.textured = 0;
+        settings.fog = 0;
+        settings.secondContext = 0;
+        settings.uScroll = ScrollNone;
+        settings.vScroll = ScrollNone;
+        settings.ownAlpha = 0;
+        settings.linear = 1;
+        settings.noFba = 0;
+        settings.unused57 = 0;
+        settings.antiAliased = 0;
+        settings.noDepthWrites = 0;
+        settings.animatedColour = 0;
+        settings.hasAnimation = 0;
+        shader->textureId = NoTexture;
         shader->texture = nullptr;
         shader->scroll[0] = 0.0f;
         shader->scroll[1] = 0.0f;
@@ -109,7 +118,7 @@ extern "C"
         shader->textureId = id;
         if (id != 0)
         {
-            shader->texture = reinterpret_cast<u8*>(g_TextureTable.Acquire(&id, nullptr));
+            shader->texture = g_TextureTable.Acquire(&id, nullptr);
         }
     }
 
@@ -120,13 +129,37 @@ extern "C"
 
     void ReadShader(Shader* shader, Stream* stream)
     {
-        for (const SettingField& field : FileFields)
-        {
-            s8 value;
-            stream->ReadS8(&value);
-            u64 mask = (1ull << field.width) - 1;
-            shader->settings = (shader->settings & ~(mask << field.shift)) | (static_cast<u8>(value) & mask) << field.shift;
-        }
+        ShaderSettings& settings = shader->settings;
+        settings.blends = ReadSettingField(stream);
+        settings.preset = ReadSettingField(stream);
+        settings.alphaTest = ReadSettingField(stream);
+        settings.alphaMethod = ReadSettingField(stream);
+        settings.alphaReference = ReadSettingField(stream);
+        settings.alphaFail = ReadSettingField(stream);
+        settings.destinationTest = ReadSettingField(stream);
+        settings.destinationMode = ReadSettingField(stream);
+        settings.depthTest = ReadSettingField(stream);
+        settings.unused23 = ReadSettingField(stream);
+        settings.gouraud = ReadSettingField(stream);
+        settings.textured = ReadSettingField(stream);
+        settings.stq = ReadSettingField(stream);
+        settings.fog = ReadSettingField(stream);
+        settings.secondContext = ReadSettingField(stream);
+        settings.uScroll = ReadSettingField(stream);
+        settings.vScroll = ReadSettingField(stream);
+        settings.ownAlpha = ReadSettingField(stream);
+        settings.alphaA = ReadSettingField(stream);
+        settings.alphaB = ReadSettingField(stream);
+        settings.alphaC = ReadSettingField(stream);
+        settings.alphaD = ReadSettingField(stream);
+        settings.alphaFix = ReadSettingField(stream);
+        settings.linear = ReadSettingField(stream);
+        settings.noFba = ReadSettingField(stream);
+        settings.unused57 = ReadSettingField(stream);
+        settings.antiAliased = ReadSettingField(stream);
+        settings.noDepthWrites = ReadSettingField(stream);
+        settings.animatedColour = ReadSettingField(stream);
+        settings.hasAnimation = ReadSettingField(stream);
 
         stream->ReadU16(reinterpret_cast<u16*>(&shader->lodK));
         stream->ReadU16(reinterpret_cast<u16*>(&shader->lodL));
@@ -140,7 +173,7 @@ extern "C"
         s32 type;
         stream->ReadS32(&type);
         shader->type = type;
-        if ((shader->settings >> SettingAnimation & 1) != 0)
+        if (shader->settings.hasAnimation)
         {
             auto* animation = ConstructShaderAnimation(static_cast<ShaderAnimation*>(MemoryAllocate(AnimationSize)));
             shader->animation = animation;
@@ -148,9 +181,9 @@ extern "C"
         }
 
         u32 id = shader->textureId;
-        if (id != TextureLookup)
+        if (id != NoTexture)
         {
-            shader->texture = reinterpret_cast<u8*>(g_TextureTable.Acquire(&id, nullptr));
+            shader->texture = g_TextureTable.Acquire(&id, nullptr);
         }
 
         SetShaderColourByte(shader);
@@ -168,12 +201,12 @@ extern "C"
             shader->leftover[1] == other->leftover[1] && shader->leftover[2] == other->leftover[2] &&
             shader->shaderColour[0] == other->shaderColour[0] && shader->shaderColour[1] == other->shaderColour[1] &&
             shader->shaderColour[2] == other->shaderColour[2] &&
-            (shader->settings & ComparedSettings) == (other->settings & ComparedSettings) && shader->lodK == other->lodK &&
-            shader->lodL == other->lodL && shader->scrollPhases[0] == other->scrollPhases[0] &&
+            (shader->settings.value & ComparedSettings) == (other->settings.value & ComparedSettings) &&
+            shader->lodK == other->lodK && shader->lodL == other->lodL && shader->scrollPhases[0] == other->scrollPhases[0] &&
             shader->scrollPhases[1] == other->scrollPhases[1] && shader->scrollSpeeds[0] == other->scrollSpeeds[0] &&
             shader->scrollSpeeds[1] == other->scrollSpeeds[1])
         {
-            same = ((shader->settings ^ other->settings) & ComparedLastSettings) == 0 ? 1 : 0;
+            same = ((shader->settings.value ^ other->settings.value) & ComparedLastSettings) == 0 ? 1 : 0;
         }
 
         if (shader->animation != nullptr && other->animation != nullptr &&
@@ -193,11 +226,11 @@ extern "C"
         return Opposite(Same(shader, other, ShaderSameSlot));
     }
 
-    // Functions 9 and 10 of most types: no
-    u32 ShaderSlot9(const Shader* shader) RETAIL(FUN_001d9078);
+    // Functions 9 and 10 of most types: no (the shader doesn't make its model a billboard, and the unasked one)
+    u32 ShaderMakesBillboard(const Shader* shader) RETAIL(FUN_001d9078);
     u32 ShaderSlot10(const Shader* shader) RETAIL(FUN_001d9080);
 
-    u32 ShaderSlot9(const Shader*)
+    u32 ShaderMakesBillboard(const Shader*)
     {
         return 0;
     }
@@ -423,7 +456,7 @@ extern "C"
     u32 ShaderType16Slot10(const Shader* shader) RETAIL(FUN_001da0f0);
     u32 ShaderType18NeedsEye(const Shader* shader) RETAIL(FUN_001da1f0);
     u32 ShaderType1BNeedsEye(const Shader* shader) RETAIL(FUN_001da3b0);
-    u32 ShaderType1BSlot9(const Shader* shader) RETAIL(FUN_001da3b8);
+    u32 ShaderType1BMakesBillboard(const Shader* shader) RETAIL(FUN_001da3b8);
 
     u32 ShaderType0BNeedsEye(const Shader*)
     {
@@ -490,7 +523,7 @@ extern "C"
         return 1;
     }
 
-    u32 ShaderType1BSlot9(const Shader*)
+    u32 ShaderType1BMakesBillboard(const Shader*)
     {
         return 1;
     }
@@ -1112,10 +1145,9 @@ extern "C"
     u32 MaterialBlends(const Material* material)
     {
         u32 blends = 0;
-        const auto* shaders = reinterpret_cast<Shader* const*>(material);
         for (u32 index = 0; index < material->shaderCount; index++)
         {
-            blends |= shaders[index]->settings & 1;
+            blends |= material->shaders[index]->settings.blends;
         }
 
         return blends;
@@ -1140,115 +1172,115 @@ Shader* MakeShader(s32 type)
     {
     case 0x1:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType01VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType01VTable);
         ShaderType01SetUp(shader);
         return shader;
     }
     case 0x2:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType02VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType02VTable);
         ShaderType02SetUp(shader);
         return shader;
     }
     case 0x4:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType04VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType04VTable);
         ShaderType04SetUp(shader);
         return shader;
     }
     case 0xa:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType0AVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType0AVTable);
         ShaderType0ASetUp(shader);
         return shader;
     }
     case 0xb:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType0BVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType0BVTable);
         ShaderType0BSetUp(shader);
         return shader;
     }
     case 0xc:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType0CVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType0CVTable);
         ShaderType0CSetUp(shader);
         return shader;
     }
     case 0xd:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType0DVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType0DVTable);
         ShaderType0DSetUp(shader);
         return shader;
     }
     case 0xf:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType0FVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType0FVTable);
         ShaderType0FSetUp(shader);
         return shader;
     }
     case 0x10:
     {
-        auto* shader = MadeShader<ScreenCopyShader>(0x80, g_ShaderType10VTable);
+        auto* shader = MadeShader<ScreenCopyShader>(ScreenCopyShaderSize, g_ShaderType10VTable);
         ShaderType10SetUp(shader);
         return shader;
     }
     case 0x11:
     {
-        auto* shader = MadeShader<ScreenCopyShader>(0x80, g_ShaderType11VTable);
+        auto* shader = MadeShader<ScreenCopyShader>(ScreenCopyShaderSize, g_ShaderType11VTable);
         ShaderType11SetUp(shader);
         return shader;
     }
     case 0x12:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType12VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType12VTable);
         ShaderType12SetUp(shader);
         return shader;
     }
     case 0x13:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType13VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType13VTable);
         ShaderType13SetUp(shader);
         return shader;
     }
     case 0x14:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType14VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType14VTable);
         ShaderType14SetUp(shader);
         return shader;
     }
     case 0x15:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType15VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType15VTable);
         ShaderType15SetUp(shader);
         return shader;
     }
     case 0x16:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType16VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType16VTable);
         ShaderType16SetUp(shader);
         return shader;
     }
     case 0x17:
     {
-        auto* shader = MadeShader<ClothShader>(0x280, g_ShaderType17VTable);
+        auto* shader = MadeShader<ClothShader>(ClothShaderSize, g_ShaderType17VTable);
         shader->speed = ClothSpeed;
         shader->amplitudes[0] = ClothAmplitude;
-        shader->mode = 0;
+        shader->mode = ClothSines;
         ShaderType17SetUp(shader);
         return shader;
     }
     case 0x19:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType19VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType19VTable);
         ShaderType19SetUp(shader);
         return shader;
     }
     case 0x1a:
     {
-        auto* shader = MadeShader<ClothShader>(0x290, g_ShaderType1AVTable);
+        auto* shader = MadeShader<ClothShader>(ClothShader2Size, g_ShaderType1AVTable);
         shader->amplitudes[2] = ClothAmplitude;
         shader->speed = ClothSpeed;
-        shader->mode = 0;
+        shader->mode = ClothSines;
         shader->amplitudes[0] = ClothAmplitude;
         shader->amplitudes[1] = ClothAmplitude;
         ShaderType1ASetUp(shader);
@@ -1256,25 +1288,25 @@ Shader* MakeShader(s32 type)
     }
     case 0x1b:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType1BVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType1BVTable);
         ShaderType1BSetUp(shader);
         return shader;
     }
     case 0x1e:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType1EVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType1EVTable);
         ShaderType1ESetUp(shader);
         return shader;
     }
     case 0x1f:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType1FVTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType1FVTable);
         ShaderType1FSetUp(shader);
         return shader;
     }
     case 0x20:
     {
-        auto* shader = MadeShader<Shader>(0x70, g_ShaderType20VTable);
+        auto* shader = MadeShader<Shader>(sizeof(Shader), g_ShaderType20VTable);
         ShaderType20SetUp(shader);
         return shader;
     }
@@ -1315,14 +1347,14 @@ extern "C"
                 stream->ReadS32(&type);
                 Shader* shader = MakeShader(type);
                 CallVirtual<void>(shader, VTableOf(shader), ShaderReadSlot, stream);
-                reinterpret_cast<Shader**>(material)[index] = shader;
+                material->shaders[index] = shader;
                 index++;
             } while (index < material->shaderCount);
         }
 
         if (MaterialBlends(material) != 0)
         {
-            material->call = 2;
+            material->call = CallSharedGifTag;
         }
     }
 }

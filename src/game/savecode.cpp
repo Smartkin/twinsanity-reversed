@@ -21,115 +21,37 @@ extern "C"
 
 namespace
 {
-// The save code's operations: the card checked at the start (done when it's unformatted or has room for the save, else the screen
-// of no room), the card checked (a due save stays due), a save to a slot the player chooses, which its screens offer to skip (3)
-// or not (4, the pause menu's), with the card formatted and the save made first when the player asks, a load, and a save to the
-// slot of the results (of every file when the save was just made: bit 5 of the results)
-enum Operation : u32
-{
-    OperationCheckRoom = 1,
-    OperationCheck = 2,
-    OperationSave = 3,
-    OperationPauseSave = 4,
-    OperationLoad = 5,
-    OperationSaveSlot = 6,
-};
-
-// The device's operations (game/savedevice.cpp): the waits while there's a card (10 to 12) keep the message of what was done on
-// the screen
-enum DeviceOperation : u32
-{
-    DeviceCheck = 1,
-    DeviceFormat = 2,
-    DeviceMeasure = 3,
-    DeviceCreate = 4,
-    DeviceWriteFolder = 5,
-    DeviceReadFolder = 6,
-    DeviceFind = 7,
-    DeviceWriteFile = 8,
-    DeviceReadFile = 9,
-    DeviceWaitFormatted = 10,
-    DeviceWaitSaved = 11,
-    DeviceWaitLoaded = 12,
-    DeviceWait = 13,
-};
-
-// The screens (their messages D_002E80E0 gives): none (the message of the operation running), no card at the start, no room at the
-// start, the save made?, no card, unformatted, format?, a card with a save wanted, a card with room wanted, overwrite?, cancel the
-// save?, the slots to save to and to load from, and the failures of formatting, saving and loading
-enum Screen : u32
-{
-    ScreenMessage = 0,
-    ScreenNoCard = 1,
-    ScreenNoRoom = 2,
-    ScreenCreate = 3,
-    ScreenInsertCard = 4,
-    ScreenUnformatted = 5,
-    ScreenConfirmFormat = 6,
-    ScreenInsertSave = 7,
-    ScreenInsertRoom = 8,
-    ScreenOverwrite = 9,
-    ScreenCancelSave = 10,
-    ScreenSaveSlots = 11,
-    ScreenLoadSlots = 12,
-    ScreenFormatFailed = 13,
-    ScreenSaveFailed = 14,
-    ScreenLoadFailed = 15,
-};
-
-// The player's answers (bits 16-19 of the bits): the first choice (a slot on the slots' screens), back, the third choice
-enum Answer : u32
-{
-    AnswerFirst = 1,
-    AnswerBack = 2,
-    AnswerThird = 3,
-};
-
-// The device's results (bits 16-19 of its flags)
-constexpr u32 DeviceFailed = 1;
-constexpr u32 SlotMask = 0xF;
-constexpr u32 SaveMessageCount = 38;
-constexpr u32 KilobyteShift = 10;
-constexpr u32 KilobyteRound = 0x3FF;
-
-enum Slots : u32
-{
-    AskSlot = 1,
-    ShowChoicesSlot = 2,
-    ShowSlotsSlot = 3,
-    OperationDoneSlot = 4,
-    WaitingSlot = 5,
-    FinishSlot = 6,
-};
+// Bytes rounded up to kilobytes
+constexpr u32 KilobyteRound = (1u << SaveDevice::KilobyteShift) - 1;
 
 u32 AskDevice(SaveCode* code, u32 operation, u32 file)
 {
-    return CallVirtual<u32>(code, code->vtable, AskSlot, operation, file);
+    return CallVirtual<u32>(code, code->vtable, SaveCode::AskSlot, operation, file);
 }
 
 u32 ShowChoicesScreen(SaveCode* code, u32 screen)
 {
-    return CallVirtual<u32>(code, code->vtable, ShowChoicesSlot, screen);
+    return CallVirtual<u32>(code, code->vtable, SaveCode::ShowChoicesSlot, screen);
 }
 
 u32 ShowSlotsScreen(SaveCode* code, u32 screen)
 {
-    return CallVirtual<u32>(code, code->vtable, ShowSlotsSlot, screen);
+    return CallVirtual<u32>(code, code->vtable, SaveCode::ShowSlotsSlot, screen);
 }
 
 void TellOperationDone(SaveCode* code, u32 operation)
 {
-    CallVirtual<void>(code, code->vtable, OperationDoneSlot, operation);
+    CallVirtual<void>(code, code->vtable, SaveCode::OperationDoneSlot, operation);
 }
 
 void TellWaiting(SaveCode* code, u32 screen)
 {
-    CallVirtual<void>(code, code->vtable, WaitingSlot, screen);
+    CallVirtual<void>(code, code->vtable, SaveCode::WaitingSlot, screen);
 }
 
 void EndOperation(SaveCode* code, u32 flagged, u32 saveDue)
 {
-    CallVirtual<void>(code, code->vtable, FinishSlot, flagged, saveDue);
+    CallVirtual<void>(code, code->vtable, SaveCode::FinishSlot, flagged, saveDue);
 }
 
 // Whether the save fits on the card: in the free space, or where the save is (the same size, or with the free space)
@@ -149,28 +71,17 @@ bool SaveFits(SaveDevice* device)
 // The slot written: every file after the save was just made, else the slot's file and the folder's
 void WriteSlot(SaveCode* code, u32 slot)
 {
-    if ((code->results & SaveCode::Fresh) != 0)
+    if (code->results.fresh != 0)
     {
-        code->device->flags = (code->device->flags & ~SaveDevice::WritesEverything) | SaveDevice::WritesEverything;
-        AskDevice(code, DeviceWriteFolder, 0);
+        code->device->flags.writesEverything = 1;
+        AskDevice(code, SaveDevice::OperationWriteFolder, 0);
     }
     else
     {
-        AskDevice(code, DeviceWriteFile, slot);
+        AskDevice(code, SaveDevice::OperationWriteFile, slot);
     }
 
-    code->results = (code->results & ~SlotMask) | slot;
-}
-
-// The slot acted on (bits 24-27 of the bits)
-u32 ActedSlot(const SaveCode* code)
-{
-    return reinterpret_cast<const u8*>(&code->bits)[3] & SlotMask;
-}
-
-void SetActedSlot(SaveCode* code, u32 slot)
-{
-    code->bits = (code->bits & ~(SlotMask << SaveCode::SlotShift)) | (slot & SlotMask) << SaveCode::SlotShift;
+    code->results.slot = slot;
 }
 }
 
@@ -180,9 +91,9 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) SaveCode* SaveCode
     code->vtable = g_SaveCodeVTable;
     StringConstruct(&code->name, name);
     code->device = device;
-    RetailLibc::MemorySet(code, 0, 8);
-    code->bits &= ~OperationMask;
-    code->SetScreen(ScreenMessage);
+    RetailLibc::MemorySet(code, 0, sizeof(SaveCodeBits) + sizeof(SaveCodeResults));
+    code->bits.operation = SaveOperationNone;
+    code->bits.screen = SaveScreenMessage;
     for (u32 message = 0; message < SaveMessageCount; message++)
     {
         g_SaveMessageTexts[message] = -1;
@@ -193,20 +104,20 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) SaveCode* SaveCode
 
 void SaveCode::OperationDone(u32 operation)
 {
-    switch (Operation())
+    switch (bits.operation)
     {
-    case OperationCheckRoom:
+    case SaveOperationCheckRoom:
         if (device->HasCard() == 0)
         {
-            ShowChoicesScreen(this, ScreenNoCard);
+            ShowChoicesScreen(this, SaveScreenNoCard);
         }
         else if (device->CardFormatted() == 0)
         {
             EndOperation(this, 1, 0);
         }
-        else if (operation != DeviceMeasure)
+        else if (operation != SaveDevice::OperationMeasure)
         {
-            AskDevice(this, DeviceMeasure, 0);
+            AskDevice(this, SaveDevice::OperationMeasure, 0);
         }
         else if (SaveFits(device))
         {
@@ -214,103 +125,103 @@ void SaveCode::OperationDone(u32 operation)
         }
         else
         {
-            ShowChoicesScreen(this, ScreenNoRoom);
+            ShowChoicesScreen(this, SaveScreenNoRoom);
         }
 
         return;
-    case OperationCheck:
-        EndOperation(this, 1, bits >> 28 & 1);
+    case SaveOperationCheckInserted:
+        EndOperation(this, 1, bits.saveDue);
         return;
-    case OperationSave:
-    case OperationPauseSave:
+    case SaveOperationNewGameSave:
+    case SaveOperationPauseSave:
         switch (operation)
         {
-        case DeviceFormat:
-            AskDevice(this, DeviceWaitFormatted, 0);
+        case SaveDevice::OperationFormat:
+            AskDevice(this, SaveDevice::OperationWaitFormatted, 0);
             return;
-        case DeviceMeasure:
+        case SaveDevice::OperationMeasure:
             if (!SaveFits(device))
             {
-                ShowChoicesScreen(this, ScreenInsertRoom);
+                ShowChoicesScreen(this, SaveScreenInsertRoom);
             }
             else if (device->HasSave() != 0)
             {
-                results &= ~Fresh;
-                AskDevice(this, DeviceReadFolder, 0);
+                results.fresh = 0;
+                AskDevice(this, SaveDevice::OperationReadFolder, 0);
             }
             else
             {
-                ShowChoicesScreen(this, ScreenCreate);
+                ShowChoicesScreen(this, SaveScreenCreate);
             }
 
             return;
-        case DeviceCreate:
-            ShowSlotsScreen(this, ScreenSaveSlots);
+        case SaveDevice::OperationCreate:
+            ShowSlotsScreen(this, SaveScreenSaveSlots);
             return;
-        case DeviceWriteFolder:
+        case SaveDevice::OperationWriteFolder:
         {
-            u32 previous = results;
-            if ((previous & Fresh) != 0)
+            SaveCodeResults previous = results;
+            if (previous.fresh != 0)
             {
-                results = previous & ~Fresh;
-                AskDevice(this, DeviceWriteFile, previous & SlotMask);
-                results = (results & ~SlotMask) | (previous & SlotMask);
+                results.fresh = 0;
+                AskDevice(this, SaveDevice::OperationWriteFile, previous.slot);
+                results.slot = previous.slot;
             }
             else
             {
-                ShowSlotsScreen(this, ScreenSaveSlots);
+                ShowSlotsScreen(this, SaveScreenSaveSlots);
             }
 
             return;
         }
-        case DeviceReadFolder:
-            ShowSlotsScreen(this, ScreenSaveSlots);
+        case SaveDevice::OperationReadFolder:
+            ShowSlotsScreen(this, SaveScreenSaveSlots);
             return;
-        case DeviceWriteFile:
-            AskDevice(this, DeviceWaitSaved, 0);
+        case SaveDevice::OperationWriteFile:
+            AskDevice(this, SaveDevice::OperationWaitSaved, 0);
             return;
-        case DeviceWaitFormatted:
-            AskDevice(this, DeviceCreate, 0);
+        case SaveDevice::OperationWaitFormatted:
+            AskDevice(this, SaveDevice::OperationCreate, 0);
             return;
-        case DeviceWaitSaved:
+        case SaveDevice::OperationWaitSaved:
             EndOperation(this, 1, 1);
             return;
-        case DeviceWait:
+        case SaveDevice::OperationWaitCancelled:
             EndOperation(this, 0, 0);
             return;
         default:
             return;
         }
-    case OperationLoad:
+    case SaveOperationLoad:
         switch (operation)
         {
-        case DeviceMeasure:
+        case SaveDevice::OperationMeasure:
             if (device->HasSave() != 0)
             {
-                results &= ~Fresh;
-                AskDevice(this, DeviceReadFolder, 0);
+                results.fresh = 0;
+                AskDevice(this, SaveDevice::OperationReadFolder, 0);
             }
             else
             {
-                ShowChoicesScreen(this, ScreenInsertSave);
+                ShowChoicesScreen(this, SaveScreenInsertSave);
             }
 
             return;
-        case DeviceReadFolder:
-            ShowSlotsScreen(this, ScreenLoadSlots);
+        case SaveDevice::OperationReadFolder:
+            ShowSlotsScreen(this, SaveScreenLoadSlots);
             return;
-        case DeviceReadFile:
-            results = (results & ~SlotMask) | ActedSlot(this);
-            AskDevice(this, DeviceWaitLoaded, 0);
+        case SaveDevice::OperationReadFile:
+            results.slot = bits.targetSlot;
+            AskDevice(this, SaveDevice::OperationWaitLoaded, 0);
             return;
-        case DeviceWaitLoaded:
+        case SaveDevice::OperationWaitLoaded:
             EndOperation(this, 1, 1);
             return;
         default:
             return;
         }
-    case OperationSaveSlot:
-        if (operation == DeviceWriteFile)
+    case SaveOperationAutosave:
+        if (operation == SaveDevice::OperationWriteFile)
         {
             EndOperation(this, 1, 1);
         }
@@ -323,29 +234,29 @@ void SaveCode::OperationDone(u32 operation)
 
 u32 SaveCode::Waiting(u32 screen)
 {
-    if (screen == ScreenMessage)
+    if (screen == SaveScreenMessage)
     {
-        TellOperationDone(this, device->Running());
+        TellOperationDone(this, device->flags.running);
         return 1;
     }
 
-    if (screen != ScreenInsertCard || device->HasCard() == 0)
+    if (screen != SaveScreenInsertCard || device->HasCard() == 0)
     {
         return 0;
     }
 
-    u32 operation = Operation();
+    u32 operation = bits.operation;
     if (device->CardFormatted() != 0)
     {
-        AskDevice(this, DeviceMeasure, 0);
+        AskDevice(this, SaveDevice::OperationMeasure, 0);
     }
-    else if (operation == OperationSave || operation == OperationPauseSave)
+    else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
     {
-        ShowChoicesScreen(this, ScreenUnformatted);
+        ShowChoicesScreen(this, SaveScreenUnformatted);
     }
-    else if (operation == OperationLoad)
+    else if (operation == SaveOperationLoad)
     {
-        ShowChoicesScreen(this, ScreenInsertSave);
+        ShowChoicesScreen(this, SaveScreenInsertSave);
     }
 
     return 1;
@@ -353,15 +264,16 @@ u32 SaveCode::Waiting(u32 screen)
 
 void SaveCode::Finish(u32 flagged, u32 saveDue)
 {
-    results = (results & ~Flagged) | (flagged & 1) << 4;
-    u32 operation = bits & OperationMask;
-    bits = (((bits & ~(OperationMask << AskedShift)) | operation << AskedShift) & ~OperationMask & ~SaveDue) | (saveDue & 1) << 28;
+    results.flagged = flagged;
+    bits.asked = bits.operation;
+    bits.operation = SaveOperationNone;
+    bits.saveDue = saveDue;
 }
 
 void SaveCode::Frame(TimeClock* clock)
 {
-    u32 running = device->Running();
-    if ((bits & AnswerMask) != 0)
+    u32 running = device->flags.running;
+    if (bits.answer != AnswerNone)
     {
         TakeAnswer();
     }
@@ -371,32 +283,32 @@ void SaveCode::Frame(TimeClock* clock)
         return;
     }
 
-    u32 operation = Operation();
-    u32 state = device->State();
-    if (running == 0)
+    u32 operation = bits.operation;
+    u32 state = device->flags.state;
+    if (running == SaveDevice::OperationNone)
     {
-        running = device->Running();
+        running = device->flags.running;
     }
 
-    if (state == 0)
+    if (state == SaveDevice::StateOk)
     {
-        u32 screen = Screen();
-        if (operation >= OperationSave && operation <= OperationLoad)
+        u32 screen = bits.screen;
+        if (operation >= SaveOperationNewGameSave && operation <= SaveOperationLoad)
         {
             if (device->HasCard() != 0)
             {
                 // Retail asks whether the card is formatted on the format failure's screen and drops the answer
-                if (screen == ScreenFormatFailed)
+                if (screen == SaveScreenFormatFailed)
                 {
                     device->CardFormatted();
                 }
             }
-            else if (running < DeviceWaitSaved || running > DeviceWait)
+            else if (running < SaveDevice::OperationWaitSaved || running > SaveDevice::OperationWaitCancelled)
             {
-                if (screen != ScreenCancelSave && screen != ScreenInsertCard &&
-                    (screen < ScreenFormatFailed || screen > ScreenLoadFailed))
+                if (screen != SaveScreenCancelSave && screen != SaveScreenInsertCard &&
+                    (screen < SaveScreenFormatFailed || screen > SaveScreenLoadFailed))
                 {
-                    screen = ShowChoicesScreen(this, ScreenInsertCard);
+                    screen = ShowChoicesScreen(this, SaveScreenInsertCard);
                 }
             }
         }
@@ -405,77 +317,77 @@ void SaveCode::Frame(TimeClock* clock)
         return;
     }
 
-    if (state != DeviceFailed)
+    if (state != SaveDevice::StateFailed)
     {
         return;
     }
 
     switch (running)
     {
-    case DeviceCheck:
-        if (operation != OperationCheckRoom)
+    case SaveDevice::OperationCheck:
+        if (operation != SaveOperationCheckRoom)
         {
             EndOperation(this, 0, 0);
         }
         else
         {
-            ShowChoicesScreen(this, ScreenNoCard);
+            ShowChoicesScreen(this, SaveScreenNoCard);
         }
 
         return;
-    case DeviceFormat:
-        ShowChoicesScreen(this, ScreenFormatFailed);
+    case SaveDevice::OperationFormat:
+        ShowChoicesScreen(this, SaveScreenFormatFailed);
         return;
-    case DeviceMeasure:
-        if (operation == OperationLoad)
+    case SaveDevice::OperationMeasure:
+        if (operation == SaveOperationLoad)
         {
-            ShowChoicesScreen(this, device->HasCard() != 0 ? ScreenLoadFailed : ScreenInsertCard);
+            ShowChoicesScreen(this, device->HasCard() != 0 ? SaveScreenLoadFailed : SaveScreenInsertCard);
         }
-        else if (operation == OperationSave || operation == OperationPauseSave)
+        else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
         {
-            ShowChoicesScreen(this, device->HasCard() != 0 ? ScreenSaveFailed : ScreenInsertCard);
+            ShowChoicesScreen(this, device->HasCard() != 0 ? SaveScreenSaveFailed : SaveScreenInsertCard);
         }
-        else if (operation == OperationSaveSlot)
+        else if (operation == SaveOperationAutosave)
         {
             EndOperation(this, 0, 0);
         }
 
         return;
-    case DeviceCreate:
-    case DeviceWriteFolder:
-    case DeviceWriteFile:
-    case DeviceReadFile:
-    case DeviceWaitFormatted:
-    case DeviceFind:
-        if (operation == OperationLoad)
+    case SaveDevice::OperationCreate:
+    case SaveDevice::OperationWriteFolder:
+    case SaveDevice::OperationWriteFile:
+    case SaveDevice::OperationReadFile:
+    case SaveDevice::OperationWaitFormatted:
+    case SaveDevice::OperationFind:
+        if (operation == SaveOperationLoad)
         {
-            ShowChoicesScreen(this, ScreenLoadFailed);
+            ShowChoicesScreen(this, SaveScreenLoadFailed);
         }
-        else if (operation == OperationSave || operation == OperationPauseSave)
+        else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
         {
-            ShowChoicesScreen(this, ScreenSaveFailed);
+            ShowChoicesScreen(this, SaveScreenSaveFailed);
         }
-        else if (operation == OperationSaveSlot)
+        else if (operation == SaveOperationAutosave)
         {
             EndOperation(this, 0, 0);
         }
 
         return;
-    case DeviceReadFolder:
-        if (operation == OperationLoad)
+    case SaveDevice::OperationReadFolder:
+        if (operation == SaveOperationLoad)
         {
-            ShowChoicesScreen(this, ScreenLoadFailed);
+            ShowChoicesScreen(this, SaveScreenLoadFailed);
         }
-        else if (operation == OperationSave || operation == OperationPauseSave)
+        else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
         {
-            ShowSlotsScreen(this, ScreenSaveSlots);
+            ShowSlotsScreen(this, SaveScreenSaveSlots);
         }
-        else if (operation == OperationSaveSlot)
+        else if (operation == SaveOperationAutosave)
         {
             EndOperation(this, 0, 0);
         }
 
-        results |= Fresh;
+        results.fresh = 1;
         return;
     default:
         return;
@@ -484,75 +396,75 @@ void SaveCode::Frame(TimeClock* clock)
 
 void SaveCode::TakeAnswer()
 {
-    u32 screen = Screen();
-    SetScreen(ScreenMessage);
-    u32 operation = Operation();
-    u32 answer = bits >> AnswerShift & 0xF;
-    bits &= ~AnswerMask;
-    u32 chosen = bits >> ChosenShift & SlotMask;
+    u32 screen = bits.screen;
+    bits.screen = SaveScreenMessage;
+    u32 operation = bits.operation;
+    u32 answer = bits.answer;
+    bits.answer = AnswerNone;
+    u32 chosen = bits.chosen;
     if (answer == AnswerFirst)
     {
         switch (screen)
         {
-        case ScreenNoCard:
-        case ScreenNoRoom:
-            AskDevice(this, DeviceCheck, 0);
+        case SaveScreenNoCard:
+        case SaveScreenNoRoom:
+            AskDevice(this, SaveDevice::OperationCheck, 0);
             return;
-        case ScreenCreate:
-            AskDevice(this, DeviceCreate, 0);
+        case SaveScreenCreate:
+            AskDevice(this, SaveDevice::OperationCreate, 0);
             return;
-        case ScreenUnformatted:
-            ShowChoicesScreen(this, ScreenConfirmFormat);
+        case SaveScreenUnformatted:
+            ShowChoicesScreen(this, SaveScreenConfirmFormat);
             return;
-        case ScreenConfirmFormat:
-            AskDevice(this, DeviceFormat, 0);
+        case SaveScreenConfirmFormat:
+            AskDevice(this, SaveDevice::OperationFormat, 0);
             return;
-        case ScreenOverwrite:
-            WriteSlot(this, ActedSlot(this));
+        case SaveScreenOverwrite:
+            WriteSlot(this, bits.targetSlot);
             return;
-        case ScreenCancelSave:
-            AskDevice(this, DeviceWait, 0);
+        case SaveScreenCancelSave:
+            AskDevice(this, SaveDevice::OperationWaitCancelled, 0);
             return;
-        case ScreenSaveSlots:
+        case SaveScreenSaveSlots:
         {
-            FolderSummary* summary = static_cast<FolderFile*>(device->mainFile)->summaries[chosen];
-            SetActedSlot(this, chosen);
+            FolderSummary* summary = device->folder->summaries[chosen];
+            bits.targetSlot = chosen;
             if (summary->HasSave())
             {
-                ShowChoicesScreen(this, ScreenOverwrite);
+                ShowChoicesScreen(this, SaveScreenOverwrite);
                 return;
             }
 
             GetSaveDate(&summary->date);
-            WriteSlot(this, ActedSlot(this));
+            WriteSlot(this, bits.targetSlot);
             return;
         }
-        case ScreenLoadSlots:
-            SetActedSlot(this, chosen);
-            AskDevice(this, DeviceReadFile, chosen);
+        case SaveScreenLoadSlots:
+            bits.targetSlot = chosen;
+            AskDevice(this, SaveDevice::OperationReadFile, chosen);
             return;
-        case ScreenFormatFailed:
-        case ScreenSaveFailed:
-        case ScreenLoadFailed:
+        case SaveScreenFormatFailed:
+        case SaveScreenSaveFailed:
+        case SaveScreenLoadFailed:
             if (device->HasCard() == 0)
             {
-                ShowChoicesScreen(this, ScreenInsertCard);
+                ShowChoicesScreen(this, SaveScreenInsertCard);
             }
             else if (device->CardFormatted() != 0)
             {
-                AskDevice(this, DeviceMeasure, 0);
+                AskDevice(this, SaveDevice::OperationMeasure, 0);
             }
-            else if (screen == ScreenSaveFailed)
+            else if (screen == SaveScreenSaveFailed)
             {
-                ShowChoicesScreen(this, ScreenUnformatted);
+                ShowChoicesScreen(this, SaveScreenUnformatted);
             }
-            else if (screen == ScreenFormatFailed)
+            else if (screen == SaveScreenFormatFailed)
             {
-                ShowChoicesScreen(this, ScreenConfirmFormat);
+                ShowChoicesScreen(this, SaveScreenConfirmFormat);
             }
             else
             {
-                ShowChoicesScreen(this, ScreenInsertSave);
+                ShowChoicesScreen(this, SaveScreenInsertSave);
             }
 
             return;
@@ -565,19 +477,19 @@ void SaveCode::TakeAnswer()
     {
         switch (screen)
         {
-        case ScreenCreate:
-        case ScreenInsertCard:
-        case ScreenUnformatted:
-        case ScreenInsertSave:
-        case ScreenInsertRoom:
-        case ScreenSaveSlots:
-        case ScreenLoadSlots:
-        case ScreenFormatFailed:
-        case ScreenSaveFailed:
-        case ScreenLoadFailed:
-            if (operation == OperationSave || operation == OperationPauseSave)
+        case SaveScreenCreate:
+        case SaveScreenInsertCard:
+        case SaveScreenUnformatted:
+        case SaveScreenInsertSave:
+        case SaveScreenInsertRoom:
+        case SaveScreenSaveSlots:
+        case SaveScreenLoadSlots:
+        case SaveScreenFormatFailed:
+        case SaveScreenSaveFailed:
+        case SaveScreenLoadFailed:
+            if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
             {
-                ShowChoicesScreen(this, ScreenCancelSave);
+                ShowChoicesScreen(this, SaveScreenCancelSave);
             }
             else
             {
@@ -585,28 +497,28 @@ void SaveCode::TakeAnswer()
             }
 
             return;
-        case ScreenConfirmFormat:
-            ShowChoicesScreen(this, ScreenUnformatted);
+        case SaveScreenConfirmFormat:
+            ShowChoicesScreen(this, SaveScreenUnformatted);
             return;
-        case ScreenOverwrite:
-            ShowSlotsScreen(this, ScreenSaveSlots);
+        case SaveScreenOverwrite:
+            ShowSlotsScreen(this, SaveScreenSaveSlots);
             return;
-        case ScreenCancelSave:
+        case SaveScreenCancelSave:
             if (device->HasCard() == 0)
             {
-                ShowChoicesScreen(this, ScreenInsertCard);
+                ShowChoicesScreen(this, SaveScreenInsertCard);
             }
             else if (device->CardFormatted() != 0)
             {
-                AskDevice(this, DeviceMeasure, 0);
+                AskDevice(this, SaveDevice::OperationMeasure, 0);
             }
-            else if (operation == OperationSave || operation == OperationPauseSave)
+            else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
             {
-                ShowChoicesScreen(this, ScreenUnformatted);
+                ShowChoicesScreen(this, SaveScreenUnformatted);
             }
-            else if (operation == OperationLoad)
+            else if (operation == SaveOperationLoad)
             {
-                ShowChoicesScreen(this, ScreenInsertSave);
+                ShowChoicesScreen(this, SaveScreenInsertSave);
             }
 
             return;
@@ -615,8 +527,8 @@ void SaveCode::TakeAnswer()
         }
     }
 
-    bool thirdEnds = screen < ScreenOverwrite || (screen >= ScreenSaveSlots && screen <= ScreenLoadFailed);
-    if (answer == AnswerThird && screen != ScreenMessage && thirdEnds)
+    bool thirdEnds = screen < SaveScreenOverwrite || (screen >= SaveScreenSaveSlots && screen <= SaveScreenLoadFailed);
+    if (answer == AnswerThird && screen != SaveScreenMessage && thirdEnds)
     {
         EndOperation(this, 1, 0);
     }
@@ -629,7 +541,7 @@ const char* SaveCode::Message(s32 message)
 
 void SaveCode::MessageText(s32 message, String* text)
 {
-    u32 kilobytes = (device->NeededBytes() + KilobyteRound) >> KilobyteShift;
+    u32 kilobytes = (device->NeededBytes() + KilobyteRound) >> SaveDevice::KilobyteShift;
     String size = {nullptr, 0, 0};
     String number;
     StringConstructNumber(&number, kilobytes);
@@ -652,43 +564,45 @@ extern "C"
     void SaveManagerRequest(SaveManager* manager, u32 operation, s32 time)
     {
         s32 asked = static_cast<s32>(operation);
-        manager->results &= ~SaveCode::Flagged;
-        manager->bits = (manager->bits & 0xEFFFFF00) | (operation & SaveCode::OperationMask) |
-                        (operation & SaveCode::OperationMask) << SaveCode::AskedShift;
+        manager->results.flagged = 0;
+        manager->bits.operation = operation;
+        manager->bits.asked = operation;
+        manager->bits.saveDue = 0;
         manager->device->wait = time;
-        if (asked == 0)
+        if (asked == static_cast<s32>(SaveOperationNone))
         {
             return;
         }
 
-        if (asked > 0 && asked < static_cast<s32>(OperationSave))
+        // The checks
+        if (asked > 0 && asked < static_cast<s32>(SaveOperationNewGameSave))
         {
-            AskDevice(manager, DeviceCheck, 0);
-            manager->SetScreen(ScreenMessage);
+            AskDevice(manager, SaveDevice::OperationCheck, 0);
+            manager->bits.screen = SaveScreenMessage;
             return;
         }
 
-        if (asked == static_cast<s32>(OperationSaveSlot))
+        if (asked == static_cast<s32>(SaveOperationAutosave))
         {
-            WriteSlot(manager, manager->results & SlotMask);
+            WriteSlot(manager, manager->results.slot);
             return;
         }
 
         if (manager->device->HasCard() == 0)
         {
-            ShowChoicesScreen(manager, ScreenInsertCard);
+            ShowChoicesScreen(manager, SaveScreenInsertCard);
         }
         else if (manager->device->CardFormatted() != 0)
         {
-            AskDevice(manager, DeviceMeasure, 0);
+            AskDevice(manager, SaveDevice::OperationMeasure, 0);
         }
-        else if (operation == OperationSave || operation == OperationPauseSave)
+        else if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
         {
-            ShowChoicesScreen(manager, ScreenUnformatted);
+            ShowChoicesScreen(manager, SaveScreenUnformatted);
         }
-        else if (operation == OperationLoad)
+        else if (operation == SaveOperationLoad)
         {
-            ShowChoicesScreen(manager, ScreenInsertSave);
+            ShowChoicesScreen(manager, SaveScreenInsertSave);
         }
     }
 
@@ -696,7 +610,7 @@ extern "C"
     {
         code->vtable = g_SaveCodeVTable;
         StringDestroy(&code->name);
-        if ((destroyFlags & 1) != 0)
+        if ((destroyFlags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(code);
         }

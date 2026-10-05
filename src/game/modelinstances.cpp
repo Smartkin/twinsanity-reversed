@@ -1,5 +1,6 @@
 #include "game/instancefactory.h"
 
+#include "game/animation.h"
 #include "game/camerarig.h"
 #include "game/chunkdata.h"
 #include "game/controllers.h"
@@ -25,13 +26,6 @@ extern "C"
 
 namespace
 {
-constexpr u16 NoModel = 0xFFFF;
-constexpr u16 ModelIdMask = 0x7FFF;
-// An object's header's first word: its exit points (bits 0-5) and camera joints (bits 6-11)
-constexpr u32 JointsMask = 0x3F;
-constexpr u32 CameraJointsShift = 6;
-// A node registered attached to its instance
-constexpr u32 AttachToInstance = 1;
 // How far a camera instance's box goes either way
 constexpr f32 CameraBoxReach = 0x1.99999Ap-4f;
 
@@ -41,7 +35,7 @@ GameOGI* ModelOgi(u16 model)
     ResourceTable* models = G_GameResourcesObjectPointer->models;
     u16 id;
     CopyHalfword(&id, &model);
-    return id != NoModel ? static_cast<GameOGI*>(models->items[id & ModelIdMask]) : nullptr;
+    return id != NoModelId ? static_cast<GameOGI*>(models->items[id & ResourceIndexMask]) : nullptr;
 }
 
 ModelNode* NewModelNode()
@@ -80,9 +74,10 @@ GameNode* MakeObjectModelNode(GameObject* object)
     u16 model;
     GetObjectModelId(&model, object, 0);
     GameOGI* ogi = ModelOgi(model);
-    u32 header = object->header[0];
+    u32 reactJoints = object->header.reactJoints;
+    u32 exitPoints = object->header.exitPoints;
     ModelNode* node = NewModelNode();
-    node->SetOgi(ogi, header >> CameraJointsShift & JointsMask, header & JointsMask);
+    node->SetOgi(ogi, reactJoints, exitPoints);
     return node;
 }
 
@@ -103,8 +98,8 @@ InstanceContext* MakeModelInstance(ChunkData* chunk, u16 model, const Matrix4x4*
     }
 
     ModelNode* node = MakePlainModelNode(model);
-    instance->flags |= ReferencedObject::FlagVisible;
-    RegisterNode(instance, AttachToInstance, node);
+    instance->flags.visible = 1;
+    RegisterNode(instance, AttachNode, node);
     node->AttachCollision();
     ChunkData::AddInstance(chunk, instance);
     return instance;
@@ -129,9 +124,9 @@ InstanceContext* MakeCameraInstance(ChunkData* chunk, const Matrix4x4* matrix)
     instance->collision.givenHull = g_CameraHull;
     instance->collision.ownBox = box;
     auto* lens = CameraLensNode::Construct(static_cast<CameraLensNode*>(MemoryAllocate(sizeof(CameraLensNode))));
-    lens->bits |= CameraLensNode::BitProjectionChanged;
+    lens->bits.projectionChanged = 1;
     lens->fov = fov;
-    RegisterNode(instance, AttachToInstance, lens);
+    RegisterNode(instance, AttachNode, lens);
     ChunkData::AddInstance(chunk, instance);
     return instance;
 }

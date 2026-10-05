@@ -5,14 +5,53 @@
 #include "gcc2.h"
 #include "game/graphicstables.h"
 
+// How a text sits on its place: a bit for each way up and down (its top, middle or bottom at the place) and across (its left,
+// centre or right end). The font's drawing only reads top, bottom, left and right, taking neither of a pair for the middle or
+// the centre, which the game sets as well
+union TextAlignment
+{
+    u32 value;
+    struct
+    {
+        u32 top : 1;
+        u32 centre : 1;
+        u32 bottom : 1;
+        u32 unused3 : 1;
+        u32 left : 1;
+        u32 middle : 1;
+        u32 right : 1;
+        u32 unused7 : 25;
+    };
+
+    // The bits' masks, and the alignments the game uses
+    enum Mask : u32
+    {
+        Top = 0x1,
+        Centre = 0x2,
+        Bottom = 0x4,
+        Left = 0x10,
+        Middle = 0x20,
+        Right = 0x40,
+        TopLeft = Top | Left,
+        TopCentre = Top | Centre,
+        MiddleLeft = Middle | Left,
+        Centred = Middle | Centre,
+        MiddleRight = Middle | Right,
+        BottomLeft = Bottom | Left,
+        BottomCentre = Bottom | Centre,
+        BottomRight = Bottom | Right,
+    };
+};
+CHECK_SIZE(TextAlignment, 4);
+
 // A text a font draws: where (fractions of the screen), its size (glyphs scaled so the font's "a" has the font's size), its
-// colour (RGBA bytes), its alignment (Align*) and the text ("~" starts a line)
+// colour (RGBA bytes), its alignment and the text ("~" starts a line)
 struct TextItem
 {
     Vector2 position;
     Vector2 scale;
     u32 colour;
-    u32 flags;
+    TextAlignment alignment;
     const char* text;
 };
 
@@ -26,7 +65,7 @@ struct TextLayout
     u8 glyphs[0x800];
     f32 height;
     s32 lineCount;
-    u8 unknownB08[0xC];
+    u8 unusedB08[0xC];
     u8 pages[4];
 };
 CHECK_OFFSET(TextLayout, pages, 0xB14);
@@ -44,20 +83,14 @@ CHECK_OFFSET(TextPackets, pages, 0x404);
 
 struct GameTexture;
 
-// A font (a PSF file): its glyphs (a quadword each: the page in the first byte's low bits, the width and height in z and w, then a
-// quadword of VIF codes the glyphs' upload runs: an MSCAL of VU1's program 0), the character of the first, the size its "a" is drawn at, its vtable,
-// and its pages (a material and a texture each). The vtable's functions: the destructor, then the frame's texts begun, a text
-// drawn and the texts finished
+// A font (a PSF file): its glyphs (a quadword each: the page in the first byte's low bits, the width and height in z and w in
+// sixteenths of a pixel, then a quadword of VIF codes the glyphs' upload runs: an MSCAL of VU1's program 0), the character of the
+// first, the size its "a" is drawn at, its vtable, and its pages (a material and a texture each). The vtable's functions: the
+// destructor, then the frame's texts begun, a text drawn and the texts finished
 class Font
 {
 public:
-    enum Align : u32
-    {
-        AlignTop = 1,
-        AlignBottom = 4,
-        AlignLeft = 0x10,
-        AlignRight = 0x40,
-    };
+    static constexpr u32 MaxPages = 3;
 
     s32 glyphCount;
     s32 firstCharacter;
@@ -66,9 +99,9 @@ public:
     f32 height;
     const GccVTableEntry* vtable;
     s32 pageCount;
-    MaterialResource* materials[3];
-    GameTexture* textures[3];
-    u8 unknown34[0xC];
+    MaterialResource* materials[MaxPages];
+    GameTexture* textures[MaxPages];
+    u8 unused34[0xC];
 
     // The base class's (D_002F6F80, its vtable at 0x14 too: 1 the destructor): no glyphs, the size 1; the glyphs freed (its vtable
     // left alone); the destructor

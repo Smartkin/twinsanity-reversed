@@ -1,6 +1,7 @@
 #include "game/instances.h"
 
 #include "game/agentparts.h"
+#include "game/agents.h"
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/gamecontroller.h"
@@ -30,16 +31,16 @@ extern "C"
     extern const GccVTableEntry g_GrapleNodeVTable[] RETAIL(UnkNode_0x13_Methods);
     extern const GccVTableEntry g_ProjectileNodeVTable[] RETAIL(UnkNode_0x14_Methods);
 
-    // The vtable functions: 1 an event handled (the agent's when it's of type 0x1801), 2 the destructor (the agent deleted with
-    // it; the kinds' are copies of the base's but the character's, grabbables' and projectiles'), 3 given its instance (the agent
+    // The vtable functions: 1 an event handled (the agent's when it's an attack), 2 the destructor (the agent deleted with it;
+    // the kinds' are copies of the base's but the character's, grabbables' and projectiles'), 3 given its instance (the agent
     // given the game's resources), 4 whether its instance may change chunks (the agent's say), 5 its kind, 7 a step (the
-    // agent's), 8 its update (the agent's frame when its clock runs; its instance's bit 9 cleared once its chunk lacks bit 23),
-    // 10 its type
+    // agent's), 8 its update (the agent's frame when its clock runs; its instance no longer in a drawn cell once its chunk's
+    // drawn cells hold none of its instances), 10 its type
     void AgentNodeHandleEvent(AgentNode* node, Reference** event) RETAIL(HandleEvent);
     void AgentNodeDestroy(AgentNode* node, u32 flags) RETAIL(FUN_0017a9c0);
     void AgentNodeSetOwner(AgentNode* node, InstanceContext* instance) RETAIL(FUN_0017aa30);
     u32 AgentNodeCanChangeChunk(AgentNode* node, ChunkData* from, ChunkLinkData* link) RETAIL(FUN_0017ab60);
-    void AgentNodeStep(AgentNode* node, TimeClock* clock, u32 unknown) RETAIL(FUN_0017aa78);
+    void AgentNodeStep(AgentNode* node, TimeClock* clock, u32 resetEntry) RETAIL(FUN_0017aa78);
     u32 AgentNodeUpdate(AgentNode* node, TimeClock* clock) RETAIL(FUN_0017aac8);
     u32 AgentNodeType(AgentNode* node) RETAIL(FUN_00179a08);
     void CharacterNodeDestroy(AgentNode* node, u32 flags) RETAIL(FUN_0017c870);
@@ -62,7 +63,7 @@ extern "C"
     u32 GrabbableNodeType(AgentNode* node) RETAIL(FUN_0017c8c8);
     void PayGateNodeDestroy(AgentNode* node, u32 flags) RETAIL(FUN_0017afb8);
     void PayGateNodeSetOwner(AgentNode* node, InstanceContext* instance) RETAIL(FUN_0017b028);
-    void PayGateNodeStep(AgentNode* node, TimeClock* clock, u32 unknown) RETAIL(FUN_0017b0a8);
+    void PayGateNodeStep(AgentNode* node, TimeClock* clock, u32 resetEntry) RETAIL(FUN_0017b0a8);
     u32 PayGateNodeKind(AgentNode* node) RETAIL(GetNodeIndex_0017AF60);
     u32 PayGateNodeType(AgentNode* node) RETAIL(FUN_0017af68);
     void GrapleNodeDestroy(AgentNode* node, u32 flags) RETAIL(FUN_0017ae28);
@@ -80,40 +81,10 @@ extern "C"
 
 namespace
 {
-// The events the agent handles itself
-constexpr u16 AgentEventType = 0x1801;
-// The agent's vtable functions: the destructor, whether its instance may change chunks, an event of its type and its frame
-constexpr u32 AgentDestroySlot = 2;
-constexpr u32 AgentCanChangeChunkSlot = 10;
-constexpr u32 AgentEventSlot = 20;
-constexpr u32 AgentFrameSlot = 22;
-// An instance's bit 9 (every instance the factory makes has it) and its chunk's bit 23
-constexpr u32 InstanceBit9 = 0x200;
-constexpr u32 ChunkBit23 = 0x800000;
-// The clock runs
-constexpr u32 ClockRunning = 0x1;
-// The pay gates' number: their third integer, into the low 12 bits of their part's word 0x14 bytes in
+// The pay gates' number: their third integer, given to their part
 constexpr u32 PayGateNumberIndex = 2;
-constexpr u32 PayGateNumberMask = 0xFFF;
 
-// The kinds and their types
-constexpr u32 CharacterKind = 0xC;
-constexpr u32 CrateKind = 0xD;
-constexpr u32 PickupKind = 0xE;
-constexpr u32 CreatureKind = 0xF;
-constexpr u32 GenericObjectKind = 0x10;
-constexpr u32 GrabbableKind = 0x11;
-constexpr u32 PayGateKind = 0x12;
-constexpr u32 GrapleKind = 0x13;
-constexpr u32 ProjectileKind = 0x14;
-constexpr u32 GameNodeType = 0x9001;
-constexpr u32 BaseType = 0x1423;
-// A grabbable's first integer: 1 a hook (else how many points it can be landed on from); the object nodes' kind, and what the
-// landing point's direction is normalized with
-constexpr u32 GrabbableKindIndex = 0;
-constexpr s32 HookGrabbable = 1;
-constexpr u32 ObjectNodeKind = 1;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+// The agents' nodes' types
 constexpr u32 CharacterType = 0x9002;
 constexpr u32 CrateType = 0x9003;
 constexpr u32 CreatureType = 0x9004;
@@ -123,6 +94,12 @@ constexpr u32 GenericObjectType = 0x9009;
 constexpr u32 PayGateType = 0x900A;
 constexpr u32 GrapleType = 0x900B;
 constexpr u32 ProjectileType = 0x900C;
+// The types of the game nodes' base and of the agents' nodes' base
+constexpr u32 GameNodeType = 0x9001;
+constexpr u32 BaseType = 0x1423;
+// A grabbable's first integer: 1 a hook (else how many points it can be landed on from)
+constexpr u32 GrabbableKindIndex = 0;
+constexpr s32 HookGrabbable = 1;
 
 AgentNode* ConstructWith(AgentNode* node, Agent* agent, const GccVTableEntry* vtable)
 {
@@ -134,7 +111,7 @@ AgentNode* ConstructWith(AgentNode* node, Agent* agent, const GccVTableEntry* vt
 
 GameResources* GameResourcesOf()
 {
-    return G_GameController_00309890->resources;
+    return g_AgentNodesGameController->resources;
 }
 
 void GivePayGateNumber(AgentNode* node)
@@ -142,7 +119,7 @@ void GivePayGateNumber(AgentNode* node)
     Agent* agent = node->agent;
     s32 number = agent->properties->GetInt(PayGateNumberIndex);
     auto* part = static_cast<PayGatePart*>(agent->part);
-    part->value = (part->value & ~PayGateNumberMask) | (static_cast<u32>(number) & PayGateNumberMask);
+    part->payGate.number = number;
 }
 }
 
@@ -191,27 +168,25 @@ AgentNode* ConstructGrapleNode(AgentNode* node, Agent* agent)
     return ConstructWith(node, agent, g_GrapleNodeVTable);
 }
 
-// The event's sender (what its object's 0xC bytes point at) goes with an event the agent handles; another's reference is taken
-// for the game node's handling. The event is let go of either way
+// An attack goes to the agent with its sender (the event's argument); another event's reference is taken for the game node's
+// handling. The event is let go of either way
 void AgentNodeHandleEvent(AgentNode* node, Reference** event)
 {
     Agent* agent = node->agent;
     Reference* reference = *event;
-    auto* object = reference != nullptr ? reinterpret_cast<u8*>(reference->object) : nullptr;
-    auto* sender = *reinterpret_cast<void***>(object + 0xC);
-    void* senderObject = sender != nullptr ? *sender : nullptr;
-    auto* type = reinterpret_cast<u16*>(object + 4);
-    if (*type == AgentEventType)
+    auto* handled = reference != nullptr ? reinterpret_cast<GameEvent*>(reference->object) : nullptr;
+    Reference* sender = handled->argument;
+    ReferencedObject* senderObject = sender != nullptr ? sender->object : nullptr;
+    if (handled->id == AttackEvent::EventId)
     {
-        CallVirtual<void>(agent, agent->vtable, AgentEventSlot, reference->object, senderObject);
+        CallVirtual<void>(agent, agent->vtable, Agent::AttackedSlot, reference->object, senderObject);
     }
     else
     {
         Reference* taken = reference;
         if (reference != nullptr)
         {
-            u32 count = ((reference->value & ReferenceBits::CountMask) + 1) & ReferenceBits::CountMask;
-            reference->value = (reference->value & ~ReferenceBits::CountMask) | count;
+            reference->bits.count++;
         }
 
         node->HandleEvent(&taken);
@@ -226,7 +201,7 @@ void AgentNodeDestroy(AgentNode* node, u32 flags)
     Agent* agent = node->agent;
     if (agent != nullptr)
     {
-        CallVirtual<void>(agent, agent->vtable, AgentDestroySlot, DestroyAndFree);
+        CallVirtual<void>(agent, agent->vtable, Agent::DestroySlot, DestroyAndFree);
     }
 
     node->vtable = g_AgentNodeBaseVTable;
@@ -244,12 +219,12 @@ void AgentNodeSetOwner(AgentNode* node, InstanceContext* instance)
 u32 AgentNodeCanChangeChunk(AgentNode* node, ChunkData* from, ChunkLinkData* link)
 {
     Agent* agent = node->agent;
-    return CallVirtual<u32>(agent, agent->vtable, AgentCanChangeChunkSlot, from, link);
+    return CallVirtual<u32>(agent, agent->vtable, Agent::CanChangeChunkSlot, from, link);
 }
 
-void AgentNodeStep(AgentNode* node, TimeClock* clock, u32 unknown)
+void AgentNodeStep(AgentNode* node, TimeClock* clock, u32 resetEntry)
 {
-    AgentStep(node->agent, GameResourcesOf(), clock, unknown);
+    AgentStep(node->agent, GameResourcesOf(), clock, resetEntry);
     node->time = clock->time;
 }
 
@@ -258,14 +233,14 @@ u32 AgentNodeUpdate(AgentNode* node, TimeClock* clock)
     InstanceContext* instance = node->owner;
     ChunkData* chunk = instance->chunk;
     Agent* agent = node->agent;
-    if (chunk != nullptr && (chunk->bits & ChunkBit23) == 0)
+    if (chunk != nullptr && chunk->flags.drawn == 0)
     {
-        instance->flags &= ~InstanceBit9;
+        instance->flags.inDrawnCell = 0;
     }
 
-    if ((*reinterpret_cast<u8*>(&clock->flags) & ClockRunning) != 0)
+    if (clock->flags.running != 0)
     {
-        CallVirtual<void>(agent, agent->vtable, AgentFrameSlot, clock);
+        CallVirtual<void>(agent, agent->vtable, Agent::FrameSlot, clock);
     }
 
     return node->Update(clock);
@@ -283,7 +258,7 @@ void CharacterNodeDestroy(AgentNode* node, u32 flags)
 
 u32 CharacterNodeKind(AgentNode*)
 {
-    return CharacterKind;
+    return NodeCharacter;
 }
 
 u32 CharacterNodeType(AgentNode*)
@@ -298,7 +273,7 @@ void CrateNodeDestroy(AgentNode* node, u32 flags)
 
 u32 CrateNodeKind(AgentNode*)
 {
-    return CrateKind;
+    return NodeCrate;
 }
 
 u32 CrateNodeType(AgentNode*)
@@ -313,7 +288,7 @@ void PickupNodeDestroy(AgentNode* node, u32 flags)
 
 u32 PickupNodeKind(AgentNode*)
 {
-    return PickupKind;
+    return NodePickup;
 }
 
 u32 PickupNodeType(AgentNode*)
@@ -328,7 +303,7 @@ void CreatureNodeDestroy(AgentNode* node, u32 flags)
 
 u32 CreatureNodeKind(AgentNode*)
 {
-    return CreatureKind;
+    return NodeCreature;
 }
 
 u32 CreatureNodeType(AgentNode*)
@@ -343,7 +318,7 @@ void GenericObjectNodeDestroy(AgentNode* node, u32 flags)
 
 u32 GenericObjectNodeKind(AgentNode*)
 {
-    return GenericObjectKind;
+    return NodeGenericObject;
 }
 
 u32 GenericObjectNodeType(AgentNode*)
@@ -358,7 +333,7 @@ void GrabbableNodeDestroy(AgentNode* node, u32 flags)
 
 u32 GrabbableNodeKind(AgentNode*)
 {
-    return GrabbableKind;
+    return NodeGrabbable;
 }
 
 u32 GrabbableNodeType(AgentNode*)
@@ -377,15 +352,15 @@ void PayGateNodeSetOwner(AgentNode* node, InstanceContext* instance)
     GivePayGateNumber(node);
 }
 
-void PayGateNodeStep(AgentNode* node, TimeClock* clock, u32 unknown)
+void PayGateNodeStep(AgentNode* node, TimeClock* clock, u32 resetEntry)
 {
-    AgentNodeStep(node, clock, unknown);
+    AgentNodeStep(node, clock, resetEntry);
     GivePayGateNumber(node);
 }
 
 u32 PayGateNodeKind(AgentNode*)
 {
-    return PayGateKind;
+    return NodePayGate;
 }
 
 u32 PayGateNodeType(AgentNode*)
@@ -400,7 +375,7 @@ void GrapleNodeDestroy(AgentNode* node, u32 flags)
 
 u32 GrapleNodeKind(AgentNode*)
 {
-    return GrapleKind;
+    return NodeGraple;
 }
 
 u32 GrapleNodeType(AgentNode*)
@@ -421,7 +396,7 @@ u32 ProjectileNodeUpdate(AgentNode*, TimeClock*)
 
 u32 ProjectileNodeKind(AgentNode*)
 {
-    return ProjectileKind;
+    return NodeProjectile;
 }
 
 u32 ProjectileNodeType(AgentNode*)
@@ -454,7 +429,7 @@ Vector4* GrabbableLandingPoint(AgentNode* node, ObjectPlace* place)
         return nullptr;
     }
 
-    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&node->owner->nodes, ObjectNodeKind))->waypoints;
+    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&node->owner->nodes, NodeObject))->waypoints;
     if (waypoints == nullptr)
     {
         return nullptr;
@@ -469,7 +444,7 @@ Vector4* GrabbableLandingPoint(AgentNode* node, ObjectPlace* place)
     // The point the place faces most (its z axis, from its translation)
     const Matrix4x4& matrix = place->matrix;
     Vector4* landing = nullptr;
-    f32 best = -Rounded(1e30);
+    f32 best = -Infinite;
     for (u32 index = 0; index < count; index++)
     {
         LayoutPosition* position = index < waypoints->keyCount ? waypoints->positions.data[index] : nullptr;

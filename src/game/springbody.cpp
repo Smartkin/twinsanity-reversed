@@ -20,15 +20,11 @@ namespace
 constexpr f32 DefaultStiffness = 1000.0f;
 // Springs whose ends are nearer pull nothing
 constexpr f32 MinimumSpringLength = 0x1.0624dep-10f;
-// The fixed axis's parts within this of 0 are none
-constexpr f32 AxisEpsilon = 0x1.a36e2ep-15f;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // A step longer than a 50th of a second takes its passes once for every whole 50th of a second in it
 constexpr f32 LongStep = 0x1.47ae14p-6f;
 constexpr f32 PassesPerSecond = 50.0f;
 // The room the arrays are made with and grow by
 constexpr u32 ArrayRoom = 10;
-constexpr u32 NoJoint = 0xFF;
 
 void DestroyIterator(ArrayIterator* iterator, const GccVTableEntry* base, u32 flags)
 {
@@ -87,7 +83,7 @@ OgiAnimator* AnimatorOf(const SpringSkeleton* skeleton)
         return nullptr;
     }
 
-    auto* node = static_cast<ModelNode*>(GetGameNode(&InstanceOf(skeleton)->nodes, ModelNode::NodeKind));
+    auto* node = static_cast<ModelNode*>(GetGameNode(&InstanceOf(skeleton)->nodes, NodeModel));
     if (node == nullptr)
     {
         return nullptr;
@@ -458,7 +454,7 @@ void LayChain(SpringChain* chain, const Vector4* start, const Vector4* end)
     StopSpringPoint(chain->last);
 }
 
-void AddSpring(SpringBody* body, SpringChain* chain)
+void AddSpringChain(SpringBody* body, SpringChain* chain)
 {
     body->chains.Append(chain);
 }
@@ -539,8 +535,8 @@ void MoveSpringPoint(f32 seconds, SpringPoint* point, const Vector4* fixedAxis)
 void MoveSpringPoints(f32 seconds, SpringBody* body)
 {
     const Vector4* fixedAxis = &body->fixedAxis;
-    if (__builtin_fabsf(fixedAxis->x) <= AxisEpsilon && __builtin_fabsf(fixedAxis->y) <= AxisEpsilon &&
-        __builtin_fabsf(fixedAxis->z) <= AxisEpsilon)
+    if (__builtin_fabsf(fixedAxis->x) <= Epsilon && __builtin_fabsf(fixedAxis->y) <= Epsilon &&
+        __builtin_fabsf(fixedAxis->z) <= Epsilon)
     {
         fixedAxis = nullptr;
     }
@@ -557,7 +553,7 @@ void MoveSpringPoints(f32 seconds, SpringBody* body)
 
 void SimulateSpringBody(SpringBody* body, TimeClock* clock, const Vector4* force, const Vector4* gravity)
 {
-    if ((clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock->flags.running == 0)
     {
         return;
     }
@@ -598,7 +594,7 @@ void DestroySpringBody(SpringBody* body, u32 destroyFlags)
         SpringChain* chain = body->chains.data[index];
         if (chain != nullptr)
         {
-            CallVirtual<void>(chain, chain->vtable, 1, DestroyAndFree);
+            CallVirtual<void>(chain, chain->vtable, SpringChain::DestroySlot, DestroyAndFree);
         }
     }
 
@@ -629,7 +625,8 @@ SpringSkeleton* SpringSkeleton::Construct(SpringSkeleton* skeleton, u32 passes, 
     Clear(&body->fixedAxis);
     skeleton->instance = instance != nullptr ? AddReference(instance) : nullptr;
     // Blended out, nothing asked for
-    skeleton->flags = BlendNone << RequestShift;
+    skeleton->flags.value = 0;
+    skeleton->flags.requestedBlend = BlendNone;
     return skeleton;
 }
 
@@ -647,7 +644,7 @@ void SpringSkeleton::BaseDestroy(u32 destroyFlags)
 
 u32 SpringSkeleton::AttachToInstance()
 {
-    if ((flags & FlagAttached) != 0)
+    if (flags.attached != 0)
     {
         return 0;
     }
@@ -658,14 +655,14 @@ u32 SpringSkeleton::AttachToInstance()
         return 0;
     }
 
-    flags |= FlagAttached;
+    flags.attached = 1;
     AttachVirtual(animator);
     return 1;
 }
 
 u32 SpringSkeleton::DetachFromInstance()
 {
-    if ((flags & FlagAttached) == 0)
+    if (flags.attached == 0)
     {
         return 0;
     }
@@ -676,23 +673,23 @@ u32 SpringSkeleton::DetachFromInstance()
         return 0;
     }
 
-    flags &= ~u32{FlagAttached};
+    flags.attached = 0;
     DetachVirtual(animator);
     return 1;
 }
 
 void SpringSkeleton::StepBlend(TimeClock* clock)
 {
-    u32 requested = flags >> RequestShift & BlendMask;
+    u32 requested = flags.requestedBlend;
     if (requested != BlendNone)
     {
-        flags = (flags & ~(BlendMask << BlendShift)) | requested << BlendShift;
+        flags.blend = requested;
         blendStart = static_cast<s32>(clock->time);
-        RequestBlend(BlendNone);
+        flags.requestedBlend = BlendNone;
     }
 
     bool done;
-    switch (BlendState())
+    switch (flags.blend)
     {
     case BlendedIn:
         blend = 1.0f;
@@ -701,7 +698,7 @@ void SpringSkeleton::StepBlend(TimeClock* clock)
         blend = BlendShare(this, clock, &done);
         if (done)
         {
-            RequestBlend(BlendedIn);
+            flags.requestedBlend = BlendedIn;
         }
 
         break;
@@ -710,7 +707,7 @@ void SpringSkeleton::StepBlend(TimeClock* clock)
         f32 share = BlendShare(this, clock, &done);
         if (done)
         {
-            RequestBlend(BlendedOut);
+            flags.requestedBlend = BlendedOut;
         }
 
         blend = 1.0f - share;
@@ -720,7 +717,7 @@ void SpringSkeleton::StepBlend(TimeClock* clock)
         break;
     }
 
-    if (BlendState() == BlendedOut || InstanceOf(this) == nullptr)
+    if (flags.blend == BlendedOut || InstanceOf(this) == nullptr)
     {
         return;
     }
@@ -729,10 +726,10 @@ void SpringSkeleton::StepBlend(TimeClock* clock)
     RotateAndTranslate(place);
     instanceMatrix = place->matrix;
     VuInvertRigid(&toInstance, &instanceMatrix);
-    if ((flags & FlagTurnsAxis) != 0)
+    if (flags.turnsAxis != 0)
     {
         VuRotateVector(&toInstance, &axis, &instanceAxis);
-        flags |= FlagAxisTurned;
+        flags.axisTurned = 1;
     }
 }
 
@@ -745,26 +742,26 @@ void SpringSkeleton::BlendIn(s32 ticks)
 
     if (ticks == 0)
     {
-        RequestBlend(BlendedIn);
+        flags.requestedBlend = BlendedIn;
         return;
     }
 
     blendTicks = ticks;
     blendStart = 0;
-    RequestBlend(BlendingIn);
+    flags.requestedBlend = BlendingIn;
 }
 
 void SpringSkeleton::PoseJointFromPoints(u32 joint, u32 toward, JointAnimator* animator)
 {
     u8 jointId = static_cast<u8>(joint);
     u8 towardId = static_cast<u8>(toward);
-    if (towardId != NoJoint)
+    if (towardId != GameOGI::NoJoint)
     {
         TurnJointToward(jointId, towardId, animator);
         return;
     }
 
-    if (BlendState() == BlendedOut)
+    if (flags.blend == BlendedOut)
     {
         return;
     }
@@ -786,7 +783,7 @@ void SpringSkeleton::TurnJointToward(u32 joint, u32 toward, JointAnimator* anima
 {
     u8 jointId = static_cast<u8>(joint);
     u8 towardId = static_cast<u8>(toward);
-    if (BlendState() == BlendedOut)
+    if (flags.blend == BlendedOut)
     {
         return;
     }
@@ -794,7 +791,7 @@ void SpringSkeleton::TurnJointToward(u32 joint, u32 toward, JointAnimator* anima
     JointAnimation* animation = animator->animation;
     JointAnimation* towardJoint = FindChildJoint(animation, towardId, 1);
     JointAnimation* parent = animation->parent;
-    const JointStruct* towardBind = towardJoint->joint;
+    const OgiJoint* towardBind = towardJoint->joint;
     SpringPoint** points = body.points.data;
     SpringPoint* from = points[jointId];
     SpringPoint* to = points[towardId];
@@ -815,7 +812,7 @@ void SpringSkeleton::TurnJointToward(u32 joint, u32 toward, JointAnimator* anima
     way.x = way.x - start.x;
     way.y = way.y - start.y;
     way.z = way.z - start.z;
-    if ((flags & FlagAxisTurned) != 0)
+    if (flags.axisTurned != 0)
     {
         RemoveComponentAlong(&bindWay, &instanceAxis, 0);
         RemoveComponentAlong(&way, &instanceAxis, 0);
@@ -837,7 +834,7 @@ void SpringSkeleton::TurnJointToward(u32 joint, u32 toward, JointAnimator* anima
     {
         rotation = {0.0f, 0.0f, 0.0f, 1.0f};
     }
-    else if ((flags & FlagAxisTurned) != 0)
+    else if (flags.axisTurned != 0)
     {
         angle = turn;
         RotationAboutAxis(&rotation, &instanceAxis, &angle, 0);

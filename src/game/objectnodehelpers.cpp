@@ -23,11 +23,11 @@
 
 extern "C"
 {
-    // The statics of the module before: GCC 2.9x's initialisation function (a word nothing reads made 0, called for every
-    // priority) and the module's global constructor
-    void InitModuleStatics229060(u32 initialise, u32 priority) RETAIL(FUN_00229060);
-    void ConstructModule229060() RETAIL(FUN_0022c2c8);
-    extern u32 g_StaticWord30A938 RETAIL(D_0030A938);
+    // The statics of the module before (the script conditions' classes from 1 to 176): GCC 2.9x's initialisation function (a
+    // word nothing reads made 0, called for every priority) and the module's global constructor
+    void InitConditionClassesStatics(u32 initialise, u32 priority) RETAIL(FUN_00229060);
+    void ConstructConditionClassesModule() RETAIL(FUN_0022c2c8);
+    extern u32 g_ConditionClassesUnused RETAIL(D_0030A938);
     // A surface's impact particles and sound played at a point
     void SpawnSurfaceImpactParticles(InstanceContext* instance, CollisionSurface* surface, const Vector4* point);
     void PlaySurfaceImpactSound(ObjectNode* node, CollisionSurface* surface, const Vector4* point);
@@ -49,55 +49,12 @@ EABI_EXPORT(PlaySurfaceContactHard, PlaySurfaceContactHard);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// Angles in 65536ths of a turn to radians
-constexpr f32 RadiansPerUnit = Rounded(6.283185307179586 / 65536.0);
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 NoDesignator = 0xFF;
-constexpr u32 FocusReceiver = 0xFB;
-// The designator of the runner's originator
-constexpr u32 DesignatesOriginator = 0xF4;
-constexpr u32 NoSound = 0xFFFF;
-constexpr u32 NoParticles = 0xFFFF;
-constexpr u8 NoSlot = 0xFF;
-// The agent's vtable functions: a velocity of its own (whether it has one), 12 (a yes keeps the water's sound and splash away),
-// a contact message, a contact sound of what it rides played
-constexpr u32 OwnVelocitySlot = 11;
-constexpr u32 AgentSlot12 = 12;
-constexpr u32 AgentContactSlot = 9;
-constexpr u32 RideSoundSlot = 17;
-// An object node's vtable function 27: pushed by another instance (the strength first)
-constexpr u32 PushedSlot = 27;
-// A physics body's vtable function 15: whether it's a sphere
-constexpr u32 IsSphereSlot = 15;
-// Bit 41 of the node's 64 bits at 0x150 (what command 194 sets): it plays no contact sounds
-constexpr u64 NoContactSounds = u64{1} << 41;
-// An instance whose seen stamp (the distance the scenery's draw keeps in it) is past this plays no contact sounds
-constexpr u32 FarStamp = 0x1FA4;
-// Bit 20 of a surface's collision mask (solid to the player): a strong contact plays what the agent rides's sound and the node's
-// contact sound
-constexpr u32 SurfaceSolidToPlayer = 0x100000;
-// Bit 25 of the rigid body's word at 0x90: its agent is told it touched water
-constexpr u64 TellsWaterTouches = 0x2000000;
 // The surface ID of water
 constexpr s32 WaterSurface = 0xC;
-// The contact kinds of a surface's sounds and particles
-constexpr u32 ScrapeContact = 5;
-
-// The spaces of a script's positions: the world's, the instance's start, its own place, the target's (the receiver's instance or
-// the designated one), facing from the instance to what its packet tracks, its rigid body's object, none, its stored place
-enum Space : u32
-{
-    SpaceWorld = 0,
-    SpaceStart = 1,
-    SpaceOwn = 2,
-    SpaceTarget = 3,
-    SpaceTracked = 4,
-    SpaceRigidBody = 5,
-    SpaceNone = 6,
-    SpaceStored = 7,
-};
+// The sounds' group (none), and their repeats: none for a sound at a position, followed with the instance for an instance's
+constexpr s32 NoGroup = 0;
+constexpr s32 NotLast = -1;
+constexpr s32 FollowsInstance = 0;
 
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
@@ -106,7 +63,7 @@ ObjectNode* NodeOf(BehaviourRunner* runner)
 
 bool IsAsleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // An instance's place as the retail code reads it, also when there's no instance (the word at address 8 then)
@@ -137,40 +94,7 @@ void AddTurned(Vector4* vector, const Matrix4x4* matrix, const Vector4* offset)
 // An instance's seen stamp (24 bits)
 u32 SeenStamp(const InstanceContext* instance)
 {
-    return instance->seen[0] | instance->seen[1] << 8 | instance->seen[2] << 16;
-}
-
-// The node's bytes past what game/objectnode.h names: the sound its hard contacts keep playing (0x158, none 0xFF), its contact
-// sound's slots (0x168 and 0x169, 0xFF none) and the value that plays it while it's negative (0x16C), and the clock time of its
-// last surface contact (0x170)
-u8& HardContactSound(ObjectNode* node)
-{
-    return node->unknown155[0x158 - 0x155];
-}
-
-u8& ContactSoundFirst(ObjectNode* node)
-{
-    return node->unknown155[0x168 - 0x155];
-}
-
-u8& ContactSoundLast(ObjectNode* node)
-{
-    return node->unknown155[0x169 - 0x155];
-}
-
-f32& ContactSoundValue(ObjectNode* node)
-{
-    return *reinterpret_cast<f32*>(&node->unknown155[0x16C - 0x155]);
-}
-
-u32& LastContactTime(ObjectNode* node)
-{
-    return *reinterpret_cast<u32*>(&node->unknown155[0x170 - 0x155]);
-}
-
-u64 NodeBits150(const ObjectNode* node)
-{
-    return *reinterpret_cast<const u64*>(&node->unknown150);
+    return instance->seen;
 }
 
 // Seconds of an instance's clock since a time
@@ -184,7 +108,7 @@ f32 SecondsSince(InstanceContext* instance, u32 time)
 void NodeVelocity(ObjectNode* node, Vector4* velocity)
 {
     Agent* agent = node->agent;
-    if (CallVirtual<u32>(agent, agent->vtable, OwnVelocitySlot, velocity) != 0)
+    if (CallVirtual<u32>(agent, agent->vtable, Agent::VelocitySlot, velocity) != 0)
     {
         return;
     }
@@ -222,12 +146,12 @@ void SnapInstanceRotation(f32 step, InstanceContext* instance, u32 axis)
     place->SyncRotation();
     s32 angles[3];
     AnglesOfRotation(&place->rotation, &angles[0], &angles[1], &angles[2]);
-    f32 steps = (static_cast<f32>(angles[axis]) * RadiansPerUnit + step * 0.5f) / step;
+    f32 steps = (static_cast<f32>(angles[axis]) * AngleToRadians + step * 0.5f) / step;
     s32 snapped;
     AngleFrom(&snapped, step * static_cast<f32>(static_cast<s32>(steps)), AngleRadians);
     place = instance->place;
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
     AnglesOfRotation(&place->rotation, &angles[0], &angles[1], &angles[2]);
     angles[axis] = snapped;
     GetRotationXYZ(&place->rotation, &angles[0], &angles[1], &angles[2]);
@@ -235,39 +159,34 @@ void SnapInstanceRotation(f32 step, InstanceContext* instance, u32 axis)
 }
 }
 
-void InitModuleStatics229060(u32 initialise, u32 priority)
+void InitConditionClassesStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
-    g_StaticWord30A938 = 0;
+    g_ConditionClassesUnused = 0;
 }
 
-void ConstructModule229060()
+void ConstructConditionClassesModule()
 {
-    InitModuleStatics229060(1, 0xFFFF);
+    InitConditionClassesStatics(1, DefaultInitPriority);
 }
 
 // The surface's impact sound (contact kind 0) at the point in the node's instance's chunk, at the surface's volume scale and
 // the sound's own pitch, in the voice kind of where the listener is
 void PlaySurfaceImpactSound(ObjectNode* node, CollisionSurface* surface, const Vector4* point)
 {
-    constexpr u32 ImpactContact = 0;
-    constexpr f32 OwnPitch = -1.0f;
-    constexpr s32 NoGroup = 0;
-    constexpr s32 NotLast = -1;
     f32 volume = -1.0f;
-    u32 sound = GetSurfaceSound(surface, ImpactContact, &volume);
-    if (sound == NoSound)
+    u32 sound = GetSurfaceSound(surface, ContactImpact, &volume);
+    if (sound == NoSoundId)
     {
         return;
     }
 
     s32 voiceKind = ListenerVoiceKind();
-    PlaySoundByIdAt(volume, OwnPitch, static_cast<u16>(sound), NoGroup, node->owner->chunk, point, voiceKind, NotLast);
+    PlaySoundByIdAt(volume, OwnScale, static_cast<u16>(sound), NoGroup, node->owner->chunk, point, voiceKind, NotLast);
 }
 
 u32 IsWithinAiPosition(const AiPosition* position, GameNode* node)
@@ -408,9 +327,9 @@ void DesignatedPosition(Vector4* position, u32 space, BehaviourRunner* runner, c
     ObjectPlace* place = nullptr;
     bool fromPlace = false;
     bool found = false;
-    if (receiver != NoDesignator)
+    if (receiver != DesignatesNone)
     {
-        if (receiver == FocusReceiver)
+        if (receiver == DesignatesFocus)
         {
             target = node->AwakeFocus();
             fromPlace = target != nullptr;
@@ -432,7 +351,7 @@ void DesignatedPosition(Vector4* position, u32 space, BehaviourRunner* runner, c
             place = target->place;
         }
     }
-    else if (designator != NoDesignator)
+    else if (designator != DesignatesNone)
     {
         Waypoints* waypoints = node->waypoints;
         LayoutPosition* key;
@@ -449,7 +368,7 @@ void DesignatedPosition(Vector4* position, u32 space, BehaviourRunner* runner, c
             fromPlace = true;
             break;
         case DesignatesStoredPosition:
-            if ((node->flags & ObjectNodeBase::FlagStoredPosition) != 0)
+            if (node->flags.storedPosition)
             {
                 result = node->storedPosition;
                 found = true;
@@ -457,8 +376,7 @@ void DesignatedPosition(Vector4* position, u32 space, BehaviourRunner* runner, c
 
             break;
         case DesignatesAgentRef2:
-            if (node->agentRef2 != nullptr && IsAsleep(node->agentRef2)
-                && (node->flags & ObjectNodeBase::FlagKeepsAgentRef2) == 0)
+            if (node->agentRef2 != nullptr && IsAsleep(node->agentRef2) && !node->flags.keepsAgentRef2)
             {
                 node->agentRef2 = nullptr;
             }
@@ -502,7 +420,7 @@ void DesignatedPosition(Vector4* position, u32 space, BehaviourRunner* runner, c
 
             break;
         case DesignatesFocusPosition:
-            if ((node->flags & ObjectNodeBase::FlagFocusPosition) != 0)
+            if (node->flags.focusPosition)
             {
                 result.x = node->focusPosition.x;
                 result.y = node->focusPosition.y;
@@ -671,9 +589,9 @@ ObjectPlace* SpaceOfRequest(BehaviourRunner* runner, u32, u32 target, u32 receiv
 {
     target &= 0xFF;
     receiver &= 0xFF;
-    if (target == NoDesignator)
+    if (target == DesignatesNone)
     {
-        if (receiver == NoDesignator)
+        if (receiver == DesignatesNone)
         {
             return runner->agentNode->owner->place;
         }
@@ -681,7 +599,7 @@ ObjectPlace* SpaceOfRequest(BehaviourRunner* runner, u32, u32 target, u32 receiv
         return RetailPlaceOf(runner->receivers->instances[receiver]);
     }
 
-    if (target != FocusReceiver)
+    if (target != DesignatesFocus)
     {
         return nullptr;
     }
@@ -699,7 +617,7 @@ u32 JointPosition(InstanceContext* instance, u32 joint, Vector4* position, const
         return 0;
     }
 
-    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     OgiAnimator* animator = model->animator;
     if (animator == nullptr)
     {
@@ -801,7 +719,7 @@ void SpinAlongMove(f32, f32 degreesPerUnit, ObjectNode* node, const Vector4* mov
 
     ObjectPlace* place = instance->place;
     place->SyncRotation();
-    place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+    place->MarkTurned();
     Vector4 rotation;
     if (axis == 0)
     {
@@ -847,14 +765,14 @@ void NotifyInstancesWithin(f32 radius, ObjectNode* node)
     }
 
     void* results[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = results;
     query.most = MostFound;
     query.count = 0;
-    query.distance = Rounded(1e30);
-    query.bits = InstanceRayHit::BitAllWanted;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
-    query.wantedFlags = ReferencedObject::FlagPhysicsBody | ReferencedObject::FlagSphereContact;
+    query.distance = Infinite;
+    query.bits.value = InstanceQueryBits::AllWanted;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
+    query.wantedFlags = ReferencedObjectFlags::PhysicsBody | ReferencedObjectFlags::CollisionActive;
     query.skipped[0] = nullptr;
     query.instance = nullptr;
     query.skipped[1] = nullptr;
@@ -863,8 +781,8 @@ void NotifyInstancesWithin(f32 radius, ObjectNode* node)
     for (u16 index = 0; index < found; index++)
     {
         auto* other = static_cast<InstanceContext*>(results[index]);
-        auto* otherNode = static_cast<GameNode*>(GetGameNode(&other->nodes, ObjectNodeKind));
-        CallVirtual<void>(otherNode, otherNode->vtable, PushedSlot, 0.0f, node->owner);
+        auto* otherNode = static_cast<GameNode*>(GetGameNode(&other->nodes, NodeObject));
+        CallVirtual<void>(otherNode, otherNode->vtable, ObjectNode::PushSlot, 0.0f, node->owner);
     }
 }
 
@@ -877,7 +795,7 @@ void ObjectNode::TouchedWater(const CollisionHit* hit, const Vector4* position)
     }
 
     // Where it touched, on the water's plane
-    unknown140 = *position;
+    waterPoint = *position;
     Vector4 plane;
     PlaneThroughTriangle(&plane, &hit->vertices[0], &hit->vertices[1], &hit->vertices[2]);
     Vector4 normal;
@@ -885,8 +803,8 @@ void ObjectNode::TouchedWater(const CollisionHit* hit, const Vector4* position)
     normal.y = plane.y;
     normal.z = plane.z;
     normal.w = 1.0f;
-    ProjectOntoPlaneInPlace(&plane, &unknown140);
-    if (unknown134 != WaterSurface)
+    ProjectOntoPlaneInPlace(&plane, &waterPoint);
+    if (waterSurface != WaterSurface)
     {
         EnteredWater(this, touched, &normal);
     }
@@ -895,18 +813,18 @@ void ObjectNode::TouchedWater(const CollisionHit* hit, const Vector4* position)
         MovedInWater(this, touched, &normal);
     }
 
-    unknown134 = WaterSurface;
-    if (rigidBody == nullptr || (rigidBody->bits90 & TellsWaterTouches) == 0)
+    waterSurface = WaterSurface;
+    if (rigidBody == nullptr || !rigidBody->state.tellsWaterTouches)
     {
         return;
     }
 
     ContactMessage message;
-    message.point = unknown140;
-    message.word = g_WaterContactKinds;
-    message.byte = 1;
+    message.point = waterPoint;
+    message.hitKinds = g_WaterContactKinds;
+    message.damage = 1;
     message.point.w = 0.0f;
-    CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &message, owner, 1u);
+    CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &message, owner, 1u);
 }
 
 void EnteredWater(ObjectNode* node, CollisionSurface* surface, const Vector4*)
@@ -926,14 +844,14 @@ void EnteredWater(ObjectNode* node, CollisionSurface* surface, const Vector4*)
     Vector4 velocity;
     NodeVelocity(node, &velocity);
     Vector4 splash = velocity;
-    splash.x = velocity.x * Lead + node->unknown140.x;
-    splash.z = velocity.z * Lead + node->unknown140.z;
-    splash.y = node->unknown140.y;
-    if (SplashInterval < SecondsSince(node->owner, node->unknown150))
+    splash.x = velocity.x * Lead + node->waterPoint.x;
+    splash.z = velocity.z * Lead + node->waterPoint.z;
+    splash.y = node->waterPoint.y;
+    if (SplashInterval < SecondsSince(node->owner, node->reactions.splashTime))
     {
         SpawnSurfaceImpactParticles(node->owner, surface, &splash);
         PlaySurfaceImpactSound(node, surface, &splash);
-        node->unknown150 = GetContextClock(node->owner)->time;
+        node->reactions.splashTime = GetContextClock(node->owner)->time;
     }
 
     ObjectRigidBody* body = node->rigidBody;
@@ -964,7 +882,8 @@ void EnteredWater(ObjectNode* node, CollisionSurface* surface, const Vector4*)
     f32 across = __builtin_sqrtf(velocity.x * velocity.x + velocity.z * velocity.z);
     f32 bounce = spin * SkimSpinBounce + SkimBounce;
     f32 flatness = across / -fall;
-    f32 steepest = CallVirtual<u32>(physicsBody, physicsBody->vtable, IsSphereSlot) != 0 ? SteepestSphereSkim : SteepestSkim;
+    f32 steepest = CallVirtual<u32>(physicsBody, physicsBody->vtable, DynamicBody::IsSphereSlot) != 0 ? SteepestSphereSkim
+                                                                                                   : SteepestSkim;
     if (flatness < steepest)
     {
         bounce = 0.0f;
@@ -1005,25 +924,25 @@ void MovedInWater(ObjectNode* node, CollisionSurface* surface, const Vector4* no
     }
 
     Vector4 wake = velocity;
-    wake.x = velocity.x * Lead + node->unknown140.x;
-    wake.z = velocity.z * Lead + node->unknown140.z;
-    wake.y = node->unknown140.y;
+    wake.x = velocity.x * Lead + node->waterPoint.x;
+    wake.z = velocity.z * Lead + node->waterPoint.z;
+    wake.y = node->waterPoint.y;
     // (The surface goes as the decal's unused argument)
     ScatterDecal(node->owner, static_cast<u32>(reinterpret_cast<std::uintptr_t>(surface)), &wake, chance);
     Agent* agent = node->agent;
-    if (CallVirtual<u32>(agent, agent->vtable, AgentSlot12) != 0)
+    if (CallVirtual<u32>(agent, agent->vtable, Agent::IsCharacterSlot) != 0)
     {
         return;
     }
 
-    f32 elapsed = SecondsSince(node->owner, node->unknown150);
+    f32 elapsed = SecondsSince(node->owner, node->reactions.splashTime);
     if (!(SoundSpeed < speed) || !(SoundInterval < elapsed))
     {
         return;
     }
 
     PlaySurfaceImpactSound(node, surface, &wake);
-    node->unknown150 = GetContextClock(node->owner)->time;
+    node->reactions.splashTime = GetContextClock(node->owner)->time;
     if (SplashSpeed < velocity.x * normal->x + velocity.y * normal->y + velocity.z * normal->z)
     {
         SpawnSurfaceImpactParticles(node->owner, surface, &wake);
@@ -1049,21 +968,21 @@ void PlaySurfaceContact(f32 intensity, ObjectNode* node, CollisionSurface* surfa
     constexpr f32 ShakeSpread = 0.5f;
     constexpr f32 ShakeFalloff = 0.02f;
     constexpr f32 RideIntensity = 50.0f;
-    if (SecondsSince(node->owner, LastContactTime(node)) < Interval)
+    if (SecondsSince(node->owner, node->lastContactTime) < Interval)
     {
         return;
     }
 
     kind &= 0xFF;
-    LastContactTime(node) = GetContextClock(node->owner)->time;
+    node->lastContactTime = GetContextClock(node->owner)->time;
     f32 volumeScale;
     u32 sound = GetSurfaceSound(surface, kind, &volumeScale);
     u32 particles = GetSurfaceParticle(surface, kind);
     u32 seen = SeenStamp(node->owner);
     s32 voiceKind = ListenerVoiceKind();
-    if (seen < FarStamp)
+    if (seen < InstanceContext::SoundSeenLimit)
     {
-        if (sound != NoSound && (NodeBits150(node) & NoContactSounds) == 0)
+        if (sound != NoSoundId && !node->reactions.noContactSounds)
         {
             f32 strength = __builtin_sqrtf(intensity);
             f32 volume = strength * VolumePerStrength + LeastVolume;
@@ -1087,7 +1006,7 @@ void PlaySurfaceContact(f32 intensity, ObjectNode* node, CollisionSurface* surfa
                 pitch = LeastPitch;
             }
 
-            PlaySoundByIdAt(volume, pitch, sound, 0, node->owner->chunk, point, voiceKind, -1);
+            PlaySoundByIdAt(volume, pitch, sound, NoGroup, node->owner->chunk, point, voiceKind, NotLast);
             f32 shake = __builtin_sqrtf(velocity->x * velocity->x + velocity->y * velocity->y + velocity->z * velocity->z)
                         * ShakePerSpeed;
             if (MostShake < shake)
@@ -1100,18 +1019,18 @@ void PlaySurfaceContact(f32 intensity, ObjectNode* node, CollisionSurface* surfa
             PushCameraShakeAxes(&g_CameraShake, point, across, shake, along, ShakeFalloff);
         }
 
-        if (RideIntensity < intensity && (surface->collisionMask & SurfaceSolidToPlayer) != 0)
+        if (RideIntensity < intensity && surface->flags.solidToPlayer != 0)
         {
             Agent* agent = node->agent;
-            CallVirtual<void>(agent, agent->vtable, RideSoundSlot, intensity);
-            if (ContactSoundFirst(node) != NoSlot)
+            CallVirtual<void>(agent, agent->vtable, Agent::PlayRideSoundSlot, intensity);
+            if (node->contactSoundFirst != ObjectNode::NoContactSoundSlot)
             {
                 PlayContactSound(intensity, node);
             }
         }
     }
 
-    if (particles != NoParticles)
+    if (particles != NoSurfaceEffect)
     {
         StartContactParticles(node, particles, point, velocity);
     }
@@ -1122,15 +1041,15 @@ void PlayContactSound(f32 strength, ObjectNode* node)
     constexpr f32 VolumePerStrength = 0.06f;
     constexpr f32 LeastVolume = Rounded(0.2);
     constexpr f32 PitchSpread = Rounded(0.07);
-    u32 sound = NoSound;
-    if (ContactSoundValue(node) < 0.0f)
+    u32 sound = NoSoundId;
+    if (node->contactSoundValue < 0.0f)
     {
-        u8 first = ContactSoundFirst(node);
-        u8 last = ContactSoundLast(node);
+        u8 first = node->contactSoundFirst;
+        u8 last = node->contactSoundLast;
         sound = SoundOfSlot(node, RandomFrom(first, last - first + 1) & 0xFFFF);
     }
 
-    if (sound == NoSound)
+    if (sound == NoSoundId)
     {
         return;
     }
@@ -1141,7 +1060,7 @@ void PlayContactSound(f32 strength, ObjectNode* node)
     place->SyncPosition();
     Vector4 position = place->position;
     f32 pitch = RandomSignedTimes(PitchSpread) + 1.0f;
-    PlaySoundByIdAt(volume, pitch, sound, 0, node->owner->chunk, &position, voiceKind, -1);
+    PlaySoundByIdAt(volume, pitch, sound, NoGroup, node->owner->chunk, &position, voiceKind, NotLast);
 }
 
 void PlaySurfaceContactHard(f32 intensity, ObjectNode* node, CollisionSurface* surface, u32 kind, const Vector4* point,
@@ -1163,12 +1082,12 @@ void PlaySurfaceContactHard(f32 intensity, ObjectNode* node, CollisionSurface* s
     f32 volumeScale;
     u32 sound = GetSurfaceSound(surface, kind & 0xFF, &volumeScale);
     u32 particles = GetSurfaceParticle(surface, kind & 0xFF);
-    if (sound != NoSound && (NodeBits150(node) & NoContactSounds) == 0 && SeenStamp(node->owner) < FarStamp)
+    if (sound != NoSoundId && !node->reactions.noContactSounds && SeenStamp(node->owner) < InstanceContext::SoundSeenLimit)
     {
         f32 strength = __builtin_sqrtf(intensity);
         f32 pitch;
         f32 volume;
-        if (kind == ScrapeContact)
+        if (kind == ContactScrape)
         {
             pitch = strength * ScrapePitchPerStrength + 1.0f - node->rollRadius * ScrapePitchPerRadius;
             volume = strength * ScrapeVolumePerStrength + ScrapeBaseVolume;
@@ -1197,19 +1116,19 @@ void PlaySurfaceContactHard(f32 intensity, ObjectNode* node, CollisionSurface* s
             volume = MostVolume;
         }
 
-        if (HardContactSound(node) == NoSlot)
+        if (node->playingSound == NoInstanceSound)
         {
             s32 voiceKind = ListenerVoiceKind();
-            HardContactSound(node) = PlayInstanceSoundById(volume, pitch, sound, 0, node->owner, voiceKind, 0);
+            node->playingSound = PlayInstanceSoundById(volume, pitch, sound, NoGroup, node->owner, voiceKind, FollowsInstance);
         }
         else
         {
-            SetInstanceSoundPitch(pitch, HardContactSound(node));
-            SetInstanceSoundVolume(volume, HardContactSound(node));
+            SetInstanceSoundPitch(pitch, node->playingSound);
+            SetInstanceSoundVolume(volume, node->playingSound);
         }
     }
 
-    if (particles != NoParticles)
+    if (particles != NoSurfaceEffect)
     {
         StartContactParticles(node, particles, point, velocity);
     }

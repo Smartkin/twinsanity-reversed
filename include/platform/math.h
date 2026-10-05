@@ -90,10 +90,11 @@ inline f32 CosinePolynomial(f32 radians)
 
 inline void SinCosPolynomial(f32 first, f32 second, f32* out)
 {
-    constexpr f32 QuarterTurn = 0x1.921FB0p+0f;
-    out[0] = CosinePolynomial(first - QuarterTurn);
+    // The microprogram's π/2, a few bits below the float nearest it
+    constexpr f32 ProgramHalfPi = 0x1.921FB0p+0f;
+    out[0] = CosinePolynomial(first - ProgramHalfPi);
     out[1] = CosinePolynomial(first);
-    out[2] = CosinePolynomial(second - QuarterTurn);
+    out[2] = CosinePolynomial(second - ProgramHalfPi);
     out[3] = CosinePolynomial(second);
 }
 }

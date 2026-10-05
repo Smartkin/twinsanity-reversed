@@ -11,34 +11,83 @@ struct ChunkManager;
 struct GameProgress;
 class Stream;
 
-// Checkpoints (0x80 bytes of the heap): an instance play can start from again (the chunk it's in and its ID, 0xFFFF none), how the
-// characters were paired and which they were when it was set, and where the characters start from it
+// How the second character is paired with the first (the progress's, a checkpoint's and a save's pairing): alone, the second on
+// the Humiliskate or the Rollerbrawl with the first, the two tied together, 5 (only the scripts set it and test it: SetPlayerMode
+// and PairingIs5Condition), on the hoverboard, and on it with its controls
+enum Pairing : u32
+{
+    PairingAlone = 1,
+    PairingHumiliskate = 2,
+    PairingRollerbrawl = 3,
+    PairingTied = 4,
+    Pairing5 = 5,
+    PairingHoverboard = 6,
+    PairingHoverboardControls = 7,
+};
+
+// The ways into the game (the progress's Reset and Enter, the game controller's entry): a new game, a new game from the start's
+// checkpoint (nothing asks for it), from a save's chunk and place (Enter; Reset, also the game over's continue: from the saved
+// checkpoint, else the start's) and from the latest checkpoint of any (the scripts' RestartFromCheckpoint). The first two drop
+// the chunks' instances
+enum GameEntry : u32
+{
+    EntryNewGame = 0,
+    EntryNewGameFromStart = 1,
+    EntrySaved = 2,
+    EntryCheckpoint = 3,
+};
+
+// The play modes: normal, with a health bar (boss mode) and timed with a count (whack-a-worm)
+enum PlayMode : u32
+{
+    PlayNormal = 0,
+    PlayHealth = 1,
+    PlayTimed = 2,
+};
+
+// A level's gems (its progress's bits, the order of TokenGem's keywords)
+enum Gem : u32
+{
+    GemBlue = 0,
+    GemClear = 1,
+    GemGreen = 2,
+    GemPurple = 3,
+    GemRed = 4,
+    GemYellow = 5,
+};
+
+// A checkpoint's bits: set, play started from it since it was set, and the progress's pairing, character and second character
+// when it was set (in retail the low bits of a 64 bit word the chunk's string shares)
+union CheckpointBits
+{
+    u32 value;
+    struct
+    {
+        u32 set : 1;
+        u32 used : 1;
+        u32 pairing : 4;
+        u32 character : 4;
+        u32 second : 4;
+        u32 unused14 : 18;
+    };
+};
+CHECK_SIZE(CheckpointBits, 4);
+
+// Checkpoints (0x80 bytes of the heap): an instance play can start from again (the chunk it's in and its ID, NoInstanceId none),
+// how the characters were paired and which they were when it was set, and where the characters start from it
 struct Checkpoint
 {
-    enum Bits : u32
-    {
-        BitSet = 0x1,
-        // Play started from it since it was set
-        BitUsed = 0x2,
-        // The pairing (bits 2-5), the character (6-9) and the second character (10-13), as the progress has them
-        PairingShift = 2,
-        CharacterShift = 6,
-        SecondShift = 10,
-        FieldMask = 0xF,
-    };
-
-    // In retail the low bits of a 64 bit word the chunk's string shares
-    u32 bits;
+    CheckpointBits bits;
     String chunk;
     u16 id;
-    u8 unknown12[0x20 - 0x12];
+    u8 unused12[0x20 - 0x12];
     InstancePlacement character;
     InstancePlacement second;
 
     static Checkpoint* Construct(Checkpoint* checkpoint) RETAIL(FUN_0017a760);
-    // Play starting from it: its instance's persistent flag set, and the progress's characters put where they start and told to
-    // come back there (the second where the first does). Whether it's set (the pairing isn't read)
-    bool Restore(u32 pairing, GameProgress* progress, ChunkManager* chunks) RETAIL(FUN_00171d00);
+    // Play starting from it a way into the game: its instance's persistent flag set, and the progress's characters put where they
+    // start and told to come back there (the second where the first does). Whether it's set (the way isn't read)
+    bool Restore(u32 way, GameProgress* progress, ChunkManager* chunks) RETAIL(FUN_00171d00);
     // Set at the instance for the pairing and the characters (the chunk the loading follows taken as its chunk); when it's at the
     // instance already, only whether it hasn't been used
     bool Set(u32 pairing, ChunkManager* chunks, InstanceContext* instance, InstanceContext* character, InstanceContext* second)
@@ -52,58 +101,96 @@ struct Checkpoint
 CHECK_OFFSET(Checkpoint, character, 0x20);
 CHECK_SIZE(Checkpoint, 0x80);
 
-// The game's progress (the game controller's, made by its constructor): its first word's bits 0-6 the wumpa fruit, 7-13 the lives,
-// 14-16 the most health, 17-19 the health; the play's state; the time played; the chunk play starts in; each level's gems and
-// crystal; the timed play's time left; the characters' instances and three checkpoints
+// The progress's counts: the wumpa fruit, the lives, the health play's most health and health, and the timed play's (whack-a-
+// worm's) total and count
+union ProgressCounts
+{
+    u32 value;
+    struct
+    {
+        u32 wumpa : 7;
+        u32 lives : 7;
+        u32 mostHealth : 3;
+        u32 health : 3;
+        u32 countTotal : 6;
+        u32 count : 6;
+    };
+};
+CHECK_SIZE(ProgressCounts, 4);
+
+// The play's state (the progress's): the play mode (PlayMode), how the second character is paired with the first (Pairing), the
+// character played and the second (PlayableCharacter, GameProgress::NoCharacter none), the area play is in, the area the story
+// has got to and the last area open
+union PlayState
+{
+    u32 value;
+    struct
+    {
+        u32 mode : 4;
+        u32 pairing : 4;
+        u32 character : 4;
+        u32 second : 4;
+        u32 area : 5;
+        u32 story : 5;
+        u32 open : 5;
+        u32 unused31 : 1;
+    };
+};
+CHECK_SIZE(PlayState, 4);
+
+// A level's progress: the gems found (a bit each, Gem; the code reads them as the word's low byte) and its crystal
+union LevelProgress
+{
+    u32 value;
+    struct
+    {
+        u32 gems : 8;
+        u32 crystal : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(LevelProgress, 4);
+
+// The game's progress (the game controller's, made by its constructor): its counts; the play's state; the time played; the chunk
+// play starts in; each level's gems and crystal; the timed play's time left; the characters' instances and three checkpoints
 struct GameProgress
 {
-    enum Counts : u32
+    // The checkpoints: the last one a script set without saving, the one play started from (a new game's or a loaded save's) and
+    // the last one a script saved at
+    enum CheckpointSlot : u32
     {
-        WumpaMask = 0x7F,
-        LivesShift = 7,
-        LivesMask = 0x7F,
-        MostHealthShift = 14,
-        HealthShift = 17,
-        HealthMask = 7,
-        // The timed play's count (whack-a-worm's) and its total
-        CountTotalShift = 20,
-        CountShift = 26,
-        CountMask = 0x3F,
+        CheckpointRespawn = 0,
+        CheckpointStart = 1,
+        CheckpointSaved = 2,
+        Checkpoints = 3,
     };
 
-    enum Bits : u32
+    // How ChunkLoaded waits for the start chunk: every loader under the loading's path loaded (only once asked again), the chunk,
+    // the chunk and its links
+    enum LoadedHow : u32
     {
-        // The play mode: 0 normal, 1 with health, 2 timed
-        ModeMask = 0xF,
-        // How the second character is paired with the first (1 alone), the character played (0 Crash) and the second one, 6
-        // none
-        PairingShift = 4,
-        CharacterShift = 8,
-        SecondShift = 12,
-        FieldMask = 0xF,
-        // The area play is in, the area the story has got to, the last area open
-        AreaShift = 16,
-        StoryShift = 21,
-        OpenShift = 26,
-        AreaMask = 0x1F,
+        LoadedAll = 0,
+        LoadedChunk = 1,
+        LoadedWithLinks = 2,
     };
 
     static constexpr u32 NoCharacter = 6;
     static constexpr u32 Levels = 16;
     static constexpr u32 Characters = 6;
     static constexpr u32 Gems = 6;
+    // A new game's lives
+    static constexpr u32 StartLives = 5;
 
-    u32 counts;
-    u32 bits;
+    ProgressCounts counts;
+    PlayState play;
     // The time played before the clock's time play started at (clock units; no start time: not counting)
     s32 timePlayed;
     s32 startTime;
-    // The chunk the game starts in, and two more chunks' names (forgotten when play starts)
+    // The chunk the game starts in, and two more chunks' names (only emptied)
     String startChunk;
-    String chunk1C;
-    String chunk28;
-    // Each level's word: bits 0-5 the gems found (blue, clear, green, purple, red, yellow), bit 8 its crystal
-    u32 levels[Levels];
+    String unused1C;
+    String unused28;
+    LevelProgress levels[Levels];
     // The health bar's length
     f32 barLength;
     // The timed play's time and the time left of it (clock units)
@@ -111,17 +198,20 @@ struct GameProgress
     s32 timeLeft;
     // The characters' instances (by the character)
     Reference* characters[Characters];
-    Checkpoint* checkpoints[3];
+    Checkpoint* checkpoints[Checkpoints];
 
     static GameProgress* Construct(GameProgress* progress) RETAIL(FUN_00167720);
-    // Reset for a way into the game (0 a new game and 1 its levels kept, from the start's checkpoint; 2 from the last checkpoint,
-    // else the start's; 3 from any): the health and the timed play's time, every character's place to come back to, and what the
-    // way starts over. Returns the checkpoint play starts from, the progress's pairing and characters its
+    // Reset for a way into the game (GameEntry: a new game, the start's checkpoint set again or, the second way, restored; from the
+    // saved checkpoint, else the start's; from the respawn checkpoint, else the saved one, else the start's): the health and the
+    // timed play's time, every character's place to come back to, and what the way starts over (a new game's counts, areas,
+    // levels and pairing, the wumpa fruit from a save). Returns the checkpoint play starts from, the progress's pairing and
+    // characters its
     Checkpoint* Reset(u32 way, ChunkManager* chunks) RETAIL(FUN_00167a18);
-    // Play entered a way (2: from a save's chunk and place, the start's checkpoint set there; else Reset's), the characters put
-    // at the checkpoint it starts from (the other progress's). Returns the checkpoint
+    // Play entered a way (EntrySaved: from a save's chunk and place, the start's checkpoint at the character played and the saved
+    // one at the place; else Reset's), the characters put at the checkpoint it starts from (the other progress's). Returns the
+    // checkpoint
     Checkpoint* Enter(u32 way, String* chunk, u16* place, GameProgress* progress, ChunkManager* chunks) RETAIL(FUN_00167840);
-    // Whether the start chunk is loaded as asked (1 the chunk, 2 with its links), waiting for it when asked
+    // Whether the start chunk is loaded as asked (LoadedHow), waiting for it when asked
     u32 ChunkLoaded(u32 how, u32 wait) RETAIL(FUN_00167ed8);
     // How many levels have the gem
     s32 GemsFound(u32 gem) RETAIL(FUN_001796c0);
@@ -137,11 +227,6 @@ struct GameProgress
     void ForgetChunks() RETAIL(FUN_00179938);
     // With a start chunk, every chunk unloaded and the start chunk queued. Whether there's one
     u32 LoadStartChunk(ChunkManager* chunks) RETAIL(FUN_001799a8);
-
-    u32 Field(u32 shift) const
-    {
-        return bits >> shift & FieldMask;
-    }
 
     // A character's instance (none for no character)
     InstanceContext* Instance(u32 character) const
@@ -159,59 +244,71 @@ CHECK_OFFSET(GameProgress, levels, 0x34);
 CHECK_OFFSET(GameProgress, characters, 0x80);
 CHECK_SIZE(GameProgress, 0xA4);
 
+// What a save keeps of the progress: the lives, the levels' crystals, how much of the game is done (percent), the pairing, the
+// character and the second character
+union SaveControllerSummary
+{
+    u32 value;
+    struct
+    {
+        u32 lives : 7;
+        u32 crystals : 6;
+        u32 done : 7;
+        u32 pairing : 4;
+        u32 character : 4;
+        u32 second : 4;
+    };
+};
+CHECK_SIZE(SaveControllerSummary, 4);
+
+// A save's options: the progress's areas (the area play is in, the story's and the last one open), the vibration, the widescreen
+// TV and the music's stereo mode
+union SaveControllerOptions
+{
+    u32 value;
+    struct
+    {
+        u32 area : 5;
+        u32 story : 5;
+        u32 open : 5;
+        u32 vibration : 1;
+        u32 widescreen : 1;
+        u32 musicStereo : 4;
+        u32 unused21 : 11;
+    };
+};
+CHECK_SIZE(SaveControllerOptions, 4);
+
 // What a save holds of the game (the game controller's): its summary, the progress's areas and the options, the time played, the
-// chunk and the place (a checkpoint's ID, 0xFFFF none) play starts from, the screen's position and the volumes, the save's data
-// (the levels' words and the chunks' persistent flags) and the progress
+// chunk and the place (a checkpoint's ID, NoInstanceId none) play starts from, the screen's position and the volumes,
+// the save's data (the levels' progress and the chunks' persistent flags) and the progress
 struct SaveController
 {
     static constexpr u32 DataSize = 0xF000;
 
-    enum Summary : u32
-    {
-        SummaryLivesMask = 0x7F,
-        SummaryCrystalsShift = 7,
-        SummaryCrystalsMask = 0x3F,
-        SummaryDoneShift = 13,
-        SummaryDoneMask = 0x7F,
-        // The progress's pairing and characters
-        SummaryPairingShift = 20,
-        SummaryCharacterShift = 24,
-        SummarySecondShift = 28,
-    };
-
-    enum Options : u32
-    {
-        // Bits 0-14: the progress's areas (its bits 16-30)
-        OptionAreas = 0x7FFF,
-        OptionVibration = 0x8000,
-        OptionWidescreen = 0x10000,
-        OptionMusicStereoShift = 17,
-        OptionMusicStereoMask = 0xF,
-    };
-
-    u32 summary;
-    u32 options;
+    SaveControllerSummary summary;
+    SaveControllerOptions options;
     // The time played (clock units)
     s32 timePlayed;
     String chunk;
     u16 place;
-    u8 unknown1A[0x1C - 0x1A];
+    u8 unused1A[0x1C - 0x1A];
     // The screen's position, and the sound effects' and the music's volumes (volume groups 0 and 2)
     Vector2 screenOffset;
     f32 effectsVolume;
     f32 musicVolume;
     u8* data;
     GameProgress* progress;
-    u8 unknown34[0x3C - 0x34];
+    u8 unused34[0x3C - 0x34];
 
     // Read from and written to a save's file
     void Read(Stream* stream) RETAIL(FUN_001680b8);
     void Write(Stream* stream) RETAIL(FUN_001681b0);
     // The game given what it holds: the progress's lives, areas, pairing, characters and time played (counted from now), the
-    // levels' words and the chunks' persistent flags from its data when asked (every chunk unloaded first), and the options
+    // levels' progress and the chunks' persistent flags from its data when asked (every chunk unloaded first), and the options
     void Restore(u32 withData, GameProgress* progress, ChunkManager* chunks) RETAIL(FUN_001682a0);
     // What it takes of the game: the chunk the loading follows (the start chunk without one) and the checkpoint's ID, the
-    // summary, the areas, the time played, the levels' words and the chunks' persistent flags, and the options
+    // summary, the areas, the time played, the levels' progress and the chunks' persistent flags, and the options
     void Take(GameProgress* progress, ChunkManager* chunks, Checkpoint* checkpoint) RETAIL(FUN_001684f0);
     // The options taken from the game: the vibration, the volumes, the music's stereo mode, the widescreen TV and the screen's
     // position
@@ -223,18 +320,18 @@ CHECK_SIZE(SaveController, 0x3C);
 
 extern "C"
 {
-    // The area a script's token names (the global progression commands' argument), -1 for none
+    // The area a script's keyword names (0x26F to 0x286; the play area commands' argument), -1 for none
     s32 TokenArea(u32 token) RETAIL(FUN_00167df0);
-    // A gem marked found in a level's word (its low byte): whether it wasn't before. The level's crystal (bit 8) the same way
+    // A gem marked found in a level's progress (its gems' byte): whether it wasn't before. The level's crystal the same way
     u32 MarkGem(u8* level, u32 gem) RETAIL(FUN_0017a2e8);
     u32 MarkCrystal(u32* level) RETAIL(FUN_0017a2c0);
-    // A level's word made (no gem, no crystal), read from a stream and written to one (the progress's constructor and the save
-    // controller have them inline)
+    // A level's progress made (no gem, no crystal), read from a stream and written to one (the progress's constructor and the
+    // save controller have them inline)
     u32* ConstructLevelWord(u32* level) RETAIL(FUN_0017a220);
     void ReadLevelWord(u32* level, Stream* stream) RETAIL(FUN_0017a250);
     void WriteLevelWord(const u32* level, Stream* stream) RETAIL(FUN_0017a288);
-    // The gem a keyword names (0x288 to 0x28D: 0 to 5), -1 for any other
+    // The gem a keyword names (0x288 to 0x28D: Gem's), -1 for any other
     s32 TokenGem(u32 token) RETAIL(FUN_0017a318);
-    // The player mode a script's token names (1 to 6, the player mode command's argument), 0 for none
+    // The pairing a script's keyword names (0x291 to 0x296: 1 to 6, the SetPlayerMode command's first argument), 0 for none
     u32 TokenPlayerMode(u32 token) RETAIL(FUN_001798d8);
 }

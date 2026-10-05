@@ -44,7 +44,7 @@ CHECK_SIZE(CurveScaleEffect, 0x20);
 class SparkleEffect : public WidgetEffect
 {
 public:
-    u8 unknown18[8];
+    u8 unused18[8];
     RadialEmitter2D emitter;
 
     void Destroy(u32 flags) RETAIL(FUN_00179018);

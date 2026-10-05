@@ -19,11 +19,13 @@ extern "C"
 
 namespace
 {
-// The squared lengths too short to have a direction
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// The surfaces' contact kind of an impact
-constexpr u32 ImpactContact = 0;
-constexpr u32 NoParticleSystem = 0xFFFF;
+// An emitter of a surface's particles starts with a value
+constexpr u32 EmitterValue = 1;
+// A footprint's decal: its variant, type, flags and key
+constexpr s32 FootprintVariant = 1;
+constexpr s32 FootprintType = 0;
+constexpr s32 FootprintFlags = 1;
+constexpr s32 FootprintKey = 1;
 }
 
 extern "C"
@@ -38,7 +40,7 @@ extern "C"
         constexpr f32 Around = 0.9f;
         constexpr f32 Below = Rounded(0.2);
         constexpr f32 TurnDegrees = 60.0f;
-        u32 system = GetSurfaceParticle(surface, ImpactContact);
+        u32 system = GetSurfaceParticle(surface, ContactImpact);
         Vector4 offset = {Around, 0.0f, 0.0f, 1.0f};
         for (u32 mark = 0; mark < Marks; mark++)
         {
@@ -52,7 +54,7 @@ extern "C"
             place->y = place->y + jitter.y;
             place->z = place->z + jitter.z;
             AddDecalFromDescriptor(&frame, instance->chunk);
-            if (system == NoParticleSystem)
+            if (system == NoSurfaceEffect)
             {
                 continue;
             }
@@ -61,7 +63,7 @@ extern "C"
             at.x = offset.x + point->x;
             at.y = offset.y + point->y - Below;
             at.z = offset.z + point->z;
-            StartEmitterKeepingTranslation(instance, static_cast<s32>(system), 1, &at);
+            StartEmitterKeepingTranslation(instance, static_cast<s32>(system), EmitterValue, &at);
             s32 angle;
             AngleFrom(&angle, TurnDegrees, AngleDegrees);
             TurnAboutAxis(&offset, &g_YAxis, &angle, 1);
@@ -70,10 +72,9 @@ extern "C"
 
     // A footprint of an instance at an exit point (the kind isn't read): at the point's place moved by an offset turned with the
     // instance, at the instance's own height (0.09 above it), facing the point's z axis over the ground (the instance's when the
-    // two are about 45 degrees apart or more); variant 1, type 0, flags 1 and key 1, in the instance's chunk
+    // two are about 45 degrees apart or more), in the instance's chunk
     void AddInstanceDecal(u32, InstanceContext* instance, ExitPointAnimation* at, const Vector4* offset)
     {
-        constexpr f32 Lift = Rounded(0.09);
         constexpr f32 SameWay = 0.7f;
         ObjectPlace* place = instance->place;
         RotateAndTranslate(place);
@@ -85,7 +86,7 @@ extern "C"
             position.z = position.z + (m[0][2] * offset->x + m[1][2] * offset->y + m[2][2] * offset->z);
         }
 
-        position.y = m[3][1] + Lift;
+        position.y = m[3][1] + FootprintLift;
         const Vector4& forward = *RowOf(&place->matrix, 2);
         Vector4 direction = *RowOf(&at->matrix, 2);
         if (direction.x * forward.x + direction.y * forward.y + direction.z * forward.z < SameWay)
@@ -99,10 +100,10 @@ extern "C"
         decal.place = position;
         decal.normal = {0.0f, 1.0f, 0.0f, 1.0f};
         decal.direction = {direction.x * inverse, direction.y * inverse, direction.z * inverse, 1.0f};
-        decal.variant = 1;
-        decal.type = 0;
-        decal.flags = 1;
-        decal.key = 1;
+        decal.variant = FootprintVariant;
+        decal.type = FootprintType;
+        decal.flags = FootprintFlags;
+        decal.key = FootprintKey;
         decal.chunk = instance->chunk;
         AddDecal(&g_DecalData, &decal);
     }

@@ -1,4 +1,5 @@
 #include "common.h"
+#include "game/math.h"
 
 // expf as Sony's newlib had it: fdlibm's, on the R5900's floats (no infinities or NaNs, exponent 255 is a number), wrapped in the
 // SVID/X/Open error handling of its time (the retail library is X/Open's: errno is ERANGE on an overflow or underflow, the
@@ -30,10 +31,25 @@ constexpr f32 HugeSquared = Bits(0x7F800000);
 constexpr f32 HugeValue = Bits(0x7F800000);
 constexpr f32 SvidHuge = Bits(0x7F7FFFFF);
 
+// The bits of |x| (a float's magnitude): past which there's no result (|x| >= 88.72), of an infinity (exponent 255, which fdlibm
+// takes for an infinity or a NaN, a number on the R5900), of 0.5 ln2 and 1.5 ln2 (the argument's reductions) and of 2^-28 (below
+// it e^x is 1 + x)
+constexpr u32 MagnitudeMask = 0x7FFFFFFF;
+constexpr u32 LargeArgumentBits = 0x42B17217;
+constexpr u32 InfinityBits = 0x7F800000;
+constexpr u32 HalfLn2Bits = 0x3EB17218;
+constexpr u32 ThreeHalvesLn2Bits = 0x3F851592;
+constexpr u32 TinyArgumentBits = 0x31800000;
+// k goes into the result's exponent, or k + 100 and the result times 2^-100 when k alone would leave the normal floats
+constexpr s32 SmallestScale = -125;
+constexpr s32 ScaleBias = 100;
+constexpr u32 ExponentShift = 23;
+
 // _LIB_VERSION's values
 constexpr s32 IeeeLibrary = -1;
 constexpr s32 SvidLibrary = 0;
 
+// ERANGE
 constexpr s32 RangeError = 34;
 
 u32 BitsOf(f32 value)
@@ -56,24 +72,26 @@ extern "C"
     s32 IsFiniteFloat(f32 x) RETAIL(FUN_002c2318);
 }
 
+// The difference's sign bit: set below the infinity's bits
 s32 IsFiniteFloat(f32 x)
 {
-    return static_cast<s32>(((BitsOf(x) & 0x7FFFFFFF) + 0x80800000) >> 31);
+    return static_cast<s32>(((BitsOf(x) & MagnitudeMask) - InfinityBits) >> 31);
 }
 
 f32 ExpFloatCore(f32 x)
 {
-    u32 bits = BitsOf(x);
-    s32 negative = static_cast<s32>(bits >> 31);
-    u32 magnitude = bits & 0x7FFFFFFF;
-    if (magnitude > 0x42B17217)
+    FloatBits bits;
+    bits.value = BitsOf(x);
+    s32 negative = static_cast<s32>(bits.sign);
+    u32 magnitude = bits.value & MagnitudeMask;
+    if (magnitude > LargeArgumentBits)
     {
-        if (magnitude > 0x7F800000)
+        if (magnitude > InfinityBits)
         {
             return x + x;
         }
 
-        if (magnitude == 0x7F800000)
+        if (magnitude == InfinityBits)
         {
             return negative == 0 ? x : 0.0f;
         }
@@ -93,9 +111,9 @@ f32 ExpFloatCore(f32 x)
     s32 k;
     f32 high = 0.0f;
     f32 low = 0.0f;
-    if (magnitude > 0x3EB17218)
+    if (magnitude > HalfLn2Bits)
     {
-        if (magnitude < 0x3F851592)
+        if (magnitude < ThreeHalvesLn2Bits)
         {
             high = x - Ln2High[negative];
             low = Ln2Low[negative];
@@ -111,7 +129,7 @@ f32 ExpFloatCore(f32 x)
 
         x = high - low;
     }
-    else if (magnitude < 0x31800000)
+    else if (magnitude < TinyArgumentBits)
     {
         if (Huge + x > 1.0f)
         {
@@ -133,12 +151,12 @@ f32 ExpFloatCore(f32 x)
     }
 
     f32 y = 1.0f - ((low - (x * c) / (2.0f - c)) - high);
-    if (k >= -125)
+    if (k >= SmallestScale)
     {
-        return Bits(BitsOf(y) + (static_cast<u32>(k) << 23));
+        return Bits(BitsOf(y) + (static_cast<u32>(k) << ExponentShift));
     }
 
-    return Bits(BitsOf(y) + (static_cast<u32>(k + 100) << 23)) * TwoToMinus100;
+    return Bits(BitsOf(y) + (static_cast<u32>(k + ScaleBias) << ExponentShift)) * TwoToMinus100;
 }
 
 // expf: matherr (newlib's default) never handles an error, so X/Open's errno is always ERANGE

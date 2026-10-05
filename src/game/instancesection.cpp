@@ -51,12 +51,12 @@ extern "C"
     // The section item's vtable functions
     void InstanceSectionItemDestroy(InstanceSectionItem* item, u32 destroyFlags) RETAIL(FUN_0026a018);
     u32 InstanceSectionItemCount(InstanceSectionItem* item) RETAIL(GetInstanceSectionSubSectionsAmount);
-    u32 InstanceSectionItemSlot3(InstanceSectionItem* item) RETAIL(FUN_0026b598);
+    u32 InstanceSectionItemSectionType(InstanceSectionItem* item) RETAIL(FUN_0026b598);
     u32 InstanceSectionItemCanRead(InstanceSectionItem* item, u32 type) RETAIL(FUN_0026b5a0);
     InstanceSectionReader* InstanceSectionItemGetReader(InstanceSectionItem* item, s32 index, ItemHeader* header, s32* size)
         RETAIL(GetInstanceSectionReader);
-    void InstanceSectionItemSlot6(InstanceSectionItem* item) RETAIL(FUN_0026b5b0);
-    void InstanceSectionItemSlot7(InstanceSectionItem* item) RETAIL(FUN_0026b5b8);
+    void InstanceSectionItemClear(InstanceSectionItem* item) RETAIL(FUN_0026b5b0);
+    void InstanceSectionItemSetCount(InstanceSectionItem* item) RETAIL(FUN_0026b5b8);
     void InstanceSectionItemFinish(InstanceSectionItem* item) RETAIL(FUN_0026b5c0);
 
     // Each kind's item's vtable functions and its reader's vtable
@@ -64,7 +64,7 @@ extern "C"
     extern const GccVTableEntry g_TemplateReaderVTable[] RETAIL(D_003048F8);
     void TemplateItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269e68);
     u32 TemplateItemCount(InstanceKindItem* item) RETAIL(FUN_0026c7c8);
-    u32 TemplateItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026c7d0);
+    u32 TemplateItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026c7d0);
     u32 TemplateItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026c7d8);
     InstanceKindReader* TemplateItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026c7e8);
     void TemplateItemClear(InstanceKindItem* item) RETAIL(FUN_0026c848);
@@ -73,7 +73,7 @@ extern "C"
     extern const GccVTableEntry g_ObjectInstanceReaderVTable[] RETAIL(ObjectInstanceSectionReader_Methods);
     void ObjectInstanceItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269e98);
     u32 ObjectInstanceItemCount(InstanceKindItem* item) RETAIL(GetObjectInstanceAmount);
-    u32 ObjectInstanceItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026c610);
+    u32 ObjectInstanceItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026c610);
     u32 ObjectInstanceItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026c618);
     InstanceKindReader* ObjectInstanceItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(GetObjectInstanceSectionReader);
     void ObjectInstanceItemClear(InstanceKindItem* item) RETAIL(FUN_0026c688);
@@ -82,7 +82,7 @@ extern "C"
     extern const GccVTableEntry g_AiPositionReaderVTable[] RETAIL(D_00304948);
     void AiPositionItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269ec8);
     u32 AiPositionItemCount(InstanceKindItem* item) RETAIL(FUN_0026c428);
-    u32 AiPositionItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026c430);
+    u32 AiPositionItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026c430);
     u32 AiPositionItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026c438);
     InstanceKindReader* AiPositionItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026c448);
     void AiPositionItemClear(InstanceKindItem* item) RETAIL(FUN_0026c4a8);
@@ -91,7 +91,7 @@ extern "C"
     extern const GccVTableEntry g_AiPathReaderVTable[] RETAIL(D_00304970);
     void AiPathItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269ef8);
     u32 AiPathItemCount(InstanceKindItem* item) RETAIL(FUN_0026c278);
-    u32 AiPathItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026c280);
+    u32 AiPathItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026c280);
     u32 AiPathItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026c288);
     InstanceKindReader* AiPathItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026c298);
     void AiPathItemClear(InstanceKindItem* item) RETAIL(FUN_0026c2f8);
@@ -100,7 +100,7 @@ extern "C"
     extern const GccVTableEntry g_PositionReaderVTable[] RETAIL(D_00304998);
     void PositionItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269f28);
     u32 PositionItemCount(InstanceKindItem* item) RETAIL(FUN_0026c0b8);
-    u32 PositionItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026c0c0);
+    u32 PositionItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026c0c0);
     u32 PositionItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026c0c8);
     InstanceKindReader* PositionItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026c0d8);
     void PositionItemClear(InstanceKindItem* item) RETAIL(FUN_0026c138);
@@ -109,7 +109,7 @@ extern "C"
     extern const GccVTableEntry g_PathReaderVTable[] RETAIL(D_003049C0);
     void PathItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269f58);
     u32 PathItemCount(InstanceKindItem* item) RETAIL(FUN_0026bef0);
-    u32 PathItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026bef8);
+    u32 PathItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026bef8);
     u32 PathItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026bf00);
     InstanceKindReader* PathItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026bf10);
     void PathItemClear(InstanceKindItem* item) RETAIL(FUN_0026bf70);
@@ -118,7 +118,7 @@ extern "C"
     extern const GccVTableEntry g_TriggerReaderVTable[] RETAIL(TriggerSectionReader_Methods);
     void TriggerItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269f88);
     u32 TriggerItemCount(InstanceKindItem* item) RETAIL(GetTriggerAmount);
-    u32 TriggerItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026bd30);
+    u32 TriggerItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026bd30);
     u32 TriggerItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026bd38);
     InstanceKindReader* TriggerItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(GetTriggerSectionReader);
     void TriggerItemClear(InstanceKindItem* item) RETAIL(FUN_0026bda8);
@@ -127,7 +127,7 @@ extern "C"
     extern const GccVTableEntry g_CameraReaderVTable[] RETAIL(CameraSectionReader_Methods);
     void CameraItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269fb8);
     u32 CameraItemCount(InstanceKindItem* item) RETAIL(GetInstanceSubSectionItemAmount);
-    u32 CameraItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026bb68);
+    u32 CameraItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026bb68);
     u32 CameraItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026bb70);
     InstanceKindReader* CameraItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(GetCameraSectionReader);
     void CameraItemClear(InstanceKindItem* item) RETAIL(FUN_0026bbe0);
@@ -136,7 +136,7 @@ extern "C"
     extern const GccVTableEntry g_SurfaceReaderVTable[] RETAIL(CollisionSurfaceSectionReader_Methods);
     void SurfaceItemDestroy(InstanceKindItem* item, u32 destroyFlags) RETAIL(FUN_00269fe8);
     u32 SurfaceItemCount(InstanceKindItem* item) RETAIL(FUN_0026b9a0);
-    u32 SurfaceItemSlot3(InstanceKindItem* item) RETAIL(FUN_0026b9a8);
+    u32 SurfaceItemSectionType(InstanceKindItem* item) RETAIL(FUN_0026b9a8);
     u32 SurfaceItemCanRead(InstanceKindItem* item, u32 type) RETAIL(FUN_0026b9b0);
     InstanceKindReader* SurfaceItemGetReader(InstanceKindItem* item, s32 index, ItemHeader* header, s32* size) RETAIL(FUN_0026b9c0);
     void SurfaceItemClear(InstanceKindItem* item) RETAIL(FUN_0026ba20);
@@ -145,20 +145,18 @@ extern "C"
 
 namespace
 {
-// The sections an instance section's items read
-constexpr u32 InstanceKindSection = 1;
-// The kinds of an instance section, and the size of a kind's section header
-constexpr u32 Kinds = 9;
-constexpr s32 KindHeaderSize = 0xC;
-// Paths' vtables are 8 bytes in, triggers' and cameras' 0x50
+// The kinds of an instance section
+constexpr u32 Kinds = LayoutInstances::KindCount;
+// Paths' vtables are 8 bytes in, triggers' and cameras' 0x50, their destructor first
 constexpr u32 PathVTable = 0x8;
 constexpr u32 TriggerVTable = 0x50;
-// The node kinds of an object instance, a trigger and a camera
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 TriggerNodeKind = 7;
-constexpr u32 CameraNodeKind = 8;
+constexpr u32 DestroySlot = 1;
 // A list made by a loader has room for this many, and grows by as many
 constexpr u32 LoadedListGrowth = 10;
+// A trigger of this kind is a plain box of its chunk for the sound code
+constexpr u32 SoundBoxKind = 0;
+// The instances an object instance names are kept linked to its agent
+constexpr u32 KeptLink = 1;
 // The loaders read their element from a memory stream of the section aligned like this
 constexpr u16 ElementAlignment = 1;
 
@@ -272,7 +270,7 @@ void DestroyPosition(void* position)
 void DestroyAt(void* object, u32 vtableOffset)
 {
     auto* vtable = *reinterpret_cast<const GccVTableEntry**>(static_cast<u8*>(object) + vtableOffset);
-    CallVirtual<void>(object, vtable, 1, u32{DestroyAndFree});
+    CallVirtual<void>(object, vtable, DestroySlot, u32{DestroyAndFree});
 }
 
 void DestroyPath(void* path)
@@ -366,14 +364,14 @@ u32 InstanceSectionItemCount(InstanceSectionItem*)
     return Kinds;
 }
 
-u32 InstanceSectionItemSlot3(InstanceSectionItem*)
+u32 InstanceSectionItemSectionType(InstanceSectionItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 InstanceSectionItemCanRead(InstanceSectionItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceSectionReader* InstanceSectionItemGetReader(InstanceSectionItem* item, s32, ItemHeader* header, s32* size)
@@ -387,7 +385,7 @@ InstanceSectionReader* InstanceSectionItemGetReader(InstanceSectionItem* item, s
     u32 offset = header->offset;
     if (section < Kinds)
     {
-        *size = KindHeaderSize;
+        *size = sizeof(SectionHeader);
     }
 
     auto* reader = static_cast<InstanceSectionReader*>(MemoryAllocate(sizeof(InstanceSectionReader)));
@@ -398,11 +396,11 @@ InstanceSectionReader* InstanceSectionItemGetReader(InstanceSectionItem* item, s
     return reader;
 }
 
-void InstanceSectionItemSlot6(InstanceSectionItem*)
+void InstanceSectionItemClear(InstanceSectionItem*)
 {
 }
 
-void InstanceSectionItemSlot7(InstanceSectionItem*)
+void InstanceSectionItemSetCount(InstanceSectionItem*)
 {
 }
 
@@ -421,14 +419,14 @@ u32 TemplateItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 TemplateItemSlot3(InstanceKindItem*)
+u32 TemplateItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 TemplateItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* TemplateItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -456,14 +454,14 @@ u32 ObjectInstanceItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 ObjectInstanceItemSlot3(InstanceKindItem*)
+u32 ObjectInstanceItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 ObjectInstanceItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* ObjectInstanceItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -491,14 +489,14 @@ u32 AiPositionItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 AiPositionItemSlot3(InstanceKindItem*)
+u32 AiPositionItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 AiPositionItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* AiPositionItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -526,14 +524,14 @@ u32 AiPathItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 AiPathItemSlot3(InstanceKindItem*)
+u32 AiPathItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 AiPathItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* AiPathItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -561,14 +559,14 @@ u32 PositionItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 PositionItemSlot3(InstanceKindItem*)
+u32 PositionItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 PositionItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* PositionItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -596,14 +594,14 @@ u32 PathItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 PathItemSlot3(InstanceKindItem*)
+u32 PathItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 PathItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* PathItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -631,14 +629,14 @@ u32 TriggerItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 TriggerItemSlot3(InstanceKindItem*)
+u32 TriggerItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 TriggerItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* TriggerItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -666,14 +664,14 @@ u32 CameraItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 CameraItemSlot3(InstanceKindItem*)
+u32 CameraItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 CameraItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* CameraItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -701,14 +699,14 @@ u32 SurfaceItemCount(InstanceKindItem* item)
     return item->count;
 }
 
-u32 SurfaceItemSlot3(InstanceKindItem*)
+u32 SurfaceItemSectionType(InstanceKindItem*)
 {
-    return 1;
+    return DefaultSectionType;
 }
 
 u32 SurfaceItemCanRead(InstanceKindItem*, u32 type)
 {
-    return type == InstanceKindSection;
+    return type == DefaultSectionType;
 }
 
 InstanceKindReader* SurfaceItemGetReader(InstanceKindItem* item, s32, ItemHeader*, s32* size)
@@ -730,7 +728,11 @@ void InstanceSectionItem::QueueKind(u32 section, u32 start)
 {
     // The RM2's sections of a layout: the instance templates, the AI positions, the AI paths, the positions, the paths, the
     // collision surfaces, the object instances, the triggers and the cameras
-    static const u8 KindOfSection[Kinds] = {0, 2, 3, 4, 5, 8, 1, 6, 7};
+    static const u8 KindOfSection[Kinds] = {LayoutInstances::KindTemplates,       LayoutInstances::KindAiPositions,
+                                            LayoutInstances::KindAiPaths,         LayoutInstances::KindPositions,
+                                            LayoutInstances::KindPaths,           LayoutInstances::KindSurfaces,
+                                            LayoutInstances::KindObjectInstances, LayoutInstances::KindTriggers,
+                                            LayoutInstances::KindCameras};
     if (section < Kinds)
     {
         AddSectionToLoadQueue(&kinds[KindOfSection[section]], start);
@@ -850,7 +852,7 @@ void LoadPath(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     MemoryStream stream;
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     auto* path = static_cast<LayoutPath*>(MemoryAllocate(sizeof(LayoutPath)));
-    path->unknown48 = -1;
+    path->searchSegment = -1;
     path->vtable = g_LayoutPathVTable;
     path->points = nullptr;
     path->Read(&stream);
@@ -982,7 +984,8 @@ void LayoutInstances::Destroy(u32 destroyFlags)
     }
 }
 
-LayoutInstances* LayoutInstances::Construct(LayoutInstances* layout, u32 readerBit0, u32 chunkOwn, GameResources* resources, ChunkEntry* chunk)
+LayoutInstances* LayoutInstances::Construct(LayoutInstances* layout, u32 unregistered, u32 chunkOwn, GameResources* resources,
+                                            ChunkEntry* chunk)
 {
     for (PointerArray<void>*& list : layout->kinds)
     {
@@ -995,15 +998,15 @@ LayoutInstances* LayoutInstances::Construct(LayoutInstances* layout, u32 readerB
     layout->paths = nullptr;
     layout->resources = resources;
     layout->chunk = chunk;
-    layout->flags = 0;
-    layout->flags = (layout->flags & ~FlagReaderBit0) | (readerBit0 & 1);
-    layout->flags = (layout->flags & ~FlagChunkOwn) | (chunkOwn & 1) << 1;
+    layout->flags.value = 0;
+    layout->flags.unused0 = unregistered;
+    layout->flags.chunkOwn = chunkOwn;
     return layout;
 }
 
 void LayoutInstances::Finish()
 {
-    PointerArray<void>* instances = kinds[1];
+    PointerArray<void>* instances = kinds[KindObjectInstances];
     if (navigation != nullptr)
     {
         navigation->Link(g_ChunkManager->pathFinder, chunk->index);
@@ -1026,10 +1029,10 @@ void LayoutInstances::Finish()
                 continue;
             }
 
-            Agent* agent = static_cast<ObjectNode*>(GetGameNode(&context->nodes, ObjectNodeKind))->agent;
+            Agent* agent = static_cast<ObjectNode*>(GetGameNode(&context->nodes, NodeObject))->agent;
             for (u32 link = 0; link < linked.count; link++)
             {
-                LinkToAgent(agent, contexts->contexts[linked.data[link]], 1);
+                LinkToAgent(agent, contexts->contexts[linked.data[link]], KeptLink);
             }
         }
     }
@@ -1055,27 +1058,26 @@ void LayoutInstances::RegisterTemplate(u32, u32, InstanceTemplate* instanceTempl
 
 void LayoutInstances::RegisterObjectInstance(u32, u32 count, ObjectInstance* instance)
 {
-    constexpr u32 CountBits = ContextCountMask << ContextCountShift;
     InstanceFactory* factory = g_InstanceFactory;
-    factory->SetFlag2();
-    factory->SetFlag3();
-    factory->ClearFlag1();
-    factory->ClearFlag0();
-    factory->creationFlags = (flags & FlagChunkOwn) != 0 ? 0 : InstanceFactory::NotChunkOwn;
+    factory->SetInstanceProperties();
+    factory->SetGivesFlagSlots();
+    factory->ClearUnused1();
+    factory->ClearGivesIds();
+    factory->creationFlags = flags.chunkOwn != 0 ? 0 : InstanceFactory::NotChunkOwn;
     InstanceContext* context = CreateInstanceContext(factory, chunk, instance);
     if (contexts == nullptr)
     {
         auto* table = static_cast<LayoutContexts*>(MemoryAllocate(sizeof(LayoutContexts)));
         table->capacity = count;
         table->contexts = count != 0 ? static_cast<InstanceContext**>(MemoryAllocate2(count * sizeof(InstanceContext*))) : nullptr;
-        flags &= ~CountBits;
+        flags.contextCount = 0;
         contexts = table;
     }
 
-    u32 made = flags >> ContextCountShift & ContextCountMask;
+    u32 made = flags.contextCount;
     contexts->contexts[made] = context;
-    flags = (flags & ~CountBits) | ((made + 1) & ContextCountMask) << ContextCountShift;
-    u32 notChunkOwn = (flags & FlagChunkOwn) == 0 ? 1 : 0;
+    flags.contextCount = made + 1;
+    u32 notChunkOwn = flags.chunkOwn == 0 ? 1 : 0;
     LinkInstancePositions(instance, chunk, context, notChunkOwn);
     LinkInstancePaths(instance, chunk, context, notChunkOwn);
     factory->creationFlags = 0;
@@ -1150,7 +1152,7 @@ void LayoutInstances::RegisterPosition(u32, u32 count, LayoutPosition* position)
         }
 
         positions = entry->positions;
-        if ((flags & FlagChunkOwn) != 0)
+        if (flags.chunkOwn != 0)
         {
             chunk->positionCount = count;
         }
@@ -1177,16 +1179,17 @@ void LayoutInstances::RegisterPath(u32, u32 count, LayoutPath* path)
 
 void LayoutInstances::RegisterTrigger(u32, u32, MessageTrigger* trigger)
 {
-    if (trigger->Kind() == 0)
+    if (trigger->header.kind == SoundBoxKind)
     {
         SoundBox* box = SoundBox::Construct(static_cast<SoundBox*>(MemoryAllocate(sizeof(SoundBox))), trigger);
-        Reference* data = chunk->data;
-        ChunkData::AddSoundBox(data != nullptr ? static_cast<ChunkData*>(static_cast<void*>(data->object)) : nullptr, box);
+        ChunkDataReference* reference = chunk->data;
+        ChunkData* chunkData = reference != nullptr ? reference->chunk : nullptr;
+        ChunkData::AddSoundBox(chunkData, box);
         return;
     }
 
     InstanceContext* context = CreateTriggerContext(g_InstanceFactory, chunk, trigger);
-    auto* node = static_cast<TriggerNode*>(GetGameNode(&context->nodes, TriggerNodeKind));
+    auto* node = static_cast<TriggerNode*>(GetGameNode(&context->nodes, NodeMessageTrigger));
     for (u32 index = 0; index < trigger->instances.count; index++)
     {
         node->AddInstance(contexts->contexts[trigger->instances.data[index]]);
@@ -1196,9 +1199,9 @@ void LayoutInstances::RegisterTrigger(u32, u32, MessageTrigger* trigger)
 void LayoutInstances::RegisterCamera(u32, u32, CameraTrigger* camera)
 {
     InstanceFactory* factory = g_InstanceFactory;
-    factory->creationFlags = (flags & FlagChunkOwn) != 0 ? 0 : InstanceFactory::NotChunkOwn;
+    factory->creationFlags = flags.chunkOwn != 0 ? 0 : InstanceFactory::NotChunkOwn;
     InstanceContext* context = CreateCameraContext(factory, chunk, camera);
-    auto* node = static_cast<TriggerNode*>(GetGameNode(&context->nodes, CameraNodeKind));
+    auto* node = static_cast<TriggerNode*>(GetGameNode(&context->nodes, NodeCameraTrigger));
     for (u32 index = 0; index < camera->instances.count; index++)
     {
         node->AddInstance(contexts->contexts[camera->instances.data[index]]);
@@ -1264,7 +1267,7 @@ void LinkInstancePositions(ObjectInstance* instance, ChunkEntry* chunk, Instance
         return;
     }
 
-    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&context->nodes, ObjectNodeKind))->waypoints;
+    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&context->nodes, NodeObject))->waypoints;
     for (u32 index = 0; index < ids.count; index++)
     {
         u16 id = ids.data[index];
@@ -1290,7 +1293,7 @@ void LinkInstancePaths(ObjectInstance* instance, ChunkEntry* chunk, InstanceCont
         return;
     }
 
-    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&context->nodes, ObjectNodeKind))->waypoints;
+    Waypoints* waypoints = static_cast<ObjectNode*>(GetGameNode(&context->nodes, NodeObject))->waypoints;
     for (u32 index = 0; index < ids.count; index++)
     {
         u16 id = ids.data[index];

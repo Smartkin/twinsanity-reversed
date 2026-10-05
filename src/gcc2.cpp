@@ -137,6 +137,11 @@ enum CallFrameInstruction : u32
 constexpr u32 WindowFirst = 16;
 constexpr u32 WindowEnd = 32;
 
+// An LEB128 number's bytes: 7 bits of the number each, from the lowest, the top bit set on all but the last
+constexpr u32 Leb128Bits = 7;
+constexpr u32 Leb128Mask = 0x7F;
+constexpr u32 Leb128More = 0x80;
+
 u32 ReadUnaligned32(const u8* data)
 {
     u32 value;
@@ -176,14 +181,13 @@ const u8* DecodeUleb128(const u8* data, u32* value)
     while (true)
     {
         u32 byte = *data++;
-        // sllv: the shift's low five bits
-        result |= (byte & 0x7F) << (shift & 0x1F);
-        if ((byte & 0x80) == 0)
+        result |= (byte & Leb128Mask) << (shift & ShiftMask);
+        if ((byte & Leb128More) == 0)
         {
             break;
         }
 
-        shift += 7;
+        shift += Leb128Bits;
     }
 
     *value = result;
@@ -225,19 +229,19 @@ const u8* ExecuteCfaInstruction(const u8* data, FrameStateInternal* state, const
     {
     case CfaSetLoc:
         *address = reinterpret_cast<u8*>(ReadUnaligned32(data));
-        data += 4;
+        data += sizeof(u32);
         break;
     case CfaAdvanceLoc1:
         *address += *data;
-        data += 1;
+        data += sizeof(u8);
         break;
     case CfaAdvanceLoc2:
         *address += static_cast<u16>(data[0] | data[1] << 8);
-        data += 2;
+        data += sizeof(u16);
         break;
     case CfaAdvanceLoc4:
         *address += ReadUnaligned32(data);
-        data += 4;
+        data += sizeof(u32);
         break;
     case CfaOffsetExtended:
         data = DecodeUleb128(data, &reg);

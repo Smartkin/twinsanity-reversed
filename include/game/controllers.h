@@ -5,6 +5,7 @@
 #include "game/array.h"
 #include "game/clock.h"
 #include "game/cutscenes.h"
+#include "game/font.h"
 #include "game/math.h"
 #include "game/pads.h"
 #include "game/string.h"
@@ -31,7 +32,7 @@ struct RenderTargetDescription
     s32 y;
     // A packet the renderer keeps (0x60 bytes)
     u8* packet;
-    u32 unknown6C;
+    u32 unused6C;
 
     // Made for the controller (nothing set but its clear colour, the colour table's 8th, and its packet), a copy made of another
     // (its frame worked out, the platform's Platform::Graphics::SetUpRenderTarget) and destroyed
@@ -39,7 +40,7 @@ struct RenderTargetDescription
         RETAIL(FUN_001a2458);
     static RenderTargetDescription* Copy(RenderTargetDescription* description, const RenderTargetDescription* other)
         RETAIL(FUN_001a24b0);
-    void Destroy(u32 flags) RETAIL(FUN_001a2528);
+    void Destroy(u32 destroyFlags) RETAIL(FUN_001a2528);
 };
 CHECK_SIZE(RenderTargetDescription, 0x70);
 
@@ -49,10 +50,33 @@ struct QueuedShape;
 struct GameRendererController;
 struct RenderView;
 
-// The renderer made at start-up (G_Renderer_): its controller, the view it draws the scene with, its render target, its flags
-// (bit 0: it draws the frame's overlay), and the UI's 2D overlay queued for the frame (game/overlay.h): the colour shapes and
-// texts are queued in (the colour table's 15th leaves a shape's own colours), the texts queued per font, the font, scale and
-// flags texts are queued with, and the shapes queued in each of six layers (the first and the last of each)
+// A renderer's flags: it draws (its overlay too), it clears its frame's colour and its depth when it has no sky to draw
+union RendererFlags
+{
+    u32 value;
+    struct
+    {
+        u32 draws : 1;
+        u32 unused1 : 3;
+        u32 clearsColour : 1;
+        u32 clearsDepth : 1;
+        u32 unused6 : 26;
+    };
+
+    // The bits' masks (a renderer starts with all three)
+    enum Mask : u32
+    {
+        Draws = 0x1,
+        ClearsColour = 0x10,
+        ClearsDepth = 0x20,
+    };
+};
+CHECK_SIZE(RendererFlags, 4);
+
+// The renderer made at start-up (G_Renderer_): its controller, the view it draws the scene with, its render target, its flags,
+// and the UI's 2D overlay queued for the frame (game/overlay.h): the colour shapes and texts are queued in (white leaves a
+// shape's own colours), the texts queued per font, the font, scale and alignment texts are queued with, and the shapes queued
+// in each of six layers (the first and the last of each)
 struct Renderer
 {
     static constexpr u32 OverlayLayers = 6;
@@ -60,26 +84,18 @@ struct Renderer
     GameRendererController* controller;
     RenderView* view;
     RenderTargetDescription* target;
-    u32 flags;
+    RendererFlags flags;
     u32 colour;
-    u32 unknown14;
+    u32 unused14;
     PointerArray<FontTexts> texts;
     Font* font;
     Vector2 textScale;
-    u32 textFlags;
+    TextAlignment textAlignment;
     QueuedShape* layers[OverlayLayers];
     QueuedShape* layerEnds[OverlayLayers];
 
-    // Bits of its flags: it draws (its overlay too), it clears its frame's colour and its depth when it has no sky to draw
-    enum Flags : u32
-    {
-        FlagDraws = 0x1,
-        FlagClearColour = 0x10,
-        FlagClearDepth = 0x20,
-    };
-
-    // Made for a controller with its own copy of a render target: drawing, clearing its frame, nothing queued, texts in the
-    // colour table's 15th colour at a scale of 1 with flags 0x11
+    // Made for a controller with its own copy of a render target: drawing, clearing its frame, nothing queued, texts in white
+    // at a scale of 1 at the top left
     static Renderer* Construct(Renderer* renderer, struct GameRendererController* controller,
                                const RenderTargetDescription* target) RETAIL(FUN_001a09b0);
 };
@@ -145,6 +161,21 @@ extern "C"
 // Its vtable follows 0x1C bytes of members. The base class (D_002F68D0) has the slots the game's controller doesn't replace
 struct GameRendererController
 {
+    enum Slot : u32
+    {
+        BeginFrameSlot = 3,
+        UpdateSlot = 4,
+        BeforeDrawingSlot = 5,
+        AfterDrawingSlot = 6,
+        DrawRendererScenesSlot = 8,
+        AfterGameRenderSlot = 9,
+        FinishSceneSlot = 10,
+        SetScreenOffsetSlot = 12,
+        RenderSlot = 13,
+        PresentSlot = 14,
+        CreateRendererSlot = 18,
+    };
+
     RendererPool renderers;
     // Where the screen is moved to (the options' screen position)
     Vector2 screenOffset;
@@ -162,7 +193,7 @@ struct GameRendererController
     // nothing reads), 8 every renderer's scene drawn, 9 the drawing renderers' overlays drawn (the base's) or the scene finished
     // with its screen effects (the game's), 11 a frame of the first renderer's overlay alone presented, 12 the screen moved (each
     // way between -1 and 1; the game's moves the display with it), 18 a renderer made for a render target (its own copy of it)
-    u32 Unknown2() RETAIL(FUN_001a05c0);
+    u32 None2() RETAIL(FUN_001a05c0);
     void ClearFrames() RETAIL(FUN_0019d250);
     void StepAnimations(TimeClock* clock) RETAIL(FUN_001a05c8);
     void CountCameraRenderers() RETAIL(FUN_0019d3f0);
@@ -172,7 +203,7 @@ struct GameRendererController
     void PresentOverlay() RETAIL(FUN_001a1270);
     void BaseSetScreenOffset(const Vector2* offset) RETAIL(FUN_0019d840);
     void MoveScreen(const Vector2* offset) RETAIL(FUN_001a06d0);
-    Renderer* MakeRenderer(RenderTargetDescription* description, u32 unknown) RETAIL(FUN_001a03f0);
+    Renderer* MakeRenderer(RenderTargetDescription* description, u32 unused) RETAIL(FUN_001a03f0);
     // The ones that do nothing: the game's 5, 6, 15, 16, 17, 19, 20 and 21, the base's 10 and 14
     void Nothing5() RETAIL(FUN_001a00e0);
     void Nothing6() RETAIL(FUN_001a00e8);
@@ -187,56 +218,56 @@ struct GameRendererController
 
     void BeginFrame()
     {
-        CallVirtual<void>(this, vtable, 3);
+        CallVirtual<void>(this, vtable, BeginFrameSlot);
     }
 
     void Update(TimeClock* clocks)
     {
-        CallVirtual<void>(this, vtable, 4, clocks);
+        CallVirtual<void>(this, vtable, UpdateSlot, clocks);
     }
 
     void EndFrame()
     {
-        CallVirtual<void>(this, vtable, 5);
+        CallVirtual<void>(this, vtable, BeforeDrawingSlot);
     }
 
     void AfterEndFrame()
     {
-        CallVirtual<void>(this, vtable, 6);
+        CallVirtual<void>(this, vtable, AfterDrawingSlot);
     }
 
     void DrawRendererScenes()
     {
-        CallVirtual<void>(this, vtable, 8);
+        CallVirtual<void>(this, vtable, DrawRendererScenesSlot);
     }
 
     void AfterGameRender()
     {
-        CallVirtual<void>(this, vtable, 9);
+        CallVirtual<void>(this, vtable, AfterGameRenderSlot);
     }
 
     // The scene's frame finished (the movies' end does it without the screen effects)
     void FinishScene(u32 effects)
     {
-        CallVirtual<void>(this, vtable, 10, effects);
+        CallVirtual<void>(this, vtable, FinishSceneSlot, effects);
     }
 
     // The screen moved to an offset (the display's position follows it)
     void SetScreenOffset(const Vector2* offset)
     {
-        CallVirtual<void>(this, vtable, 12, offset);
+        CallVirtual<void>(this, vtable, SetScreenOffsetSlot, offset);
     }
 
     // Sends the frame's render buckets, waits for the vertical blank and starts the next frame's
     void Render()
     {
-        CallVirtual<void>(this, vtable, 13);
+        CallVirtual<void>(this, vtable, RenderSlot);
     }
 
     // The same, the buckets sent unless told not to
     void Present(bool withoutSending)
     {
-        CallVirtual<void>(this, vtable, 14, withoutSending);
+        CallVirtual<void>(this, vtable, PresentSlot, withoutSending);
     }
 
     // Its versions of those (game/renderer.cpp)
@@ -244,12 +275,43 @@ struct GameRendererController
     void PresentFrameUnlessHeld(bool held) RETAIL(FUN_001a0540);
     void EndScene(u32 effects) RETAIL(FUN_001a0638);
 
-    Renderer* CreateRenderer(RenderTargetDescription* description, u32 unknown)
+    // (The game passes 1, which the game's controller ignores)
+    Renderer* CreateRenderer(RenderTargetDescription* description, u32 unused)
     {
-        return CallVirtual<Renderer*>(this, vtable, 18, description, unknown);
+        return CallVirtual<Renderer*>(this, vtable, CreateRendererSlot, description, unused);
     }
 };
 CHECK_OFFSET(GameRendererController, vtable, 0x1C);
+
+// The cutscenes' player's bits: the tracks are placed in the origin's space, the next part was read, the first part was read (the
+// cutscene can start), it waits for the music, it was stopped by a script (a part read then is let go of), the cutscene can be
+// skipped, it's only music (it plays until the music ends) and the music was asked for (it starts once it's prepared)
+union VideoControllerBits
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 relative : 1;
+        u32 unused2 : 5;
+        u32 nextPartRead : 1;
+        u32 firstPartRead : 1;
+        u32 waitingForMusic : 1;
+        u32 stopped : 1;
+        u32 skippable : 1;
+        u32 musicOnly : 1;
+        u32 musicAsked : 1;
+        u32 unused14 : 18;
+    };
+
+    // The bits' masks: what the constructor clears (it sets relative)
+    enum Mask : u32
+    {
+        Relative = 0x2,
+        ConstructorCleared = 0x3FFF,
+    };
+};
+CHECK_SIZE(VideoControllerBits, 4);
 
 // The cutscenes' player (the video controller, 0x15B0 bytes; the cutscenes and its tracks are game/cutscenes.h's): its resource
 // manager, its bits (GCC 2.9x's bit fields of the 64 bit word it starts, past the resource manager), its state, the frames it
@@ -272,39 +334,20 @@ struct VideoController
         StateFinished = 5,
     };
 
-    enum Bits : u32
-    {
-        // The tracks are placed in the origin's space
-        BitRelative = 0x2,
-        BitNextPartRead = 0x80,
-        // The first part was read: the cutscene can start
-        BitFirstPartRead = 0x100,
-        BitWaitingForMusic = 0x200,
-        // Stopped by a script: a part read then is let go of
-        BitStopped = 0x400,
-        BitSkippable = 0x800,
-        // The cutscene is only music: it plays until the music ends
-        BitMusicOnly = 0x1000,
-        // The music was asked for: it starts once it's prepared
-        BitMusicAsked = 0x2000,
-        // What the constructor clears (it sets BitRelative)
-        ConstructorMask = 0x3FFF,
-    };
-
     static constexpr u32 ModelCount = 15;
     static constexpr u32 TrackCount = 32;
     // The frames waited from which the disc error shows
     static constexpr u32 DiscErrorFrames = 13;
 
     void* resourceManager;
-    u32 bits;
+    VideoControllerBits bits;
     u32 state;
     // The state it was paused in
     u32 pausedState;
     u32 waitedFrames;
     struct GameObject* object;
     InstanceContext* instance;
-    u32 unknown1C;
+    u32 unused1C;
     Matrix4x4 origin;
     struct ChunkData* chunk;
     TimeClock* clock;
@@ -313,7 +356,7 @@ struct VideoController
     String discErrorTitle;
     u16 models[ModelCount];
     InstanceContext* modelInstances[ModelCount];
-    u32 unknownDC;
+    u32 unusedDC;
     u16 modelCount;
     u8 clockIndex;
     PlayedCameraTrack cameraTrack;
@@ -333,7 +376,7 @@ struct VideoController
     u16 frame;
     u16 partFrame;
     f32 frameShare;
-    u8 unknown152C[0x15B0 - 0x152C];
+    u8 unused152C[0x15B0 - 0x152C];
 
     // Paused (the state it was in kept) and resumed in it, and a frame of the state it's in
     void Pause() RETAIL(FUN_0029eed8);
@@ -358,42 +401,75 @@ CHECK_OFFSET(VideoController, startTime, 0x1518);
 CHECK_OFFSET(VideoController, frameShare, 0x1528);
 CHECK_SIZE(VideoController, 0x15B0);
 
-// The save code (the memory card's state machine; the save manager derives from it, G_UnkStruct_5C0): its bits (0-3 the operation
-// running, 0 none; 4-7 the one asked for; 8-15 the screen shown; 16-19 the player's answer to it, 1 the first choice (20-23 the
-// save slot chosen), 2 back or no, 3 the third; 24-27 the save slot acted on; 28 and 29 the game controller's), its results (0-3
-// the save slot; bit 4 set by the last operation: the game controller saves again after a save with it, and goes ahead with a load
-// or a new game with it; bit 5 the card has no save of the game yet: a slot's save writes every file), its name, its device and
-// its vtable: 1 an operation asked of the device (with its message), 2 and 3 a screen of choices and of save slots shown, 4 the
-// device's operation done, 5 the screen's frame while the device waits, 6 its operation finished (bit 4 of the results, whether a
-// save is due), 7 the destructor, 8 the update with the global clock, 9 the drawing
+// The save code's bits: the operation running (0 none), the one asked for, the screen shown, the player's answer to it
+// (SaveCode::Answer) with the save slot chosen by the first choice, the save slot the operation saves to or loads from, a save due
+// once the game controller has handled a failure (set by the save code, cleared by a request) and that save under way (the game
+// controller's)
+union SaveCodeBits
+{
+    u32 value;
+    struct
+    {
+        u32 operation : 4;
+        u32 asked : 4;
+        u32 screen : 8;
+        u32 answer : 4;
+        u32 chosen : 4;
+        u32 targetSlot : 4;
+        u32 saveDue : 1;
+        u32 savingDue : 1;
+        u32 unused30 : 2;
+    };
+};
+CHECK_SIZE(SaveCodeBits, 4);
+
+// The save code's results: the save slot, set by the last operation (the game controller saves again after a save with it, and
+// goes ahead with a load or a new game with it), and the card has no save of the game yet (a slot's save writes every file)
+union SaveCodeResults
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 4;
+        u32 flagged : 1;
+        u32 fresh : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(SaveCodeResults, 4);
+
+// The save code (the memory card's state machine; the save manager derives from it, g_SaveManager): its bits, its results, its
+// name, its device and its vtable: 1 an operation asked of the device (with its message), 2 and 3 a screen of choices and of save
+// slots shown, 4 the device's operation done, 5 the screen's frame while the device waits, 6 its operation finished (the results'
+// flagged, whether a save is due), 7 the destructor, 8 the update with the global clock, 9 the drawing
 struct SaveCode
 {
-    enum Bits : u32
+    enum Slot : u32
     {
-        OperationMask = 0xF,
-        AskedShift = 4,
-        ScreenShift = 8,
-        AnswerShift = 16,
-        AnswerMask = 0xF0000,
-        ChosenShift = 20,
-        SlotShift = 24,
-        // Set by the save code, cleared by a request: a save is due once the game controller has handled a failure
-        SaveDue = 0x10000000,
-        // The game controller's: that save is under way
-        SavingDue = 0x20000000,
+        AskSlot = 1,
+        ShowChoicesSlot = 2,
+        ShowSlotsSlot = 3,
+        OperationDoneSlot = 4,
+        WaitingSlot = 5,
+        FinishSlot = 6,
+        UpdateSlot = 8,
+        RenderSlot = 9,
     };
 
-    enum Results : u32
+    // The player's answers to a screen: none, the first choice (on the slots' screens a slot, the bits' chosen), back or no, the
+    // third choice
+    enum Answer : u32
     {
-        SlotMask = 0xF,
-        Flagged = 0x10,
-        Fresh = 0x20,
+        AnswerNone = 0,
+        AnswerFirst = 1,
+        AnswerBack = 2,
+        AnswerThird = 3,
     };
 
-    u32 bits;
-    u32 results;
+    SaveCodeBits bits;
+    SaveCodeResults results;
     String name;
-    // Its card slots (game/savedevice.h): bits 0-3 of their flags, the files besides the icons, are its save slots
+    // Its device (game/savedevice.h, the memory card): its flags' fileCount, the files besides the icons, are its save slots
     class SaveDevice* device;
     const GccVTableEntry* vtable;
 
@@ -411,30 +487,14 @@ struct SaveCode
     const char* Message(s32 message) RETAIL(FUN_002a7fa8);
     void MessageText(s32 message, String* text) RETAIL(FUN_002a1fb0);
 
-    u32 Operation() const
-    {
-        return bits & OperationMask;
-    }
-
-    // The screen is the bits' second byte
-    u32 Screen() const
-    {
-        return reinterpret_cast<const u8*>(&bits)[1];
-    }
-
-    void SetScreen(u32 screen)
-    {
-        reinterpret_cast<u8*>(&bits)[1] = static_cast<u8>(screen);
-    }
-
     void Update(TimeClock* clock)
     {
-        CallVirtual<void>(this, vtable, 8, clock);
+        CallVirtual<void>(this, vtable, UpdateSlot, clock);
     }
 
     void Render(Renderer* renderer)
     {
-        CallVirtual<void>(this, vtable, 9, renderer);
+        CallVirtual<void>(this, vtable, RenderSlot, renderer);
     }
 };
 CHECK_SIZE(SaveCode, 0x1C);
@@ -450,7 +510,7 @@ extern "C"
     extern PadControllerInterface* G_GamePadController;
     extern GameMovieController* G_GameMovieController;
     extern VideoController* G_VideoController;
-    extern SaveCode* G_UnkStruct_5C0;
+    extern SaveCode* g_SaveManager RETAIL(G_UnkStruct_5C0);
     extern Renderer* G_Renderer_;
     extern ChunkLoadingManager* G_ChunkLoadingManager_;
     extern GameResources* G_GameResourcesObjectPointer;

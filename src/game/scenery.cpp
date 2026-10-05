@@ -24,66 +24,20 @@ extern "C"
     extern const GccVTableEntry g_SceneryCellReaderVTable[] RETAIL(SceneryTypeSection_Reader);
     extern const GccVTableEntry g_SceneryReleaseReaderVTable[] RETAIL(D_002FBE60);
     extern const GccVTableEntry g_SceneryDestroyReaderVTable[] RETAIL(D_002FBE38);
-    // Where a volume is against a cell's box: 0 apart, 1 the cell wholly inside, 2 partly
-    // A dynamic scenery node drawn through a view, and culled first: how many models were
 }
 
 
 namespace
 {
-constexpr u32 DynamicFlag = 0x40000;
+// The links an instance is on a cell's list by (InstanceContext::previous and next), as GCC 2.9x member pointers: their offsets
+// plus 1
 constexpr u32 ListPrevious = 0x140 + 1;
 constexpr u32 ListNext = 0x144 + 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 DynamicSceneryNodeKind = 4;
-constexpr u32 FlagInDrawnCell = 0x200;
-constexpr u32 FlagVisible = 0x400;
-constexpr u32 FlagAsleep = 0x1;
-constexpr u64 SeenMask = 0xFFFFFF;
 constexpr s32 PathEnd = -1;
-
-// The vtable slots the cells call each other by
-enum CellSlot : u32
-{
-    SlotDestroy = 1,
-    SlotRelease = 2,
-    SlotRender = 3,
-    SlotCollectInstances = 4,
-    SlotCollectCells = 6,
-    SlotFindCell = 7,
-    SlotSetChunk = 9,
-    SlotCollectVisible = 10,
-    SlotDrawContents = 11,
-    SlotDrawContentsCulled = 12,
-    SlotReleaseMeshes = 13,
-    SlotHasInstances = 21,
-    SlotSleepInstances = 22,
-    SlotReleaseInstances = 23,
-    SlotRead = 25,
-    SlotAddInstanceAt = 26,
-    SlotSetItemAt = 27,
-    SlotCellAt = 28,
-    SlotMakeChild = 30,
-    SlotSetLight = 31,
-    SlotChildCount = 32,
-    SlotChildren = 33,
-    SlotOtherChildren = 34,
-};
-
-enum ViewSlot : u32
-{
-    ViewTestBox = 2,
-    ViewTestBoxAt = 3,
-    ViewLoadModel = 11,
-    ViewTestCell = 12,
-};
-
-// An instance's vtable slots (its vtable 0xA4 bytes in)
-enum InstanceSlot : u32
-{
-    InstanceSleep = 3,
-    InstanceRelease = 4,
-};
+// The boxes, items and matrices of a cell's meshes are aligned to the cache's lines
+constexpr u32 CacheLineSize = 0x40;
+// The depth left below which a node's children are leaves
+constexpr s32 LeafDepth = 2;
 
 // A cache line pulled in ahead of its use
 inline void Touch(const void* address)
@@ -93,19 +47,17 @@ inline void Touch(const void* address)
 
 void SetSeen(InstanceContext* instance, u32 seen)
 {
-    auto* word = reinterpret_cast<u64*>(instance->seen);
-    *word = (*word & ~SeenMask) | (static_cast<u64>(seen) & SeenMask);
+    instance->seen = seen;
 }
 
 void ClearSeen(InstanceContext* instance)
 {
-    auto* word = reinterpret_cast<u64*>(instance->seen);
-    *word &= ~SeenMask;
+    instance->seen = 0;
 }
 
 bool Draws(InstanceContext* instance)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
     return model != nullptr && model->drawnOgi != nullptr;
 }
 
@@ -123,8 +75,8 @@ void QueueClipped(InstanceContext* instance)
 
 bool IsSolid(InstanceContext* instance)
 {
-    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
-    return model != nullptr && ((static_cast<s32>(model->bits) >> 27) & 1) != 0;
+    auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
+    return model != nullptr && model->bits.solid != 0;
 }
 
 SceneryCell* MakeLeaf()
@@ -167,7 +119,7 @@ u32 DrawCellInstances(InstanceContext** list, ChunkView* view)
         return 0;
     }
 
-    CallVirtual<void>(view, view->vtable, ViewLoadModel, instance->place);
+    CallVirtual<void>(view, view->vtable, ChunkView::SlotLoadModel, instance->place);
     InstanceContext* next = instance->next;
     while (true)
     {
@@ -175,15 +127,16 @@ u32 DrawCellInstances(InstanceContext** list, ChunkView* view)
         s32 distance = view->distance;
         if (next != nullptr)
         {
-            CallVirtual<void>(view, view->vtable, ViewLoadModel, next->place);
+            CallVirtual<void>(view, view->vtable, ChunkView::SlotLoadModel, next->place);
         }
 
         if (IsSolid(instance))
         {
-            u32 flags = instance->flags | FlagInDrawnCell;
+            ReferencedObjectFlags flags = instance->flags;
+            flags.inDrawnCell = 1;
             instance->flags = flags;
             ClearSeen(instance);
-            if ((flags & FlagVisible) != 0 && (flags & FlagAsleep) != FlagAsleep && Draws(instance))
+            if (flags.visible && !flags.asleep && Draws(instance))
             {
                 count++;
                 QueueClipped(instance);
@@ -191,10 +144,11 @@ u32 DrawCellInstances(InstanceContext** list, ChunkView* view)
         }
         else
         {
-            u32 flags = instance->flags | FlagInDrawnCell;
+            ReferencedObjectFlags flags = instance->flags;
+            flags.inDrawnCell = 1;
             SetSeen(instance, static_cast<u32>(distance));
             instance->flags = flags;
-            if ((flags & FlagVisible) != 0 && (flags & FlagAsleep) != FlagAsleep && Draws(instance))
+            if (flags.visible && !flags.asleep && Draws(instance))
             {
                 count++;
                 QueueInView(instance);
@@ -228,7 +182,7 @@ u32 DrawCellInstancesCulled(InstanceContext** list, ChunkView* view)
     {
         u32 result = view->InstanceResult();
         s32 distance = view->distance;
-        bool inView = result != 0;
+        bool inView = result != ChunkView::OutOfView;
         if (next != nullptr)
         {
             view->TestBoxOnVu0(&next->collision.ownBox, reinterpret_cast<const Matrix4x4*>(next->place));
@@ -236,10 +190,11 @@ u32 DrawCellInstancesCulled(InstanceContext** list, ChunkView* view)
 
         if (IsSolid(instance))
         {
-            u32 flags = instance->flags | FlagInDrawnCell;
+            ReferencedObjectFlags flags = instance->flags;
+            flags.inDrawnCell = 1;
             instance->flags = flags;
             ClearSeen(instance);
-            if ((flags & FlagVisible) != 0 && (flags & FlagAsleep) != FlagAsleep && Draws(instance))
+            if (flags.visible && !flags.asleep && Draws(instance))
             {
                 count++;
                 QueueClipped(instance);
@@ -247,15 +202,15 @@ u32 DrawCellInstancesCulled(InstanceContext** list, ChunkView* view)
         }
         else
         {
-            instance->flags = inView ? instance->flags | FlagInDrawnCell : instance->flags & ~FlagInDrawnCell;
+            instance->flags.inDrawnCell = inView;
             SetSeen(instance, static_cast<u32>(distance));
-            u32 flags = instance->flags;
-            if ((flags & FlagVisible) != 0 && (flags & FlagAsleep) != FlagAsleep && inView)
+            ReferencedObjectFlags flags = instance->flags;
+            if (flags.visible && !flags.asleep && inView)
             {
-                auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind));
+                auto* model = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));
                 if (model != nullptr && model->drawnOgi != nullptr)
                 {
-                    if (result == 1)
+                    if (result == ChunkView::InView)
                     {
                         QueueInView(instance);
                     }
@@ -286,7 +241,7 @@ void CollectCellInstancesAll(SceneryCell* cell, InstanceCollector* collector, u3
     {
         if ((instance->nodes.mask & kinds) != 0)
         {
-            AddInstanceToPool(&collector->instances, 0, instance);
+            AddInstanceToPool(&collector->instances, InstanceCollector::WhollyInsidePool, instance);
         }
     }
 
@@ -294,7 +249,7 @@ void CollectCellInstancesAll(SceneryCell* cell, InstanceCollector* collector, u3
     {
         if ((instance->nodes.mask & kinds) != 0)
         {
-            AddInstanceToPool(&collector->instances, 0, instance);
+            AddInstanceToPool(&collector->instances, InstanceCollector::WhollyInsidePool, instance);
         }
     }
 }
@@ -315,13 +270,15 @@ void CollectInView(InstanceContext* first, InstanceCollector* collector, u32 kin
 
         ObjectPlace* place = instance->place;
         RotateAndTranslate(place);
-        CallVirtual<void>(view, view->vtable, ViewTestBoxAt, &instance->collision.ownBox, place);
-        if (view->visibility == 0)
+        CallVirtual<void>(view, view->vtable, ChunkView::SlotTestBoxAt, &instance->collision.ownBox, place);
+        if (view->visibility == ChunkView::OutOfView)
         {
             continue;
         }
 
-        AddInstanceToPool(&collector->instances, view->visibility == 2 ? 1 : 0, instance);
+        u32 pool = view->visibility == ChunkView::PartlyInView ? InstanceCollector::PartlyInsidePool
+                                                                 : InstanceCollector::WhollyInsidePool;
+        AddInstanceToPool(&collector->instances, pool, instance);
     }
 }
 
@@ -338,7 +295,7 @@ void CollectCellInstancesInView(SceneryCell* cell, InstanceCollector* collector,
 
 namespace
 {
-constexpr u32 CollectorPools = 2;
+constexpr u32 CollectorPools = InstanceCollector::PoolCount;
 
 template <typename T>
 ItemPool<T>* NewPools()
@@ -363,7 +320,7 @@ void DeletePools(ItemPool<T>* pools)
     for (ItemPool<T>* pool = pools + ArrayCount(pools); pool != pools;)
     {
         pool--;
-        pool->VirtualDestroy(0);
+        pool->VirtualDestroy(DestroyElement);
     }
 
     DeleteArray(pools);
@@ -372,7 +329,7 @@ void DeletePools(ItemPool<T>* pools)
 
 extern "C"
 {
-InstanceCollector* InstanceCollectorConstruct(InstanceCollector* collector, u32 wantedFlags, u32 unwantedFlags, u32 unknown)
+InstanceCollector* InstanceCollectorConstruct(InstanceCollector* collector, u32 wantedFlags, u32 unwantedFlags, u32 unused)
 {
     collector->instances.count = CollectorPools;
     collector->instances.pools = NewPools<InstanceContext*>();
@@ -380,7 +337,7 @@ InstanceCollector* InstanceCollectorConstruct(InstanceCollector* collector, u32 
     collector->cells.pools = NewPools<SceneryCell*>();
     collector->wantedFlags = wantedFlags;
     collector->unwantedFlags = unwantedFlags;
-    collector->unknown18 = unknown;
+    collector->unused18 = unused;
     InstanceCollectorClear(collector);
     return collector;
 }
@@ -416,18 +373,17 @@ u32 InstanceCollectorFound(const InstanceCollector* collector)
 
 u32 CollectCellInstances(InstanceCollector* collector, u32 kinds)
 {
-    constexpr u32 BothPools = 0x3;
     PoolsWalk<SceneryCell*> walk;
-    ConstructPoolsWalk(&walk, g_CellPoolsWalkVTable, g_CellWalkVTable, &collector->cells, BothPools);
+    ConstructPoolsWalk(&walk, g_CellPoolsWalkVTable, g_CellWalkVTable, &collector->cells, InstanceCollector::BothPools);
     for (walk.First(); !walk.AtEnd(); walk.Next())
     {
         for (InstanceContext* instance = (*walk.Item())->instances; instance != nullptr; instance = instance->next)
         {
-            u32 flags = instance->flags;
+            u32 flags = instance->flags.value;
             if ((flags & collector->wantedFlags) == collector->wantedFlags && (flags & collector->unwantedFlags) == 0 &&
                 (instance->nodes.mask & kinds) != 0)
             {
-                AddInstanceToPool(&collector->instances, 0, instance);
+                AddInstanceToPool(&collector->instances, InstanceCollector::WhollyInsidePool, instance);
             }
         }
     }
@@ -440,7 +396,7 @@ u32 CollectCellInstances(InstanceCollector* collector, u32 kinds)
 
 namespace
 {
-// The instances matching a filter (its kinds of nodes, the flags they have all of, the flags they have none of) told a slot
+// The instances matching a filter (InstanceFilterWord) told a slot
 void TellInstances(SceneryCell* cell, const u32* filter, u32 slot)
 {
     InstanceContext* instance = cell->instances;
@@ -448,10 +404,10 @@ void TellInstances(SceneryCell* cell, const u32* filter, u32 slot)
     {
         InstanceContext* next = instance->next;
         bool matches = false;
-        u32 flags = instance->flags;
-        if ((flags & filter[1]) == filter[1] && (flags & filter[2]) == 0)
+        u32 flags = instance->flags.value;
+        if ((flags & filter[FilterWantedFlags]) == filter[FilterWantedFlags] && (flags & filter[FilterUnwantedFlags]) == 0)
         {
-            matches = (instance->nodes.mask & filter[0]) != 0;
+            matches = (instance->nodes.mask & filter[FilterKinds]) != 0;
         }
 
         if (matches)
@@ -485,7 +441,7 @@ u32 DrawCellContents(SceneryCell* cell, ChunkView* view, bool culled)
 
     for (InstanceContext* instance = cell->dynamicInstances; instance != nullptr; instance = instance->next)
     {
-        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, DynamicSceneryNodeKind));
+        auto* node = static_cast<GameNode*>(GetGameNode(&instance->nodes, NodeDynamicScenery));
         auto* dynamic = static_cast<DynamicSceneryNode*>(node);
         count += culled ? dynamic->DrawCulled(view) : dynamic->Draw(view);
     }
@@ -498,11 +454,11 @@ void DestroyCellBase(SceneryCell* cell, u32 flags)
     cell->vtable = g_SceneryCellVTable;
     if (cell->meshes != nullptr)
     {
-        cell->meshes->Destroy(3);
+        cell->meshes->Destroy(DestroyAndFree);
     }
 
-    CellListDestroy(&cell->dynamicInstances, 2);
-    CellListDestroy(&cell->instances, 2);
+    CellListDestroy(&cell->dynamicInstances, DestroyOnly);
+    CellListDestroy(&cell->instances, DestroyOnly);
     if ((flags & 1) != 0)
     {
         MemoryDeallocate2_(cell);
@@ -523,7 +479,7 @@ void ReleaseCellMeshes(SceneryCell* cell, u32 keep)
 
     if (cell->meshes != nullptr)
     {
-        cell->meshes->Destroy(3);
+        cell->meshes->Destroy(DestroyAndFree);
     }
 
     cell->meshes = nullptr;
@@ -543,7 +499,7 @@ void SetCellItem(SceneryCell* cell, RigidModel* mesh, Lod* lod, s32 index)
 
 s32 ChildCountOf(SceneryCell* cell)
 {
-    return CallVirtual<s32>(cell, cell->vtable, SlotChildCount);
+    return CallVirtual<s32>(cell, cell->vtable, SceneryCell::SlotChildCount);
 }
 
 SceneryCell** ChildrenOf(SceneryCell* cell, u32 slot)
@@ -590,7 +546,7 @@ void CellListRelease(InstanceContext** list)
     InstanceContext* instance = *list;
     while (true)
     {
-        CallVirtual<void>(instance, instance->vtable, InstanceRelease);
+        CallVirtual<void>(instance, instance->vtable, InstanceContext::ReleaseSlot);
         if (*list == nullptr)
         {
             return;
@@ -615,7 +571,7 @@ void SceneryCell::Destroy(u32 flags)
 
 void SceneryCell::Release(u32 releaseInstances, u32 queue)
 {
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     if (queue != 0)
     {
         auto* reader = static_cast<SceneryDestroyReader*>(MemoryAllocate(sizeof(SceneryDestroyReader)));
@@ -623,7 +579,7 @@ void SceneryCell::Release(u32 releaseInstances, u32 queue)
         reader->cell = this;
         MemoryReader* item =
             MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), reader, nullptr, 0);
-        AddItemReaderToReaderStorage(storage, item, 1);
+        AddItemReaderToReaderStorage(storage, item, QueueFront);
         CellListRelease(&instances);
         parent = nullptr;
         return;
@@ -635,19 +591,19 @@ void SceneryCell::Release(u32 releaseInstances, u32 queue)
     }
 }
 
-u32 SceneryCell::Render(s32 mode, ChunkView* view, ChunkData* drawn)
+u32 SceneryCell::Render(s32 parentVisibility, ChunkView* view, ChunkData* drawn)
 {
     u32 slot = SlotDrawContents;
-    if (mode != 1)
+    if (parentVisibility != ChunkView::InView)
     {
-        CallVirtual<void>(view, view->vtable, ViewTestCell, this);
+        CallVirtual<void>(view, view->vtable, ChunkView::SlotTestCell, this);
         u32 visibility = view->CellResult();
-        if (visibility == 0)
+        if (visibility == ChunkView::OutOfView)
         {
             return 0;
         }
 
-        if (visibility == 2)
+        if (visibility == ChunkView::PartlyInView)
         {
             slot = SlotDrawContentsCulled;
         }
@@ -656,22 +612,22 @@ u32 SceneryCell::Render(s32 mode, ChunkView* view, ChunkData* drawn)
     return CallVirtual<u32>(this, vtable, slot, view, drawn);
 }
 
-void SceneryCell::CollectInstances(s32 mode, InstanceCollector* collector, u32 kinds, ChunkView* view)
+void SceneryCell::CollectInstances(s32 parentVisibility, InstanceCollector* collector, u32 kinds, ChunkView* view)
 {
-    if (mode == 1)
+    if (parentVisibility == ChunkView::InView)
     {
         CollectCellInstancesAll(this, collector, kinds);
         return;
     }
 
-    CallVirtual<void>(view, view->vtable, ViewTestBox, this);
+    CallVirtual<void>(view, view->vtable, ChunkView::SlotTestBox, this);
     u32 visibility = view->lastVisibility;
-    if (visibility == 0)
+    if (visibility == ChunkView::OutOfView)
     {
         return;
     }
 
-    if (visibility == 2)
+    if (visibility == ChunkView::PartlyInView)
     {
         CollectCellInstancesInView(this, collector, kinds, view);
     }
@@ -685,11 +641,11 @@ void SceneryCell::CollectCells(InstanceCollector* collector)
 {
     if (CallVirtual<u32>(this, vtable, SlotHasInstances) != 0)
     {
-        AddCellToPool(&collector->cells, 0, this);
+        AddCellToPool(&collector->cells, InstanceCollector::WhollyInsidePool, this);
     }
 }
 
-SceneryCell* SceneryCell::Self()
+SceneryCell* SceneryCell::FindCell()
 {
     return this;
 }
@@ -707,9 +663,10 @@ void SceneryCell::SetChunk(ChunkData* owner)
 u32 SceneryCell::CollectVisibleCells(BoundingVolume* volume, InstanceCollector* collector)
 {
     u32 inside = VolumeHoldsCell(this, volume);
-    if (inside != 0 && instances != nullptr)
+    if (inside != Volume::Apart && instances != nullptr)
     {
-        AddCellToPool(&collector->cells, inside == 1 ? 0 : 1, this);
+        u32 pool = inside == Volume::Inside ? InstanceCollector::WhollyInsidePool : InstanceCollector::PartlyInsidePool;
+        AddCellToPool(&collector->cells, pool, this);
     }
 
     return inside;
@@ -735,22 +692,22 @@ void SceneryCell::ReleaseMeshes(u32 keep)
     ReleaseCellMeshes(this, keep);
 }
 
-u32 SceneryCell::None14()
+u32 SceneryCell::Collect()
 {
     return 0;
 }
 
-u32 SceneryCell::None15()
+u32 SceneryCell::CellOf()
 {
     return 0;
 }
 
-u32 SceneryCell::None16()
+u32 SceneryCell::CellOfBox()
 {
     return 0;
 }
 
-f32 SceneryCell::NoneFloat()
+f32 SceneryCell::Unused17()
 {
     return 0.0f;
 }
@@ -760,7 +717,7 @@ s32 SceneryCell::Depth()
     return -1;
 }
 
-u16 SceneryCell::QueryInstances(InstanceRayHit* query)
+u16 SceneryCell::QueryInstances(InstanceQuery* query)
 {
     u16 before = query->count;
     for (InstanceContext* instance = instances; instance != nullptr; instance = instance->next)
@@ -778,12 +735,12 @@ u32 SceneryCell::HasInstances()
 
 void SceneryCell::SleepInstances(const u32* filter)
 {
-    TellInstances(this, filter, InstanceSleep);
+    TellInstances(this, filter, InstanceContext::SleepSlot);
 }
 
 void SceneryCell::ReleaseInstances(const u32* filter)
 {
-    TellInstances(this, filter, InstanceRelease);
+    TellInstances(this, filter, InstanceContext::ReleaseSlot);
 }
 
 u32 SceneryCell::Type()
@@ -791,18 +748,16 @@ u32 SceneryCell::Type()
     return TypeId;
 }
 
-// Its meshes (3: none, 0x1613: read), its volume (only the box is kept) and its lights' bits
+// Its meshes (read when the type says so), its volume (only the box is kept) and its lights' bits
 void SceneryCell::Read(Stream* stream)
 {
-    constexpr s32 NoMeshes = 3;
-    constexpr s32 HasMeshes = 0x1613;
     s32 kind;
     stream->ReadS32(&kind);
-    if (kind == NoMeshes)
+    if (kind == SceneryMeshes::NoTypeId)
     {
         meshes = nullptr;
     }
-    else if (kind == HasMeshes)
+    else if (kind == SceneryMeshes::TypeId)
     {
         meshes = SceneryMeshes::ConstructRead(static_cast<SceneryMeshes*>(MemoryAllocate(sizeof(SceneryMeshes))), stream);
     }
@@ -824,7 +779,7 @@ SceneryCell* SceneryCell::AddInstanceAt(const s16*, InstanceContext* instance)
 
 void SceneryCell::AddInstance(InstanceContext* instance)
 {
-    if ((instance->flags & DynamicFlag) == DynamicFlag)
+    if (instance->flags.dynamicScenery)
     {
         CellListAdd(&dynamicInstances, instance);
         return;
@@ -966,19 +921,19 @@ void SceneryTree::Destroy(u32 flags)
     DestroyCellBase(this, flags);
 }
 
-u32 SceneryTree::Render(s32 mode, ChunkView* view, ChunkData* drawn)
+u32 SceneryTree::Render(s32 parentVisibility, ChunkView* view, ChunkData* drawn)
 {
     u32 count = 0;
-    s32 childMode = 1;
-    if (mode == 1)
+    s32 visibility = ChunkView::InView;
+    if (parentVisibility == ChunkView::InView)
     {
         count = DrawCellContents(this, view, false);
     }
     else
     {
-        CallVirtual<void>(view, view->vtable, ViewTestCell, this);
-        childMode = static_cast<s32>(view->CellResult());
-        if (childMode == 0)
+        CallVirtual<void>(view, view->vtable, ChunkView::SlotTestCell, this);
+        visibility = static_cast<s32>(view->CellResult());
+        if (visibility == ChunkView::OutOfView)
         {
             return 0;
         }
@@ -992,26 +947,26 @@ u32 SceneryTree::Render(s32 mode, ChunkView* view, ChunkData* drawn)
     {
         if (*child != nullptr)
         {
-            count += (*child)->VirtualRender(childMode, view, drawn);
+            count += (*child)->VirtualRender(visibility, view, drawn);
         }
     }
 
     return count;
 }
 
-void SceneryTree::CollectInstances(s32 mode, InstanceCollector* collector, u32 kinds, ChunkView* view)
+void SceneryTree::CollectInstances(s32 parentVisibility, InstanceCollector* collector, u32 kinds, ChunkView* view)
 {
-    s32 childMode = 1;
-    if (mode == 1)
+    s32 visibility = ChunkView::InView;
+    if (parentVisibility == ChunkView::InView)
     {
         CollectCellInstancesAll(this, collector, kinds);
     }
     else
     {
         CollectCellInstancesInView(this, collector, kinds, view);
-        CallVirtual<void>(view, view->vtable, ViewTestBox, this);
-        childMode = static_cast<s32>(view->lastVisibility);
-        if (childMode == 0)
+        CallVirtual<void>(view, view->vtable, ChunkView::SlotTestBox, this);
+        visibility = static_cast<s32>(view->lastVisibility);
+        if (visibility == ChunkView::OutOfView)
         {
             return;
         }
@@ -1023,7 +978,7 @@ void SceneryTree::CollectInstances(s32 mode, InstanceCollector* collector, u32 k
     {
         if (*child != nullptr)
         {
-            CallVirtual<void>(*child, (*child)->vtable, SlotCollectInstances, childMode, collector, kinds, view);
+            CallVirtual<void>(*child, (*child)->vtable, SlotCollectInstances, visibility, collector, kinds, view);
         }
     }
 }
@@ -1037,7 +992,7 @@ void SceneryTree::CollectCells(InstanceCollector* collector)
 {
     if (CallVirtual<u32>(this, vtable, SlotHasInstances) != 0)
     {
-        AddCellToPool(&collector->cells, 0, this);
+        AddCellToPool(&collector->cells, InstanceCollector::WhollyInsidePool, this);
     }
 
     s32 children = ChildCountOf(this);
@@ -1070,14 +1025,15 @@ void SceneryTree::CollectVisible(BoundingVolume* volume, InstanceCollector* coll
     s32 children = ChildCountOf(this);
     SceneryCell** child = ChildrenOf(this, SlotOtherChildren);
     u32 inside = VolumeHoldsCell(this, volume);
-    if (inside == 0)
+    if (inside == Volume::Apart)
     {
         return;
     }
 
     if (instances != nullptr)
     {
-        AddCellToPool(&collector->cells, inside == 1 ? 0 : 1, this);
+        u32 pool = inside == Volume::Inside ? InstanceCollector::WhollyInsidePool : InstanceCollector::PartlyInsidePool;
+        AddCellToPool(&collector->cells, pool, this);
     }
 
     for (; children > 0; children--, child++)
@@ -1136,7 +1092,7 @@ u32 SceneryTree::HasInstances()
 }
 
 // A path is a child's index per level, -1 ending it: the cell at its end gets the instance (the children on the way made)
-SceneryCell* SceneryTree::AddInstanceAt(const s16* path, InstanceContext* instance, u32 unknown)
+SceneryCell* SceneryTree::AddInstanceAt(const s16* path, InstanceContext* instance, u32 unused)
 {
     if (*path == PathEnd)
     {
@@ -1151,11 +1107,11 @@ SceneryCell* SceneryTree::AddInstanceAt(const s16* path, InstanceContext* instan
     }
 
     SceneryCell* child = children[*path];
-    return CallVirtual<SceneryCell*>(child, child->vtable, SlotAddInstanceAt, path + 1, instance, unknown);
+    return CallVirtual<SceneryCell*>(child, child->vtable, SlotAddInstanceAt, path + 1, instance, unused);
 }
 
-SceneryCell* SceneryTree::SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unknown, s32 index, u32 unknown6,
-                                    u32 unknown7)
+SceneryCell* SceneryTree::SetItemAt(const s16* path, RigidModel* mesh, Lod* lod, u32 unused4, s32 index, u32 unused6,
+                                    u32 set)
 {
     if (*path == PathEnd)
     {
@@ -1164,7 +1120,7 @@ SceneryCell* SceneryTree::SetItemAt(const s16* path, RigidModel* mesh, Lod* lod,
     }
 
     SceneryCell* child = ChildrenOf(this, SlotChildren)[*path];
-    return CallVirtual<SceneryCell*>(child, child->vtable, SlotSetItemAt, path + 1, mesh, lod, unknown, index, unknown6, unknown7);
+    return CallVirtual<SceneryCell*>(child, child->vtable, SlotSetItemAt, path + 1, mesh, lod, unused4, index, unused6, set);
 }
 
 // Without making the children on the way, a missing one's cell is asked for at address 0 (retail)
@@ -1235,11 +1191,11 @@ SceneryNode* SceneryNode::Construct(SceneryNode* node)
 void SceneryNode::Destroy(u32 flags)
 {
     vtable = g_SceneryNodeVTable;
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         if (children[index] != nullptr)
         {
-            children[index]->VirtualDestroy(3);
+            children[index]->VirtualDestroy(DestroyAndFree);
         }
     }
 
@@ -1249,7 +1205,7 @@ void SceneryNode::Destroy(u32 flags)
 // Queued, each child's release is queued too and forgotten
 void SceneryNode::Release(u32 releaseInstances, u32 queue)
 {
-    GameReadersStorage* storage = g_ReadersStorages[0];
+    GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     if (queue != 0)
     {
         auto* reader = static_cast<SceneryDestroyReader*>(MemoryAllocate(sizeof(SceneryDestroyReader)));
@@ -1257,7 +1213,7 @@ void SceneryNode::Release(u32 releaseInstances, u32 queue)
         reader->cell = this;
         MemoryReader* item =
             MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), reader, nullptr, 0);
-        AddItemReaderToReaderStorage(storage, item, 1);
+        AddItemReaderToReaderStorage(storage, item, QueueFront);
         CellListRelease(&instances);
         parent = nullptr;
     }
@@ -1266,7 +1222,7 @@ void SceneryNode::Release(u32 releaseInstances, u32 queue)
         CellListRelease(&instances);
     }
 
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         SceneryCell* child = children[index];
         if (child == nullptr)
@@ -1281,7 +1237,7 @@ void SceneryNode::Release(u32 releaseInstances, u32 queue)
         reader->queue = static_cast<u8>(queue);
         MemoryReader* item =
             MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), reader, nullptr, 0);
-        AddItemReaderToReaderStorage(storage, item, 1);
+        AddItemReaderToReaderStorage(storage, item, QueueFront);
         if (queue != 0)
         {
             children[index] = nullptr;
@@ -1291,6 +1247,7 @@ void SceneryNode::Release(u32 releaseInstances, u32 queue)
 
 SceneryCell* SceneryNode::FindCell(const Vector4* low, const Vector4* high, s32 depthLeft)
 {
+    // Farther than any child's middle (1e11)
     constexpr f32 Far = 0x1.74876Ep+36f;
     s32 nearest = -1;
     f32 best = Far;
@@ -1298,7 +1255,7 @@ SceneryCell* SceneryNode::FindCell(const Vector4* low, const Vector4* high, s32 
     middle.x = (middle.x - low->x) * 0.5f + low->x;
     middle.y = (middle.y - low->y) * 0.5f + low->y;
     middle.z = (middle.z - low->z) * 0.5f + low->z;
-    for (s32 index = 0; index < 8; index++)
+    for (s32 index = 0; index < static_cast<s32>(Octants); index++)
     {
         SceneryCell* child = children[index];
         if (child == nullptr || BoxContainsRegion(reinterpret_cast<const Box*>(child), low, high) != 1)
@@ -1332,7 +1289,7 @@ SceneryCell* SceneryNode::FindCell(const Vector4* low, const Vector4* high, s32 
 
 void SceneryNode::RemoveChild(SceneryCell* child)
 {
-    for (s32 index = 0; index < 8; index++)
+    for (s32 index = 0; index < static_cast<s32>(Octants); index++)
     {
         if (children[index] != child)
         {
@@ -1341,7 +1298,7 @@ void SceneryNode::RemoveChild(SceneryCell* child)
 
         if (child != nullptr)
         {
-            child->VirtualDestroy(3);
+            child->VirtualDestroy(DestroyAndFree);
         }
 
         children[index] = nullptr;
@@ -1355,7 +1312,7 @@ u32 SceneryNode::IsEmpty()
         return 0;
     }
 
-    for (s32 index = 0; index < 8; index++)
+    for (s32 index = 0; index < static_cast<s32>(Octants); index++)
     {
         if (children[index] != nullptr)
         {
@@ -1368,7 +1325,7 @@ u32 SceneryNode::IsEmpty()
 
 void SceneryNode::SleepInstances(const u32* filter)
 {
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         SceneryCell* child = children[index];
         if (child != nullptr)
@@ -1377,12 +1334,12 @@ void SceneryNode::SleepInstances(const u32* filter)
         }
     }
 
-    TellInstances(this, filter, InstanceSleep);
+    TellInstances(this, filter, InstanceContext::SleepSlot);
 }
 
 void SceneryNode::ReleaseInstances(const u32* filter)
 {
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         SceneryCell* child = children[index];
         if (child != nullptr)
@@ -1391,7 +1348,7 @@ void SceneryNode::ReleaseInstances(const u32* filter)
         }
     }
 
-    TellInstances(this, filter, InstanceRelease);
+    TellInstances(this, filter, InstanceContext::ReleaseSlot);
 }
 
 u32 SceneryNode::Type()
@@ -1399,23 +1356,21 @@ u32 SceneryNode::Type()
     return TypeId;
 }
 
-// The cell's base, then the types of the eight children (0x1600 a node, 0x1605 a leaf, anything else none), each child read
-// later by the readers
+// The cell's base, then the types of the eight children (a node's, a leaf's, anything else none), each child read later by the
+// readers
 void SceneryNode::Read(Stream* stream)
 {
-    constexpr s32 NodeType = 0x1600;
-    constexpr s32 LeafType = 0x1605;
     SceneryCell::Read(stream);
-    u32 types[8];
+    u32 types[Octants];
     stream->Read(types, sizeof(types), 1);
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         SceneryCell* child;
-        if (types[index] == NodeType)
+        if (types[index] == SceneryNode::TypeId)
         {
             child = MakeNode(sizeof(SceneryNode));
         }
-        else if (types[index] == LeafType)
+        else if (types[index] == SceneryLeaf::TypeId)
         {
             child = MakeLeaf();
         }
@@ -1424,7 +1379,7 @@ void SceneryNode::Read(Stream* stream)
             child = nullptr;
         }
 
-        GameReadersStorage* storage = g_ReadersStorages[0];
+        GameReadersStorage* storage = g_ReadersStorages[MainReaders];
         if (child != nullptr)
         {
             auto* reader = static_cast<SceneryCellReader*>(MemoryAllocate(sizeof(SceneryCellReader)));
@@ -1434,15 +1389,15 @@ void SceneryNode::Read(Stream* stream)
             MemoryReader* item =
                 MemoryReader::Construct(static_cast<MemoryReader*>(MemoryAllocate(sizeof(MemoryReader))), reader, nullptr, 0);
             child->parent = this;
-            AddItemReaderToReaderStorage(storage, item, 0);
+            AddItemReaderToReaderStorage(storage, item, QueueBack);
         }
 
         children[index] = child;
     }
 }
 
-// The octant's box is half the node's around the octant's middle; below a depth of 2 the child is a leaf. Its lights' bits and
-// chunk are the node's
+// The octant's box is half the node's around the octant's middle; below a depth of LeafDepth the child is a leaf. Its lights'
+// bits and chunk are the node's
 SceneryCell* SceneryNode::MakeChild(u32 octant, s32 depthLeft)
 {
     // The node's size first, then (OctantOffset writes over it) the octant's middle
@@ -1461,7 +1416,7 @@ SceneryCell* SceneryNode::MakeChild(u32 octant, s32 depthLeft)
     offset.y = offset.y * 0.5f;
     offset.z = offset.z * 0.5f;
     SceneryCell* child;
-    if (depthLeft < 2)
+    if (depthLeft < LeafDepth)
     {
         auto* leaf = static_cast<SceneryLeaf*>(MemoryAllocate(sizeof(SceneryLeaf)));
         leaf->ConstructBase();
@@ -1507,8 +1462,8 @@ SceneryCell* SceneryNode::MakeChild(u32 octant, s32 depthLeft)
     return child;
 }
 
-// A quarter of the size, each axis's sign from the octant's bits (bit 0 x, 1 y, 2 z); a node of other than 8 children stays
-// level; then the node's middle added
+// A quarter of the size, each axis's sign from the octant's bits (bit 0 x, 1 y, 2 z, a set bit the lower half); a node of other
+// than 8 children stays level; then the node's middle added
 void SceneryNode::OctantOffset(f32* offset, u32 octant)
 {
     f32 quarter[4];
@@ -1530,7 +1485,7 @@ void SceneryNode::OctantOffset(f32* offset, u32 octant)
         bits >>= 1;
     }
 
-    if (ChildCountOf(this) != 8)
+    if (ChildCountOf(this) != static_cast<s32>(Octants))
     {
         offset[1] = 0.0f;
     }
@@ -1546,7 +1501,7 @@ void SceneryNode::OctantOffset(f32* offset, u32 octant)
 
 s32 SceneryNode::ChildCount()
 {
-    return 8;
+    return Octants;
 }
 
 SceneryCell** SceneryNode::Children()
@@ -1562,12 +1517,12 @@ SceneryCell** SceneryNode::OtherChildren()
 void SceneryRoot::Destroy(u32 flags)
 {
     vtable = g_SceneryNodeVTable;
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < Octants; index++)
     {
         SceneryCell* child = children[index];
         if (child != nullptr)
         {
-            child->VirtualDestroy(3);
+            child->VirtualDestroy(DestroyAndFree);
         }
     }
 
@@ -1582,7 +1537,7 @@ void SceneryRoot::Collect(u32 kinds, InstanceCollector* collector)
 
 SceneryCell* SceneryRoot::CellOf(InstanceContext* instance, const Matrix4x4* matrix)
 {
-    constexpr f32 Margin = 0x1.A36E2Ep-15f;
+    constexpr f32 Margin = Epsilon;
     const Vector4* low = &instance->collision.box.min;
     const Vector4* high = &instance->collision.box.max;
     Box box;
@@ -1597,7 +1552,7 @@ SceneryCell* SceneryRoot::CellOf(InstanceContext* instance, const Matrix4x4* mat
         high = &box.max;
     }
 
-    if (CellHoldsBox(Margin, this, low, high) == 0)
+    if (CellHoldsBox(Margin, this, low, high) == Volume::Apart)
     {
         return nullptr;
     }
@@ -1638,7 +1593,7 @@ void SceneryCellReader::Destroy(u32 flags)
 
 void SceneryCellReader::Read(u8*, u32, ReaderStack*)
 {
-    CallVirtual<void>(cell, cell->vtable, SlotRead, stream);
+    CallVirtual<void>(cell, cell->vtable, SceneryCell::SlotRead, stream);
 }
 
 void SceneryReleaseReader::Destroy(u32 flags)
@@ -1668,7 +1623,7 @@ void SceneryDestroyReader::Read(u8*, u32, ReaderStack*)
 {
     if (cell != nullptr)
     {
-        cell->VirtualDestroy(3);
+        cell->VirtualDestroy(DestroyAndFree);
     }
 }
 
@@ -1677,13 +1632,14 @@ SceneryMeshes* SceneryMeshes::Construct(SceneryMeshes* meshes, s16 meshCount, s1
     meshes->meshCount = static_cast<u16>(meshCount);
     meshes->lodCount = static_cast<u16>(lodCount);
     u32 count = static_cast<u16>(meshCount) + static_cast<u16>(lodCount);
-    auto* boxes = static_cast<Box*>(MemoryAllocateAligned(GetHeapManager(), count * (sizeof(Box) + sizeof(void*)), 0x40));
+    u32 size = count * (sizeof(Box) + sizeof(void*));
+    auto* boxes = static_cast<Box*>(MemoryAllocateAligned(GetHeapManager(), size, CacheLineSize));
     meshes->items = reinterpret_cast<void**>(boxes + count);
     meshes->boxes = boxes;
     RetailLibc::MemorySet(boxes + count, 0, count * sizeof(void*));
     meshes->matrices = nullptr;
     meshes->matrices = static_cast<Matrix4x4*>(
-        MemoryAllocateAligned(GetHeapManager(), (meshCount + lodCount) * sizeof(Matrix4x4), 0x40));
+        MemoryAllocateAligned(GetHeapManager(), (meshCount + lodCount) * sizeof(Matrix4x4), CacheLineSize));
     return meshes;
 }
 
@@ -1721,7 +1677,7 @@ void SceneryMeshes::Read(Stream* stream)
     }
 
     u32 size = count * sizeof(Matrix4x4);
-    matrices = static_cast<Matrix4x4*>(MemoryAllocateAligned(GetHeapManager(), size, 0x40));
+    matrices = static_cast<Matrix4x4*>(MemoryAllocateAligned(GetHeapManager(), size, CacheLineSize));
     stream->Read(matrices, size, 1);
 }
 
@@ -1738,7 +1694,8 @@ void SceneryMeshes::ReadItems(Stream* stream)
     }
 
     auto* ids = static_cast<u32*>(MemoryAllocate2(count * sizeof(u32)));
-    auto* allocated = static_cast<Box*>(MemoryAllocateAligned(GetHeapManager(), count * (sizeof(Box) + sizeof(void*)), 0x40));
+    u32 size = count * (sizeof(Box) + sizeof(void*));
+    auto* allocated = static_cast<Box*>(MemoryAllocateAligned(GetHeapManager(), size, CacheLineSize));
     boxes = allocated;
     items = reinterpret_cast<void**>(allocated + count);
     stream->Read(allocated, count * sizeof(Box), 1);
@@ -1813,14 +1770,14 @@ void SceneryMeshes::SetBox(f32 extra, const Box* box, s32 index)
 u32 SceneryMeshes::Draw(ChunkView* view)
 {
     u32 total = meshCount + lodCount;
-    view->lastVisibility = 1;
-    view->visibility = 1;
+    view->lastVisibility = ChunkView::InView;
+    view->visibility = ChunkView::InView;
     if (items == nullptr || items[0] == nullptr)
     {
         return total;
     }
 
-    CallVirtual<void>(view, view->vtable, ViewLoadModel, &matrices[0]);
+    CallVirtual<void>(view, view->vtable, ChunkView::SlotLoadModel, &matrices[0]);
     if (!(total < 2))
     {
         Touch(&matrices[1]);
@@ -1833,7 +1790,7 @@ u32 SceneryMeshes::Draw(ChunkView* view)
         u32 next = index + 1;
         if (next < total)
         {
-            CallVirtual<void>(view, view->vtable, ViewLoadModel, &matrices[next]);
+            CallVirtual<void>(view, view->vtable, ChunkView::SlotLoadModel, &matrices[next]);
             if (index + 2 < total)
             {
                 Touch(&matrices[index + 2]);
@@ -1850,7 +1807,7 @@ u32 SceneryMeshes::Draw(ChunkView* view)
         u32 next = index + 1;
         if (next < total)
         {
-            CallVirtual<void>(view, view->vtable, ViewLoadModel, &matrices[next]);
+            CallVirtual<void>(view, view->vtable, ChunkView::SlotLoadModel, &matrices[next]);
             if (index + 2 < total)
             {
                 Touch(&matrices[index + 2]);
@@ -1934,31 +1891,29 @@ u32 SceneryMeshes::DrawCulled(ChunkView* view)
     return drawn;
 }
 
-// The bits, name, colour filter palette, root type and unused byte; the sky when bit 16 says so; the lights when bit 17 does;
-// a root of type 0x160A read (made a node first, its children cleared, then made the root). The root's chunk is the data (when
-// it has no root, address 0x30's word is written, retail)
-void ReadScenery(ChunkData* data, Stream* stream)
+// The flags, name, colour filter palette, root type and unused byte; the sky and the lights when the flags say so;
+// a root of the root's type read (made a node first, its children cleared, then made the root). The root's chunk is the chunk's
+// data (when it has no root, address 0x30's word is written, retail)
+void ReadScenery(ChunkData* chunk, Stream* stream)
 {
-    constexpr s32 RootType = 0x160A;
-    constexpr u32 HasSky = 0x10000;
-    stream->Read(&data->bits, sizeof(data->bits), 1);
-    StringRead(&data->name, stream);
-    stream->ReadU32(&data->colourFilterPalette);
+    stream->Read(&chunk->flags, sizeof(chunk->flags), 1);
+    StringRead(&chunk->name, stream);
+    stream->ReadU32(&chunk->colourFilterPalette);
     s32 type;
     stream->ReadS32(&type);
-    stream->ReadBool(reinterpret_cast<bool*>(&data->unusedByte));
-    if ((data->bits & HasSky) != 0)
+    stream->ReadBool(reinterpret_cast<bool*>(&chunk->unusedByte));
+    if (chunk->flags.hasSky != 0)
     {
-        stream->ReadS32(reinterpret_cast<s32*>(&data->skyId));
-        data->sky = g_SkyTable.Acquire(&data->skyId, nullptr);
+        stream->ReadS32(reinterpret_cast<s32*>(&chunk->skyId));
+        chunk->sky = g_SkyTable.Acquire(&chunk->skyId, nullptr);
     }
 
-    if ((data->bits & ChunkData::HasLights) != 0)
+    if (chunk->flags.hasLights != 0)
     {
-        ReadSceneryLights(data->lights, stream);
+        ReadSceneryLights(chunk->lights, stream);
     }
 
-    if (type == RootType)
+    if (type == static_cast<s32>(SceneryRoot::TypeId))
     {
         auto* root = static_cast<SceneryRoot*>(MemoryAllocate(sizeof(SceneryRoot)));
         SceneryTree::Construct(root);
@@ -1966,8 +1921,8 @@ void ReadScenery(ChunkData* data, Stream* stream)
         root->ClearChildren();
         root->vtable = g_SceneryRootVTable;
         root->Read(stream);
-        data->scenery = root;
+        chunk->scenery = root;
     }
 
-    data->scenery->chunk = data;
+    chunk->scenery->chunk = chunk;
 }

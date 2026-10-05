@@ -11,22 +11,12 @@
 
 namespace
 {
-// The node classes' vtable functions the node list and the instances call
-constexpr u32 NodeDestroySlot = 2;
-constexpr u32 NodeSetOwnerSlot = 3;
-constexpr u32 NodeKindSlot = 5;
-constexpr u32 NodeLeftChunkSlot = 6;
-constexpr u32 NodeStepSlot = 7;
-constexpr u32 NodeUpdateSlot = 8;
-constexpr u32 NodeRemovedSlot = 9;
-// The objects' vtable functions: an instance let go, a queued object's step
-constexpr u32 InstanceReleaseSlot = 4;
-constexpr u32 NodeEventSlot = 1;
-constexpr u32 NodeChangeChunkSlot = 4;
 // The queued events' links
 constexpr u32 EventPrevious = 0x4 + 1;
 constexpr u32 EventNext = 0x8 + 1;
-constexpr u32 ObjectStepSlot = 5;
+// The node iterator's own vtable functions: whether it's done, to the next node
+constexpr u32 IteratorIsDoneSlot = 3;
+constexpr u32 IteratorNextSlot = 5;
 // The size of an object's place
 constexpr u32 ObjectPlaceSize = 0x70;
 // The links of the nodes' lists and of the instances' (GCC 2.9x member pointers: their offsets plus 1)
@@ -35,10 +25,16 @@ constexpr u32 NodeNext = 0x10 + 1;
 constexpr u32 InstancePrevious = 0x140 + 1;
 constexpr u32 InstanceNext = 0x144 + 1;
 constexpr u8 NoKind = 0xFF;
+// UnregisterNode's second argument: the node detached from its instance too
+constexpr u32 DetachNode = 1;
+// A new instance's clock (none yet)
+constexpr u8 NoClock = 0xFF;
+// The kinds stepped at the start, in their order (0 to 10)
+constexpr u32 FirstStepKinds = 11;
 
 u32 KindOf(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, NodeKindSlot);
+    return CallVirtual<u32>(node, node->vtable, GameNode::KindSlot);
 }
 
 // The reference arrays' start: 10 handles, none set
@@ -76,8 +72,7 @@ void CopyHandle(Reference** to, Reference* const* from)
     Reference* reference = *from;
     if (reference != nullptr)
     {
-        u32 value = reference->value;
-        reference->value = (value & ~ReferenceBits::CountMask) | ((value + 1) & ReferenceBits::CountMask);
+        reference->bits.count++;
     }
 }
 
@@ -100,8 +95,8 @@ GameNode* GameNode::Construct(GameNode* node)
 {
     node->owner = nullptr;
     node->vtable = g_GameNodeVTable;
-    node->flags = 0;
-    node->unknown06 = 0;
+    node->flags.value = 0;
+    node->nearDistance = 0;
     node->time = 0;
     node->previous = nullptr;
     node->next = nullptr;
@@ -144,24 +139,24 @@ void GameNode::Step(TimeClock* clock, u32)
     time = clock->time;
 }
 
-void GameNode::Unknown9()
+void GameNode::Removed()
 {
 }
 
 u32 GameNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock->flags.running == 0)
     {
         return 1;
     }
 
-    if ((flags & FlagKeepTime) == 0 || time == 0)
+    if (flags.keepsTime == 0 || time == 0)
     {
         time = clock->time;
     }
     else
     {
-        flags &= ~FlagKeepTime;
+        flags.keepsTime = 0;
     }
 
     return 1;
@@ -184,7 +179,7 @@ void NodeList::Destroy(u32 destroyFlags)
     {
         if (node != nullptr)
         {
-            CallVirtual<void>(node, node->vtable, NodeDestroySlot, u32{DestroyAndFree});
+            CallVirtual<void>(node, node->vtable, GameNode::DestroySlot, u32{DestroyAndFree});
         }
 
         node = nullptr;
@@ -196,24 +191,24 @@ void NodeList::Destroy(u32 destroyFlags)
     }
 }
 
-void NodeList::LeftChunk(u32 unknown)
+void NodeList::LeftChunk(u32 way)
 {
     for (GameNode* node : nodes)
     {
         if (node != nullptr)
         {
-            CallVirtual<void>(node, node->vtable, NodeLeftChunkSlot, unknown);
+            CallVirtual<void>(node, node->vtable, GameNode::LeftChunkSlot, way);
         }
     }
 }
 
-void NodeList::Step(TimeClock* clock, u32 unknown)
+void NodeList::Step(TimeClock* clock, u32 way)
 {
     for (GameNode* node : nodes)
     {
         if (node != nullptr)
         {
-            CallVirtual<void>(node, node->vtable, NodeStepSlot, clock, unknown);
+            CallVirtual<void>(node, node->vtable, GameNode::StepSlot, clock, way);
         }
     }
 }
@@ -251,8 +246,8 @@ void* GetGameNode(NodeList* list, u32 kind)
 
 ReferencedObject* ReferencedObject::Construct(ReferencedObject* object)
 {
-    object->unknown00 = 0;
-    object->flags = 0;
+    object->unused00 = 0;
+    object->flags.value = 0;
     object->vtable = g_ReferencedObjectVTable;
     ConstructObjectCollision(&object->collision, object);
     object->chunk = nullptr;
@@ -274,42 +269,42 @@ void ReferencedObject::BaseDestroy(u32 destroyFlags)
 
 u32 ReferencedObject::Wake()
 {
-    u32 old = flags;
-    flags = old & ~FlagAsleep;
-    return old & FlagAsleep;
+    u32 wasAsleep = flags.asleep;
+    flags.asleep = 0;
+    return wasAsleep;
 }
 
 u32 ReferencedObject::Sleep()
 {
-    u32 old = flags;
-    flags = old | FlagAsleep;
-    return (old & FlagAsleep) ^ 1;
+    u32 wasAwake = !flags.asleep;
+    flags.asleep = 1;
+    return wasAwake;
 }
 
 u32 ReferencedObject::Release()
 {
-    if ((flags & FlagReleased) != 0)
+    if (flags.released)
     {
         return 0;
     }
 
-    flags |= FlagReleased;
+    flags.released = 1;
     return 1;
 }
 
 void ReferencedObject::StepQueued()
 {
-    flags &= ~FlagQueued;
+    flags.queued = 0;
 }
 
 void QueueObject(ReferencedObject* object)
 {
-    if ((object->flags & ReferencedObject::FlagQueued) != 0)
+    if (object->flags.queued)
     {
         return;
     }
 
-    object->flags |= ReferencedObject::FlagQueued;
+    object->flags.queued = 1;
     Reference* handle = object != nullptr ? AddReference(object) : nullptr;
     ReferenceArrayAppend(&g_QueuedObjects, &handle);
 }
@@ -361,19 +356,16 @@ InstanceContext* InstanceContext::Construct(InstanceContext* instance)
     instance->vtable = g_InstanceContextVTable;
     NodeList::Construct(&instance->nodes);
     instance->events = nullptr;
-    // Retail sets the low 24 bits of the 64 bit word at 0x150
-    instance->seen[0] = 0xFF;
-    instance->seen[1] = 0xFF;
-    instance->seen[2] = 0xFF;
+    instance->seen = InstanceContext::NeverSeen;
     instance->places = nullptr;
     instance->previous = nullptr;
     instance->next = nullptr;
     instance->cellPrevious = nullptr;
     instance->cellNext = nullptr;
 
-    instance->id = -1;
+    instance->id = InstanceContext::NoId;
     instance->box = g_DefaultBox.min;
-    instance->clockIndex = 0xFF;
+    instance->clockIndex = NoClock;
     instance->box.w = 1.0f;
     return instance;
 }
@@ -384,12 +376,12 @@ void InstanceContext::Destroy(u32 destroyFlags)
     InstancePlaces* block = places;
     if (block != nullptr)
     {
-        for (s32 index = 7; index >= 0; index--)
+        for (s32 index = InstancePlaces::MostPlaces - 1; index >= 0; index--)
         {
             StringDestroy(&block->places[index].chunk);
         }
 
-        StringDestroy(&block->name);
+        StringDestroy(&block->lastChunk);
         MemoryDeallocate2_(block);
     }
 
@@ -403,17 +395,17 @@ void InstanceContext::Destroy(u32 destroyFlags)
     BaseDestroy(destroyFlags);
 }
 
-void InstanceContext::LeaveChunk(u32 unknown)
+void InstanceContext::LeaveChunk(u32 way)
 {
-    nodes.LeftChunk(unknown);
+    nodes.LeftChunk(way);
     chunk = nullptr;
 }
 
-void InstanceContext::Step(TimeClock* clocks, u32 unknown)
+void InstanceContext::Step(TimeClock* clocks, u32 way)
 {
     TimeClock* clock = &clocks[clockIndex];
     ClearEvents();
-    nodes.Step(clock, unknown);
+    nodes.Step(clock, way);
 }
 
 void InstanceContext::ClearEvents()
@@ -435,7 +427,7 @@ u32 RegisterNode(InstanceContext* instance, u32 attach, void* node)
     {
         auto* gameNode = static_cast<GameNode*>(node);
         instance->nodes.Add(gameNode);
-        CallVirtual<void>(gameNode, gameNode->vtable, NodeSetOwnerSlot, instance);
+        CallVirtual<void>(gameNode, gameNode->vtable, GameNode::SetOwnerSlot, instance);
     }
 
     ChunkData* chunk = instance->chunk;
@@ -465,7 +457,7 @@ u32 UnregisterNode(InstanceContext* instance, u32 detach, void* node)
 
 u32 RemoveNode(InstanceContext* instance, void* node)
 {
-    u32 removed = UnregisterNode(instance, 1, node) & 0xFF;
+    u32 removed = UnregisterNode(instance, DetachNode, node) & 0xFF;
     FreeNode(node);
     return removed;
 }
@@ -476,7 +468,7 @@ TimeClock* GetContextClock(InstanceContext* instance)
     ChunkData* chunk = instance->chunk;
     if (chunk != nullptr && chunk->clocks != nullptr)
     {
-        clocks = static_cast<TimeClock*>(chunk->clocks);
+        clocks = chunk->clocks;
     }
 
     return &clocks[instance->clockIndex];
@@ -554,13 +546,13 @@ void NodeIterator::First()
     index = 0;
     if ((list->mask & 1) == 0)
     {
-        CallVirtual<void>(this, vtable, 5);
+        CallVirtual<void>(this, vtable, IteratorNextSlot);
     }
 }
 
 u32 NodeIterator::IsDone()
 {
-    return (list->mask & ~0u << (index & 0x1F)) == 0;
+    return (list->mask & ~0u << (index & ShiftMask)) == 0;
 }
 
 GameNode** NodeIterator::Current()
@@ -570,7 +562,7 @@ GameNode** NodeIterator::Current()
 
 void NodeIterator::Next()
 {
-    if (CallVirtual<u32>(this, vtable, 3) != 0)
+    if (CallVirtual<u32>(this, vtable, IteratorIsDoneSlot) != 0)
     {
         return;
     }
@@ -578,7 +570,7 @@ void NodeIterator::Next()
     do
     {
         index++;
-    } while ((list->mask & 1u << (index & 0x1F)) == 0 && CallVirtual<u32>(this, vtable, 3) == 0);
+    } while ((list->mask & 1u << (index & ShiftMask)) == 0 && CallVirtual<u32>(this, vtable, IteratorIsDoneSlot) == 0);
 }
 
 ChunkInstances* ChunkInstances::Construct(ChunkInstances* chunkInstances)
@@ -627,19 +619,19 @@ u32 ChunkInstances::IsEmpty()
 u32 ChunkInstances::AddNode(GameNode* node)
 {
     u32 kind = KindOf(node);
-    if ((node->flags & GameNode::FlagListed) != 0)
+    if (node->flags.listed != 0)
     {
         return 0;
     }
 
-    node->flags |= GameNode::FlagListed;
+    node->flags.listed = 1;
     NodeListPushFront(node, reinterpret_cast<void**>(&nodes[kind]), NodePrevious, NodeNext);
     return 1;
 }
 
 u32 ChunkInstances::RemoveNode(GameNode* node)
 {
-    if ((node->flags & GameNode::FlagListed) == 0)
+    if (node->flags.listed == 0)
     {
         return 0;
     }
@@ -653,19 +645,19 @@ u32 ChunkInstances::RemoveNode(GameNode* node)
     else
     {
         NodeListRemove(node, reinterpret_cast<void**>(&nodes[kind]), NodePrevious, NodeNext);
-        CallVirtual<void>(node, node->vtable, NodeRemovedSlot);
+        CallVirtual<void>(node, node->vtable, GameNode::RemovedSlot);
     }
 
-    node->flags &= ~GameNode::FlagListed;
+    node->flags.listed = 0;
     return 1;
 }
 
 void ChunkInstances::AddNodes(InstanceContext* instance)
 {
     NodeList& list = instance->nodes;
-    for (u32 kind = 0; (list.mask & ~0u << (kind & 0x1F)) != 0; kind++)
+    for (u32 kind = 0; (list.mask & ~0u << (kind & ShiftMask)) != 0; kind++)
     {
-        if ((list.mask & 1u << (kind & 0x1F)) != 0)
+        if ((list.mask & 1u << (kind & ShiftMask)) != 0)
         {
             AddNode(list.nodes[kind]);
         }
@@ -675,9 +667,9 @@ void ChunkInstances::AddNodes(InstanceContext* instance)
 void ChunkInstances::RemoveNodes(InstanceContext* instance)
 {
     NodeList& list = instance->nodes;
-    for (u32 kind = 0; (list.mask & ~0u << (kind & 0x1F)) != 0; kind++)
+    for (u32 kind = 0; (list.mask & ~0u << (kind & ShiftMask)) != 0; kind++)
     {
-        if ((list.mask & 1u << (kind & 0x1F)) != 0)
+        if ((list.mask & 1u << (kind & ShiftMask)) != 0)
         {
             RemoveNode(list.nodes[kind]);
         }
@@ -686,7 +678,7 @@ void ChunkInstances::RemoveNodes(InstanceContext* instance)
 
 u32 ChunkInstances::WakeInstance(InstanceContext* instance)
 {
-    if ((instance->flags & ReferencedObject::FlagAsleep) != 0)
+    if (instance->flags.asleep)
     {
         ListRemove(instance, reinterpret_cast<void**>(&sleeping), InstancePrevious, InstanceNext);
     }
@@ -697,7 +689,7 @@ u32 ChunkInstances::WakeInstance(InstanceContext* instance)
 
 u32 ChunkInstances::SleepInstance(InstanceContext* instance)
 {
-    if ((instance->flags & ReferencedObject::FlagAsleep) == 0)
+    if (!instance->flags.asleep)
     {
         InstanceListPushFront(instance, reinterpret_cast<void**>(&sleeping), InstancePrevious, InstanceNext);
     }
@@ -708,7 +700,7 @@ u32 ChunkInstances::SleepInstance(InstanceContext* instance)
 
 u32 ChunkInstances::AddInstance(InstanceContext* instance)
 {
-    if ((instance->flags & ReferencedObject::FlagAsleep) != 0)
+    if (instance->flags.asleep)
     {
         InstanceListPushFront(instance, reinterpret_cast<void**>(&sleeping), InstancePrevious, InstanceNext);
     }
@@ -719,7 +711,7 @@ u32 ChunkInstances::AddInstance(InstanceContext* instance)
 
 u32 ChunkInstances::RemoveInstance(InstanceContext* instance)
 {
-    if ((instance->flags & ReferencedObject::FlagAsleep) != 0)
+    if (instance->flags.asleep)
     {
         ListRemove(instance, reinterpret_cast<void**>(&sleeping), InstancePrevious, InstanceNext);
     }
@@ -734,7 +726,7 @@ void ChunkInstances::ReleaseInstance(InstanceContext* instance)
     FreeInstance(instance);
 }
 
-u32 ChunkInstances::Update(GameTimeController* clock, void* clocks, s32 detail)
+u32 ChunkInstances::Update(GameTimeController* clock, void* clocks, s32 kindMask)
 {
     u32 updated = 0;
     if (g_StepKindCount == 0)
@@ -751,8 +743,8 @@ u32 ChunkInstances::Update(GameTimeController* clock, void* clocks, s32 detail)
     for (u32 index = 0; index < g_StepKindCount; index++)
     {
         u32 kind = g_StepKinds[index];
-        u32 bit = 1u << (kind & 0x1F);
-        if ((static_cast<u32>(detail) & bit) != bit)
+        u32 bit = 1u << (kind & ShiftMask);
+        if ((static_cast<u32>(kindMask) & bit) != bit)
         {
             continue;
         }
@@ -768,7 +760,7 @@ u32 ChunkInstances::Update(GameTimeController* clock, void* clocks, s32 detail)
         {
             GameNode* next = node->next;
             TimeClock* nodeClock = &kindClocks[node->owner->clockIndex];
-            if (CallVirtual<u32>(node, node->vtable, NodeUpdateSlot, nodeClock) != 0)
+            if (CallVirtual<u32>(node, node->vtable, GameNode::UpdateSlot, nodeClock) != 0)
             {
                 updated++;
             }
@@ -784,7 +776,7 @@ u32 ChunkInstances::Update(GameTimeController* clock, void* clocks, s32 detail)
         {
             GameNode* out = g_NodesTakenOut[taken];
             NodeListRemove(out, reinterpret_cast<void**>(&nodes[steppingKind]), NodePrevious, NodeNext);
-            CallVirtual<void>(out, out->vtable, NodeRemovedSlot);
+            CallVirtual<void>(out, out->vtable, GameNode::RemovedSlot);
         }
 
         steppingKind = NoKind;
@@ -804,7 +796,7 @@ void ChunkInstances::Release()
     while (instance != nullptr)
     {
         InstanceContext* next = instance->next;
-        CallVirtual<void>(instance, instance->vtable, InstanceReleaseSlot);
+        CallVirtual<void>(instance, instance->vtable, InstanceContext::ReleaseSlot);
         instance = next;
     }
 }
@@ -815,7 +807,7 @@ u32 FreeOne()
     if (node != nullptr)
     {
         g_NodesToFree = node->next;
-        CallVirtual<void>(node, node->vtable, NodeDestroySlot, u32{DestroyAndFree});
+        CallVirtual<void>(node, node->vtable, GameNode::DestroySlot, u32{DestroyAndFree});
         return 1;
     }
 
@@ -830,9 +822,9 @@ u32 FreeOne()
     return 1;
 }
 
-void MakeGlobal(u32 unknown, InstanceContext* instance)
+void MakeGlobal(u32 way, InstanceContext* instance)
 {
-    instance->LeaveChunk(unknown);
+    instance->LeaveChunk(way);
     InstanceListPushFront(instance, reinterpret_cast<void**>(&g_GlobalInstances), InstancePrevious, InstanceNext);
 }
 
@@ -844,7 +836,7 @@ void StepQueuedObjects()
         ReferencedObject* object = handle != nullptr ? handle->object : nullptr;
         if (object != nullptr)
         {
-            CallVirtual<void>(object, object->vtable, ObjectStepSlot);
+            CallVirtual<void>(object, object->vtable, ReferencedObject::StepQueuedSlot);
         }
     }
 
@@ -899,10 +891,10 @@ void UpdateGlobalInstances()
     {
         InstanceContext* next = instance->next;
         ListRemove(instance, reinterpret_cast<void**>(&g_GlobalInstances), InstancePrevious, InstanceNext);
-        instance->Step(clocks, g_GlobalStepWord);
-        if (instance->chunk == nullptr && (instance->flags & ReferencedObject::FlagReleased) != 0)
+        instance->Step(clocks, g_ResetWay);
+        if (instance->chunk == nullptr && instance->flags.released)
         {
-            CallVirtual<void>(instance, instance->vtable, InstanceReleaseSlot);
+            CallVirtual<void>(instance, instance->vtable, InstanceContext::ReleaseSlot);
         }
 
         instance = next;
@@ -915,9 +907,9 @@ void UpdateInstances()
     DeliverEvents();
 }
 
-void FreeAll(u32 stepWord)
+void FreeAll(u32 way)
 {
-    g_GlobalStepWord = stepWord;
+    g_ResetWay = way;
     DropEvents();
     StepQueuedObjects2();
     while (FreeOne() != 0)
@@ -932,7 +924,7 @@ void ReleaseGlobalInstances()
     {
         InstanceContext* next = instance->next;
         ListRemove(instance, reinterpret_cast<void**>(&g_GlobalInstances), InstancePrevious, InstanceNext);
-        CallVirtual<void>(instance, instance->vtable, InstanceReleaseSlot);
+        CallVirtual<void>(instance, instance->vtable, InstanceContext::ReleaseSlot);
         instance = next;
     }
 
@@ -952,9 +944,9 @@ u32 InstanceContext::Wake()
 
 u32 InstanceContext::Sleep()
 {
-    if (id != -1)
+    if (id != NoId)
     {
-        return CallVirtual<u32>(this, vtable, InstanceReleaseSlot);
+        return CallVirtual<u32>(this, vtable, ReleaseSlot);
     }
 
     if (chunk != nullptr)
@@ -968,7 +960,7 @@ u32 InstanceContext::Sleep()
 u32 InstanceContext::Release()
 {
     u32 placesLetGo = 1;
-    if (places != nullptr && id == -1)
+    if (places != nullptr && id == NoId)
     {
         placesLetGo = ReleasePlaces(places, this);
     }
@@ -983,7 +975,7 @@ u32 InstanceContext::Release()
         return 0;
     }
 
-    if (id != -1)
+    if (id != NoId)
     {
         g_InstanceIds->Remove(this);
     }
@@ -1002,7 +994,7 @@ u32 InstanceContext::Release()
 
 void InstanceContext::StepQueued()
 {
-    bool stepped = (flags & FlagAsleep) == 0 && StepObjectCollision(&collision) == nullptr;
+    bool stepped = !flags.asleep && StepObjectCollision(&collision) == nullptr;
     ObjectPlace* objectPlace = place;
     if (stepped)
     {
@@ -1010,7 +1002,7 @@ void InstanceContext::StepQueued()
         bool moved = false;
         if (!(box.x == objectPlace->position.x && box.y == objectPlace->position.y && objectPlace->position.z == box.z))
         {
-            objectPlace->bits = (objectPlace->bits | ObjectPlace::BitMoved) & ~u64{ObjectPlace::BitMatrixMoved};
+            objectPlace->MarkMoved();
             objectPlace->position = box;
             moved = true;
         }
@@ -1034,15 +1026,15 @@ void InstanceContext::StepQueued()
 ChunkData* InstanceContext::ChangeChunk(ChunkLinkData* link)
 {
     u32 allowed = 1;
-    for (u32 kind = 0; (nodes.mask & ~0u << (kind & 0x1F)) != 0; kind++)
+    for (u32 kind = 0; (nodes.mask & ~0u << (kind & ShiftMask)) != 0; kind++)
     {
-        if ((nodes.mask & 1u << (kind & 0x1F)) == 0)
+        if ((nodes.mask & 1u << (kind & ShiftMask)) == 0)
         {
             continue;
         }
 
         GameNode* node = nodes.nodes[kind];
-        allowed &= CallVirtual<u32>(node, node->vtable, NodeChangeChunkSlot, chunk, link) != 0 ? 1 : 0;
+        allowed &= CallVirtual<u32>(node, node->vtable, GameNode::CanChangeChunkSlot, chunk, link) != 0 ? 1 : 0;
     }
 
     if (allowed == 0)
@@ -1060,7 +1052,7 @@ Reference* CopyEvent(Reference* event)
 {
     if (event != nullptr)
     {
-        event->value = (event->value & 0xFF000000) | (((event->value & 0xFFFFFF) + 1) & 0xFFFFFF);
+        event->bits.count++;
     }
 
     return event;
@@ -1094,9 +1086,9 @@ void HandOutEvents(InstanceContext* instance)
         QueuedEvent* next = entry->next;
         Reference* event = CopyEvent(entry->event);
         NodeList& list = instance->nodes;
-        for (u32 kind = 0; (list.mask & ~0u << (kind & 0x1F)) != 0; kind++)
+        for (u32 kind = 0; (list.mask & ~0u << (kind & ShiftMask)) != 0; kind++)
         {
-            if ((list.mask & 1u << (kind & 0x1F)) == 0)
+            if ((list.mask & 1u << (kind & ShiftMask)) == 0)
             {
                 continue;
             }
@@ -1112,7 +1104,7 @@ void HandOutEvents(InstanceContext* instance)
             if ((bit & gameEvent->kinds) != 0)
             {
                 Reference* copy = CopyEvent(event);
-                CallVirtual<void>(node, node->vtable, NodeEventSlot, &copy);
+                CallVirtual<void>(node, node->vtable, GameNode::HandleEventSlot, &copy);
             }
         }
 
@@ -1123,13 +1115,13 @@ void HandOutEvents(InstanceContext* instance)
     }
 }
 
-void ChunkInstances::MakeGlobal(u32 unknown, InstanceContext* instance)
+void ChunkInstances::MakeGlobal(u32 way, InstanceContext* instance)
 {
     ListRemove(instance, reinterpret_cast<void**>(&sleeping), InstancePrevious, InstanceNext);
-    ::MakeGlobal(unknown, instance);
+    ::MakeGlobal(way, instance);
 }
 
-void ChunkInstances::MakeGlobalWhere(u32 unknown, const u32* filter)
+void ChunkInstances::MakeGlobalWhere(u32 way, const u32* filter)
 {
     InstanceContext* instance = sleeping;
     while (FreeOne() != 0)
@@ -1140,14 +1132,14 @@ void ChunkInstances::MakeGlobalWhere(u32 unknown, const u32* filter)
     {
         InstanceContext* next = instance->next;
         bool matches = false;
-        if ((instance->flags & filter[1]) == filter[1] && (instance->flags & filter[2]) == 0)
+        if ((instance->flags.value & filter[1]) == filter[1] && (instance->flags.value & filter[2]) == 0)
         {
             matches = (instance->nodes.mask & filter[0]) != 0;
         }
 
         if (matches)
         {
-            MakeGlobal(unknown, instance);
+            MakeGlobal(way, instance);
         }
 
         instance = next;
@@ -1156,8 +1148,8 @@ void ChunkInstances::MakeGlobalWhere(u32 unknown, const u32* filter)
 
 void InitStepKinds()
 {
-    g_StepKindCount = 11;
-    for (u32 kind = 0; kind < 11; kind++)
+    g_StepKindCount = FirstStepKinds;
+    for (u32 kind = 0; kind < FirstStepKinds; kind++)
     {
         g_StepKinds[kind] = static_cast<u8>(kind);
     }
@@ -1211,7 +1203,7 @@ void SetObjectPlace(ReferencedObject* object, const ObjectPlace* place)
     *object->place = *place;
 }
 
-void* ChunkNoticeInstance(InstanceContext* instance)
+void* UpdateInstanceChunk(InstanceContext* instance)
 {
     ChunkData* chunk = instance->chunk;
     if (chunk == nullptr)
@@ -1219,12 +1211,12 @@ void* ChunkNoticeInstance(InstanceContext* instance)
         return nullptr;
     }
 
-    if ((instance->flags & 0x20000) != 0x20000)
+    if (!instance->flags.movesBetweenChunks)
     {
         return chunk;
     }
 
-    return ChunkNoticeInstance2(chunk, instance);
+    return ChunkUpdateInstanceChunk(chunk, instance);
 }
 
 void* UpdateObjectMatrix(ReferencedObject* object)
@@ -1242,19 +1234,19 @@ void* UpdateObjectMatrix(ReferencedObject* object)
 
 void MovementNode::Capture()
 {
-    seconds = Rounded(1.0 / 60.0);
+    seconds = SecondsPerFrame;
     ObjectPlace* place = owner->place;
     RotateAndTranslate(place);
     previousMatrix = place->matrix;
     place = owner->place;
     RotateAndTranslate(place);
     matrix = place->matrix;
-    bits |= BitCaptured;
+    bits.captured = 1;
 }
 
 Matrix4x4* MovementNode::PreviousMatrix()
 {
-    if ((bits & BitCaptured) == 0)
+    if (bits.captured == 0)
     {
         Capture();
     }
@@ -1264,7 +1256,7 @@ Matrix4x4* MovementNode::PreviousMatrix()
 
 Matrix4x4* MovementNode::CurrentMatrix()
 {
-    if ((bits & BitCaptured) == 0)
+    if (bits.captured == 0)
     {
         Capture();
     }
@@ -1274,7 +1266,7 @@ Matrix4x4* MovementNode::CurrentMatrix()
 
 f32 MovementNode::Seconds()
 {
-    if ((bits & BitCaptured) == 0)
+    if (bits.captured == 0)
     {
         Capture();
     }
@@ -1288,7 +1280,7 @@ InstanceIds* InstanceIds::Construct(InstanceIds* ids)
     for (Entry& entry : ids->entries)
     {
         entry.instance = nullptr;
-        entry.unknown04 = 0;
+        entry.spawner = nullptr;
     }
 
     return ids;
@@ -1304,7 +1296,7 @@ void InstanceIds::Destroy(u32 destroyFlags)
 
 void InstanceIds::Add(InstanceContext* instance)
 {
-    if (count >= 0x100)
+    if (count >= MostIds)
     {
         return;
     }
@@ -1331,18 +1323,17 @@ void InstanceIds::Remove(InstanceContext* instance)
         entries[id].instance->id = static_cast<s32>(id);
     }
 
-    instance->id = -1;
+    instance->id = InstanceContext::NoId;
 }
 
 void TriggerNode::AddInstance(InstanceContext* instance)
 {
-    instances[instanceCount++] = instance;
+    instances[bits.instanceCount++] = instance;
 }
 
 void InitInstancesStatics(u32 initialize, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
@@ -1355,7 +1346,7 @@ void InitInstancesStatics(u32 initialize, u32 priority)
 
 void InstancesStaticConstructor()
 {
-    InitInstancesStatics(1, 0xFFFF);
+    InitInstancesStatics(1, DefaultInitPriority);
 }
 
 void* MakeNoItem(void*, u32)

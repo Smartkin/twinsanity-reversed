@@ -10,14 +10,28 @@ struct RigidModel;
 // The characters' shadows (TT Lab's notes: verified in the PAL executable): an instance's shadow node casts its slot's shapes
 // from a point above it into its chunk's list, which the chunk's draw turns into volumes over the ground beneath
 
+// The shapes shadows are drawn with (the default meshes' kinds, g_ShadowMeshes), named after the development tools' files
+enum ShadowShape : u8
+{
+    ShadowCylinder = 0,
+    ShadowCube = 1,
+    ShadowRoundedCube = 2,
+    ShadowOctagon = 3,
+    ShadowTaperedCylinder = 4,
+    ShadowTaperedCube = 5,
+    ShadowTaperedRoundedCube = 6,
+    ShadowTaperedOctagon = 7,
+    ShadowShapeCount = 8,
+};
+
 // A circle (a disc under a joint: its radius and how tall the volume is) and a capsule (between two joints, of a radius), each
-// a kind of the default meshes and an offset from its joint; a plain shape (a rectangle of a width and a depth) at the instance
+// drawn with a ShadowShape at an offset from its joint; a plain shape (a rectangle of a width and a depth) at the instance
 struct ShadowCircle
 {
     Vector4 offset;
     u8 kind;
     u8 joint;
-    u8 unknown12[2];
+    u8 unused12[2];
     f32 radius;
     f32 height;
     ShadowCircle* next;
@@ -33,7 +47,7 @@ struct ShadowCapsule
     u8 kind;
     u8 joint;
     u8 secondJoint;
-    u8 unknown13;
+    u8 unused13;
     f32 radius;
     ShadowCapsule* next;
 
@@ -46,7 +60,7 @@ struct ShadowPlain
 {
     Vector4 offset;
     u8 kind;
-    u8 unknown11[3];
+    u8 unused11[3];
     f32 width;
     f32 depth;
 
@@ -55,19 +69,25 @@ struct ShadowPlain
 };
 CHECK_OFFSET(ShadowPlain, depth, 0x18);
 
-// What a shadow casts up to a distance (the bits' low 10 bits, and its square in the next 20): the joints its shapes follow (a bit
-// each), its strength, its plain shape, circles and capsules, and the shapes cast beyond that distance
+// How far a shadow's shapes reach: the distance (whole units) and its square
+union ShadowReach
+{
+    u32 value;
+    struct
+    {
+        u32 distance : 10;
+        u32 squared : 20;
+        u32 unused30 : 2;
+    };
+};
+CHECK_SIZE(ShadowReach, 4);
+
+// What a shadow casts up to a distance: the joints its shapes follow (a bit each), the distance, its strength, its plain shape,
+// circles and capsules, and the shapes cast beyond that distance
 struct ShadowShapes
 {
-    enum Bits : u32
-    {
-        DistanceMask = 0x3FF,
-        SquaredShift = 10,
-        SquaredMask = 0xFFFFF,
-    };
-
     u64 joints;
-    u32 bits;
+    ShadowReach reach;
     f32 strength;
     ShadowPlain* plain;
     ShadowCircle* circles;
@@ -97,14 +117,25 @@ struct ShadowSlot
 };
 CHECK_SIZE(ShadowSlot, 0xC);
 
-// An instance's shadow node (kind 10, class 0x1428): the slot it casts (the low byte of its bits) and its four slots
+// A shadow node's bits: the slot it casts
+union ShadowNodeBits
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(ShadowNodeBits, 4);
+
+// An instance's shadow node (kind 10, class 0x1428): the slot it casts and its four slots
 struct ShadowNode : GameNode
 {
-    static constexpr u32 NodeKind = 10;
     static constexpr u32 ClassId = 0x1428;
     static constexpr u32 Slots = 4;
 
-    u32 bits;
+    ShadowNodeBits bits;
     ShadowSlot* slots[Slots];
 
     static ShadowNode* Construct(ShadowNode* node) RETAIL(InitUnkNode);
@@ -128,9 +159,9 @@ struct ShadowEntry
     Matrix4x4 frame;
     f32 offset[3];
     u8 kind;
-    u8 unknown4D[3];
+    u8 unused4D[3];
     f32 size[3];
-    u32 unknown5C;
+    u32 unused5C;
 };
 CHECK_SIZE(ShadowEntry, 0x60);
 
@@ -145,7 +176,7 @@ struct ChunkShadows
     u32* currentCount;
     u32 capacity;
 
-    static ChunkShadows* Construct(ChunkShadows* shadows, s32 unused) RETAIL(FUN_001cc310);
+    static ChunkShadows* Construct(ChunkShadows* shadows, s32 capacity) RETAIL(FUN_001cc310);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001cc3f8);
     // The other list made the one cast into (emptied)
     void Swap() RETAIL(FUN_001cc4e0);
@@ -174,8 +205,8 @@ extern "C"
     // to the camera and to the world
     void DrawShadowEntry(const ShadowEntry* entry, const Matrix4x4* toScreen, const Matrix4x4* toCamera, const Matrix4x4* world)
         RETAIL(FUN_001cb048);
-    // The shape of a development tools token's kind (0xBB to 0xBE, 0x10D to 0x110: 0 to 7, -1 none)
-    s32 ShadowShapeOfToken(u32 kind) RETAIL(FUN_001ccaf0);
+    // The shape a development tools keyword names (its token's value, 0xBB to 0xBE and 0x10D to 0x110), -1 for another
+    s32 ShadowShapeOfToken(u32 keyword) RETAIL(FUN_001ccaf0);
     // The lighting constants' static constructor
     void LightingConstantsStaticInit() RETAIL(FUN_001cccf0);
     // The shadows made ready with the default chunk: the pass's set-up and the default meshes they're drawn with (the meshes read
@@ -183,7 +214,7 @@ extern "C"
     void InitShadows(u32 fromFiles) RETAIL(FUN_001c9668);
     void LoadShadowMeshes(u32 fromFiles) RETAIL(FUN_001cad10);
     // The default meshes the shadows are drawn with, by kind
-    extern RigidModel* g_ShadowMeshes[8] RETAIL(G_DefaultMeshIDs);
+    extern RigidModel* g_ShadowMeshes[ShadowShapeCount] RETAIL(G_DefaultMeshIDs);
     // A segment clipped by six planes (each end outside one pulled back along the segment by its distance from it): whether
     // any of it is left, and the clipped segment
     u32 ClipSegmentToPlanes(const Vector4* planes, const Vector4* segment, Vector4* clipped) RETAIL(FUN_001fdf90);

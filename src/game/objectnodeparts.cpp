@@ -39,10 +39,10 @@ extern "C"
 
 EABI_EXPORT(FUN_0023cfd8, JitterVector);
 EABI_EXPORT(FUN_0023de38, KnockNode);
-EABI_EXPORT(FUN_0023e650, SetNodeBytes168);
-EABI_EXPORT(FUN_0023edd0, SetHeadTrackingAngle2);
-EABI_EXPORT(FUN_0023ee18, SetHeadTrackingAngle1);
-EABI_EXPORT(FUN_0023ee60, SetHeadTrackingAngle3);
+EABI_EXPORT(FUN_0023e650, SetContactSounds);
+EABI_EXPORT(FUN_0023edd0, SetHeadTrackingPositivePitch);
+EABI_EXPORT(FUN_0023ee18, SetHeadTrackingNegativePitch);
+EABI_EXPORT(FUN_0023ee60, SetHeadTrackingYawLimit);
 EABI_EXPORT(FUN_0023f340, SetUpMotionBlock);
 EABI_EXPORT(FUN_0023f638, SetMotionBlockTurnLimit);
 EABI_EXPORT(FUN_0023f650, MotionBlockFadeRate);
@@ -57,45 +57,15 @@ EABI_EXPORT(FUN_00240b68, HoldWithAttachments);
 
 namespace
 {
-// Angles in 65536ths of a turn to radians, and degrees to them
-constexpr f32 RadiansPerUnit = Rounded(6.283185307179586 / 65536.0);
-constexpr f32 UnitsPerDegree = Rounded(65536.0 / 360.0);
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u8 NoSlot = 0xFF;
-// The agent's vtable functions: it bumped into an instance while moving, a velocity of its own (whether it has one)
-constexpr u32 AgentBumpedSlot = 8;
-constexpr u32 OwnVelocitySlot = 11;
-// The object node's vtable function 15: whether it takes packets
-constexpr u32 TakesPacketsSlot = 15;
-// The node's flag 14, cleared when its grabber takes hold
-constexpr u32 NodeFlag14 = 0x4000;
-// Bit 52 of the rigid body's 64 bits at 0x88 (one of its contacts')
-constexpr u64 BodyContact52 = u64{1} << 52;
-
-// The motion block's flags beyond game/objectnode.h's: a grabber holds what it touches (11), or holds on to AgentRef1 when it
-// touches it (12); things stick to it (13, which StartFollowing hands on); what touches it is sent its message (16)
-constexpr u32 BlockHoldsTouched = 0x800;
-constexpr u32 BlockHoldsAgentRef1 = 0x1000;
-constexpr u32 BlockSticky = MotionBlock::CarriedOver;
-constexpr u32 BlockSendsTouches = 0x10000;
-// A cover search that looks among the positions in a box around the instance (the low 5 bits of its search)
-constexpr u16 SearchMask = 0x1F;
-constexpr u16 SearchInBox = 1;
 // The margins of the largest cycle's range its fade rate is worked out of: a moving cycle's and a turning one's
 constexpr f32 MoveMargin = 0.01f;
 constexpr f32 TurnMargin = 0x1.c98714p-10f;
-
-u32 BlockKind(const MotionBlock* block)
-{
-    return block->cycles >> MotionBlock::KindShift & MotionBlock::KindMask;
-}
 
 // A cycle about an axis at an angle, as the block's cycle and sign for the axis say
 f32 MotionBlockCycle(MotionBlock* block, u32 axis, const s32* angle, f32 range)
 {
     f32 value;
-    switch (block->cycles >> (MotionBlock::CycleShift + 3 * axis) & MotionBlock::CycleMask)
+    switch (block->motion.CycleOf(axis))
     {
     case MotionBlock::CycleSine:
         value = range * SinOfAngle(angle);
@@ -103,7 +73,7 @@ f32 MotionBlockCycle(MotionBlock* block, u32 axis, const s32* angle, f32 range)
     case MotionBlock::CycleSquare:
     case MotionBlock::CycleSquareToo:
     {
-        s32 turns = static_cast<s32>(block->cycleRates[axis] * (static_cast<f32>(*angle) * RadiansPerUnit));
+        s32 turns = static_cast<s32>(block->cycleRates[axis] * (static_cast<f32>(*angle) * AngleToRadians));
         value = (turns & 1) != 0 ? -range : range;
         break;
     }
@@ -111,13 +81,13 @@ f32 MotionBlockCycle(MotionBlock* block, u32 axis, const s32* angle, f32 range)
         value = RandomSignedTimes(range);
         break;
     case MotionBlock::CycleAngle:
-        value = static_cast<f32>(*angle) * RadiansPerUnit;
+        value = static_cast<f32>(*angle) * AngleToRadians;
         break;
     default:
         return 0.0f;
     }
 
-    switch (block->cycles >> (MotionBlock::SignShift + 2 * axis) & MotionBlock::SignMask)
+    switch (block->motion.SignOf(axis))
     {
     case MotionBlock::SignPositive:
         return __builtin_fabsf(value);
@@ -128,16 +98,13 @@ f32 MotionBlockCycle(MotionBlock* block, u32 axis, const s32* angle, f32 range)
     }
 }
 
-// The head tracking settings' bit the third angle sets
-constexpr u32 SettingsThirdAngle = 0x8000000;
-
 void UnhookJoints(HeadTracking* tracking, OgiAnimator* animator)
 {
-    RemoveJointCallback(animator, tracking->joint, tracking);
-    tracking->bits &= ~u64{HeadTracking::BitHooked};
-    if (tracking->secondJoint != HeadTracking::NoJoint)
+    RemoveJointCallback(animator, tracking->bits.joint, tracking);
+    tracking->bits.hooked = 0;
+    if (tracking->bits.secondJoint != GameOGI::NoJoint)
     {
-        RemoveJointCallback(animator, tracking->secondJoint, tracking);
+        RemoveJointCallback(animator, tracking->bits.secondJoint, tracking);
     }
 }
 
@@ -155,10 +122,10 @@ const PerceptionSense* SenseOf(const void* sense)
 void SetSenseOn(void* perception, u32 kind, u8 on)
 {
     Perception* senses = PerceptionOf(perception);
-    u32 count = senses->bits & Perception::CountMask;
+    u32 count = senses->bits.count;
     for (u32 index = 0; index < count; index++)
     {
-        if ((senses->senses[index]->bits & PerceptionSense::KindMask) == kind)
+        if (senses->senses[index]->bits.kind == kind)
         {
             senses->on[index] = on;
             return;
@@ -166,31 +133,19 @@ void SetSenseOn(void* perception, u32 kind, u8 on)
     }
 }
 
-constexpr u32 MostTrails = 8;
-constexpr s32 NoEmitter = -1;
-// A trail's kind that measures the turn a packet facing the way it moves makes, and its kind for taking trails away (bits 50-52
-// of its bits)
+// A trail's kind that measures the turn a packet facing the way it moves makes
 constexpr u64 MeasuresTurnKind = 5;
-constexpr u32 RemovalKindShift = 50;
-constexpr u64 RemovalKindMask = 0x7;
-constexpr u16 NoTrailSystem = 0xFFFF;
-
-// The node's sound byte at 0x160 (0xFF none)
-u8& NodeSound(ObjectNode* node)
-{
-    return node->unknown155[0x160 - 0x155];
-}
 
 // The flags of a physics body as the retail code reads them, also when there's none (the word at address 0x18 then)
-u32 BodyFlagsOf(const DynamicBody* body)
+RigidBodyFlags BodyFlagsOf(const DynamicBody* body)
 {
     std::uintptr_t address = reinterpret_cast<std::uintptr_t>(body) + offsetof(RigidBody, bodyFlags);
-    return *reinterpret_cast<const u32*>(address);
+    return *reinterpret_cast<const RigidBodyFlags*>(address);
 }
 
 bool IsAsleep(const InstanceContext* instance)
 {
-    return (instance->flags & ReferencedObject::FlagAsleep) != 0;
+    return instance->flags.asleep;
 }
 
 // The properties a node's object gives it (the node it stands in for has them when there's one)
@@ -212,36 +167,35 @@ ObjectRigidBody* MakeTrajectoryBody(ObjectNode* node, u32 kind)
 
 void ObjectNode::MotionBlockTouched(InstanceContext* other)
 {
-    constexpr u32 TouchEventKinds = 2;
     MotionBlock* block = motionBlock;
-    if ((block->flags & BlockSticky) != 0 && (other->flags & ReferencedObject::FlagSphereContact) != 0
+    if (block->flags.sticky && other->flags.collisionActive
         && SticksToMotionBlock(block, other) != 0)
     {
         StickToMotionBlock(block, other);
     }
 
-    if ((block->flags & BlockSendsTouches) == 0)
+    if (!block->flags.sendsTouches)
     {
         return;
     }
 
-    // An event of the block's touch message (the low half of its word at 0x78) from the instance
+    // An event of the block's touch message (the low half of its word) from the instance
     Reference* argument = owner != nullptr ? AddReference(owner) : nullptr;
     auto* memory = static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent)));
-    GameEvent* event = GameEvent::Construct(memory, static_cast<u16>(block->unknown78), &argument, TouchEventKinds);
+    GameEvent* event = GameEvent::Construct(memory, static_cast<u16>(block->touchMessage), &argument, ObjectNodeKinds);
     Reference* handle = event != nullptr ? AddEventReference(event) : nullptr;
     QueueEvent(other, &handle);
 }
 
 void InitObjectNodeStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
-    g_ObjectUpdateRate.cutoff = 0xFFFF;
+    // The nodes are updated however long their instances weren't seen
+    g_ObjectUpdateRate.cutoff = UpdateRate::NoCutoff;
     g_ObjectUpdateRate.slope = 1.0f;
     g_ObjectNodeUnused = 0;
     g_ObjectUpdateRate.grace = 0;
@@ -249,16 +203,16 @@ void InitObjectNodeStatics(u32 initialise, u32 priority)
 
 void ConstructObjectNodeModule()
 {
-    InitObjectNodeStatics(1, 0xFFFF);
+    InitObjectNodeStatics(1, DefaultInitPriority);
 }
 
 AiPosition* AiPosition::Construct(AiPosition* position)
 {
     position->links = nullptr;
-    position->flags = 0;
-    position->bits = 0;
+    position->flags.value = 0;
+    position->bits.value = 0;
     position->position = g_DefaultBox.min;
-    position->previousPosition = 0xFF;
+    position->previousPosition = AiPosition::NoPrevious;
     position->position.w = 1.0f;
     return position;
 }
@@ -289,8 +243,8 @@ ObjectNodeBase* ObjectNodeBase::ConstructPrototype(ObjectNodeBase* node, ChunkEn
 {
     GameNode::Construct(node);
     node->vtable = g_NodePrototypeVTable;
-    Reference* data = chunk->data;
-    InstancePlacement::Construct(&node->information, data != nullptr ? reinterpret_cast<ChunkData*>(data->object) : nullptr);
+    ChunkDataReference* data = chunk->data;
+    InstancePlacement::Construct(&node->information, data != nullptr ? data->chunk : nullptr);
     node->ownInformation = nullptr;
     node->informationPointer = &node->information;
     SetUndefinedId(&node->ownObjectId);
@@ -305,7 +259,7 @@ void SetSoundObject(ObjectNodeBase* node, const GameObject* object)
 
 void ObjectNodeBase::Bumped(InstanceContext* other, const Vector4* motion, const Vector4* normal)
 {
-    CallVirtual<void>(agent, agent->vtable, AgentBumpedSlot, other, motion, normal);
+    CallVirtual<void>(agent, agent->vtable, Agent::BumpedSlot, other, motion, normal);
 }
 
 void ClearComebackPlacement(void* node)
@@ -352,7 +306,7 @@ void SetStoredPlace(ObjectNode* node, ObjectPlace* place)
 
 void SetStoredPosition(ObjectNode* node, const Vector4* position)
 {
-    node->flags |= ObjectNodeBase::FlagStoredPosition;
+    node->flags.storedPosition = 1;
     node->storedPosition = *position;
 }
 
@@ -371,7 +325,7 @@ void ObjectNode::HitWhileMoving(void* other, const Vector4* point, const Vector4
     {
         // Riding it, the physics body (when the world leaves it out) comes back and takes the impulse
         ObjectRigidBody* body = rigidBody;
-        if (body != nullptr && (BodyFlagsOf(body->physicsBody) & RigidBody::FlagLeftOut) != 0)
+        if (body != nullptr && BodyFlagsOf(body->physicsBody).leftOut != 0)
         {
             body->physicsBody->ReleaseRide();
             if (LeastPush < strength)
@@ -380,7 +334,7 @@ void ObjectNode::HitWhileMoving(void* other, const Vector4* point, const Vector4
             }
         }
     }
-    else if ((block->flags & MotionBlock::FollowedWhenTouched) != 0)
+    else if (block->flags.followedWhenTouched)
     {
         TimeClock* clock = GetContextClock(owner);
         FollowMotionBlock(motionBlock, clock);
@@ -409,47 +363,52 @@ void FollowOwnMotionBlock(ObjectNode* node)
 
 void KnockNode(f32 strength, ObjectNode* node)
 {
-    u8& countdown = node->unknown154;
-    if (6.4e-11f < strength)
+    // Knocks past these strengths raise the countdown by 4, 3, 2 and 1, which keeps it at most 255
+    constexpr f32 HardestKnock = 6.4e-11f;
+    constexpr f32 HardKnock = 1.6e-11f;
+    constexpr f32 Knock = 4e-12f;
+    constexpr f32 SoftKnock = 1e-12f;
+    constexpr u32 MostCountdown = 0xFF;
+    ObjectNodeReactions& reactions = node->reactions;
+    if (HardestKnock < strength)
     {
-        if (countdown < 0xFC)
+        if (reactions.knockCountdown < MostCountdown - 3)
         {
-            countdown = countdown + 4;
+            reactions.knockCountdown = reactions.knockCountdown + 4;
         }
     }
-    else if (1.6e-11f < strength)
+    else if (HardKnock < strength)
     {
-        if (countdown < 0xFD)
+        if (reactions.knockCountdown < MostCountdown - 2)
         {
-            countdown = countdown + 3;
+            reactions.knockCountdown = reactions.knockCountdown + 3;
         }
     }
-    else if (4e-12f < strength)
+    else if (Knock < strength)
     {
-        if (countdown < 0xFE)
+        if (reactions.knockCountdown < MostCountdown - 1)
         {
-            countdown = countdown + 2;
+            reactions.knockCountdown = reactions.knockCountdown + 2;
         }
     }
-    else if (1e-12f < strength)
+    else if (SoftKnock < strength)
     {
-        if (countdown < 0xFF)
+        if (reactions.knockCountdown < MostCountdown)
         {
-            countdown = countdown + 1;
+            reactions.knockCountdown = reactions.knockCountdown + 1;
         }
     }
 }
 
 void ReleaseRigidBodyAtRest(ObjectNode* node)
 {
-    constexpr f32 Resting = Rounded(0.001);
-    if ((node->rigidBody->bits88 & BodyContact52) == 0)
+    if (!node->rigidBody->bits.touchingWorld)
     {
         return;
     }
 
     const Vector4& velocity = node->motion->velocity;
-    if (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z < Resting)
+    if (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z < ObjectRigidBody::RestingSpeedSquared)
     {
         node->ReleaseRigidBody();
     }
@@ -461,7 +420,7 @@ void AddPerception(ObjectNode* node, const void* arguments)
     {
         void* perception = MemoryAllocate(sizeof(Perception));
         ConstructPerception(perception);
-        node->perception = perception;
+        node->perception = static_cast<Perception*>(perception);
     }
 
     AddSense(node->perception, arguments);
@@ -469,14 +428,13 @@ void AddPerception(ObjectNode* node, const void* arguments)
 
 void StopNodeSounds(ObjectNode* node)
 {
-    u8& sound = NodeSound(node);
-    if (sound == NoSlot)
+    if (node->trackedSound == NoInstanceSound)
     {
         return;
     }
 
-    StopInstanceSound(sound);
-    sound = NoSlot;
+    StopInstanceSound(node->trackedSound);
+    node->trackedSound = NoInstanceSound;
 }
 
 void ObjectNode::FollowMotionBlock(MotionBlock* block, TimeClock* clock)
@@ -511,30 +469,26 @@ void CreateHeadTracking(ObjectNode* node, const void* arguments, TimeClock* cloc
 
 void SetNodeController(ObjectNode* node, NodeController* controller)
 {
-    constexpr u32 DestructorSlot = 1;
-    constexpr u32 StartSlot = 2;
-    constexpr u32 StopSlot = 5;
-    auto* current = reinterpret_cast<NodeController*>(node->unknown114);
+    NodeController* current = node->controller;
     if (current != nullptr)
     {
-        CallVirtual<void>(current, current->vtable, StopSlot);
-        current = reinterpret_cast<NodeController*>(node->unknown114);
+        CallVirtual<void>(current, current->vtable, NodeController::StopSlot);
+        current = node->controller;
         if (current != nullptr)
         {
-            CallVirtual<void>(current, current->vtable, DestructorSlot, DestroyAndFree);
+            CallVirtual<void>(current, current->vtable, NodeController::DestroySlot, DestroyAndFree);
         }
     }
 
-    node->unknown114 = static_cast<u32>(reinterpret_cast<std::uintptr_t>(controller));
-    CallVirtual<void>(controller, controller->vtable, StartSlot);
+    node->controller = controller;
+    CallVirtual<void>(controller, controller->vtable, NodeController::StartSlot);
 }
 
-void SetNodeBytes168(f32 value, ObjectNode* node, u32 first, u32 second)
+void SetContactSounds(f32 value, ObjectNode* node, u32 first, u32 last)
 {
-    // The contact sound's value (it plays while negative) and its first and last slot
-    *reinterpret_cast<f32*>(&node->unknown155[0x16C - 0x155]) = value;
-    node->unknown155[0x168 - 0x155] = static_cast<u8>(first);
-    node->unknown155[0x169 - 0x155] = static_cast<u8>(second);
+    node->contactSoundValue = value;
+    node->contactSoundFirst = static_cast<u8>(first);
+    node->contactSoundLast = static_cast<u8>(last);
 }
 
 void StopNodeMotion(ObjectNode* node)
@@ -552,33 +506,37 @@ void StopNodeMotion(ObjectNode* node)
 
 ObjectNode* PacketNodeOf(InstanceContext* instance)
 {
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     if (node == nullptr)
     {
         return nullptr;
     }
 
-    return CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0 ? node : nullptr;
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0 ? node : nullptr;
 }
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) void* ConstructHeadTrackingSettings(void* memory)
 {
-    // A range of 10, a stiffness of a half, the joints and the exit point none (bits 24-27 cleared, the top ones as the memory
-    // had them)
+    // A range of 10, a stiffness of a half, the joints and the exit point none, no steering (bits 28-31 as the memory had them)
     constexpr f32 Range = 10.0f;
     auto* settings = static_cast<HeadTrackingSettings*>(memory);
-    settings->unknown00 = 0;
+    settings->unused00 = 0;
     settings->range = Range;
     settings->stiffness = 0.5f;
     AngleFrom(&settings->negativePitch, 0.0f, AngleRadians);
     AngleFrom(&settings->positivePitch, 0.0f, AngleRadians);
     AngleFrom(&settings->yawLimit, 0.0f, AngleRadians);
-    settings->bits = (settings->bits & 0xF0000000) | 0xFFFFFF;
+    settings->bits.joint = GameOGI::NoJoint;
+    settings->bits.secondJoint = GameOGI::NoJoint;
+    settings->bits.exitPoint = GameOGI::NoExitPoint;
+    settings->bits.steering = 0;
+    settings->bits.ignoresNoises = 0;
+    settings->bits.unused27 = 0;
     settings->direction[2] = -1.0f;
     settings->damping = 1.0f;
     settings->direction[0] = -1.0f;
     settings->direction[1] = 1.0f;
-    for (u32& value : settings->unknown24)
+    for (u32& value : settings->unused24)
     {
         value = 0;
     }
@@ -595,33 +553,33 @@ void DestroyHeadTrackingSettings(void* settings, u32 destroyFlags)
     }
 }
 
-void SetHeadTrackingAngle1(void* settings, f32 degrees)
+void SetHeadTrackingNegativePitch(void* settings, f32 degrees)
 {
-    auto* tracking = static_cast<HeadTrackingSettings*>(settings);
-    tracking->negativePitch = static_cast<s32>(degrees * UnitsPerDegree);
-    tracking->direction[1] = SinOfAngle(&tracking->negativePitch);
+    auto* limits = static_cast<HeadTrackingSettings*>(settings);
+    limits->negativePitch = static_cast<s32>(degrees * DegreesToAngle);
+    limits->direction[1] = SinOfAngle(&limits->negativePitch);
 }
 
-void SetHeadTrackingAngle2(void* settings, f32 degrees)
+void SetHeadTrackingPositivePitch(void* settings, f32 degrees)
 {
-    auto* tracking = static_cast<HeadTrackingSettings*>(settings);
-    tracking->positivePitch = static_cast<s32>(degrees * UnitsPerDegree);
-    tracking->direction[0] = -SinOfAngle(&tracking->positivePitch);
+    auto* limits = static_cast<HeadTrackingSettings*>(settings);
+    limits->positivePitch = static_cast<s32>(degrees * DegreesToAngle);
+    limits->direction[0] = -SinOfAngle(&limits->positivePitch);
 }
 
-void SetHeadTrackingAngle3(void* settings, f32 degrees)
+void SetHeadTrackingYawLimit(void* settings, f32 degrees)
 {
-    auto* tracking = static_cast<HeadTrackingSettings*>(settings);
-    tracking->yawLimit = static_cast<s32>(degrees * UnitsPerDegree);
-    tracking->direction[2] = CosOfAngle(&tracking->yawLimit);
-    tracking->bits |= SettingsThirdAngle;
+    auto* limits = static_cast<HeadTrackingSettings*>(settings);
+    limits->yawLimit = static_cast<s32>(degrees * DegreesToAngle);
+    limits->direction[2] = CosOfAngle(&limits->yawLimit);
+    limits->bits.unused27 = 1;
 }
 
 void SenseSpeed(const void* sense, TimeClock*, ObjectNode* node, f32* level)
 {
     Vector4 velocity = {0.0f, 0.0f, 0.0f, 1.0f};
     Agent* agent = node->agent;
-    if (CallVirtual<u32>(agent, agent->vtable, OwnVelocitySlot, &velocity) == 0)
+    if (CallVirtual<u32>(agent, agent->vtable, Agent::VelocitySlot, &velocity) == 0)
     {
         ObjectRigidBody* body = node->rigidBody;
         if (body != nullptr && body->physicsBody != nullptr)
@@ -641,9 +599,8 @@ void SenseSpeed(const void* sense, TimeClock*, ObjectNode* node, f32* level)
 
 void SenseRising(const void* sense, TimeClock*, ObjectNode*, f32* level)
 {
-    constexpr f32 DecayShare = Rounded(0.3);
     const PerceptionSense* rising = SenseOf(sense);
-    *level = ClampFloat(*level + rising->decay * DecayShare, rising->lowest, rising->highest);
+    *level = ClampFloat(*level + rising->decay * PerceptionSense::DecayShare, rising->lowest, rising->highest);
 }
 
 u32 SenseNoticesObject(const void* sense, u32 objectId)
@@ -678,12 +635,12 @@ void SetTrailPosition(u32* settings, const Vector4* position)
 {
     auto* trail = reinterpret_cast<TrailArguments*>(settings);
     *reinterpret_cast<Vector4*>(trail->offset) = *position;
-    trail->bits |= TrailArguments::OffsetGiven;
+    trail->bits.offsetGiven = 1;
 }
 
 s32 UpdateTrail(TrailArguments* trail, ObjectNode* node, s32 emitter)
 {
-    if (trail->system == NoTrailSystem)
+    if (trail->system == NoParticleSystem)
     {
         emitter = StopTrail(trail, emitter);
     }
@@ -698,11 +655,10 @@ s32 UpdateTrail(TrailArguments* trail, ObjectNode* node, s32 emitter)
     }
 
     Matrix4x4 frame = *ParticleFrame(node->owner, trail->exitPoint);
-    u64 bits = trail->bits;
-    OrientParticleFrame(bits >> TrailArguments::TurnedShift & 1, bits >> TrailArguments::AxesShift & TrailArguments::AxesMask,
-                        (bits & TrailArguments::OffsetGiven) != 0 ? reinterpret_cast<const Vector4*>(trail->offset) : nullptr,
+    TrailBits bits = trail->bits;
+    OrientParticleFrame(bits.turned, bits.axes, bits.offsetGiven ? reinterpret_cast<const Vector4*>(trail->offset) : nullptr,
                         &frame);
-    if ((trail->bits & TrailArguments::GravityFrame) != 0)
+    if (trail->bits.gravityFrame)
     {
         return SetEmitterGravityFrame(emitter, &frame);
     }
@@ -727,7 +683,7 @@ s32 StartTrail(const TrailArguments* trail, u32 system, u32, ObjectNode* node)
     place->SyncPosition();
     Vector4 position = place->position;
     system &= 0xFFFF;
-    if ((trail->bits & TrailArguments::GravityFrame) != 0)
+    if (trail->bits.gravityFrame)
     {
         return StartEmitter(instance, system, 0, &position);
     }
@@ -781,7 +737,7 @@ void SetUpMotionBlock(MotionBlock* block, u32 fallingX, u32 fallingY, u32 fallin
     // The angle itself turns by a range of 1
     for (u32 axis = 0; axis < 3; axis++)
     {
-        if ((block->cycles >> (MotionBlock::CycleShift + 3 * axis) & MotionBlock::CycleMask) == MotionBlock::CycleAngle)
+        if (block->motion.CycleOf(axis) == MotionBlock::CycleAngle)
         {
             block->cycleRanges[axis] = 1.0f;
         }
@@ -789,14 +745,14 @@ void SetUpMotionBlock(MotionBlock* block, u32 fallingX, u32 fallingY, u32 fallin
 
     if (0.0f < duration)
     {
-        block->fadeRate = MotionBlockFadeRate(duration, (block->cycles & MotionBlock::Turns) != 0 ? 1 : 0, block->cycleRanges[0],
+        block->fadeRate = MotionBlockFadeRate(duration, block->motion.turns ? 1 : 0, block->cycleRanges[0],
                                               block->cycleRanges[1], block->cycleRanges[2]);
-        block->cycles = block->cycles | MotionBlock::Fades;
+        block->motion.fades = 1;
     }
     else
     {
         block->fadeRate = 0.0f;
-        block->cycles = block->cycles & ~MotionBlock::Fades;
+        block->motion.fades = 0;
     }
 
     for (u32 axis = 0; axis < 3; axis++)
@@ -807,15 +763,13 @@ void SetUpMotionBlock(MotionBlock* block, u32 fallingX, u32 fallingY, u32 fallin
         }
 
         s32 phase;
-        CycleStart(&phase, block, block->cycles >> (MotionBlock::CycleShift + 3 * axis) & MotionBlock::CycleMask, falling[axis],
-                   starts[axis], block->cycleRanges[axis]);
-        block->cyclePhases[axis] = static_cast<f32>(phase) * RadiansPerUnit;
+        CycleStart(&phase, block, block->motion.CycleOf(axis), falling[axis], starts[axis], block->cycleRanges[axis]);
+        block->cyclePhases[axis] = static_cast<f32>(phase) * AngleToRadians;
     }
 }
 
 void SetMotionBlockConstraint(MotionBlock* block, u32 kind, const Vector4* vector)
 {
-    // Kinds 1 to 7: the constraints (2 and 3 take their axis or normal) and the hinges about x, y and z (4 to 6)
     switch (kind)
     {
     case MotionBlock::ConstraintLine:
@@ -824,22 +778,20 @@ void SetMotionBlockConstraint(MotionBlock* block, u32 kind, const Vector4* vecto
         block->constraint[1] = vector->y;
         block->constraint[2] = vector->z;
         block->constraint[3] = vector->w;
-        block->bodyBits = (block->bodyBits & ~MotionBlock::ConstraintBits) | (kind & MotionBlock::ConstraintMask)
-                                                                                  << MotionBlock::ConstraintShift;
+        block->body.constraint = kind;
         break;
-    case 4:
-        block->bodyBits |= MotionBlock::HingeX;
+    case MotionBlock::GivenHingeX:
+        block->body.hingeX = 1;
         break;
-    case 5:
-        block->bodyBits |= MotionBlock::HingeY;
+    case MotionBlock::GivenHingeY:
+        block->body.hingeY = 1;
         break;
-    case 6:
-        block->bodyBits |= MotionBlock::HingeZ;
+    case MotionBlock::GivenHingeZ:
+        block->body.hingeZ = 1;
         break;
     case MotionBlock::ConstraintFixed:
-    case 7:
-        block->bodyBits = (block->bodyBits & ~MotionBlock::ConstraintBits) | (kind & MotionBlock::ConstraintMask)
-                                                                                  << MotionBlock::ConstraintShift;
+    case MotionBlock::GivenOddConstraint:
+        block->body.constraint = kind;
         break;
     default:
         break;
@@ -849,7 +801,7 @@ void SetMotionBlockConstraint(MotionBlock* block, u32 kind, const Vector4* vecto
 void SetMotionBlockTurnLimit(f32 limit, MotionBlock* block)
 {
     block->turnLimit = limit;
-    block->bodyBits |= MotionBlock::LimitsTurn;
+    block->body.limitsTurn = 1;
 }
 
 f32 MotionBlockFadeRate(f32 duration, u32 turns, f32 x, f32 y, f32 z)
@@ -885,40 +837,37 @@ f32 MotionBlockCycleZ(MotionBlock* block, const s32* angle, f32 range)
 
 void MakeMotionBlockNormal(MotionBlock* block)
 {
-    constexpr u32 ReleaseAll = 2;
-    ReleaseLinkedInstances(AttachmentsOf(block->node->owner), ReleaseAll);
+    ReleaseLinkedInstances(AttachmentsOf(block->node->owner), AttachmentLinkFlags::Marked);
 }
 
-void SetMotionBlockFlag(MotionBlock* block, u32 keepStuck)
+void StopMotionBlockSticking(MotionBlock* block, u32 keepStuck)
 {
     // Not sticky any more: what stuck to it let go unless asked
-    constexpr u32 ReleaseAll = 2;
     if (keepStuck == 0)
     {
-        ReleaseLinkedInstances(AttachmentsOf(block->node->owner), ReleaseAll);
+        ReleaseLinkedInstances(AttachmentsOf(block->node->owner), AttachmentLinkFlags::Marked);
     }
 
     block->stickyObject = 0;
-    block->stickyFlags = 0;
-    block->flags &= ~BlockSticky;
-    block->stickyValue = 0.0f;
+    block->stickyKinds = 0;
+    block->flags.sticky = 0;
+    block->stickyStrength = 0.0f;
     block->stickyMessage = 0;
 }
 
 void SetMotionBlockKind(MotionBlock* block, u32 kind)
 {
-    block->cycles = (block->cycles & ~(MotionBlock::KindMask << MotionBlock::KindShift))
-                    | (kind & MotionBlock::KindMask) << MotionBlock::KindShift;
+    block->motion.kind = kind;
 }
 
 void MakePlainMotionBlock(MotionBlock* block)
 {
     // Its cycles' rates, ranges and phases, spin, fade rate and duration none, its mover the node's own instance, its grab and
     // hold strengths none
-    constexpr u8 OwnInstance = 0xFF;
     ResetMotionBlock(block);
-    block->flags &= ~MotionBlock::KeepsStepping & ~u32{BlockSendsTouches};
-    block->mover = OwnInstance;
+    block->flags.keepsStepping = 0;
+    block->flags.sendsTouches = 0;
+    block->mover = MotionBlock::MoverOwnInstance;
     for (u32 axis = 0; axis < 3; axis++)
     {
         block->cycleRates[axis] = 0.0f;
@@ -936,10 +885,9 @@ void MakePlainMotionBlock(MotionBlock* block)
 void MakeCoverMotionBlock(MotionBlock* block)
 {
     ResetMotionBlock(block);
-    block->cycles = (block->cycles & ~(MotionBlock::KindMask << MotionBlock::KindShift))
-                    | MotionBlock::KindCover << MotionBlock::KindShift;
-    block->flags |= MotionBlock::KeepsStepping;
-    block->search &= ~SearchMask;
+    block->motion.kind = MotionBlock::KindCover;
+    block->flags.keepsStepping = 1;
+    block->search.kind = 0;
 }
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) void ResetHeadTurns(HeadTracking* tracking)
@@ -952,7 +900,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void ResetHeadTurn
     tracking->yawAngle = 0;
     tracking->rollAngle = 0;
     // The three words after the angles
-    auto* words = reinterpret_cast<u32*>(tracking->unknown30);
+    auto* words = reinterpret_cast<u32*>(tracking->unused30);
     for (u32 index = 0; index < 3; index++)
     {
         words[index] = 0;
@@ -972,11 +920,11 @@ void DestroyHeadTurner(HeadTracking* tracking, u32 destroyFlags)
 
 void HookHeadTracking(HeadTracking* tracking, OgiAnimator* animator)
 {
-    AddJointCallback(animator, tracking->joint, tracking);
-    tracking->bits |= HeadTracking::BitHooked;
-    if (tracking->secondJoint != HeadTracking::NoJoint)
+    AddJointCallback(animator, tracking->bits.joint, tracking);
+    tracking->bits.hooked = 1;
+    if (tracking->bits.secondJoint != GameOGI::NoJoint)
     {
-        AddJointCallback(animator, tracking->secondJoint, tracking);
+        AddJointCallback(animator, tracking->bits.secondJoint, tracking);
     }
 }
 
@@ -999,19 +947,21 @@ void DestroyHeadTracking(HeadTracking* tracking, u32 destroyFlags)
 
 void LetGoOfHeadTracking(HeadTracking* tracking, ObjectNode* node)
 {
-    if ((tracking->bits & HeadTracking::BitHooked) == 0)
+    if (!tracking->bits.hooked)
     {
         return;
     }
 
-    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNodeKind));
+    auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
     UnhookJoints(tracking, model->animator);
 }
 
 void StopHeadTracking(HeadTracking* tracking)
 {
-    tracking->flags |= HeadTracking::FlagHasTarget | HeadTracking::FlagIgnoredByLook;
-    LetGoOfHeadTarget(tracking, 1);
+    constexpr u32 StopsAtRest = 1;
+    tracking->flags.hasTarget = 1;
+    tracking->flags.ignoredByLook = 1;
+    LetGoOfHeadTarget(tracking, StopsAtRest);
 }
 
 u32 AddSense(void* perception, const void* sense)
@@ -1019,16 +969,15 @@ u32 AddSense(void* perception, const void* sense)
     constexpr u32 NoSense = 0xFF;
     Perception* senses = PerceptionOf(perception);
     auto* added = static_cast<PerceptionSense*>(const_cast<void*>(sense));
-    if ((senses->bits & Perception::CountMask) == Perception::MostSenses
-        || HasSense(perception, added->bits & PerceptionSense::KindMask) != 0)
+    if (senses->bits.count == Perception::MostSenses || HasSense(perception, added->bits.kind) != 0)
     {
         return NoSense;
     }
 
-    u32 count = senses->bits & Perception::CountMask;
-    senses->bits = (senses->bits & ~u64{Perception::CountMask}) | ((count + 1) & Perception::CountMask);
+    u32 count = senses->bits.count;
+    senses->bits.count = count + 1;
     senses->senses[count] = added;
-    return senses->bits & Perception::CountMask;
+    return senses->bits.count;
 }
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) void ConstructPerception(void* memory)
@@ -1044,7 +993,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void ConstructPerc
 
     senses->direction = g_DefaultBox.min;
     senses->direction.w = 1.0f;
-    senses->bits &= ~u64{Perception::CountMask};
+    senses->bits.count = 0;
 }
 
 u32 SetPerceptionWeight(f32 weight, void* perception, u32 slot)
@@ -1089,9 +1038,9 @@ u32 AddPerceptionWeight(f32 weight, void* perception, u32 slot)
 u32 FindSense(void* perception, u32 kind, u32* index)
 {
     Perception* senses = PerceptionOf(perception);
-    for (u32 at = 0; at < (senses->bits & Perception::CountMask); at++)
+    for (u32 at = 0; at < senses->bits.count; at++)
     {
-        if ((senses->senses[at]->bits & PerceptionSense::KindMask) == kind)
+        if (senses->senses[at]->bits.kind == kind)
         {
             *index = at;
             return 1;
@@ -1104,10 +1053,10 @@ u32 FindSense(void* perception, u32 kind, u32* index)
 u32 HasSense(void* perception, u32 kind)
 {
     Perception* senses = PerceptionOf(perception);
-    u32 count = senses->bits & Perception::CountMask;
+    u32 count = senses->bits.count;
     for (u32 index = 0; index < count; index++)
     {
-        if ((senses->senses[index]->bits & PerceptionSense::KindMask) == kind)
+        if (senses->senses[index]->bits.kind == kind)
         {
             return 1;
         }
@@ -1129,7 +1078,7 @@ void TurnSenseOn(void* perception, u32 kind)
 ParticleTrails* ParticleTrails::Construct(ParticleTrails* trails)
 {
     trails->Reset();
-    trails->bits &= ~MeasuresTurn;
+    trails->bits.measuresTurn = 0;
     trails->time = nullptr;
     trails->strength = 1.0f;
     return trails;
@@ -1137,7 +1086,7 @@ ParticleTrails* ParticleTrails::Construct(ParticleTrails* trails)
 
 void ParticleTrails::Destroy(u32 destroyFlags)
 {
-    for (u32 index = 0; index < (bits & CountMask); index++)
+    for (u32 index = 0; index < bits.count; index++)
     {
         if (emitters[index] >= 0)
         {
@@ -1154,7 +1103,8 @@ void ParticleTrails::Destroy(u32 destroyFlags)
 u32 ParticleTrails::Add(const void* arguments)
 {
     constexpr u32 Full = 0xFF;
-    u32 count = bits & CountMask;
+    ParticleTrailsBits added = bits;
+    u32 count = added.count;
     if (count == MostTrails)
     {
         return Full;
@@ -1162,19 +1112,20 @@ u32 ParticleTrails::Add(const void* arguments)
 
     auto* trail = static_cast<TrailArguments*>(const_cast<void*>(arguments));
     trails[count] = trail;
-    times[bits & CountMask] = 0;
-    bits = (bits & ~CountMask) | (((bits & CountMask) + 1) & CountMask);
-    if ((trail->bits & TrailArguments::KindMask) == MeasuresTurnKind)
+    times[count] = 0;
+    added.count = count + 1;
+    bits = added;
+    if (trail->bits.kind == MeasuresTurnKind)
     {
-        bits |= MeasuresTurn;
+        bits.measuresTurn = 1;
     }
 
-    return bits & CountMask;
+    return bits.count;
 }
 
 void StepParticleTrails(ParticleTrails* trails, TimeClock* clock, ObjectNode* node)
 {
-    for (u32 index = 0; index < (trails->bits & ParticleTrails::CountMask); index++)
+    for (u32 index = 0; index < trails->bits.count; index++)
     {
         trails->time = &trails->times[index];
         trails->emitters[index] = StepTrail(trails->trails[index], clock, node, trails->emitters[index]);
@@ -1190,17 +1141,17 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void ParticleTrail
         times[index] = 0;
     }
 
-    bits &= ~CountMask;
+    bits.count = 0;
 }
 
 void ParticleTrails::RemoveKind(u32 kind)
 {
     // Taking a trail out moves the last one into its slot, which is looked at next
     u32 index = 0;
-    while (index < (bits & CountMask))
+    while (index < bits.count)
     {
         const TrailArguments* trail = trails[index];
-        if (trail == nullptr || (trail->bits >> RemovalKindShift & RemovalKindMask) == kind)
+        if (trail == nullptr || trail->bits.removalKind == kind)
         {
             RemoveSlot(index & 0xFF);
         }
@@ -1214,7 +1165,7 @@ void ParticleTrails::RemoveKind(u32 kind)
 u32 ParticleTrails::RemoveSlot(u32 index)
 {
     index &= 0xFF;
-    if (index >= (bits & CountMask))
+    if (index >= bits.count)
     {
         return 0;
     }
@@ -1224,8 +1175,8 @@ u32 ParticleTrails::RemoveSlot(u32 index)
         StopEmitter(emitters[index]);
     }
 
-    u32 last = ((bits & CountMask) - 1) & CountMask;
-    bits = (bits & ~CountMask) | last;
+    bits.count = bits.count - 1;
+    u32 last = bits.count;
     if (last != 0)
     {
         trails[index] = trails[last];
@@ -1238,7 +1189,7 @@ u32 ParticleTrails::RemoveSlot(u32 index)
 
 void ParticleTrails::ChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    for (u32 index = 0; index < (bits & CountMask); index++)
+    for (u32 index = 0; index < bits.count; index++)
     {
         if (emitters[index] != NoEmitter)
         {
@@ -1264,13 +1215,13 @@ void DestroyTrajectory(Trajectory* trajectory, u32 destroyFlags)
 void StartCoverSearch(Trajectory* trajectory, ObjectNode* node)
 {
     trajectory->coverScore = 0.0f;
-    if ((trajectory->followed->search & SearchMask) != SearchInBox)
+    if (trajectory->followed->search.kind != MotionBlock::SearchInBox)
     {
         return;
     }
 
     trajectory->cover = nullptr;
-    trajectory->count = 0;
+    trajectory->bits.count = 0;
     node->waypoints->ReleaseRoute();
     GatherCoverPositions(trajectory, node);
 }
@@ -1279,12 +1230,12 @@ void StartGrabber(Trajectory* trajectory, ObjectNode* node)
 {
     constexpr u32 HullsKind = 10;
     ObjectRigidBody* body = MakeTrajectoryBody(node, HullsKind);
-    if ((trajectory->followed->bodyBits & MotionBlock::NoCollisions) != 0)
+    if (trajectory->followed->body.noCollisions)
     {
         StopRigidBodyCollisions(body);
         if (body->physicsBody != nullptr)
         {
-            body->physicsBody->bits |= DynamicBody::BitNoCollisions;
+            body->physicsBody->bits.noCollisions = 1;
         }
     }
     else
@@ -1292,9 +1243,9 @@ void StartGrabber(Trajectory* trajectory, ObjectNode* node)
         ListRigidBodySecond(body, HullsKind);
     }
 
-    SetRigidBodyMass(NodeProperties(node)->GetFloat(0), body);
+    SetRigidBodyMass(NodeProperties(node)->GetFloat(RigidBodyMassProperty), body);
     SetUpTrajectoryBody(trajectory, body);
-    node->unknown154 = 0;
+    node->reactions.knockCountdown = 0;
 }
 
 void StartBall(Trajectory* trajectory, ObjectNode* node)
@@ -1302,10 +1253,10 @@ void StartBall(Trajectory* trajectory, ObjectNode* node)
     constexpr u32 SphereKind = 9;
     ObjectRigidBody* body = MakeTrajectoryBody(node, SphereKind);
     ListRigidBodySecond(body, SphereKind);
-    f32 mass = NodeProperties(node)->GetFloat(0);
+    f32 mass = NodeProperties(node)->GetFloat(RigidBodyMassProperty);
     body->physicsBody->SetMassAndSize(mass, 1.0f, 1.0f, 1.0f);
     SetUpTrajectoryBody(trajectory, body);
-    node->unknown154 = 0;
+    node->reactions.knockCountdown = 0;
 }
 
 void SlowBodyAlongAxis(f32 share, Trajectory*, DynamicBody* body, u32 axis)
@@ -1330,8 +1281,8 @@ void SlowBodyAlongAxis(f32 share, Trajectory*, DynamicBody* body, u32 axis)
 
 void LetGoOfTrajectory(Trajectory* trajectory, ObjectNode* node)
 {
-    trajectory->bits |= Trajectory::BitLetGo;
-    u32 kind = BlockKind(trajectory->followed);
+    trajectory->bits.unused16 = 1;
+    u32 kind = trajectory->followed->motion.kind;
     // The body kinds let go of the rigid body
     if (kind != MotionBlock::KindCycles && kind < MotionBlock::KindCover && node->rigidBody != nullptr)
     {
@@ -1359,15 +1310,15 @@ void LetGoOfTrajectory(Trajectory* trajectory, ObjectNode* node)
 
 void GrabTouched(f32 strength, Trajectory* trajectory, ObjectNode* node, InstanceContext* touched)
 {
-    node->flags &= ~NodeFlag14;
+    node->flags.seeksContact = 0;
     InstanceContext* instance = node->owner;
-    u32 blockFlags = trajectory->followed->flags;
+    MotionBlockFlags blockFlags = trajectory->followed->flags;
     bool holds;
-    if ((blockFlags & BlockHoldsTouched) != 0)
+    if (blockFlags.holdsTouched)
     {
         holds = true;
     }
-    else if ((blockFlags & BlockHoldsAgentRef1) == 0)
+    else if (!blockFlags.holdsAgentRef1)
     {
         holds = false;
     }

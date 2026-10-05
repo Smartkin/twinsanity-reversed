@@ -1,19 +1,16 @@
 #include "game/commands.h"
 
+#include "game/attachment.h"
 #include "game/math.h"
 #include "game/objectnode.h"
 #include "game/progress.h"
 #include "game/scripttokens.h"
 
-// More of the commands' development tools parsers (game/commandtokens.cpp): each token's kind names an argument, its value goes
+// More of the commands' development tools parsers (game/commandtokens.cpp): each token's tag names an argument, its value goes
 // into the command's field. The retail game never calls them
 
 namespace
 {
-constexpr f32 Epsilon = 0x1.a36e2ep-15f;
-constexpr f32 DegreesToAngle = 0x1.6C16C2p+7f;
-constexpr f32 DegreesToRadians = 0x1.1df46cp-6f;
-
 bool IsNearlyZero(const f32* vector)
 {
     return __builtin_fabsf(vector[0]) <= Epsilon && __builtin_fabsf(vector[1]) <= Epsilon &&
@@ -29,16 +26,16 @@ void SetStateCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x61)
+        if (token->tag == TagState)
         {
-            value1 = (value1 & ~0xFFu) | TokenIsZero(token);
+            state.flag = TokenIsOn(token);
         }
 
         reader.Next();
     }
 }
 
-void SetKeyPathByte43Command::ParseTokens(const ScriptTokenList* tokens)
+void SetPathIndexCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -46,16 +43,16 @@ void SetKeyPathByte43Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFFFF && token->type == 1)
+        if (token->tag == TagNone && token->type == TokenInt)
         {
-            value = (value & ~0xFFu) | (token->value & 0xFF);
+            path.index = token->value;
         }
 
         reader.Next();
     }
 }
 
-void SetCharacterAnalogCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetPresenceCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -63,16 +60,16 @@ void SetCharacterAnalogCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xD5)
+        if (token->tag == TagPerceptionWeight)
         {
-            value = token->Float();
+            presence = token->Float();
         }
 
         reader.Next();
     }
 }
 
-void AddCharacterAnalogCommand::ParseTokens(const ScriptTokenList* tokens)
+void AddPresenceCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -80,7 +77,7 @@ void AddCharacterAnalogCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xD5)
+        if (token->tag == TagPerceptionWeight)
         {
             delta = token->Float();
         }
@@ -89,7 +86,7 @@ void AddCharacterAnalogCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void ShadowToggleCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetShadowSlotCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -97,16 +94,16 @@ void ShadowToggleCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x122)
+        if (token->tag == TagShadowSlot)
         {
-            slot = (slot & ~0xFFu) | (token->value & 0xFF);
+            slot.slot = token->value;
         }
 
         reader.Next();
     }
 }
 
-void SetNode10SlotCommand::ParseTokens(const ScriptTokenList* tokens)
+void ClearShadowSlotCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -114,9 +111,9 @@ void SetNode10SlotCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x122)
+        if (token->tag == TagShadowSlot)
         {
-            slot = (slot & ~0xFFu) | (token->value & 0xFF);
+            slot.slot = token->value;
         }
 
         reader.Next();
@@ -143,9 +140,9 @@ void EndContextMusicCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x14)
+        if (token->tag == TagBlendSeconds)
         {
-            time = token->Float();
+            fadeSeconds = token->Float();
         }
 
         reader.Next();
@@ -160,24 +157,24 @@ void SetSoundParamsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xB:
+        case TagVolume:
         {
-            // The volume is a float of at most 1 (commands.h has an integer)
+            // A volume of at most 1
             f32 loudness = token->Float();
             if (1.0f < loudness)
             {
                 loudness = 1.0f;
             }
 
-            volume = __builtin_bit_cast(s32, loudness);
-            set.raw |= 0x2;
+            volume = loudness;
+            sets.volume = 1;
             break;
         }
-        case 0x98:
+        case TagRelativePitch:
             pitch = token->Float();
-            set.raw |= 0x1;
+            sets.pitch = 1;
             break;
         default:
             break;
@@ -189,187 +186,201 @@ void SetSoundParamsCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void SetCollisionsCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // value2 to value4 and value13 are floats (commands.h has integers)
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x82:
-            flags |= 0x80000;
-            value2 = static_cast<s32>(token->value);
+        case TagXShift:
+            settings.centerOfMassGiven = 1;
+            centerOfMassX = token->Float();
             break;
-        case 0x83:
-            flags |= 0x80000;
-            value3 = static_cast<s32>(token->value);
+        case TagYShift:
+            settings.centerOfMassGiven = 1;
+            centerOfMassY = token->Float();
             break;
-        case 0x84:
-            flags |= 0x80000;
-            value4 = static_cast<s32>(token->value);
+        case TagZShift:
+            settings.centerOfMassGiven = 1;
+            centerOfMassZ = token->Float();
             break;
-        case 0x6A:
-            ParseTaggedValueRecord(token, &radius);
-            flags |= 0x800;
+        case TagGravity:
+            ParseTaggedValueRecord(token, &gravity);
+            settings.gravityGiven = 1;
             break;
-        case 0x66:
-            // The keywords pick the value of bits 0-3, whatever the token's type
+        case TagAgentPairs:
+            // The keywords pick the kind of motion, whatever the token's type
             switch (token->value)
             {
-            case 0x1:
-                flags = (flags | 0x100) & ~0xFu;
+            case KeywordOff:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindNone;
                 break;
-            case 0x30:
-                flags = ((flags | 0x100) & ~0xFu) | 0x1;
+            case KeywordPush:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindPlain;
                 break;
-            case 0x8D:
-                flags = ((flags | 0x100) & ~0xFu) | 0x6;
+            case KeywordSlide:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindSlide;
                 break;
-            case 0x31:
-                flags = ((flags | 0x100) & ~0xFu) | 0x9;
+            case KeywordSphere:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindSphere;
                 break;
-            case 0x8A:
-                flags = ((flags | 0x100) & ~0xFu) | 0x5;
+            case KeywordUpright:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindUpright;
                 break;
-            case 0x32:
-                flags = ((flags | 0x100) & ~0xFu) | 0xA;
+            case KeywordCuboid:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindCuboid;
                 break;
-            case 0x33:
-                flags = ((flags | 0x100) & ~0xFu) | 0xB;
+            case KeywordSimplex:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindSimplex;
                 break;
-            case 0x3B:
-                flags = ((flags | 0x100) & ~0xFu) | 0x8;
+            case KeywordAxisBox:
+                settings.motionKindGiven = 1;
+                settings.motionKind = BodyKindAxisBox;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0x67:
-            // The same of bits 4-7, without 0x3B
+        case TagTerrain:
+            // The same of the kind of collisions, without the axis box
             switch (token->value)
             {
-            case 0x1:
-                flags = (flags | 0x200) & ~0xF0u;
+            case KeywordOff:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindNone;
                 break;
-            case 0x30:
-                flags = ((flags | 0x200) & ~0xF0u) | 0x10;
+            case KeywordPush:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindPlain;
                 break;
-            case 0x8D:
-                flags = ((flags | 0x200) & ~0xF0u) | 0x60;
+            case KeywordSlide:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindSlide;
                 break;
-            case 0x31:
-                flags = ((flags | 0x200) & ~0xF0u) | 0x90;
+            case KeywordSphere:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindSphere;
                 break;
-            case 0x8A:
-                flags = ((flags | 0x200) & ~0xF0u) | 0x50;
+            case KeywordUpright:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindUpright;
                 break;
-            case 0x32:
-                flags = ((flags | 0x200) & ~0xF0u) | 0xA0;
+            case KeywordCuboid:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindCuboid;
                 break;
-            case 0x33:
-                flags = ((flags | 0x200) & ~0xF0u) | 0xB0;
+            case KeywordSimplex:
+                settings.collisionKindGiven = 1;
+                settings.collisionKind = BodyKindSimplex;
                 break;
             default:
                 break;
             }
 
             break;
-        case 0x3F:
-            flags |= 0x2000;
-            value8 = token->Float();
+        case TagDamping:
+            settings.dragGiven = 1;
+            drag = token->Float();
             break;
-        case 0x68:
-            height = token->Float();
-            flags |= 0x400;
+        case TagLogicalRadius:
+            rollRadius = token->Float();
+            settings.rollRadiusGiven = 1;
             break;
-        case 0x79:
-            flags |= 0x10000;
-            value12 = token->Float();
+        case TagInertia:
+            settings.sizeGiven = 1;
+            size = token->Float();
             break;
-        case 0x73:
-        case 0x94:
-            flags |= 0x4000;
-            value10 = token->Float();
+        case TagFriction:
+        case TagRepelForce:
+            settings.frictionGiven = 1;
+            friction = token->Float();
             break;
-        case 0x74:
-            flags |= 0x8000;
-            value11 = token->Float();
+        case TagBounce:
+            settings.restitutionGiven = 1;
+            restitution = token->Float();
             break;
-        case 0x88:
-            flags |= 0x400000;
-            value11 = token->Float();
+        case TagTiltPower:
+            settings.ownNormalRate = 1;
+            restitution = token->Float();
             break;
-        case 0x87:
+        case TagMaxTilt:
         {
             s32 angle;
             AngleFrom(&angle, token->Float(), AngleDegrees);
-            value12 = CosOfAngle(&angle);
-            flags |= 0x200000;
+            size = CosOfAngle(&angle);
+            settings.slopeLimited = 1;
             break;
         }
-        case 0x8B:
-            flags |= 0x800000;
-            value13 = static_cast<s32>(token->value);
+        case TagAntiRoll:
+            settings.spinFrictionGiven = 1;
+            spinFriction = token->Float();
             break;
-        case 0x8F:
-            flags |= 0x1000000;
-            value9 = token->Float();
+        case TagSteady:
+            settings.lengthDragGiven = 1;
+            lengthDrag = token->Float();
             break;
-        case 0x90:
-            value14 = token->Float();
+        case TagFlatMultiplier:
+            widthScale = token->Float();
             break;
-        case 0xCE:
-            value15 = token->Float();
+        case TagKnockScale:
+            impulseLength = token->Float();
             break;
-        case 0xEF:
-            flags |= 0x20000000;
-            value15 = token->Float();
+        case TagImpulseCap:
+            settings.impulseCapped = 1;
+            impulseLength = token->Float();
             break;
-        case 0xF0:
-            flags |= 0x40000000;
-            value15 = token->Float();
+        case TagFixedImpulse:
+            settings.impulseFixed = 1;
+            impulseLength = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x3A:
-                    flags |= 0x1000;
+                case KeywordInfiniteMass:
+                    settings.immovable = 1;
                     break;
-                case 0x3F:
-                    flags = (flags & ~0x60000u) | 0x20000;
+                case KeywordJustVertical:
+                    settings.launch = VerticalLaunch;
                     break;
-                case 0x40:
-                    flags = (flags & ~0x60000u) | 0x40000;
+                case KeywordFullMotion:
+                    settings.launch = ObjectRigidBodyBits::Launched;
                     break;
-                case 0x41:
-                    flags &= ~0x60000u;
+                case KeywordNoPhysicsMotion:
+                    settings.launch = NoLaunch;
                     break;
-                case 0x43:
-                    flags |= 0x100000;
+                case KeywordClampNormal:
+                    settings.steersItself = 1;
                     break;
-                case 0x8E:
-                    flags |= 0x2000000;
+                case KeywordUnused8E:
+                    settings.unused25 = 1;
                     break;
-                case 0x17:
-                    flags |= 0x4000000;
+                case KeywordOrient:
+                    settings.unused26 = 1;
                     break;
-                case 0x34:
-                    flags |= 0x8000000;
+                case KeywordEnclosingSphere:
+                    settings.rollRadiusFromBox = 1;
                     break;
-                case 0xC7:
-                    flags |= 0x10000000;
+                case KeywordRadiusFromHeight:
+                    settings.rollRadiusFromHeight = 1;
                     break;
-                case 0xD1:
+                case KeywordPushedByVolumes:
                     // Falls through into the default (no break in retail)
-                    flags |= 0x80000000;
+                    settings.pushedByVolumes = 1;
                     [[fallthrough]];
                 default:
-                    value9 = -1.0f;
+                    lengthDrag = -1.0f;
                     break;
                 }
             }
@@ -391,15 +402,15 @@ void SetLogicalRadiusCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x68:
-            value2 = token->Float();
+        case TagLogicalRadius:
+            radius = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x34)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordEnclosingSphere)
             {
-                value1 |= 0x1;
+                flags.fromBox = 1;
             }
 
             break;
@@ -419,18 +430,19 @@ void SetSurfaceCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x102:
-            surface = ((surface & ~0x1FE0000u) | ((token->value & 0xFF) << 17)) & ~0x10000u;
+        case TagHull:
+            request.hull = token->value;
+            request.allHulls = 0;
             break;
-        case 0x45:
-            surface = (surface & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagSurface:
+            request.surface = token->value;
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x3E)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordAll)
             {
-                surface |= 0x10000;
+                request.allHulls = 1;
             }
 
             break;
@@ -444,43 +456,42 @@ void SetSurfaceCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void ContinueColliderMotionCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // The velocity and value6 to value8 are floats (commands.h has integers)
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x49:
-            value1.raw |= 0x1;
-            velX = static_cast<s32>(token->value);
+        case TagVelocityX:
+            flags.velocityGiven = 1;
+            unused2 = token->Float();
             break;
-        case 0x4A:
-            value1.raw |= 0x1;
-            velY = static_cast<s32>(token->value);
+        case TagVelocityY:
+            flags.velocityGiven = 1;
+            unused3 = token->Float();
             break;
-        case 0x4B:
-            value1.raw |= 0x1;
-            velZ = static_cast<s32>(token->value);
+        case TagVelocityZ:
+            flags.velocityGiven = 1;
+            unused4 = token->Float();
             break;
-        case 0x3F:
-            value1.raw |= 0x2;
-            value6 = static_cast<s32>(token->value);
+        case TagDamping:
+            flags.dragGiven = 1;
+            drag = token->Float();
             break;
-        case 0x73:
-            value1.raw |= 0x4;
-            value7 = static_cast<s32>(token->value);
+        case TagFriction:
+            flags.frictionGiven = 1;
+            friction = token->Float();
             break;
-        case 0x74:
-            value1.raw |= 0x8;
-            value8 = static_cast<s32>(token->value);
+        case TagBounce:
+            flags.restitutionGiven = 1;
+            restitution = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x42)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordAutoRevert)
             {
-                value1.raw |= 0x10;
+                flags.stops = 1;
             }
 
             break;
@@ -494,85 +505,87 @@ void ContinueColliderMotionCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void ColliderLaunchNowCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    // value8, value10, value12 to value14 and value11 (radians) are floats (commands.h has integers)
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        flags = (flags & ~0xFF000u) | ((TokenDesignator(token, (flags >> 12) & 0xFF) & 0xFF) << 12);
-        flags = (flags & ~0xFu) | (TokenSpace(token, flags & 0xF) & 0xF);
+        launch.designator = TokenDesignator(token, launch.designator);
+        launch.space = TokenSpace(token, launch.space);
         TokenVectorComponent(token, &x);
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6:
-            flags = (flags & ~0xFF0u) | ((token->value & 0xFF) << 4);
+        case TagAgent:
+            launch.receiver = token->value;
             break;
-        case 0x49:
-            flags = (flags | 0x100000) & ~0x200000u;
+        case TagVelocityX:
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             x = token->Float();
             break;
-        case 0x4A:
+        case TagVelocityY:
             y = token->Float();
-            flags = (flags | 0x100000) & ~0x200000u;
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             break;
-        case 0x4B:
+        case TagVelocityZ:
             z = token->Float();
-            flags = (flags | 0x100000) & ~0x200000u;
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             break;
-        case 0x3F:
-            flags |= 0x400000;
-            value8 = static_cast<s32>(token->value);
+        case TagDamping:
+            launch.dragGiven = 1;
+            drag = token->Float();
             break;
-        case 0x73:
-            flags |= 0x800000;
-            value9 = token->Float();
+        case TagFriction:
+            launch.frictionGiven = 1;
+            friction = token->Float();
             break;
-        case 0x74:
-            flags |= 0x1000000;
-            value10 = static_cast<s32>(token->value);
+        case TagBounce:
+            launch.restitutionGiven = 1;
+            restitution = token->Float();
             break;
-        case 0x75:
-            flags |= 0x2000000;
-            value11 = __builtin_bit_cast(u32, token->Float() * DegreesToRadians);
+        case TagDiveDegreesPerSecond:
+            launch.turnGiven = 1;
+            turn = token->Float() * DegreesToRadians;
             break;
-        case 0xC:
-            flags |= 0x10000000;
-            power = token->Float();
+        case TagDuration:
+            launch.thrownInTime = 1;
+            heightOrTime = token->Float();
             break;
-        case 0xC5:
-            flags2 |= 0x8;
+        case TagAddedRise:
+            extras.addsRise = 1;
             [[fallthrough]];
-        case 0x41:
-            flags |= 0x20000000;
-            power = token->Float();
+        case TagRise:
+            launch.thrownOverHeight = 1;
+            heightOrTime = token->Float();
             break;
-        case 0xAA:
-            flags2 |= 0x1;
-            value12 = static_cast<s32>(token->value);
+        case TagRouteCorner:
+            extras.unused0 = 1;
+            stepCorner = token->Float();
             break;
-        case 0xAB:
-            flags2 |= 0x2;
-            value13 = static_cast<s32>(token->value);
+        case TagRouteToward:
+            extras.unused1 = 1;
+            stepToward = token->Float();
             break;
-        case 0xAC:
-            flags2 |= 0x4;
-            value14 = static_cast<s32>(token->value);
+        case TagRouteScatter:
+            extras.unused2 = 1;
+            stepScatter = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x42:
-                    flags |= 0x8000000;
+                case KeywordAutoRevert:
+                    launch.stops = 1;
                     break;
-                case 0x43:
-                    flags |= 0x4000000;
+                case KeywordClampNormal:
+                    launch.unused26 = 1;
                     break;
-                case 0x8E:
-                    flags2 |= 0x10;
+                case KeywordUnused8E:
+                    extras.unused4 = 1;
                     break;
                 default:
                     break;
@@ -587,9 +600,9 @@ void ColliderLaunchNowCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if ((flags & 0x100000) == 0 && !IsNearlyZero(&x))
+    if (!launch.velocityGiven && !IsNearlyZero(&x))
     {
-        flags |= 0x200000;
+        launch.offsetGiven = 1;
     }
 }
 
@@ -601,42 +614,45 @@ void LaunchAtTargetCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        target.raw = (target.raw & ~0xFF000) | ((TokenDesignator(token, (target.raw >> 12) & 0xFF) & 0xFF) << 12);
-        target.raw = (target.raw & ~0xF) | (TokenSpace(token, target.raw & 0xF) & 0xF);
+        launch.designator = TokenDesignator(token, launch.designator);
+        launch.space = TokenSpace(token, launch.space);
         TokenVectorComponent(token, &offsetX);
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6:
-            target.raw = (target.raw & ~0xFF0) | ((token->value & 0xFF) << 4);
+        case TagAgent:
+            launch.receiver = token->value;
             break;
-        case 0x49:
-            target.raw = (target.raw | 0x100000) & ~0x200000;
+        case TagVelocityX:
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             offsetX = token->Float();
             break;
-        case 0x4A:
+        case TagVelocityY:
             offsetY = token->Float();
-            target.raw = (target.raw | 0x100000) & ~0x200000;
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             break;
-        case 0x4B:
+        case TagVelocityZ:
             offsetZ = token->Float();
-            target.raw = (target.raw | 0x100000) & ~0x200000;
+            launch.velocityGiven = 1;
+            launch.offsetGiven = 0;
             break;
-        case 0xC:
-            speedOrAngle = token->Float();
-            target.raw |= 0x400000;
+        case TagDuration:
+            heightOrTime = token->Float();
+            launch.thrownInTime = 1;
             break;
-        case 0xC5:
-            target.raw |= 0x1000000;
+        case TagAddedRise:
+            launch.addsRise = 1;
             [[fallthrough]];
-        case 0x41:
-            speedOrAngle = token->Float();
-            target.raw |= 0x800000;
+        case TagRise:
+            heightOrTime = token->Float();
+            launch.thrownOverHeight = 1;
             break;
-        case 0xA0:
-            value7 = token->Float();
+        case TagSpinX:
+            spinX = token->Float();
             break;
-        case 0x9F:
-            value8 = token->Float();
+        case TagSpinY:
+            spinY = token->Float();
             break;
         default:
             break;
@@ -645,67 +661,67 @@ void LaunchAtTargetCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if ((target.raw & 0x100000) == 0 && !IsNearlyZero(&offsetX))
+    if (!launch.velocityGiven && !IsNearlyZero(&offsetX))
     {
-        target.raw |= 0x200000;
+        launch.offsetGiven = 1;
     }
 }
 
 void ApplyImpulseCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    Vector4* velocity = reinterpret_cast<Vector4*>(&velX);
-    *velocity = g_DefaultBox.min;
-    velocity->w = 1.0f;
+    Vector4* impulse = reinterpret_cast<Vector4*>(&impulseX);
+    *impulse = g_DefaultBox.min;
+    impulse->w = 1.0f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6:
-            value1 = (value1 & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            flags.designator = token->value;
             break;
-        case 0x49:
-            value1 |= 0x1000;
-            velX = token->Float();
+        case TagVelocityX:
+            flags.impulseGiven = 1;
+            impulseX = token->Float();
             break;
-        case 0x4A:
-            value1 |= 0x1000;
-            velY = token->Float();
+        case TagVelocityY:
+            flags.impulseGiven = 1;
+            impulseY = token->Float();
             break;
-        case 0x4B:
-            value1 |= 0x1000;
-            velZ = token->Float();
+        case TagVelocityZ:
+            flags.impulseGiven = 1;
+            impulseZ = token->Float();
             break;
-        case 0xA0:
-            value1 |= 0x800;
-            value6 = token->Float();
+        case TagSpinX:
+            flags.spinGiven = 1;
+            spinX = token->Float();
             break;
-        case 0x9F:
-            value1 |= 0x800;
-            value7 = token->Float();
+        case TagSpinY:
+            flags.spinGiven = 1;
+            spinY = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x1C:
-                    value1 = (value1 & ~0xFFu) | DesignatesFocus;
+                case KeywordFocus:
+                    flags.designator = DesignatesFocus;
                     break;
-                case 0x44:
-                    value1 &= ~0x100u;
+                case KeywordCentre:
+                    flags.unused8 = 0;
                     break;
-                case 0x45:
-                    value1 |= 0x100;
+                case KeywordContact:
+                    flags.unused8 = 1;
                     break;
-                case 0x46:
-                    value1 |= 0x200;
+                case KeywordWithMass:
+                    flags.unused9 = 1;
                     break;
-                case 0x85:
-                    value1 |= 0x400;
+                case KeywordFromOriginator:
+                    flags.fromOriginator = 1;
                     break;
                 default:
                     break;
@@ -721,7 +737,7 @@ void ApplyImpulseCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetPhysicsSizesCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetMagnetCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -729,30 +745,30 @@ void SetPhysicsSizesCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xCD:
+        case TagSize:
             size = token->Float();
             break;
-        case 0xCC:
-            size2 = token->Float();
+        case TagMagnetPull:
+            magnetPull = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0xA7:
-                    mode2.raw = 2;
+                case KeywordMagnetMode2:
+                    magnetStrength = MagnetMode2;
                     break;
-                case 0xA8:
-                    mode2.raw = 1;
+                case KeywordEven:
+                    magnetStrength = MagnetEven;
                     break;
-                case 0xA9:
-                    mode1 = 0;
+                case KeywordFromBody:
+                    magnetWay = MagnetFromBody;
                     break;
-                case 0xAA:
-                    mode1 = 1;
+                case KeywordAlongZAxis:
+                    magnetWay = MagnetAlongZAxis;
                     break;
                 default:
                     break;
@@ -768,7 +784,7 @@ void SetPhysicsSizesCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void MoveInstancesInBoxCommand::ParseTokens(const ScriptTokenList* tokens)
+void PushInstancesAwayCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -776,26 +792,26 @@ void MoveInstancesInBoxCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x82:
+        case TagXShift:
             offsetX = token->Float();
             break;
-        case 0x83:
+        case TagYShift:
             offsetY = token->Float();
             break;
-        case 0x84:
+        case TagZShift:
             offsetZ = token->Float();
             break;
-        case 0x94:
-            value5 = token->Float();
+        case TagRepelForce:
+            push = token->Float();
             break;
-        case 0x103:
-            flags = (flags & ~0xFFu) | 0x1;
-            value6 = token->Float();
+        case TagEdgePush:
+            flags.byDistance = 1;
+            edgePush = token->Float();
             break;
-        case 0xCD:
-            size = token->Float();
+        case TagSize:
+            radius = token->Float();
             break;
         default:
             break;
@@ -813,63 +829,63 @@ void AttachFocusObjectCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x0:
-            flags |= 0x8000;
-            offsetX = token->Float();
+        case TagX:
+            flags.offsetGiven = 1;
+            offset.x = token->Float();
             break;
-        case 0x1:
-            flags |= 0x8000;
-            offsetY = token->Float();
+        case TagY:
+            flags.offsetGiven = 1;
+            offset.y = token->Float();
             break;
-        case 0x2:
-            flags |= 0x8000;
-            offsetZ = token->Float();
+        case TagZ:
+            flags.offsetGiven = 1;
+            offset.z = token->Float();
             break;
-        case 0x3:
-            flags |= 0x10000;
-            rotX = static_cast<s32>(token->Float() * DegreesToAngle);
+        case TagPitch:
+            flags.anglesGiven = 1;
+            angleX = static_cast<s32>(token->Float() * DegreesToAngle);
             break;
-        case 0x4:
-            flags |= 0x10000;
-            rotY = static_cast<s32>(token->Float() * DegreesToAngle);
+        case TagYaw:
+            flags.anglesGiven = 1;
+            angleY = static_cast<s32>(token->Float() * DegreesToAngle);
             break;
-        case 0x5:
-            flags |= 0x10000;
-            rotZ = static_cast<s32>(token->Float() * DegreesToAngle);
+        case TagRoll:
+            flags.anglesGiven = 1;
+            angleZ = static_cast<s32>(token->Float() * DegreesToAngle);
             break;
-        case 0x12:
-            flags = (flags & ~0x7F8u) | ((token->value & 0xFF) << 3);
+        case TagExitPoint:
+            flags.exitPoint = token->value;
             break;
-        case 0x72:
-            flags = (flags & ~0x1E0000u) | (((token->value - 1) & 0xF) << 17);
+        case TagLinked:
+            flags.linked = token->value - 1;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x3D:
-                    flags &= ~0x1E0000u;
+                case KeywordFirst:
+                    flags.linked = 0;
                     break;
-                case 0x4D:
-                    flags |= 0x400000;
+                case KeywordMakeBusy:
+                    flags.marksBusy = 1;
                     break;
-                case 0x4F:
-                    flags |= 0x8000;
+                case KeywordFixed:
+                    flags.offsetGiven = 1;
                     break;
-                case 0x50:
-                    flags = (flags & ~0x7800u) | 0x800;
+                case KeywordJustMove:
+                    flags.follow = Attachment::FollowsPosition;
                     break;
-                case 0x51:
-                    flags = (flags & ~0x7800u) | 0x1000;
+                case KeywordSimpleChain:
+                    flags.follow = Attachment::FollowsHanging;
                     break;
-                case 0x7B:
-                    flags |= 0x200000;
+                case KeywordUnused7B:
+                    flags.unused21 = 1;
                     break;
-                case 0xA0:
-                    flags |= 0x800000;
+                case KeywordToFocus:
+                    flags.toFocus = 1;
                     break;
                 default:
                     break;
@@ -887,63 +903,61 @@ void AttachFocusObjectCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void AttachSpringCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    Vector4* offset = reinterpret_cast<Vector4*>(&offsetX);
-    *offset = g_DefaultBox.min;
-    offset->w = 1.0f;
-    Vector4* position = reinterpret_cast<Vector4*>(&x);
-    *position = g_DefaultBox.min;
-    position->w = 1.0f;
+    offset = g_DefaultBox.min;
+    offset.w = 1.0f;
+    target = g_DefaultBox.min;
+    target.w = 1.0f;
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        offsetX2.raw = (offsetX2.raw & ~0xF) | (TokenSpace(token, offsetX2.raw & 0xF) & 0xF);
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        flags.space = TokenSpace(token, flags.space);
+        TokenVectorComponent(token, &target.x);
+        switch (token->tag)
         {
-        case 0x82:
-            offsetX2.raw |= 0x100000;
-            offsetX = token->Float();
+        case TagXShift:
+            flags.offsetGiven = 1;
+            offset.x = token->Float();
             break;
-        case 0x83:
-            offsetX2.raw |= 0x100000;
-            offsetY = token->Float();
+        case TagYShift:
+            flags.offsetGiven = 1;
+            offset.y = token->Float();
             break;
-        case 0x84:
-            offsetX2.raw |= 0x100000;
-            offsetZ = token->Float();
+        case TagZShift:
+            flags.offsetGiven = 1;
+            offset.z = token->Float();
             break;
-        case 0x89:
-            offsetX2.raw = (offsetX2.raw & ~0xFFFF0) | ((token->value & 0xFFFF) << 4);
+        case TagChildActor:
+            flags.object = token->value;
             break;
-        case 0xED:
-            offsetX2.raw |= 0x400000;
-            value14 = token->Float();
+        case TagLength:
+            flags.lengthGiven = 1;
+            length = token->Float();
             break;
-        case 0xEE:
-            value11 = (value11 & ~0xFFu) | (token->value & 0xFF);
-            offsetX2.raw |= 0x200000;
+        case TagFocusJoint:
+            joints.focusJoint = token->value;
+            flags.toFocus = 1;
             break;
-        case 0x12:
-            value11 = (value11 & ~0xFF00u) | ((token->value & 0xFF) << 8);
+        case TagExitPoint:
+            joints.joint = token->value;
             break;
-        case 0x3E:
-            value12 = token->Float();
+        case TagPower:
+            power = token->Float();
             break;
-        case 0x3F:
-            value13 = token->Float();
+        case TagDamping:
+            damping = token->Float();
             break;
-        case 0xFFFF:
+        case TagNone:
             // Whatever the token's type
-            if (token->value == 0xC8)
+            if (token->value == KeywordSpringToFocus)
             {
-                offsetX2.raw |= 0x200000;
+                flags.toFocus = 1;
             }
-            else if (token->value == 0xC9)
+            else if (token->value == KeywordEndUncollidable)
             {
-                offsetX2.raw |= 0x800000;
+                flags.endUncollidable = 1;
             }
 
             break;
@@ -963,30 +977,30 @@ void DropAttachedObjectCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6D:
-            message = (message & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagMessage:
+            request.message = token->value;
             break;
-        case 0x12:
-            message = (message & ~0xFF0000u) | ((token->value & 0xFF) << 16);
+        case TagExitPoint:
+            request.exitPoint = token->value;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x35:
-                    message = (message & ~0x7000000u) | 0x2000000;
+                case KeywordRayDrop:
+                    request.mode = DropRequest::Falls;
                     break;
-                case 0x36:
-                    message = (message & ~0x7000000u) | 0x1000000;
+                case KeywordNatural:
+                    request.mode = DropRequest::Launched;
                     break;
-                case 0x37:
-                    message = (message & ~0x7000000u) | 0x3000000;
+                case KeywordContingent:
+                    request.mode = DropRequest::FallsIfCrate;
                     break;
-                case 0x4E:
-                    message |= 0x20000000;
+                case KeywordMakeIdle:
+                    request.clearsBusy = 1;
                     break;
                 default:
                     break;
@@ -1010,18 +1024,18 @@ void ReleaseAgentRef2Command::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x4E)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordMakeIdle)
             {
-                event |= 0x10000;
+                release.unused16 = 1;
             }
 
-            // Every keyword falls through into the event (no break in retail)
+            // Every keyword falls through into the message (no break in retail)
             [[fallthrough]];
-        case 0x6D:
-            event = (event & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagMessage:
+            release.message = token->value;
             break;
         default:
             break;
@@ -1035,41 +1049,41 @@ void ThrowAttachedObjectCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
-    ParseTaggedValueTokens(tokens, &angleValue);
+    ParseTaggedValueTokens(tokens, &speed);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        value1 = (value1 & ~0xFF00000u) | ((TokenDesignator(token, (value1 >> 20) & 0xFF) & 0xFF) << 20);
-        value1 = (value1 & ~0xF00u) | ((TokenSpace(token, (value1 >> 8) & 0xF) & 0xF) << 8);
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        request.designator = TokenDesignator(token, request.designator);
+        request.space = TokenSpace(token, request.space);
+        TokenVectorComponent(token, &offset.x);
+        switch (token->tag)
         {
-        case 0x12:
-            value1 = (value1 & ~0xFFu) | (token->value & 0xFF);
+        case TagExitPoint:
+            request.exitPoint = token->value;
             break;
-        case 0x6:
-            value1 = (value1 & ~0xFF000u) | ((token->value & 0xFF) << 12);
+        case TagAgent:
+            request.receiver = token->value;
             break;
-        case 0x58:
-            value1 |= 0x10000000;
-            if ((value1 & 0xFF00000) != 0xFF00000)
+        case TagKeyLocal:
+            request.unused28 = 1;
+            if (request.designator != DesignatesNone)
             {
-                value1 = (value1 & ~0xFF00000u) | (((((value1 >> 20) & 0xFF) + 1) & 0xFF) << 20);
+                request.designator = request.designator + 1;
             }
 
             break;
-        case 0x3C:
-            value1 |= 0x40000000;
-            value8 = token->Float();
+        case TagTolerance:
+            request.spreadGiven = 1;
+            spread = token->Float();
             break;
-        case 0x6A:
-            ParseTaggedValueRecord(token, &radius);
+        case TagGravity:
+            ParseTaggedValueRecord(token, &gravity);
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x4E)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordMakeIdle)
             {
-                value1 |= 0x80000000;
+                request.clearsBusy = 1;
             }
 
             break;
@@ -1080,65 +1094,64 @@ void ThrowAttachedObjectCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!IsNearlyZero(&x))
+    if (!IsNearlyZero(&offset.x))
     {
-        value1 |= 0x20000000;
+        request.offsetGiven = 1;
     }
 }
 
 void LaunchAgentRef2Command::ParseTokens(const ScriptTokenList* tokens)
 {
-    MotionBlock* motion = reinterpret_cast<MotionBlock*>(&motion0);
-    ParseMotionBlockTokens(tokens, motion);
-    ParseTaggedValueTokens(tokens, &timeOrDistance);
+    ParseMotionBlockTokens(tokens, &block);
+    ParseTaggedValueTokens(tokens, &speed);
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        launch = (launch & ~0xFF00000u) | ((TokenDesignator(token, (launch >> 20) & 0xFF) & 0xFF) << 20);
-        launch = (launch & ~0xF00u) | ((TokenSpace(token, (launch >> 8) & 0xF) & 0xF) << 8);
-        TokenVectorComponent(token, &offsetX);
-        switch (token->kind)
+        launch.designator = TokenDesignator(token, launch.designator);
+        launch.space = TokenSpace(token, launch.space);
+        TokenVectorComponent(token, &offset.x);
+        switch (token->tag)
         {
-        case 0x12:
-            launch = (launch & ~0xFFu) | (token->value & 0xFF);
+        case TagExitPoint:
+            launch.exitPoint = token->value;
             break;
-        case 0x6:
-            launch = (launch & ~0xFF000u) | ((token->value & 0xFF) << 12);
+        case TagAgent:
+            launch.receiver = token->value;
             break;
-        case 0x58:
-            launchFlags.raw |= 0x1;
-            if ((launch & 0xFF00000) != 0xFF00000)
+        case TagKeyLocal:
+            flags.unused0 = 1;
+            if (launch.designator != DesignatesNone)
             {
-                launch = (launch & ~0xFF00000u) | (((((launch >> 20) & 0xFF) + 1) & 0xFF) << 20);
+                launch.designator = launch.designator + 1;
             }
 
             break;
-        case 0x3C:
-            launchFlags.raw |= 0x4;
-            scaleFactor = token->Float();
+        case TagTolerance:
+            flags.spreadGiven = 1;
+            spread = token->Float();
             break;
-        case 0xA0:
-            height = token->Float();
+        case TagSpinX:
+            spinX = token->Float();
             break;
-        case 0x9F:
-            value44 = token->Float();
+        case TagSpinY:
+            spinY = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x4E:
-                    launchFlags.raw |= 0x8;
+                case KeywordMakeIdle:
+                    flags.clearsBusy = 1;
                     break;
-                case 0x76:
-                    launchFlags.raw |= 0x40;
+                case KeywordUnused76:
+                    flags.unused6 = 1;
                     break;
-                case 0x79:
-                    launchFlags.raw |= 0x80;
+                case KeywordPassAgentRef1:
+                    flags.passesAgentRef1 = 1;
                     break;
                 default:
                     break;
@@ -1153,75 +1166,74 @@ void LaunchAgentRef2Command::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!IsNearlyZero(&offsetX))
+    if (!IsNearlyZero(&offset.x))
     {
-        launchFlags.raw |= 0x2;
+        flags.offsetGiven = 1;
     }
 
-    motion->flags |= MotionBlock::FollowedWhenTouched;
+    block.flags.followedWhenTouched = 1;
 }
 
 void UnsupportAboveCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
-    Vector4* position = reinterpret_cast<Vector4*>(&x);
-    *position = g_DefaultBox.min;
-    position->w = 1.0f;
+    offset = g_DefaultBox.min;
+    offset.w = 1.0f;
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x0:
-            x = token->Float();
+        case TagX:
+            offset.x = token->Float();
             break;
-        case 0x1:
-            y = token->Float();
+        case TagY:
+            offset.y = token->Float();
             break;
-        case 0x2:
-            z = token->Float();
+        case TagZ:
+            offset.z = token->Float();
             break;
-        case 0x6:
-            value1 = (value1 & ~0xFFu) | (token->value & 0xFF);
+        case TagAgent:
+            request.receiver = token->value;
             break;
-        case 0x7:
-            value1 = (value1 & ~0xFF00u) | (((token->value - 1) & 0xFF) << 8);
+        case TagKey:
+            request.designator = token->value - 1;
             break;
-        case 0x58:
-            value1 |= 0x100000;
-            if (((value1 >> 8) & 0xFF) != 0xFF)
+        case TagKeyLocal:
+            request.unused20 = 1;
+            if (request.designator != DesignatesNone)
             {
-                value1 = (value1 & ~0xFF00u) | (((((value1 >> 8) & 0xFF) + 1) & 0xFF) << 8);
+                request.designator = request.designator + 1;
             }
 
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x2:
-                    value1 &= ~0xF0000u;
+                case KeywordWorldSpace:
+                    request.space = ControlPacket::WorldSpace;
                     break;
-                case 0x3:
-                    value1 = (value1 & ~0xF0000u) | 0x10000;
+                case KeywordInitialSpace:
+                    request.space = ControlPacket::InitialSpace;
                     break;
-                case 0x4:
-                    value1 = (value1 & ~0xF0000u) | 0x20000;
+                case KeywordCurrentSpace:
+                    request.space = ControlPacket::CurrentSpace;
                     break;
-                case 0x5:
-                    value1 = (value1 & ~0xF0000u) | 0x30000;
+                case KeywordTargetSpace:
+                    request.space = ControlPacket::TargetSpace;
                     break;
-                case 0x21:
-                    value1 = (value1 & ~0xF0000u) | 0x70000;
+                case KeywordStoredSpace:
+                    request.space = ControlPacket::StoredSpace;
                     break;
-                case 0x24:
-                    value1 = (value1 & ~0xFF00u) | (DesignatesCurrentKey << 8);
+                case KeywordCurrentKey:
+                    request.designator = DesignatesCurrentKey;
                     break;
-                case 0x25:
-                    value1 = (value1 & ~0xFF00u) | (DesignatesNextKey << 8);
+                case KeywordNextKey:
+                    request.designator = DesignatesNextKey;
                     break;
                 default:
                     break;
@@ -1236,9 +1248,9 @@ void UnsupportAboveCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!IsNearlyZero(&x))
+    if (!IsNearlyZero(&offset.x))
     {
-        value1 |= 0x200000;
+        request.offsetGiven = 1;
     }
 }
 
@@ -1250,34 +1262,39 @@ void RotateWithLinkedCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0xD6:
+        case TagRate:
             degreesPerSecond = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                // One axis of bits 0-2 and one of bits 3-5
                 switch (token->value)
                 {
-                case 0x99:
-                    axes.raw = (axes.raw & ~0x7) | 0x1;
+                case KeywordHingeX:
+                    axes.value &= ~TurnAlongAxes::TurnsMask;
+                    axes.turnsX = 1;
                     break;
-                case 0x9A:
-                    axes.raw = (axes.raw & ~0x7) | 0x2;
+                case KeywordHingeY:
+                    axes.value &= ~TurnAlongAxes::TurnsMask;
+                    axes.turnsY = 1;
                     break;
-                case 0x9B:
-                    axes.raw = (axes.raw & ~0x7) | 0x4;
+                case KeywordHingeZ:
+                    axes.value &= ~TurnAlongAxes::TurnsMask;
+                    axes.turnsZ = 1;
                     break;
-                case 0xBF:
-                    axes.raw = (axes.raw & ~0x38) | 0x8;
+                case KeywordAlongX:
+                    axes.value &= ~TurnAlongAxes::AlongMask;
+                    axes.alongX = 1;
                     break;
-                case 0xC0:
-                    axes.raw = (axes.raw & ~0x38) | 0x10;
+                case KeywordAlongY:
+                    axes.value &= ~TurnAlongAxes::AlongMask;
+                    axes.alongY = 1;
                     break;
-                case 0xC1:
-                    axes.raw = (axes.raw & ~0x38) | 0x20;
+                case KeywordAlongZ:
+                    axes.value &= ~TurnAlongAxes::AlongMask;
+                    axes.alongZ = 1;
                     break;
                 default:
                     break;
@@ -1297,32 +1314,33 @@ void ForceVolumeControllerCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
-    x.raw = (x.raw & ~TaggedValue::TypeMask) | TaggedValue::TypeFloat << TaggedValue::TypeShift;
-    x.SetFloat(0.0f);
-    y.raw = (y.raw & ~TaggedValue::TypeMask) | TaggedValue::TypeFloat << TaggedValue::TypeShift;
-    y.SetFloat(0.0f);
-    z.raw = (z.raw & ~TaggedValue::TypeMask) | TaggedValue::TypeFloat << TaggedValue::TypeShift;
-    z.SetFloat(0.0f);
+    forceX.type = TaggedValue::TypeFloat;
+    forceX.SetFloat(0.0f);
+    forceY.type = TaggedValue::TypeFloat;
+    forceY.SetFloat(0.0f);
+    forceZ.type = TaggedValue::TypeFloat;
+    forceZ.SetFloat(0.0f);
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x0:
-            ParseTaggedValueRecord(token, &x);
+        case TagX:
+            ParseTaggedValueRecord(token, &forceX);
             break;
-        case 0x1:
-            ParseTaggedValueRecord(token, &y);
+        case TagY:
+            ParseTaggedValueRecord(token, &forceY);
             break;
-        case 0x2:
-            ParseTaggedValueRecord(token, &z);
+        case TagZ:
+            ParseTaggedValueRecord(token, &forceZ);
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                // Two bits, keyword 0's and keyword 1's: any other keyword clears both
-                value10.raw = (value10.raw & ~0x3) | (token->value == 0 ? 0x1 : 0x0) | (token->value == 1 ? 0x2 : 0x0);
+                // Any other keyword clears both
+                turns.on = token->value == KeywordOn ? 1 : 0;
+                turns.off = token->value == KeywordOff ? 1 : 0;
             }
 
             break;
@@ -1342,64 +1360,68 @@ void SendUserMessageCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        messageTarget = (messageTarget & ~0xFF0000u) | ((TokenDesignator(token, (messageTarget >> 16) & 0xFF) & 0xFF) << 16);
-        switch (token->kind)
+        target.recipient = TokenDesignator(token, target.recipient);
+        switch (token->tag)
         {
-        case 0x6D:
-            messageTarget = (messageTarget & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagMessage:
+            target.message = token->value;
             break;
-        case 0x72:
-            messageFlags |= 0x10000;
-            messageTarget = (messageTarget & ~0xFF0000u) | (((token->value - 1) & 0xFF) << 16);
+        case TagLinked:
+            flags.byIndex = 1;
+            target.recipient = token->value - 1;
             break;
-        case 0x10:
-            messageFlags = (messageFlags & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagActor:
+            flags.object = token->value;
             break;
-        case 0xFB:
-            messageFlags = (messageFlags & ~0x3E000000u) | ((token->value & 0x1F) << 25) | 0x1000000;
+        case TagField:
+            flags.field = token->value;
+            flags.byField = 1;
             break;
-        case 0xFC:
-            value1.raw &= ~TaggedValue::TypeMask;
-            ParseTaggedValueRecord(token, &value1);
-            messageFlags |= 0x1000000;
+        case TagFieldBits:
+            fieldBits.type = TaggedValue::TypeInt;
+            ParseTaggedValueRecord(token, &fieldBits);
+            flags.byField = 1;
             break;
-        case 0xFA:
-            value2.raw &= ~TaggedValue::TypeMask;
-            ParseTaggedValueRecord(token, &value2);
-            messageFlags |= 0x1000000;
+        case TagFieldWidth:
+            fieldWidth.type = TaggedValue::TypeInt;
+            ParseTaggedValueRecord(token, &fieldWidth);
+            flags.byField = 1;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x1C:
-                    messageTarget = (messageTarget & ~0xFF0000u) | (DesignatesFocus << 16);
+                case KeywordFocus:
+                    target.recipient = DesignatesFocus;
                     break;
-                case 0xCE:
-                    messageTarget = (messageTarget & ~0xFF0000u) | (DesignatesLinkedById << 16);
+                case KeywordLinkedById:
+                    target.recipient = DesignatesLinkedById;
                     break;
-                case 0x3D:
-                    messageTarget &= ~0xFF0000u;
-                    messageFlags |= 0x10000;
+                case KeywordFirst:
+                    target.recipient = 0;
+                    flags.byIndex = 1;
                     break;
-                case 0x3E:
-                    messageFlags |= 0x10000 | 0x20000;
+                case KeywordAll:
+                    flags.byIndex = 1;
+                    flags.everyLinked = 1;
                     break;
-                case 0xA5:
-                    messageFlags |= 0x10000 | 0x40000;
+                case KeywordCurrentLinked:
+                    flags.byIndex = 1;
+                    flags.currentLinked = 1;
                     break;
-                case 0xC3:
-                    messageFlags |= 0x80000;
+                case KeywordUnlink:
+                    flags.unlinks = 1;
                     break;
-                case 0xC4:
-                    messageFlags |= 0x10000 | 0x100000;
+                case KeywordLast:
+                    flags.byIndex = 1;
+                    flags.lastLinked = 1;
                     break;
-                case 0xD4:
-                    messageFlags |= 0x40000000;
+                case KeywordOffPath:
+                    flags.onlyOffPath = 1;
                     break;
-                case 0xD3:
-                    messageFlags |= 0x80000000;
+                case KeywordOnPath:
+                    flags.onlyOnPath = 1;
                     break;
                 default:
                     break;
@@ -1419,34 +1441,33 @@ void BroadcastUserMessageCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
-    Vector4* position = reinterpret_cast<Vector4*>(&x);
-    *position = g_DefaultBox.min;
-    position->w = 1.0f;
+    offset = g_DefaultBox.min;
+    offset.w = 1.0f;
     reader.First();
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        messageTarget = (messageTarget & ~0xFF000000u) | ((TokenDesignator(token, messageTarget >> 24) & 0xFF) << 24);
-        messageTarget = (messageTarget & ~0xF000u) | ((TokenSpace(token, (messageTarget >> 12) & 0xF) & 0xF) << 12);
-        TokenVectorComponent(token, &x);
-        switch (token->kind)
+        target.designator = TokenDesignator(token, target.designator);
+        target.space = TokenSpace(token, target.space);
+        TokenVectorComponent(token, &offset.x);
+        switch (token->tag)
         {
-        case 0x6D:
-            messageTarget = (messageTarget & ~0x7FFu) | (token->value & 0x7FF);
+        case TagMessage:
+            target.message = token->value;
             break;
-        case 0x6:
-            messageTarget = (messageTarget & ~0xFF0000u) | ((token->value & 0xFF) << 16);
+        case TagAgent:
+            target.receiver = token->value;
             break;
-        case 0x10:
-            unknown10 = (unknown10 & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagActor:
+            object.id = token->value;
             break;
-        case 0x65:
+        case TagRange:
             radius = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type == 4 && token->value == 0x1C)
+        case TagNone:
+            if (token->type == TokenKeyword && token->value == KeywordFocus)
             {
-                messageTarget = (messageTarget & ~0xFF0000u) | (DesignatesFocus << 16);
+                target.receiver = DesignatesFocus;
             }
 
             break;
@@ -1457,13 +1478,13 @@ void BroadcastUserMessageCommand::ParseTokens(const ScriptTokenList* tokens)
         reader.Next();
     }
 
-    if (!IsNearlyZero(&x))
+    if (!IsNearlyZero(&offset.x))
     {
-        messageTarget |= 0x800;
+        target.offsetGiven = 1;
     }
 }
 
-void TriggerInstancesInRangeCommand::ParseTokens(const ScriptTokenList* tokens)
+void TriggerInstancesByRankCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1471,27 +1492,27 @@ void TriggerInstancesInRangeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6D:
-            event = (event & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagMessage:
+            message.message = token->value;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
                 switch (token->value)
                 {
-                case 0x11F:
-                    event &= ~0xFF0000u;
+                case KeywordSameRank:
+                    message.mode = RankMessage::SameRank;
                     break;
-                case 0x120:
-                    event = (event & ~0xFF0000u) | 0x20000;
+                case KeywordBelowTriggerRank:
+                    message.mode = RankMessage::BelowTriggerRank;
                     break;
-                case 0x121:
-                    event = (event & ~0xFF0000u) | 0x30000;
+                case KeywordUpToTriggerRank:
+                    message.mode = RankMessage::UpToTriggerRank;
                     break;
-                case 0x122:
-                    event = (event & ~0xFF0000u) | 0x10000;
+                case KeywordTriggerRank:
+                    message.mode = RankMessage::TriggerRank;
                     break;
                 default:
                     break;
@@ -1507,7 +1528,7 @@ void TriggerInstancesInRangeCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void SetNode150FieldsCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetNoiseMessageCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1515,21 +1536,21 @@ void SetNode150FieldsCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x6D:
-            values = (values & ~0xFFFFu) | (token->value & 0xFFFF);
+        case TagMessage:
+            settings.message = token->value;
             break;
-        case 0xFFFF:
-            if (token->type == 4)
+        case TagNone:
+            if (token->type == TokenKeyword)
             {
-                if (token->value == 0)
+                if (token->value == KeywordOn)
                 {
-                    values |= 0x10000;
+                    settings.passesNoises = 1;
                 }
-                else if (token->value == 1)
+                else if (token->value == KeywordOff)
                 {
-                    values &= ~0x10000u;
+                    settings.passesNoises = 0;
                 }
             }
 
@@ -1542,7 +1563,7 @@ void SetNode150FieldsCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void ScaleModelNodeCommand::ParseTokens(const ScriptTokenList* tokens)
+void SetBodyMassCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1550,9 +1571,9 @@ void ScaleModelNodeCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0xFD)
+        if (token->tag == TagMass)
         {
-            value = token->Float();
+            mass = token->Float();
         }
 
         reader.Next();
@@ -1567,7 +1588,7 @@ void PhysicsSetGravityCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x6A)
+        if (token->tag == TagGravity)
         {
             gravity = token->Float();
         }
@@ -1584,7 +1605,7 @@ void NotifyInstancesWithinCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x65)
+        if (token->tag == TagRange)
         {
             ParseTaggedValueRecord(token, &radius);
         }
@@ -1595,9 +1616,8 @@ void NotifyInstancesWithinCommand::ParseTokens(const ScriptTokenList* tokens)
 
 void SetContactSpringyCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    MotionBlock* motion = reinterpret_cast<MotionBlock*>(&drag);
-    ParseMotionBlockTokens(tokens, motion);
-    motion->flags |= MotionBlock::FollowedWhenTouched;
+    ParseMotionBlockTokens(tokens, &block);
+    block.flags.followedWhenTouched = 1;
 }
 
 void AttachMotionBlockCommand::ParseTokens(const ScriptTokenList* tokens)
@@ -1608,9 +1628,9 @@ void AttachMotionBlockCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x6D)
+        if (token->tag == TagMessage)
         {
-            id = static_cast<s32>(token->value);
+            touchMessage = static_cast<s32>(token->value);
         }
 
         reader.Next();
@@ -1625,12 +1645,12 @@ void MakeNoiseCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
-        case 0x65:
+        case TagRange:
             radius = token->Float();
             break;
-        case 0xC2:
+        case TagLoudness:
             loudness = token->Float();
             break;
         default:
@@ -1649,9 +1669,9 @@ void SetParentExecutionValueCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == 0x6D)
+        if (token->tag == TagMessage)
         {
-            value = (value & ~0xFFFFu) | (token->value & 0xFFFF);
+            message.id = token->value;
         }
 
         reader.Next();

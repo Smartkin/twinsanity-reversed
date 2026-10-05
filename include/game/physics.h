@@ -6,10 +6,11 @@
 #include "game/hull.h"
 #include "game/math.h"
 
-// What the character's solver moves: its velocity and place
-struct PhysicsBody
+// A point moving at a velocity, laid out as a matrix's rows (the third the velocity, the fourth the position): the character's
+// solver hands GroundAhead its place's matrix, its facing as the velocity
+struct MovingPoint
 {
-    u8 unknown00[0x20];
+    u8 unused00[0x20];
     Vector4 velocity;
     Vector4 position;
 };
@@ -21,41 +22,63 @@ struct PlaneSet
     Vector4* planes;
 };
 
-// A contact the character's solver works with (0x50 bytes): the space it keeps the body out of, the instance and hull it's of, its
-// kind (1 an instance's hull, 2 a triangle, 0x801 an instance's sphere), a point (the origin when the contacts start, moved by the
-// pushes shared), the sphere of an instance (its centre and radius) and its share of the push
-struct Contact
+// A contact's kind and the solver's marks on it: an instance's hull, a triangle, an instance's sphere (with the hull's bit); pushed
+// out of, the hull the character rides (the slides' ends may be inside it), touched, stood on, ground, not to be pushed out of
+// (refused a push when it would have been), marked, its push shared with its instance's body, left out of a probe (the probe
+// started inside it). The marks the solver clears each time are all but the kinds' and the touches' (KeptBits)
+union ContactKind
 {
-    // Its kind and marks: an instance's hull (bit 0), a triangle (bit 1), an instance's sphere (bit 11 and bit 0), pushed out of
-    // (bit 2), touched (bit 4), stood on (bit 5), ground (bit 6), not to be pushed out of (bit 7, marked bit 8 when it would have
-    // been), a mark (bit 9), its push shared with its instance's body (bit 10); the marks the solver clears each time are bits 2,
-    // 3 and 7-10 but 11
-    enum Kind : u32
+    // The masks of the bits tested together (what the solver's tests leave out) and of the kinds a contact is made with
+    enum Mask : u32
     {
-        KindHull = 0x1,
-        KindTriangle = 0x2,
-        KindSphere = 0x801,
+        Hull = 0x1,
+        Triangle = 0x2,
         PushedOut = 0x4,
+        Ridden = 0x8,
         Touched = 0x10,
         StoodOn = 0x20,
         Ground = 0x40,
         NoPush = 0x80,
         PushRefused = 0x100,
-        Marked = 0x200,
-        PushShared = 0x400,
         SphereBit = 0x800,
-        KeptBits = 0x873,
-        // Left out of a probe (the probe started inside it)
+        Sphere = Hull | SphereBit,
         ProbeStart = 0x1000,
+        KeptBits = Hull | Triangle | Touched | StoodOn | Ground | SphereBit,
     };
 
+    u32 value;
+    struct
+    {
+        u32 hull : 1;
+        u32 triangle : 1;
+        u32 pushedOut : 1;
+        u32 ridden : 1;
+        u32 touched : 1;
+        u32 stoodOn : 1;
+        u32 ground : 1;
+        u32 noPush : 1;
+        u32 pushRefused : 1;
+        u32 marked : 1;
+        u32 pushShared : 1;
+        u32 sphere : 1;
+        u32 probeStart : 1;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(ContactKind, 4);
+
+// A contact the character's solver works with (0x50 bytes): the space it keeps the body out of, the instance and hull it's of, its
+// kind and marks, a point (the origin when the contacts start, moved by the pushes shared), the sphere of an instance (its centre
+// and radius) and its share of the push
+struct Contact
+{
     PlaneSet space;
     struct InstanceContext* instance;
     s32 hullIndex;
-    u32 kind;
+    ContactKind kind;
     // The plane a point was last found in front of
     s32 outside;
-    u8 unknown18[0x20 - 0x18];
+    u8 unused18[0x20 - 0x18];
     Vector4 point;
     Vector4 sphere;
     // An instance's sphere's share of the push out of the body (the origin when there was none)
@@ -66,8 +89,10 @@ CHECK_SIZE(Contact, 0x50);
 // The contacts of one kind of surface (32 at most) and the triangles they come from
 struct ContactList
 {
-    Contact contacts[32];
-    CollisionHit triangles[32];
+    static constexpr s32 MostContacts = 32;
+
+    Contact contacts[MostContacts];
+    CollisionHit triangles[MostContacts];
     s32 count;
 };
 CHECK_OFFSET(ContactList, triangles, 0xA00);
@@ -90,7 +115,7 @@ CHECK_SIZE(ContactSet, 0x2440);
 struct HullPlaneCacheEntry
 {
     PlaneSet space;
-    u8 unknown08[0x10 - 0x8];
+    u8 unused08[0x10 - 0x8];
     Vector4 triangle[3];
     const CollisionHull* hull;
 };
@@ -100,10 +125,23 @@ CHECK_SIZE(HullPlaneCacheEntry, 0x50);
 // The last 64 triangles and hulls' planes, the next to be replaced
 struct HullPlaneCache
 {
-    HullPlaneCacheEntry entries[64];
+    static constexpr s32 Entries = 64;
+
+    HullPlaneCacheEntry entries[Entries];
     s32 next;
 };
 CHECK_OFFSET(HullPlaneCache, next, 0x1400);
+
+// What Move and MoveCharacter return besides a ground contact's index (-1 none): stuck while falling; what ProbeAlong returns
+// when the motion goes into no contact; where a segment is against a space (ClipSegmentToSpace)
+constexpr s32 StuckFalling = -2;
+constexpr s32 NoProbeHit = -2;
+enum SegmentClip : s32
+{
+    SegmentOutside = 0,
+    SegmentEnters = 1,
+    SegmentStartsInside = 2,
+};
 
 extern "C"
 {
@@ -133,7 +171,7 @@ extern "C"
     u32 PushOutOfSpace(const PlaneSet* space, const Vector4* point, Vector4* push, void* unused) RETAIL(FUN_00283d60);
     u32 PushOutOfSpaceAgain(const PlaneSet* space, const Vector4* point, Vector4* push) RETAIL(FUN_002881e0);
     // The solid contacts' marks: bits added to the contact so many after an instance's first hull contact (when it's of that
-    // instance too), the first sphere contact below (its unknown40's y negative) marked (its index, -1 none), the marks cleared
+    // instance too), the first sphere contact below (its sphere's push's y negative) marked (its index, -1 none), the marks cleared
     void MarkInstanceContact(ContactSet* set, struct InstanceContext* instance, s32 after, u32 bits) RETAIL(FUN_002886e8);
     s32 MarkSphereContactBelow(ContactSet* set) RETAIL(FUN_00288778);
     // A body's box (from its place and an offset: a half width either way along x and z, from 0 up to a height) pushed out of the
@@ -188,9 +226,9 @@ extern "C"
     // ground under it flat (0.866 up), lowered as far as it's free when the body isn't rising: whether it stepped up
     u32 StepUp(ContactSet* set, const Vector4* position, const Vector4* velocity, Vector4* outVelocity, u32 allowed)
         RETAIL(FUN_00287798);
-    // Whether there's ground ahead of a body: inside a solid contact (not a sphere) 0.8 below where half of its velocity or 1.6
-    // times it takes it
-    u32 GroundAhead(ContactSet* set, const struct PhysicsBody* body) RETAIL(FUN_00287fd8);
+    // Whether there's ground ahead of a moving point: inside a solid contact (not a sphere) 0.8 below where half of its velocity
+    // or 1.6 times it takes it
+    u32 GroundAhead(ContactSet* set, const MovingPoint* point) RETAIL(FUN_00287fd8);
     void ClearContactMarks(ContactSet* set) RETAIL(FUN_002887e0);
 
     // A place pushed out of the solid contacts it's inside (hull contacts, triangle contacts or both; not spheres): the push (each
@@ -216,7 +254,7 @@ extern "C"
     // The triangles near a body's hull gathered into the contacts: in a box (whether there were more than fit), and around a place
     // the body moves from by a motion (its box grown by the motion and 0.3; the motion cut down a fifth at a time while too many
     // triangles are found, the last kept)
-    extern CollisionHit g_GatheredTriangles[32] RETAIL(D_003C3830);
+    extern CollisionHit g_GatheredTriangles[ContactList::MostContacts] RETAIL(D_003C3830);
     u32 GatherBoxTriangleContacts(ContactSet* set, ChunkData* chunk, const Box* box, const CollisionHull* hull) RETAIL(FUN_002847f0);
     u32 GatherTriangleContacts(ContactSet* set, ChunkData* chunk, const Vector4* position, Vector4* motion, const CollisionHull* hull)
         RETAIL(FUN_00284978);
@@ -251,7 +289,6 @@ extern "C"
     void GroupPoints(Vector4* points, s32 groups) RETAIL(FUN_00293540);
     void GroupsRange(const Vector4* groups, s32 count, const Vector4* axis, f32* range) RETAIL(FUN_0029359c);
     void SixteenGroupsRange(const Vector4* groups, const Vector4* axis, f32* range) RETAIL(FUN_00293624);
-    // The instances of a chunk whose boxes overlap a box with the bits (how many)
     // Whether two hulls under their matrices go into each other (no separating axis between their vertexes' differences): the
     // push along the axis they overlap the least on and where they touch (the support point of the hull whose face that axis
     // is, the other one moved by the push, or between two edges)
@@ -264,7 +301,8 @@ extern "C"
     // The point of a segment nearest a line (half way when they're parallel)
     void NearestPointOfSegment(const Vector4* lineStart, const Vector4* lineEnd, const Vector4* start, const Vector4* end,
                                Vector4* out) RETAIL(FUN_00283e98);
-    s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceRayHit* query) RETAIL(FUN_001ed750);
+    // The instances of a chunk whose boxes overlap a box with the bits (how many)
+    s32 QueryChunkInstances(ChunkData* chunk, const Box* box, u32 mask, InstanceQuery* query) RETAIL(FUN_001ed750);
     // VU0's (src/platform/ps2/collisionmaths.cpp): a triangle's vertexes and a box hull's 8 loaded, and the range along an axis
     // of the triangle less the hull (its min and max)
     void LoadTriangleHullSupport(const CollisionHit* triangle, const Vector4* hullVertices) RETAIL(FUN_002936d8);

@@ -3,9 +3,11 @@
 #include "abi.h"
 #include "common.h"
 #include "gcc2.h"
+#include "game/agents.h"
 #include "game/collision.h"
 #include "game/hull.h"
 #include "game/math.h"
+#include "game/place.h"
 #include "game/reference.h"
 
 class Agent;
@@ -21,20 +23,22 @@ struct ScreenModel;
 // next strip starts with, a ring of 100 marks (screen models), how many frames went by without a mark and the trail's length
 struct alignas(16) SkidMarks
 {
+    static constexpr s32 MarkCount = 100;
+
     u8 active;
-    u8 unknown01[0xF];
+    u8 unused01[0xF];
     Vector4 lastPoint;
     // The last point lowered by the mark's depth (only written)
-    Vector4 lastLow;
+    Vector4 unused20;
     // The next strip's near top and low corners' colours (white, the alpha a slope's shade; the second 0x00FFFFFF after a strip).
     // Never set before the first strip (retail draws it with what the heap left)
     u32 edgeColour;
     u32 lowColour;
-    ScreenModel* marks[100];
+    ScreenModel* marks[MarkCount];
     s32 next;
     s32 idleFrames;
     f32 length;
-    u8 unknown1D4[0xC];
+    u8 unused1D4[0xC];
 };
 CHECK_OFFSET(SkidMarks, marks, 0x38);
 CHECK_OFFSET(SkidMarks, length, 0x1D0);
@@ -46,15 +50,15 @@ extern "C"
     SkidMarks* ConstructSkidMarks(SkidMarks* marks) RETAIL(FUN_00161ac0);
     // Every mark freed (FreeSkidMark), the trail freed when the flags say
     void DestroySkidMarks(SkidMarks* marks, u32 destroyFlags) RETAIL(FUN_00161b08);
-    // A mark (none skipped) put on the list of screen models freed after the next frame (D_003D1EF0, its count D_0030AABC;
-    // ReleaseFreedMemory FUN_0015bc30 frees them)
+    // A mark (none skipped) put on the list of screen models freed after the next frame (gamecontroller.h's g_FreedBlocks and
+    // g_FreedBlockCount; ReleaseFreedMemory frees them)
     void FreeSkidMark(ScreenModel* mark) RETAIL(FUN_00161b78);
     // Every mark freed (inline FreeSkidMark), inactive, no length
     void ClearSkidMarks(SkidMarks* marks) RETAIL(FUN_00161bd8);
     // A frame without a mark: the 4th in a row makes it inactive with no length
     void IdleSkidMarks(SkidMarks* marks) RETAIL(FUN_00161bb0);
     // A mark laid beside a point (the side's direction times the offset, jittered 0.02) on the triangles of a collision cache that
-    // take marks (surface bit 11), a strip the depth wide (jittered) between the last point and the new one
+    // take marks (SurfaceFlags' soft), a strip the depth wide (jittered) between the last point and the new one
     void LaySkidMark(f32 offset, f32 depth, SkidMarks* marks, const Vector4* point, const Vector4* side, CollisionCache* cache)
         RETAIL_N32(FUN_0015bd20);
     // Its marks drawn through g_RenderView's screen and clip matrices (the screen one's depth moved 15% back)
@@ -66,7 +70,23 @@ extern "C"
                        Vector4* clippedTo) RETAIL(FUN_0015c5d0);
 }
 
-// What a playable character rides (retail VehicleBase; the agent's vehicle at 0xB8, which player.h's CharacterControl views),
+// A vehicle's bits: its character drives it (it takes the hits first; kinds 1 and 3 let the passenger go with it), and it's held
+// (commands 650 and 651, HoldVehicle and ReleaseVehicle; the Humiliskate stands still). Retail reads and writes them as the u64
+// at 0, whose high half is the vehicle's agent
+union VehicleBits
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 drives : 1;
+        u32 held : 1;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(VehicleBits, 4);
+
+// What a playable character rides (retail VehicleBase; the agent's vehicle at 0xB8),
 // made by SetPlayerVehicle by kind: 1 the Rollerbrawl, 3 the Humiliskate, 5 the hoverboard, 6 the wrestle, 7 clinging to a wall,
 // 8 the other character riding along on a 1 or a 3. Its character, the other agent it places (the other character, the driver of
 // a passenger, the wrestled creature, the hoverboard object), where the character goes when it leaves, where it and the other are
@@ -75,18 +95,13 @@ extern "C"
 class Vehicle
 {
 public:
-    // Bit 1: its character drives (it takes the hits first; kinds 1 and 3 let the passenger go with it). Bit 2: held (commands 650
-    // and 651; the Humiliskate stands still). Retail reads and writes the u64 at 0, whose high half is `agent`
-    enum Bits : u32
-    {
-        BitDrives = 0x2,
-        BitHeld = 0x4,
-    };
-
+    // The kinds (2 and 4 none of them: conditions 595 and 597 test them)
     enum Kind : u32
     {
         KindRollerbrawl = 1,
+        KindUnused2 = 2,
         KindHumiliskate = 3,
+        KindUnused4 = 4,
         KindHoverboard = 5,
         KindWrestle = 6,
         KindWallCling = 7,
@@ -114,22 +129,16 @@ public:
         SlotForgetOther = 17,
     };
 
-    u32 bits;
+    VehicleBits bits;
     CharacterAgent* agent;
     Agent* other;
-    u8 unknown0C[4];
+    u8 unused0C[4];
     Matrix4x4 exitMatrix;
     Matrix4x4 agentMatrix;
     Matrix4x4 otherMatrix;
     f32 height;
     const GccVTableEntry* vtable;
-    u8 unknownD8[8];
-
-    // Its bits' 64 bits (`agent` the high half), as retail reads and writes them
-    u64& Bits()
-    {
-        return *reinterpret_cast<u64*>(&bits);
-    }
+    u8 unusedD8[8];
 
     // The abstract slots
     u32 Place()
@@ -219,7 +228,8 @@ public:
     }
 
     // Slot 1: the character's place made up to date, the matrices the identity, the height 0, the character's body removed, a
-    // sphere body made when HasBody (virtual) says so (not placing the instance, mask 0x1A030), then Place (virtual)
+    // sphere body made when HasBody (virtual) says so (not placing the instance, colliding with dynamic scenery, rigid bodies,
+    // crates, creatures and generic objects), then Place (virtual)
     void Start() RETAIL(FUN_0014ef00);
     // Slot 3
     void Destroy(u32 destroyFlags) RETAIL(FUN_0015ff08);
@@ -244,7 +254,7 @@ public:
     u32 HeadFollowsCamera() RETAIL(FUN_0015df00);
     // Slot 15: whether Start makes a sphere body (yes)
     u32 HasBody() RETAIL(FUN_0015df08);
-    // Slot 16: the sphere particles splash on: the character's position raised 1, radius 0.9 (FUN_0013f430)
+    // Slot 16: the sphere particles splash on: the character's position raised 1, radius 0.9 (CharacterAgent::SplashPoint)
     void SplashSphere(Vector4* centre, f32* radius) RETAIL(FUN_001601e8);
     // Slot 17: the other forgotten
     void ForgetOther() RETAIL(FUN_00160210);
@@ -261,9 +271,36 @@ CHECK_OFFSET(Vehicle, height, 0xD0);
 CHECK_OFFSET(Vehicle, vtable, 0xD4);
 CHECK_SIZE(Vehicle, 0xE0);
 
+// When the vehicle's Place says so, the character put at agentMatrix and the other at otherMatrix, each queued when its place
+// changed (retail works out the rotation of agentMatrix first and drops it)
+inline void PlaceRiders(Vehicle* vehicle)
+{
+    if (vehicle->Place() == 0)
+    {
+        return;
+    }
+
+    Vector4 rotation;
+    GetRotationVec(&rotation, &vehicle->agentMatrix);
+    InstanceContext* instance = vehicle->agent->instance;
+    if (SetPlaceMatrix(instance->place, &vehicle->agentMatrix) != 0)
+    {
+        QueueObject(instance);
+    }
+
+    if (vehicle->other != nullptr)
+    {
+        InstanceContext* otherInstance = vehicle->other->instance;
+        if (SetPlaceMatrix(otherInstance->place, &vehicle->otherMatrix) != 0)
+        {
+            QueueObject(otherInstance);
+        }
+    }
+}
+
 // Kind 1: the two characters fighting as a rolling ball (vtable RollerbrawlVehicle_Methods, 0x5A0 bytes). Its state, the other
 // character, the ball's radius, its snow and the shell's scale, a sticky touch this frame, the heading it started with, the wobble
-// after hard knocks (squashing both characters), the timer, the melting, where it stopped and its two skid trails
+// after hard knocks (squashing both characters), the state's time, the melting, where it stopped and its two skid trails
 class RollerbrawlVehicle : public Vehicle
 {
 public:
@@ -281,20 +318,22 @@ public:
     f32 snowScale;
     f32 snow;
     u8 onSticky;
-    u8 unknownF5[0xB];
+    u8 unusedF5[0xB];
     Vector4 heading;
-    u32 unknown110;
-    u8 unknown114[0xC];
+    // 0 when it starts, never read
+    u32 unused110;
+    u8 unused114[0xC];
     Vector4 lastVelocity;
     Vector4 wobbleAxis;
     f32 wobble;
-    u8 unknown144[0xC];
+    u8 unused144[0xC];
     Matrix4x4 squash;
     Vector4 squashOffset;
     f32 wobblePhase;
-    f32 timer;
+    // How long it's been still (rolling), stopped or squashed
+    f32 stateTime;
     f32 meltTime;
-    u8 unknown1AC[4];
+    u8 unused1AC[4];
     Vector4 stopPosition;
     Vector4 stopRotation;
     Vector4 uprightRotation;
@@ -350,7 +389,7 @@ public:
     void ApplyStickySurface(const CollisionHit* triangle) RETAIL(ApplyStickySurface);
     // The body's touch: nothing
     void TouchedInstance(InstanceContext* other, u32 hull) RETAIL(FUN_00161098);
-    // The body's callbacks (DynamicBody 0x364, 0x36C), the vehicle their argument
+    // The body's contact and touch callbacks (DynamicBody's contactCallback and touchCallback), the vehicle their argument
     static void ContactCallback(const CollisionHit* triangle, void* vehicle) RETAIL(func_00160F38);
     static void TouchCallback(InstanceContext* other, u32 hull, void* vehicle) RETAIL(func_00161068);
 };
@@ -364,7 +403,8 @@ CHECK_SIZE(RollerbrawlVehicle, 0x5A0);
 
 // Kind 3: the character skating on the other one as a board (vtable HumiliskateVehicle_Methods, 0x650 bytes; no body: it moves
 // itself through its collision cache). Its shape and gravity, the board's place, velocity, ground and up, the ground and trick
-// state, crouching and leaning, the suspension, its rail, the jump, the top speeds (Cmd555 sets them) and two skid trails
+// state, crouching and leaning, the suspension, its rail, the jump, the top speeds (command 555, SetVehicleHumiliskate, sets them)
+// and two skid trails
 class HumiliskateVehicle : public Vehicle
 {
 public:
@@ -385,17 +425,18 @@ public:
     f32 reach;
     f32 gravity;
     f32 riderHeight;
-    u8 unknownF8[8];
+    u8 unusedF8[8];
     Matrix4x4 board;
-    u32 unknown140;
-    u8 unknown144[0xC];
+    // 0 when it starts, never read
+    u32 unused140;
+    u8 unused144[0xC];
     Vector4 velocity;
     Vector4 lastVelocity;
     Vector4 groundNormal;
     Vector4 up;
     u8 onGround;
     u8 wasOnGround;
-    u8 unknown192[2];
+    u8 unused192[2];
     s32 trick;
     f32 trickTime;
     u8 crouched;
@@ -404,7 +445,7 @@ public:
     u8 backwards;
     f32 suspension;
     f32 suspensionSpeed;
-    u8 unknown1A8[8];
+    u8 unused1A8[8];
     CollisionCache cache;
     CollisionSurface* surface;
     f32 airTime;
@@ -413,30 +454,35 @@ public:
     f32 spinTarget;
     f32 flipTarget;
     u8 jumped;
-    u8 unknown219[3];
-    u32 event;
-    u32 otherEvent;
-    f32 unknown224;
+    u8 unused219[3];
+    // The animation events last sent to the character and the board character (never read)
+    u32 unused21C;
+    u32 unused220;
+    // 1 when it starts, never read
+    f32 unused224;
     u8 grinding;
-    u8 unknown229[7];
+    u8 unused229[7];
     Vector4 railStart;
     Vector4 railEnd;
-    u32 unknown250;
-    u32 unknown254;
+    // 0 when it starts, never read
+    u32 unused250;
+    u32 unused254;
     f32 railCooldown;
-    u32 unknown25C;
+    // 0 when it starts, never read
+    u32 unused25C;
     u8 touched;
-    u8 unknown261[3];
+    u8 unused261[3];
     f32 crouchedSpeed;
     f32 topSpeed;
     f32 jumpCooldown;
     f32 jumpReleased;
     u8 jumpedOffRail;
-    u8 unknown275[0xB];
+    u8 unused275[0xB];
     SkidMarks leftMarks;
     SkidMarks rightMarks;
-    u32 startTime;
-    u8 unknown644[0xC];
+    // The clock's time when it starts (never read)
+    u32 unused640;
+    u8 unused644[0xC];
 
     // Made for the character and the other one: its cache (the character's instance, mask 0x10) and trails made, then Start
     static HumiliskateVehicle* Construct(HumiliskateVehicle* vehicle, CharacterAgent* agent, CharacterAgent* other)
@@ -506,7 +552,7 @@ CHECK_OFFSET(HumiliskateVehicle, railStart, 0x230);
 CHECK_OFFSET(HumiliskateVehicle, crouchedSpeed, 0x264);
 CHECK_OFFSET(HumiliskateVehicle, jumpedOffRail, 0x274);
 CHECK_OFFSET(HumiliskateVehicle, leftMarks, 0x280);
-CHECK_OFFSET(HumiliskateVehicle, startTime, 0x640);
+CHECK_OFFSET(HumiliskateVehicle, unused640, 0x640);
 CHECK_SIZE(HumiliskateVehicle, 0x650);
 
 // Kind 5: a hoverboard (vtable HoverboardVehicle_Methods, 0x110 bytes), the board object's agent its other. How knocked it is, the
@@ -519,17 +565,17 @@ public:
     Reference* towed;
     u8 towReady;
     u8 armed;
-    u8 unknownEA[2];
+    u8 unusedEA[2];
     f32 hoverHeight;
     f32 cameraRate;
     u8 keepsHeading;
     u8 tows;
     u8 canRise;
-    u8 unknownF7;
+    u8 unusedF7;
     f32 radiusX;
     f32 radiusY;
     f32 radiusZ;
-    u8 unknown104[0xC];
+    u8 unused104[0xC];
 
     // Made for the character, the board object's agent and armed (SetPlayerVehicle's 4th argument): Start, the camera rate 5
     static HoverboardVehicle* Construct(HoverboardVehicle* vehicle, CharacterAgent* agent, Agent* board, u32 armed)
@@ -567,9 +613,9 @@ CHECK_OFFSET(HoverboardVehicle, keepsHeading, 0xF4);
 CHECK_OFFSET(HoverboardVehicle, radiusX, 0xF8);
 CHECK_SIZE(HoverboardVehicle, 0x110);
 
-// Kind 6: the character wrestling a creature in a rolling ball (vtable D_002F3420, 0x250 bytes; oleg.cpp's SliderVehicle). Who's on
-// top and the creature's tactic with their timers, the ball's radius, its heading, the wobble, home, each one's side of the ball,
-// the pin, the two pushes of the frame, the struggle and its rounds
+// Kind 6: the character wrestling a creature in a rolling ball (vtable g_WrestleVehicleVTable, 0x250 bytes; the HUD's
+// slider). Who's on top and the creature's tactic with their timers, the ball's radius, its heading, the wobble, home, each
+// one's side of the ball, the pin, the two pushes of the frame, the struggle and its rounds
 class WrestleVehicle : public Vehicle
 {
 public:
@@ -591,27 +637,32 @@ public:
         TacticPress = 4,
     };
 
+    // The struggle's rounds (the last one presses)
+    static constexpr s32 Rounds = 6;
+    static constexpr s32 LastRound = Rounds - 1;
+
     s32 state;
     s32 tactic;
     f32 radius;
-    u8 unknownEC[4];
+    u8 unusedEC[4];
     f32 stateTime;
     f32 tacticTime;
-    u8 unknownF8[8];
+    u8 unusedF8[8];
     Vector4 heading;
-    u32 unknown110;
-    u8 unknown114[0xC];
+    // 0 when it starts, never read
+    u32 unused110;
+    u8 unused114[0xC];
     Vector4 lastVelocity;
     Vector4 wobbleAxis;
     f32 wobble;
-    u8 unknown144[0xC];
+    u8 unused144[0xC];
     Vector4 home;
     Vector4 characterSide;
     Vector4 creatureSide;
     Matrix4x4 squash;
     Vector4 squashOffset;
     f32 wobblePhase;
-    u8 unknown1D4[0xC];
+    u8 unused1D4[0xC];
     Vector4 pinPosition;
     Vector4 pinFrom;
     Vector4 pinTo;
@@ -620,10 +671,10 @@ public:
     f32 struggleX;
     f32 struggleZ;
     u8 resting;
-    u8 unknown239[3];
+    u8 unused239[3];
     s32 round;
     f32 restTime;
-    u8 unknown244[0xC];
+    u8 unused244[0xC];
 
     // Made for the character and the creature's agent, then Start
     static WrestleVehicle* Construct(WrestleVehicle* vehicle, CharacterAgent* agent, Agent* creature) RETAIL(FUN_001549c8);
@@ -674,8 +725,8 @@ CHECK_OFFSET(WrestleVehicle, characterPush, 0x210);
 CHECK_OFFSET(WrestleVehicle, round, 0x23C);
 CHECK_SIZE(WrestleVehicle, 0x250);
 
-// Kind 7: the character clinging to a wall and sliding down it (vtable D_002F34B8, 0x160 bytes; ClingToWall makes it). Its place,
-// velocity, hull and the wall's direction
+// Kind 7: the character clinging to a wall and sliding down it (vtable g_WallClingVehicleVTable, 0x160 bytes; ClingToWall makes
+// it). Its place, velocity, hull and the wall's direction
 class WallClingVehicle : public Vehicle
 {
 public:
@@ -719,13 +770,13 @@ CHECK_OFFSET(WallClingVehicle, hull, 0x130);
 CHECK_OFFSET(WallClingVehicle, wallNormal, 0x150);
 CHECK_SIZE(WallClingVehicle, 0x160);
 
-// Kind 8: the other character riding along on a Rollerbrawl or a Humiliskate (vtable D_002F3388, 0xF0 bytes; never started, the
-// driver's vehicle places it). Its kind (8, as made)
+// Kind 8: the other character riding along on a Rollerbrawl or a Humiliskate (vtable g_PassengerVehicleVTable, 0xF0 bytes; never
+// started, the driver's vehicle places it). Its kind (8, as made)
 class PassengerVehicle : public Vehicle
 {
 public:
     u32 kind;
-    u8 unknownE4[0xC];
+    u8 unusedE4[0xC];
 
     // Made for a kind, the passenger and the driver
     static PassengerVehicle* Construct(PassengerVehicle* vehicle, u32 kind, CharacterAgent* agent, CharacterAgent* driver)
@@ -740,7 +791,7 @@ public:
     void CollisionBox(Vector4* min, Vector4* max) RETAIL(func_00161828);
     // No
     u32 HasBody() RETAIL(FUN_00161860);
-    // The driver's (CharacterAgentOf its instance, FUN_0013f430)
+    // The driver's (the SplashPoint of its instance's character agent)
     void SplashSphere(Vector4* centre, f32* radius) RETAIL(FUN_00161920);
 };
 CHECK_OFFSET(PassengerVehicle, kind, 0xE0);
@@ -755,9 +806,9 @@ extern "C"
     extern const GccVTableEntry g_WrestleVehicleVTable[] RETAIL(D_002F3420);
     extern const GccVTableEntry g_WallClingVehicleVTable[] RETAIL(D_002F34B8);
     extern const GccVTableEntry g_PassengerVehicleVTable[] RETAIL(D_002F3388);
-    // The wrestle's rounds: how long the creature struggles and rests in each (0x23C indexes them)
-    extern const f32 g_WrestleStruggleTimes[6] RETAIL(D_002F3908);
-    extern const f32 g_WrestleRestTimes[6] RETAIL(D_002F3920);
+    // The wrestle's rounds: how long the creature struggles and rests in each (WrestleVehicle::round indexes them)
+    extern const f32 g_WrestleStruggleTimes[WrestleVehicle::Rounds] RETAIL(D_002F3908);
+    extern const f32 g_WrestleRestTimes[WrestleVehicle::Rounds] RETAIL(D_002F3920);
 }
 
-// The HUD's gauge (the wrestle's balance) is player.h's VehicleGauge, which takes the vehicle as a CharacterControl
+// The HUD's gauge (the wrestle's balance) is player.h's VehicleGauge

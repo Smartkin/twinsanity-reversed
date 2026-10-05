@@ -1,30 +1,25 @@
 #include "game/overlay.h"
 
+#include "game/colour.h"
 #include "game/memory.h"
 #include "game/renderer.h"
 #include "game/shapes.h"
 
 namespace
 {
-// The colour table's entry texts start in, and the one a renderer's colour leaves shapes in their own colours with
-constexpr s32 DefaultColourIndex = 0xF;
-// A queued text's alignment until it's queued: top and left
-constexpr u32 DefaultTextFlags = Font::AlignTop | Font::AlignLeft;
+// A queued text's alignment until it's queued
+constexpr u32 DefaultAlignment = TextAlignment::TopLeft;
 constexpr u32 FontTextsGrowth = 10;
 
 // The font's vtable functions: the frame's texts begun, a text drawn and the texts finished
 constexpr u32 FontBeginSlot = 2;
 constexpr u32 FontDrawSlot = 3;
 constexpr u32 FontEndSlot = 4;
-// A shape's draws: in its colours, in a colour, placed by a matrix, placed in a colour
-constexpr u32 ShapeDrawSlot = 5;
-constexpr u32 ShapeDrawColouredSlot = 6;
-constexpr u32 ShapeDrawPlacedSlot = 7;
-constexpr u32 ShapeDrawPlacedColouredSlot = 8;
 
+// The colour table's white: texts start in it, and a renderer's colour leaves shapes in their own colours with it
 bool IsDefaultColour(u32 colour)
 {
-    return colour == g_Colours[DefaultColourIndex];
+    return colour == g_Colours[ColourWhite];
 }
 
 void AppendShape(Renderer* renderer, QueuedShape* queued, u32 layer)
@@ -52,8 +47,8 @@ extern "C"
     QueuedText* QueuedTextConstruct(QueuedText* text, const Vector2* position, const char* string)
     {
         CopyVector2(&text->position, position);
-        GetColor(&text->colour, DefaultColourIndex);
-        text->flags = DefaultTextFlags;
+        GetColor(&text->colour, ColourWhite);
+        text->alignment.value = DefaultAlignment;
         StringConstruct(&text->text, string);
         text->scale.y = 1.0f;
         text->scale.x = 1.0f;
@@ -63,7 +58,7 @@ extern "C"
     void QueuedTextDestroy(QueuedText* text, u32 flags)
     {
         StringDestroy(&text->text);
-        if ((flags & 1) != 0)
+        if ((flags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(text);
         }
@@ -87,7 +82,7 @@ extern "C"
             MemoryDeallocate_(texts->texts.data);
         }
 
-        if ((flags & 1) != 0)
+        if ((flags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(texts);
         }
@@ -138,7 +133,7 @@ extern "C"
             MemoryDeallocate_(queue->data);
         }
 
-        if ((flags & 1) != 0)
+        if ((flags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(queue);
         }
@@ -182,7 +177,7 @@ extern "C"
     {
         queued->shape = shape;
         queued->next = nullptr;
-        queued->flags = QueuedShape::WithoutMatrix | QueuedShape::OwnColours;
+        queued->flags.value = QueuedShapeFlags::WithoutMatrix | QueuedShapeFlags::OwnColours;
         return queued;
     }
 
@@ -191,7 +186,7 @@ extern "C"
         queued->colour = colour;
         queued->shape = shape;
         queued->next = nullptr;
-        queued->flags = QueuedShape::WithoutMatrix;
+        queued->flags.value = QueuedShapeFlags::WithoutMatrix;
         return queued;
     }
 
@@ -200,7 +195,7 @@ extern "C"
         queued->matrix = *matrix;
         queued->shape = shape;
         queued->next = nullptr;
-        queued->flags = QueuedShape::OwnColours;
+        queued->flags.value = QueuedShapeFlags::OwnColours;
         return queued;
     }
 
@@ -210,7 +205,7 @@ extern "C"
         queued->shape = shape;
         queued->next = nullptr;
         queued->colour = colour;
-        queued->flags = 0;
+        queued->flags.value = 0;
         return queued;
     }
 
@@ -221,7 +216,7 @@ extern "C"
             QueuedShapeDestroy(queued->next, DestroyAndFree);
         }
 
-        if ((flags & 1) != 0)
+        if ((flags & FreeAfterDestroy) != 0)
         {
             MemoryDeallocate2_(queued);
         }
@@ -230,16 +225,16 @@ extern "C"
     void QueuedShapeDraw(QueuedShape* queued)
     {
         Shape2D* shape = queued->shape;
-        bool ownColours = (queued->flags & QueuedShape::OwnColours) != 0;
-        if ((queued->flags & QueuedShape::WithoutMatrix) != 0)
+        bool ownColours = queued->flags.ownColours != 0;
+        if (queued->flags.withoutMatrix != 0)
         {
             if (ownColours)
             {
-                CallVirtual<void>(shape, shape->vtable, ShapeDrawSlot);
+                CallVirtual<void>(shape, shape->vtable, Shape2D::DrawSlot);
             }
             else
             {
-                CallVirtual<void>(shape, shape->vtable, ShapeDrawColouredSlot, queued->colour);
+                CallVirtual<void>(shape, shape->vtable, Shape2D::DrawColouredSlot, queued->colour);
             }
 
             return;
@@ -247,11 +242,11 @@ extern "C"
 
         if (ownColours)
         {
-            CallVirtual<void>(shape, shape->vtable, ShapeDrawPlacedSlot, &queued->matrix);
+            CallVirtual<void>(shape, shape->vtable, Shape2D::DrawPlacedSlot, &queued->matrix);
         }
         else
         {
-            CallVirtual<void>(shape, shape->vtable, ShapeDrawPlacedColouredSlot, &queued->matrix, queued->colour);
+            CallVirtual<void>(shape, shape->vtable, Shape2D::DrawPlacedColouredSlot, &queued->matrix, queued->colour);
         }
     }
 
@@ -278,7 +273,7 @@ extern "C"
         text->scale.x = renderer->textScale.x;
         text->scale.y = renderer->textScale.y;
         text->colour = renderer->colour;
-        text->flags = renderer->textFlags;
+        text->alignment = renderer->textAlignment;
         FontTextsAppend(texts, text);
     }
 
@@ -337,7 +332,7 @@ extern "C"
 
     void DrawOverlay(Renderer* renderer)
     {
-        if ((renderer->flags & 1) == 0)
+        if (renderer->flags.draws == 0)
         {
             return;
         }

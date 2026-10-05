@@ -22,11 +22,19 @@ constexpr u32 SizeBits = ~0x3u;
 constexpr u32 MinimumSize = 0x10;
 constexpr u32 AlignMask = 0xF;
 constexpr u32 PageSize = 0x1000;
+// A chunk's memory comes after its two size fields; a chunk in use takes the next one's previous size as its own (SIZE_SZ)
+constexpr u32 ChunkHeaderSize = offsetof(Chunk, next);
+constexpr u32 SizeFieldSize = sizeof(u32);
+// The small bins are 8 bytes apart (a bin index is the size / 8), below SmallBinLimit
+constexpr u32 SmallBinShift = 3;
 constexpr u32 SmallBinLimit = 0x200;
 // Requests below it look for their own size in the small bins first
-constexpr u32 SmallRequestLimit = SmallBinLimit - 8;
+constexpr u32 SmallRequestLimit = SmallBinLimit - (1u << SmallBinShift);
 constexpr s32 LastSmallBin = 0x3F;
+// The bins' list heads are a next and a previous pointer each, a bin's chunk starting 8 bytes before its head
+constexpr u32 BinSize = 2 * sizeof(Chunk*);
 constexpr s32 BinBlockWidth = 4;
+// ENOMEM
 constexpr s32 OutOfMemory = 12;
 }
 
@@ -65,7 +73,7 @@ namespace
 {
 Chunk* BinAt(s32 index)
 {
-    return reinterpret_cast<Chunk*>(g_MallocBins + 8 * index);
+    return reinterpret_cast<Chunk*>(g_MallocBins + BinSize * index);
 }
 
 Chunk* LastRemainder()
@@ -86,7 +94,12 @@ Chunk* At(Chunk* chunk, u32 offset)
 
 void* MemoryOf(Chunk* chunk)
 {
-    return reinterpret_cast<u8*>(chunk) + 8;
+    return reinterpret_cast<u8*>(chunk) + ChunkHeaderSize;
+}
+
+Chunk* ChunkOf(void* memory)
+{
+    return reinterpret_cast<Chunk*>(static_cast<u8*>(memory) - ChunkHeaderSize);
 }
 
 u32 SizeOf(Chunk* chunk)
@@ -127,40 +140,41 @@ void MarkBinBlock(s32 index)
     BinAt(0)->size |= static_cast<u32>(1ull << (index / BinBlockWidth));
 }
 
+// bin_index: the small bins 8 bytes apart, then bins 64, 512, 4096, 32768 and 262144 bytes apart, the last bin for the rest
 s32 BinIndex(u32 size)
 {
     u32 large = size >> 9;
     if (large == 0)
     {
-        return static_cast<s32>(size >> 3);
+        return static_cast<s32>(size >> SmallBinShift);
     }
 
-    if (large < 5)
+    if (large <= 4)
     {
-        return static_cast<s32>(size >> 6) + 0x38;
+        return static_cast<s32>(size >> 6) + 56;
     }
 
-    if (large < 0x15)
+    if (large <= 20)
     {
-        return static_cast<s32>(large) + 0x5B;
+        return static_cast<s32>(large) + 91;
     }
 
-    if (large < 0x55)
+    if (large <= 84)
     {
-        return static_cast<s32>(size >> 12) + 0x6E;
+        return static_cast<s32>(size >> 12) + 110;
     }
 
-    if (large < 0x155)
+    if (large <= 340)
     {
-        return static_cast<s32>(size >> 15) + 0x77;
+        return static_cast<s32>(size >> 15) + 119;
     }
 
-    if (large < 0x555)
+    if (large <= 1364)
     {
-        return static_cast<s32>(size >> 18) + 0x7C;
+        return static_cast<s32>(size >> 18) + 124;
     }
 
-    return 0x7E;
+    return 126;
 }
 
 // frontlink: small chunks go first in their bin, large ones before the first smaller one (their bins are sorted)
@@ -170,7 +184,7 @@ void FrontLink(Chunk* chunk, u32 size)
     Chunk* next;
     if (size < SmallBinLimit)
     {
-        s32 index = static_cast<s32>(size >> 3);
+        s32 index = static_cast<s32>(size >> SmallBinShift);
         MarkBinBlock(index);
         bin = BinAt(index);
         next = bin->next;
@@ -246,7 +260,7 @@ void ExtendTop(s32* reent, u32 size)
             g_MallocSbrked += end - oldEnd;
         }
 
-        u32 misalignment = reinterpret_cast<u32>(end + 8) & AlignMask;
+        u32 misalignment = reinterpret_cast<u32>(end + ChunkHeaderSize) & AlignMask;
         u32 correction = 0;
         if (misalignment != 0)
         {
@@ -275,10 +289,10 @@ void ExtendTop(s32* reent, u32 size)
                 return;
             }
 
-            oldTopSize = (oldTopSize - 12) & ~AlignMask;
+            oldTopSize = (oldTopSize - 3 * SizeFieldSize) & ~AlignMask;
             oldTop->size = (oldTop->size & PreviousInUse) | oldTopSize;
-            At(oldTop, oldTopSize)->size = 4 | PreviousInUse;
-            At(oldTop, oldTopSize + 4)->size = 4 | PreviousInUse;
+            At(oldTop, oldTopSize)->size = SizeFieldSize | PreviousInUse;
+            At(oldTop, oldTopSize + SizeFieldSize)->size = SizeFieldSize | PreviousInUse;
             if (oldTopSize >= MinimumSize)
             {
                 FreeReentrant(reent, MemoryOf(oldTop));
@@ -302,11 +316,12 @@ void ExtendTop(s32* reent, u32 size)
 // _malloc_r: the exact or best fitting chunk of the bins, the last remainder, or a piece of the top chunk
 void* MallocReentrant(s32* reent, u32 size)
 {
-    u32 wanted = size + 4 + AlignMask < MinimumSize + AlignMask ? MinimumSize : (size + 4 + AlignMask) & ~AlignMask;
+    u32 wanted = size + SizeFieldSize + AlignMask < MinimumSize + AlignMask ? MinimumSize
+                                                                            : (size + SizeFieldSize + AlignMask) & ~AlignMask;
     s32 index;
     if (wanted < SmallRequestLimit)
     {
-        index = static_cast<s32>(wanted >> 3);
+        index = static_cast<s32>(wanted >> SmallBinShift);
         Chunk* bin = BinAt(index);
         Chunk* victim = bin->previous;
         if (victim != bin)
@@ -317,6 +332,7 @@ void* MallocReentrant(s32* reent, u32 size)
             return MemoryOf(victim);
         }
 
+        // Its bin was looked in, the next is an empty one (the sizes are 16 apart)
         index += 2;
     }
     else
@@ -407,11 +423,11 @@ void* MallocReentrant(s32* reent, u32 size)
                     }
                 }
 
-                bin = At(bin, 8);
+                bin = At(bin, BinSize);
                 // The small bins' sizes are 16 apart: every other one stays empty
                 if (index < LastSmallBin)
                 {
-                    bin = At(bin, 8);
+                    bin = At(bin, BinSize);
                     index++;
                 }
             } while ((++index & (BinBlockWidth - 1)) != 0);
@@ -426,7 +442,7 @@ void* MallocReentrant(s32* reent, u32 size)
                 }
 
                 start--;
-                first = At(first, -8);
+                first = At(first, -BinSize);
             } while (first->next == first);
 
             block <<= 1;
@@ -470,7 +486,7 @@ void FreeReentrant(s32* reent, void* memory)
         return;
     }
 
-    Chunk* chunk = reinterpret_cast<Chunk*>(static_cast<u8*>(memory) - 8);
+    Chunk* chunk = ChunkOf(memory);
     u32 head = chunk->size;
     u32 size = head & ~PreviousInUse;
     Chunk* next = At(chunk, size);
@@ -636,7 +652,7 @@ extern "C"
             return MallocReentrant(static_cast<s32*>(reent), size);
         }
 
-        u32 kept = SizeOf(reinterpret_cast<Chunk*>(static_cast<u8*>(memory) - 8)) - 4;
+        u32 kept = SizeOf(ChunkOf(memory)) - SizeFieldSize;
         void* moved = MallocReentrant(static_cast<s32*>(reent), size);
         if (moved != nullptr)
         {

@@ -19,12 +19,12 @@ extern "C"
     Vector4* CopyQuadword(Vector4* to, const Vector4* from) RETAIL(MovePositionFromPos2ToPos1);
     Vector4* MatrixRow(Matrix4x4* matrix, u32 row) RETAIL(GetPositionFromRTS);
     u16* CopyHalfword(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
-    // The header's constants the conditions' checks' start-up sets, which nothing reads: up (0, 1, 0, 1), 0.01 twice, a black of
-    // half alpha, 0 and 45 degrees (65536ths)
+    // The header's constants the conditions' checks' start-up sets, which nothing reads: up (0, 1, 0, 1), the UI's shadow offset
+    // and colour, 0 and 45 degrees (65536ths)
     extern Vector4 g_ConditionsUp RETAIL(D_0030BAC0);
-    extern f32 g_ConditionsSmall RETAIL(D_0030A4C4);
-    extern f32 g_ConditionsSmall2 RETAIL(D_0030A4C0);
-    extern u32 g_ConditionsShade RETAIL(D_0030A4C8);
+    extern f32 g_ConditionsShadowY RETAIL(D_0030A4C4);
+    extern f32 g_ConditionsShadowX RETAIL(D_0030A4C0);
+    extern u32 g_ConditionsShadowColour RETAIL(D_0030A4C8);
     extern u32 g_ConditionsZero RETAIL(D_0030A4D0);
     extern s32 g_ConditionsAngle45 RETAIL(D_0030A4D8);
 }
@@ -145,20 +145,18 @@ u16* CopyHalfword(u16* to, const u16* from)
 
 void InitConditionChecksModule(u32 initialize, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    constexpr f32 Small = Rounded(0.01);
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
 
     g_ConditionsUp.w = 1.0f;
     g_ConditionsUp.x = 0.0f;
-    g_ConditionsSmall = Small;
+    g_ConditionsShadowY = UiShadowOffset;
     g_ConditionsUp.y = 1.0f;
     g_ConditionsUp.z = 0.0f;
-    g_ConditionsSmall2 = Small;
-    ColourSet(&g_ConditionsShade, 0.0f, 0.0f, 0.0f, 0.5f);
+    g_ConditionsShadowX = UiShadowOffset;
+    ColourSet(&g_ConditionsShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
     g_ConditionsZero = 0;
-    AngleFrom(&g_ConditionsAngle45, 0x1.921fb6p-1f, AngleRadians);
+    AngleFrom(&g_ConditionsAngle45, QuarterPi, AngleRadians);
 }

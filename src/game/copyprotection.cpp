@@ -27,7 +27,6 @@ extern "C"
 
 namespace
 {
-constexpr f32 QuarterPi = 0x1.921fb6p-1f;
 // The countdown: 17100 frames, another 3286 for each minute of the clock past a multiple of 8 and one for each second
 constexpr s32 ArmedFrames = 0x42CC;
 constexpr s32 FramesPerMinute = 0xCD6;
@@ -41,7 +40,7 @@ constexpr s32 NoiseThreshold = 0x58;
 
 void InitSystemStatics(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -58,7 +57,7 @@ void InitSystemStatics(s32 initialise, s32 priority)
 
 void SystemStaticInit()
 {
-    InitSystemStatics(1, 0xFFFF);
+    InitSystemStatics(1, DefaultInitPriority);
 }
 
 void SimpleCopyrightChecksum()

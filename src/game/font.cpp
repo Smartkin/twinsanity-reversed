@@ -20,10 +20,18 @@ u32 GlyphIndex(const Font* font, u32 character)
     return static_cast<u32>(index) & 0xFF;
 }
 
+// A glyph's page is in the low bits of its first byte (x's lowest bits)
+constexpr u8 GlyphPageMask = 3;
+
 u8 GlyphPage(const Vector4& glyph)
 {
-    return *reinterpret_cast<const u8*>(&glyph.x) & 3;
+    return *reinterpret_cast<const u8*>(&glyph.x) & GlyphPageMask;
 }
+
+// A glyph's width and height are the GS's sixteenths of a pixel
+constexpr f32 PixelsPerGlyphUnit = 0.0625f;
+// Where a text starts a new line
+constexpr char NewLine = '~';
 
 // The glyphs as new[] makes an array of a class: their count in the 16 bytes before them
 constexpr u32 ArrayCookie = 0x10;
@@ -55,7 +63,7 @@ void Font::DestroyBase(u32 flags)
         MemoryDeallocate_(reinterpret_cast<u8*>(glyphs) - ArrayCookie);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -65,7 +73,7 @@ void Font::BaseDestroy(u32 flags)
 {
     vtable = g_FontBaseVTable;
     DestroyBase(DestroyOnly);
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -77,7 +85,7 @@ Font* Font::Construct(Font* font)
     ConstructBase(font);
     font->pageCount = 0;
     font->vtable = g_FontVTable;
-    for (u32 page = 0; page < 3; page++)
+    for (u32 page = 0; page < MaxPages; page++)
     {
         font->materials[page] = nullptr;
         font->textures[page] = nullptr;
@@ -92,7 +100,7 @@ void Font::Destroy(u32 flags)
     ReleasePages();
     vtable = g_FontBaseVTable;
     DestroyBase(DestroyOnly);
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -154,9 +162,9 @@ extern "C"
 {
     void FontScale(const Font* font, Vector2* scale)
     {
-        const Vector4& a = font->glyphs[GlyphIndex(font, 'a')];
-        f32 width = a.z * 0.0625f;
-        f32 height = a.w * 0.0625f;
+        const Vector4& letterA = font->glyphs[GlyphIndex(font, 'a')];
+        f32 width = letterA.z * PixelsPerGlyphUnit;
+        f32 height = letterA.w * PixelsPerGlyphUnit;
         width = width / static_cast<f32>(g_RendererWidth);
         height = height / static_cast<f32>(g_RendererHeight);
         scale->x = font->width / width;
@@ -174,7 +182,7 @@ extern "C"
             s32 count = 0;
             f32 width = 0.0f;
             f32 height = space.w;
-            if (*text == '~')
+            if (*text == NewLine)
             {
                 // An empty line is the space's height more for the line before it (and the text)
                 text++;
@@ -197,9 +205,9 @@ extern "C"
                     text++;
                     layout->pages[GlyphPage(glyph)] = 1;
                     count++;
-                } while (*text != '\0' && *text != '~');
+                } while (*text != '\0' && *text != NewLine);
 
-                if (*text == '~')
+                if (*text == NewLine)
                 {
                     text++;
                 }

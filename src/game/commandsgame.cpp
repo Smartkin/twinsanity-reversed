@@ -2,7 +2,9 @@
 
 #include "game/agentparts.h"
 #include "game/agents.h"
+#include "game/animation.h"
 #include "game/camerarig.h"
+#include "game/characters.h"
 #include "game/clock.h"
 #include "game/controllers.h"
 #include "game/cutscenereader.h"
@@ -16,48 +18,49 @@
 #include "game/string.h"
 #include "game/widgets.h"
 
-// The commands that ask the game's controllers: the game controller's requests, the video controller, the music, the player
+// The commands that ask the game's controllers: the game controller's requests, the video controller, the music, the player, the
+// custom pickups and projectiles
 
 extern "C"
 {
-    // The playable character's fall reset, and ammunition added to its counter
+    // The playable character's fall reset
     void ResetCharacterFall(Agent* character) RETAIL(FUN_0013f790);
-    void AddToCharacterCounter(CharacterCounter* counter, s32 amount) RETAIL(FUN_0015f010);
-    // The empty string, and the flag command 624 sets
+    // The empty string, and the flag SetScriptGlobalFlag sets for condition 629 (nothing clears it)
     extern const char g_EmptyText[] RETAIL(D_003098D8);
-    extern s32 g_VarPercept629 RETAIL(D_003098E8);
+    extern s32 g_ScriptGlobalFlag RETAIL(D_003098E8);
 }
 
 namespace
 {
-// The music's sound group, which ending the context's music fades
-constexpr u32 MusicGroup = 1;
-constexpr u32 GroupMask = 0x7;
-constexpr u32 CharacterNodeKind = 0xC;
-
 s32 ClockUnits(f32 seconds)
 {
     return static_cast<s32>(seconds * g_ClockUnitsPerSecond);
+}
+
+// The object of the node it takes its object from when there's one
+GameObject* ObjectOf(ObjectNode* node)
+{
+    return node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
 }
 }
 
 
 void EndContextMusicCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    FadeOutMusicSlot(time, MusicGroup);
+    FadeOutMusicSlot(fadeSeconds, ContextMusicSlot);
 }
 
-void FadeSoundGroupCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void FadeOutMusicSlotCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    FadeOutMusicSlot(value, static_cast<s32>(group.raw & GroupMask));
+    FadeOutMusicSlot(fadeSeconds, static_cast<s32>(slot.index));
 }
 
-void VideoControllerUpdateCommand::Execute(TimeClock* clock, BehaviourRunner*, BehaviourLevel*)
+void StartObjectVideoCommand::Execute(TimeClock* clock, BehaviourRunner*, BehaviourLevel*)
 {
     StartReadCutscene(G_VideoController, clock);
 }
 
-void VideoControllerOp182Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void CancelVideoCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     StopScriptMovie(G_VideoController);
 }
@@ -74,10 +77,10 @@ void StopVideoCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 
 void ControllerRumbleCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    VibrateForShake(value1);
+    VibrateForShake(strength);
 }
 
-void ResetGameCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void RestartFromCheckpointCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     G_GameController->RestartFromCheckpoint();
 }
@@ -91,20 +94,20 @@ void UnlinkCharactersCommand::Execute(TimeClock*, BehaviourRunner* runner, Behav
     }
 }
 
-// Half the seconds given
+// The watching screen shown over half the seconds given (and hidden the same way)
 void CutsceneStartCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->StartCutscene(static_cast<s32>(value1 * 0.5f * g_ClockUnitsPerSecond));
+    G_GameController->StartCutscene(static_cast<s32>(seconds * 0.5f * g_ClockUnitsPerSecond));
 }
 
 void CutsceneEndCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->EndCutscene(static_cast<s32>(value1 * 0.5f * g_ClockUnitsPerSecond));
+    G_GameController->EndCutscene(static_cast<s32>(seconds * 0.5f * g_ClockUnitsPerSecond));
 }
 
 void ProgressWhackawormCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->progress.AddToCount(static_cast<s32>(value1));
+    G_GameController->progress.AddToCount(countChange);
 }
 
 void EndWhackawormCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
@@ -114,7 +117,7 @@ void EndWhackawormCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*
 
 void ResetCharacterFallCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    auto* node = static_cast<AgentNode*>(GetGameNode(&runner->agentNode->owner->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&runner->agentNode->owner->nodes, NodeCharacter));
     if (node != nullptr)
     {
         ResetCharacterFall(node->agent);
@@ -126,7 +129,7 @@ void ClearBottomTextCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLeve
     StringAssign(&G_GameController->oleg.textLine.text, g_EmptyText);
 }
 
-void GameControllerOp612Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void EnablePlayerControlCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     G_GameController->EnableCharacters(0);
 }
@@ -143,31 +146,31 @@ void ForceGameOverCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*
 
 void ShowBottomTextCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->ShowBottomText(ClockUnits(value1));
+    G_GameController->ShowBottomText(ClockUnits(seconds));
 }
 
 void HideBottomTextCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->HideBottomText(ClockUnits(value1));
+    G_GameController->HideBottomText(ClockUnits(seconds));
 }
 
-void EnableVarPercept629Command::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
+void SetScriptGlobalFlagCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    g_VarPercept629 = 1;
+    g_ScriptGlobalFlag = 1;
 }
 
 void AddAmmoCommand::ExecuteOn(GameNode*)
 {
-    CharacterCounter* counter = g_PlayerCharacter->counter;
-    if (counter != nullptr)
+    Gun* gun = g_PlayerCharacter->gun;
+    if (gun != nullptr)
     {
-        AddToCharacterCounter(counter, value1);
+        gun->AddAmmo(ammo);
     }
 }
 
 void DamageBossCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    G_GameController->progress.AddHealth(static_cast<s32>(value1));
+    G_GameController->progress.AddHealth(healthChange);
 }
 
 void ExitBossModeCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
@@ -180,44 +183,39 @@ void PlayCreditsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
     G_GameController->PlayCredits();
 }
 
-namespace
-{
-constexpr u32 TakesPacketsSlot = 15;
-}
-
-// The object the node takes its object from when there's such a node
+// The cutscene of the number queued for the node's instance (the object of the node it takes its object from when there's one)
 void QueueObjectVideoCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     auto* node = static_cast<ObjectNode*>(runner->agentNode);
     InstanceContext* instance = node->owner;
-    GameObject* object = node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
-    QueueObjectMovie(G_VideoController, object, instance, value);
+    GameObject* object = ObjectOf(node);
+    QueueObjectMovie(G_VideoController, object, instance, cutscene);
 }
 
 void QueueVideoCommand::Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel*)
 {
-    s32 movie = movieId.IntWith(static_cast<ObjectNode*>(runner->agentNode)->PacketProperties());
-    QueueMovie(G_VideoController, movie, clock, flags & 1);
+    s32 trackNumber = track.IntWith(static_cast<ObjectNode*>(runner->agentNode)->PacketProperties());
+    QueueMovie(G_VideoController, trackNumber, clock, flags.loops);
 }
 
-// The node's voice's pitch (bit 0) and volume (bit 1; TT Lab's definitions have it as an integer)
+// The pitch scale and volume of the node's tracked sound (when the node takes packets)
 void SetSoundParamsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     auto* node = static_cast<ObjectNode*>(runner->agentNode);
-    if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+    if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
     {
         return;
     }
 
-    u8 voice = *(reinterpret_cast<u8*>(node) + 0x160);
-    if ((set.raw & 1) != 0)
+    u8 voice = node->trackedSound;
+    if (sets.pitch != 0)
     {
         SetInstanceSoundPitch(pitch, static_cast<s32>(voice));
     }
 
-    if ((set.raw & 2) != 0)
+    if (sets.volume != 0)
     {
-        SetInstanceSoundVolume(*reinterpret_cast<const f32*>(&volume), static_cast<s32>(voice));
+        SetInstanceSoundVolume(volume, static_cast<s32>(voice));
     }
 }
 
@@ -232,13 +230,7 @@ extern "C"
 
 namespace
 {
-constexpr u16 NoModel = 0xFFFF;
-constexpr u32 IconSlot = 2;
-
-GameObject* ObjectOf(ObjectNode* node)
-{
-    return node->sourceNode != nullptr ? SourceObject(node->sourceNode) : node->object;
-}
+constexpr s32 NoModelSlot = -1;
 
 // The bottom text line: a text, a place, a colour, the scale 0.75 and how long it stays (seconds)
 void ShowTextLine(const char* text, f32 x, f32 y, f32 red, f32 green, f32 blue, f32 seconds)
@@ -256,12 +248,12 @@ void ShowTextLine(const char* text, f32 x, f32 y, f32 red, f32 green, f32 blue, 
     line->scale.y = Scale;
 }
 
-// The model of an object's slot (none for slot -1)
+// The model of an object's slot (none for NoModelSlot)
 u16 SlotModel(GameObject* object, s32 slot)
 {
     u16 model;
     SetUndefinedId(&model);
-    if (slot != -1)
+    if (slot != NoModelSlot)
     {
         u16 found;
         GetObjectModelId(&found, object, static_cast<u32>(slot));
@@ -277,54 +269,56 @@ void AddLivesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLeve
 {
     GameController* controller = G_GameController;
     InstanceContext* owner = runner->agentNode->owner;
-    InstanceContext* played = controller->progress.Instance(controller->progress.Field(GameProgress::CharacterShift));
-    if (value1 > 0 || owner == played)
+    InstanceContext* played = controller->progress.Instance(controller->progress.play.character);
+    if (lives > 0 || owner == played)
     {
-        controller->oleg.AddLives(value1, 0);
+        controller->oleg.AddLives(lives, 0);
     }
 }
 
-// The HUD's icon 2 the model of the object's slot (the object of the node it takes its object from when there's one)
-void RequestOgiSlotCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The vehicle gauge's left icon the model of the object's slot (the object of the node it takes its object from when there's one)
+void SetGaugeIconCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     u16 model;
-    GetObjectModelId(&model, ObjectOf(static_cast<ObjectNode*>(runner->agentNode)), slot & 0xFF);
-    if (model != NoModel)
+    GetObjectModelId(&model, ObjectOf(static_cast<ObjectNode*>(runner->agentNode)), slot.index);
+    if (model != NoModelId)
     {
         u16 icon = model;
-        G_GameController->oleg.SetHudIcon(IconSlot, &icon);
+        G_GameController->oleg.SetHudIcon(OLEG::HudIconGauge, &icon);
     }
 }
 
-// The story raised to an area (-1: the second value's), never lowered
-void SetGlobalProgression2Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The story raised to an area (AreaFromValue: the tagged area's), never lowered
+void RaiseStoryAreaCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
+    constexpr s32 AreaFromValue = -1;
     GameProgress* progress = &G_GameController->progress;
-    s32 area = value1;
-    if (area == -1)
+    s32 raised = area;
+    if (raised == AreaFromValue)
     {
-        area = value.IntWith(static_cast<ObjectNode*>(runner->agentNode)->PacketProperties());
+        raised = taggedArea.IntWith(static_cast<ObjectNode*>(runner->agentNode)->PacketProperties());
     }
 
-    if (static_cast<s32>(progress->bits >> GameProgress::StoryShift & GameProgress::AreaMask) < area)
+    if (static_cast<s32>(progress->play.story) < raised)
     {
-        progress->bits = (progress->bits & ~(GameProgress::AreaMask << GameProgress::StoryShift)) |
-                         (static_cast<u32>(area) & GameProgress::AreaMask) << GameProgress::StoryShift;
+        progress->play.story = static_cast<u32>(raised);
     }
 }
 
 void DisplayBottomTextCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    ShowTextLine(g_BottomTexts[value1], x, y, value4, value5, value6, value7);
+    ShowTextLine(g_BottomTexts[text], x, y, red, green, blue, seconds);
 }
 
-// The text of the instance's first integer property (to 10 the texts from 30, past it from 41)
+// The text of the instance's first integer property (to 10 the texts from 30, past it the texts from 52)
 void DisplayBottomTextInstanceCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 LastLow = 10;
+    constexpr u32 LastLowNumber = 10;
+    constexpr u32 LowTextOffset = 30;
+    constexpr u32 HighTextOffset = 41;
     u32 number = static_cast<u32>(static_cast<ObjectNode*>(runner->agentNode)->properties->GetInt(0));
-    u32 index = number > LastLow ? number + 41 : number + 30;
-    ShowTextLine(g_BottomTexts[index], x, y, value3, value4, value5, value6);
+    u32 index = number > LastLowNumber ? number + HighTextOffset : number + LowTextOffset;
+    ShowTextLine(g_BottomTexts[index], x, y, red, green, blue, seconds);
 }
 
 // The boss bar's length and health, its icon the model of the object's slot (the object of the node it takes its object from
@@ -333,9 +327,9 @@ void EnableBossModeCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
 {
     auto* node = static_cast<ObjectNode*>(runner->agentNode);
     GameObject* object = ObjectOf(node);
-    s32 health = hitPoints.IntWith(node->PacketProperties());
-    u16 icon = SlotModel(object, animSlots);
-    G_GameController->EnableBossMode(value3, static_cast<u32>(health), &icon);
+    s32 most = health.IntWith(node->PacketProperties());
+    u16 icon = SlotModel(object, iconSlot);
+    G_GameController->EnableBossMode(barLength, static_cast<u32>(most), &icon);
 }
 
 // Whack-a-worm's time (seconds) and count, its icon the model of the object's slot
@@ -344,31 +338,28 @@ void StartWhackawormCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
     auto* node = static_cast<ObjectNode*>(runner->agentNode);
     GameObject* object = ObjectOf(node);
     PropertyHolder* properties = node->PacketProperties();
-    s32 total = hitPoints.IntWith(properties);
-    s32 time = ClockUnits(value2.FloatWith(properties));
-    u16 icon = SlotModel(object, animSlots);
-    G_GameController->StartWhackaworm(time, static_cast<u32>(total), &icon);
+    s32 count = total.IntWith(properties);
+    s32 time = ClockUnits(seconds.FloatWith(properties));
+    u16 icon = SlotModel(object, iconSlot);
+    G_GameController->StartWhackaworm(time, static_cast<u32>(count), &icon);
 }
 
 namespace
 {
-// The HUD's gem and crystal widget (its mask) and the pickup effect played over it
-constexpr u32 GemWidget = 0x26;
-constexpr u32 GemSpriteBase = 13;
-constexpr u32 CrystalSprite = 20;
+// The HUD's gem and crystal widget: how long it appears and holds
 constexpr f32 GemShowSeconds = Rounded(0.3);
 constexpr f32 GemHoldSeconds = 1.5f;
 
-// The word of the level play is in
+// The progress of the level play is in (its word)
 u32* CurrentLevel(GameProgress* progress)
 {
-    return &progress->levels[g_AreaLevels[progress->Field(GameProgress::AreaShift) & GameProgress::AreaMask]];
+    return &progress->levels[g_AreaLevels[progress->play.area]].value;
 }
 
 void ShowGemWidget(OLEG* oleg)
 {
-    oleg->Show(oleg->masks[GemWidget], ClockUnits(GemShowSeconds), ClockUnits(GemHoldSeconds));
-    oleg->PlayPickupEffect(GemWidget);
+    oleg->Show(oleg->screens[OLEG::ScreenPickup], ClockUnits(GemShowSeconds), ClockUnits(GemHoldSeconds));
+    oleg->PlayPickupEffect(OLEG::ScreenPickup);
 }
 }
 
@@ -377,10 +368,10 @@ void AddGemCommand::ExecuteOn(GameNode*)
 {
     GameController* controller = G_GameController;
     OLEG* oleg = &controller->oleg;
-    MarkGem(reinterpret_cast<u8*>(CurrentLevel(&controller->progress)), static_cast<u32>(value1));
-    s32 gem = value1;
-    oleg->unknown310 = static_cast<u8>(gem + GemSpriteBase);
-    oleg->unknown312 = static_cast<u16>((oleg->unknown312 & ~0xF) | (gem & 0xF));
+    MarkGem(reinterpret_cast<u8*>(CurrentLevel(&controller->progress)), static_cast<u32>(gem));
+    s32 found = gem;
+    oleg->pickupSprite = static_cast<u8>(found + OLEG::SpriteGems);
+    oleg->pickupGem.gem = found;
     ShowGemWidget(oleg);
 }
 
@@ -390,137 +381,101 @@ void AddCrystalCommand::ExecuteOn(GameNode*)
     GameController* controller = G_GameController;
     OLEG* oleg = &controller->oleg;
     MarkCrystal(CurrentLevel(&controller->progress));
-    oleg->unknown310 = CrystalSprite;
+    oleg->pickupSprite = OLEG::SpritePickupCrystal;
     ShowGemWidget(oleg);
 }
 
 // The played character's part gets a hit point, at most 3: a fourth makes it invincible
-void CA_PickUpHealthCommand::ExecuteOn(GameNode*)
+void PickUpHealthCommand::ExecuteOn(GameNode*)
 {
-    constexpr u32 HitPointsShift = 6;
-    constexpr u32 HitPointsMask = 0xFF;
     constexpr u32 MostHitPoints = 3;
+    // CharacterAgent::StartInvincibility's kind of 8 seconds
+    constexpr u32 LongInvincibility = 1;
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* played = progress->Instance(progress->Field(GameProgress::CharacterShift));
+    InstanceContext* played = progress->Instance(progress->play.character);
     if (played == nullptr)
     {
         return;
     }
 
-    auto* agent = static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&played->nodes, CharacterNodeKind))->agent);
-    auto* part = static_cast<BasicAgentPart*>(agent->part);
-    u32 points = (part->bits >> HitPointsShift & HitPointsMask) + 1;
+    auto* agent = static_cast<CharacterAgent*>(static_cast<AgentNode*>(GetGameNode(&played->nodes, NodeCharacter))->agent);
+    auto* part = static_cast<CreaturePart*>(agent->part);
+    u32 points = part->flags.hitPoints + 1;
     if (points > MostHitPoints)
     {
-        agent->StartInvincibility(1);
+        agent->StartInvincibility(LongInvincibility);
         points = MostHitPoints;
     }
 
-    part->bits = (part->bits & ~(HitPointsMask << HitPointsShift)) | (points & HitPointsMask) << HitPointsShift;
+    part->flags.hitPoints = points;
 }
 
-// The wumpa fruit to add to the count; an instance with a crate's node (but no kind 14 node) loses as many of its crate's wumpa
+// The wumpa fruit to add to the count; an instance with a crate's node (but no pickup node) loses as many of its crate's wumpa
 // fruit (none left at least)
-void CA_PickUpWumpaCommand::ExecuteOn(GameNode* node)
+void PickUpWumpaCommand::ExecuteOn(GameNode* node)
 {
-    constexpr u32 WumpaShift = 2;
-    constexpr u32 WumpaMask = 0xFF;
     NodeList* nodes = &node->owner->nodes;
     OLEG* oleg = &G_GameController->oleg;
-    if (GetGameNode(nodes, 0xE) == nullptr)
+    if (GetGameNode(nodes, NodePickup) == nullptr)
     {
-        auto* crate = static_cast<AgentNode*>(GetGameNode(nodes, 0xD));
+        auto* crate = static_cast<AgentNode*>(GetGameNode(nodes, NodeCrate));
         if (crate != nullptr)
         {
-            auto* part = static_cast<BasicAgentPart*>(crate->agent->part);
-            u32 wumpa = part->bits >> WumpaShift & WumpaMask;
-            u32 left = wumpa < static_cast<u32>(value1) ? 0 : wumpa - value1;
-            part->bits = (part->bits & ~(WumpaMask << WumpaShift)) | (left & WumpaMask) << WumpaShift;
+            auto* part = static_cast<CratePart*>(crate->agent->part);
+            u32 crateWumpa = part->crate.wumpaFruit;
+            u32 left = crateWumpa < static_cast<u32>(wumpaFruit) ? 0 : crateWumpa - wumpaFruit;
+            part->crate.wumpaFruit = left;
         }
     }
 
-    oleg->wumpaToAdd = static_cast<u8>(oleg->wumpaToAdd + value1);
+    oleg->wumpaToAdd = static_cast<u8>(oleg->wumpaToAdd + wumpaFruit);
 }
 
 namespace
 {
-// The custom pickups and projectiles the object scripts set up, in the slot their node's function 25 gives: a pickup's radius
-// (and its square), two values and its flags; a projectile's speed, values and flags
-struct CustomPickup
-{
-    f32 radius;
-    f32 radiusSquared;
-    f32 value2;
-    f32 value3;
-    u32 flags;
-};
-
-struct CustomProjectile
-{
-    u32 unknown00;
-    f32 speed;
-    u32 unknown08;
-    s32 value5;
-    s32 value3;
-    f32 value4;
-    f32 radius;
-    u32 flags;
-};
-
-constexpr u32 CustomSlotSlot = 25;
-constexpr u32 CustomSlots = 6;
-
 u32 CustomSlotOf(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, CustomSlotSlot);
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::CustomSlotSlot);
 }
 }
 
-extern "C"
+// The node's custom pickup: its radius, its focus's pull on it, the speed it flees at and the flags' bits 0-10
+void SetCustomPickupCommand::ExecuteOn(GameNode* node)
 {
-    extern CustomPickup* g_CustomPickups[CustomSlots] RETAIL(D_003D1E20);
-    // The custom command packs' slots, the projectiles' after them
-    extern CustomProjectile* g_CustomCommandsAndProjectiles[2 * CustomSlots] RETAIL(G_CodeModelCommand);
-}
-
-// The node's custom pickup: its radius and values, and the flags' low 11 bits
-void CA_SetPickupCommand::ExecuteOn(GameNode* node)
-{
-    constexpr u32 FlagBits = 0x7FF;
     CustomPickup* pickup = g_CustomPickups[CustomSlotOf(node)];
-    pickup->flags = (pickup->flags & ~FlagBits) | (hitPoints & FlagBits);
-    pickup->radius = value1;
-    pickup->radiusSquared = value1 * value1;
-    pickup->value2 = value2;
-    pickup->value3 = value3;
+    pickup->flags.value = (pickup->flags.value & ~CustomPickupFlags::CommandBits) | (flags.value & CustomPickupFlags::CommandBits);
+    pickup->radius = radius;
+    pickup->radiusSquared = radius * radius;
+    pickup->pull = pull;
+    pickup->fleeSpeed = fleeSpeed;
 }
 
-// The node's custom projectile: its speed, and what the flags give (its radius 0x20, two values 0x10, a value 0x40, bit 0x200 0x80)
-void CA_SetProjectileCommand::ExecuteOn(GameNode* node)
+// The node's custom projectile: its speed, and what the settings give
+void SetCustomProjectileCommand::ExecuteOn(GameNode* node)
 {
-    CustomProjectile* projectile = g_CustomCommandsAndProjectiles[CustomSlots + CustomSlotOf(node)];
+    CustomProjectile* projectile = g_CustomCommandSlots.projectiles[CustomSlotOf(node)];
     projectile->speed = speed;
-    if ((hitPoints & 0x20) != 0)
+    if (settings.falls != 0)
     {
-        projectile->radius = radius.FloatWith(static_cast<ObjectNode*>(node)->PacketProperties());
-        projectile->flags |= 0x40;
+        projectile->gravity = gravity.FloatWith(static_cast<ObjectNode*>(node)->PacketProperties());
+        projectile->flags.falls = 1;
     }
 
-    if ((hitPoints & 0x10) != 0)
+    if (settings.homes != 0)
     {
-        projectile->value3 = value3;
-        projectile->value4 = value4;
-        projectile->flags |= 0x100;
+        projectile->turn = turn;
+        projectile->sideTurnScale = sideTurnScale;
+        projectile->flags.homes = 1;
     }
 
-    if ((hitPoints & 0x40) != 0)
+    if (settings.homesForATime != 0)
     {
-        projectile->value5 = value5;
-        projectile->flags |= 0x80;
+        projectile->homingTime = homingTime;
+        projectile->flags.homesForATime = 1;
     }
 
-    if ((hitPoints & 0x80) != 0)
+    if (settings.playersShot != 0)
     {
-        projectile->flags |= 0x200;
+        projectile->flags.playersShot = 1;
     }
 }

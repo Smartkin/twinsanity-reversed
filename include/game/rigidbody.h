@@ -9,28 +9,37 @@ struct CollisionHull;
 struct CollisionSurface;
 struct RigidBody;
 
+// What a rigid body's constraint holds: its turns to the hinge's axis, its position at a point, on a line or on a plane (one of
+// the three at a time), its turns within the limit
+union BodyConstraintFlags
+{
+    u32 value;
+    struct
+    {
+        u32 hinge : 1;
+        u32 unused1 : 3;
+        u32 fixed : 1;
+        u32 onLine : 1;
+        u32 onPlane : 1;
+        u32 unused7 : 1;
+        u32 limited : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(BodyConstraintFlags, 4);
+
 // What a rigid body is held to (0xC0 bytes, the body's own): turns only about an axis (the hinge: its axis in the body's space
 // and in the world's, and the two rotations spanning the turns about it, a rotation taken to the nearest of them), turns kept
 // within an angle (radians) of a rotation, and its position held at a point, on a line (a point and a unit direction) or on a
 // plane. Velocity and momentum are held the same way (no motion, along the line, along the plane)
 struct BodyConstraint
 {
-    enum Flags : u32
-    {
-        FlagHinge = 0x1,
-        FlagFixed = 0x10,
-        FlagOnLine = 0x20,
-        FlagOnPlane = 0x40,
-        FlagPositionKinds = FlagFixed | FlagOnLine | FlagOnPlane,
-        FlagLimited = 0x100,
-    };
-
-    u32 flags;
-    u8 unknown04[0xC];
+    BodyConstraintFlags flags;
+    u8 unused04[0xC];
     Vector4 hingeLocalAxis;
     Vector4 hingeAxis;
     f32 limit;
-    u8 unknown34[0xC];
+    u8 unused34[0xC];
     Vector4 hinge[2];
     Vector4 limitCenter;
     Vector4 fixedPosition;
@@ -38,55 +47,67 @@ struct BodyConstraint
     Vector4 lineDirection;
     Vector4 plane;
     RigidBody* body;
-    u8 unknownB4[0xC];
+    u8 unusedB4[0xC];
 };
 CHECK_OFFSET(BodyConstraint, hinge, 0x40);
 CHECK_OFFSET(BodyConstraint, body, 0xB0);
 CHECK_SIZE(BodyConstraint, 0xC0);
 
+// A rigid body's flags: its velocity is out of date (UpdateState makes it again from the momentum), and so are its rotation's
+// matrices and its angular velocity; it touched a triangle of its chunk this frame, the world's frame doesn't step it, it touched
+// another body or an instance's hulls this frame; the characters push it while either of its two pushable bits is set (a
+// script's and its trajectory's motion block's). A script command switches bits 12, 13, 15 and 16, which nothing reads
+union RigidBodyFlags
+{
+    u32 value;
+    struct
+    {
+        u32 velocityStale : 1;
+        u32 rotationStale : 1;
+        u32 touchedWorld : 1;
+        u32 leftOut : 1;
+        u32 touchedBody : 1;
+        u32 pushable : 2;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(RigidBodyFlags, 4);
+
 // A rigid body (0x2E0 bytes, a node of kind 5, vtable D_00305608: 2 the destructor, 4 its instance doesn't change chunks, 5 its
-// kind, 8 no update, 10 0x1309): a box's mass and inertia (the inverse inertia the steps use, which a step resets to the one
+// kind, 8 no update, 10 its class): a box's mass and inertia (the inverse inertia the steps use, which a step resets to the one
 // kept), the most it moves and turns, its momentum, rotation and angular momentum, and what they make (its place's matrix and
 // its inverse, the rotation's rate of change, the angular velocity, the velocity and the last step's, the world's inverse
-// inertia), what pushes and turns it (kept, and only for a step), how far the impulses of a step pushed it and its constraint.
-// Bit 0 of its flags: the velocity is out of date, bit 1: the rotation's matrices and the angular velocity are
+// inertia), what pushes and turns it (kept, and only for a step), how far the impulses of a step pushed it and its constraint
 struct RigidBody : GameNode
 {
-    enum Flags : u32
-    {
-        FlagMoved = 0x1,
-        FlagTurned = 0x2,
-        // It touched a triangle of its chunk this frame
-        FlagTouched = 0x4,
-        // The world's frame doesn't step it
-        FlagLeftOut = 0x8,
-        // It touched another body or an instance's hulls this frame
-        FlagTouchedBody = 0x10,
-    };
+    // The movement node's class too
+    static constexpr u32 ClassId = MovementNode::ClassId;
 
-    u32 bodyFlags;
+    RigidBodyFlags bodyFlags;
     f32 mass;
     f32 inverseMass;
     f32 maxSpeed;
     f32 maxSpin;
-    u8 unknown2C[4];
+    u8 unused2C[4];
     Vector4 inertia;
     Vector4 inverseInertia;
     Vector4 restInverseInertia;
-    f32 unknown60;
+    // What the impulses it hands the object nodes of the instances it touches are scaled by (1, or its trajectory's motion
+    // block's)
+    f32 knockScale;
     // The steps a frame's time is cut into
     s32 substeps;
-    u8 unknown68[8];
+    u8 unused68[8];
     Vector4 momentum;
     Vector4 rotation;
     Vector4 angularMomentum;
     // The instance whose hulls it last touched, and one whose hulls it doesn't answer
     InstanceContext* lastTouched;
     InstanceContext* ignoredInstance;
-    u8 unknownA8[8];
+    u8 unusedA8[8];
     Matrix4x4 matrix;
     Matrix4x4 inverseMatrix;
-    Vector4 spin;
+    Vector4 rotationRate;
     Vector4 angularVelocity;
     Vector4 velocity;
     Vector4 lastVelocity;
@@ -97,11 +118,12 @@ struct RigidBody : GameNode
     Vector4 torque;
     Vector4 stepForce;
     Vector4 stepTorque;
-    Vector4 unknown200;
+    // Made the origin by the constructor, never read
+    Vector4 unused200;
     // The water level the hull bodies float at (from the deepest point they touched)
     f32 waterLevel;
     f32 impulseTotal;
-    u8 unknown218[8];
+    u8 unused218[8];
     BodyConstraint constraint;
 
     static RigidBody* Construct(RigidBody* body) RETAIL(FUN_002898e8);
@@ -109,7 +131,7 @@ struct RigidBody : GameNode
     u32 CanChangeChunk() RETAIL(FUN_002918a0);
     u32 Kind() RETAIL(FUN_00291878);
     u32 Update() RETAIL(FUN_00291aa8);
-    u32 Slot10() RETAIL(FUN_00291880);
+    u32 GetClassId() RETAIL(FUN_00291880);
 
     // The velocity (no faster than the most) from the momentum when it's out of date, and the rotation's matrices, the world's
     // inverse inertia, the angular velocity (no faster than the most) and the rotation's rate of change when they are
@@ -123,7 +145,8 @@ struct RigidBody : GameNode
     void WorldInertia(Matrix4x4* out) RETAIL(FUN_00289b90);
     void VelocityAt(const Vector4* point, Vector4* out) RETAIL(FUN_00289c60);
     void SetAngularVelocity(const Vector4* angularVelocity) RETAIL(FUN_00289d80);
-    // The momentum and the angular momentum made shorter by a share of an amount (bit 0 set when the angular one isn't tiny)
+    // The momentum and the angular momentum made shorter by a share of an amount (the velocity marked out of date when the angular
+    // one isn't tiny)
     void Damp(f32 amount, f32 share) RETAIL_N32(FUN_00289fc0);
     // A step of a time: moved by its velocity (at most half a unit), pushed and turned by its forces, turned by its rate of
     // change, its state made again and the step's forces cleared
@@ -213,35 +236,60 @@ extern "C"
 }
 
 
-// A body that collides (0x380 bytes, vtable D_00305570 over the rigid body's: 2 the destructor, 3 given its instance (kept here
-// too), 4 whether its instance may change chunks, 11 nothing, 12-16 its kind's (14 a collision with another body, 15 whether
-// it's a sphere, 16 whether it may touch a box), 17 its centre of mass moved): bits (0 and 2 set, 1 and 6 clear at first; the
-// world's step clears 3-5), its instance, its centre of mass in its own space, its collision cache, how it bounces and rubs
-// (scaled by the surface's values: restitution, softness, friction, and friction against spinning about the contact's normal and
-// against rolling), the slot it has in the world and the collision mask its contacts are found with
-struct DynamicBody : RigidBody
+// A body's bits: it puts its instance where it is (only its position with placesPositionOnly), it doesn't collide with the
+// world, its landings are told, and this frame a landing was told, a hard one was and a scrape was (the world's step clears
+// those three). Retail reads and writes the word as 64 bits, with the instance after it
+union DynamicBodyBits
 {
-    enum Bits : u32
+    // For the code that writes the word back with the instance (as retail does)
+    enum Mask : u32
     {
-        // It puts its instance where it is (only its position with bit 6)
-        BitPlacesInstance = 0x1,
-        BitNoCollisions = 0x2,
-        // Its landings are told, a landing was told this frame, a hard one was, a scrape was
-        BitTellsLanding = 0x4,
-        BitLanded = 0x8,
-        BitLandedHard = 0x10,
-        BitScraped = 0x20,
-        BitPlacesPosition = 0x40,
+        PlacesInstance = 0x1,
     };
 
-    u32 bits;
+    u32 value;
+    struct
+    {
+        u32 placesInstance : 1;
+        u32 noCollisions : 1;
+        u32 tellsLanding : 1;
+        u32 landed : 1;
+        u32 landedHard : 1;
+        u32 scraped : 1;
+        u32 placesPositionOnly : 1;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(DynamicBodyBits, 4);
+
+// A body that collides (0x380 bytes, vtable D_00305570 over the rigid body's: 2 the destructor, 3 given its instance (kept here
+// too), 4 whether its instance may change chunks, 11 floated on water (nothing), 12-16 its kind's (12 and 13 a step's collisions
+// with the world and with the instances around it, 14 a collision with another body, 15 whether it's a sphere, 16 whether it may
+// touch a box), 17 its centre of mass moved): bits (placesInstance and tellsLanding set, noCollisions and placesPositionOnly clear
+// at first), its instance, its centre of mass in its own space, its collision cache, how it bounces and rubs (scaled by the
+// surface's values: restitution, softness, friction, and friction against spinning about the contact's normal and against
+// rolling), the slot it has in the world and the collision mask its contacts are found with
+struct DynamicBody : RigidBody
+{
+    enum Slots : u32
+    {
+        FloatSlot = 11,
+        CollideWithWorldSlot = 12,
+        CollideWithInstancesSlot = 13,
+        CollideSlot = 14,
+        IsSphereSlot = 15,
+        TouchesBoxSlot = 16,
+        SetCenterOfMassSlot = 17,
+    };
+
+    DynamicBodyBits bits;
     InstanceContext* instance;
-    u8 unknown2E8[8];
+    u8 unused2E8[8];
     Vector4 centerOfMass;
     CollisionCache* cache;
     // Frames without a hard landing or a scrape
     u8 restingFrames;
-    u8 unknown305[3];
+    u8 unused305[3];
     f32 restitution;
     f32 softness;
     f32 friction;
@@ -253,10 +301,11 @@ struct DynamicBody : RigidBody
     f32 lengthDrag;
     f32 buoyancy;
     s16 slot;
-    u8 unknown32A[2];
-    f32 unknown32C;
+    u8 unused32A[2];
+    // 1 when it's made, never read
+    f32 unused32C;
     u32 collisionMask;
-    u8 unknown334[0xC];
+    u8 unused334[0xC];
     // The frame's pushes out of things: the limited ones, all of them (halved) and their length
     Vector4 limitedPushes;
     Vector4 pushes;
@@ -267,7 +316,7 @@ struct DynamicBody : RigidBody
     void* contactArgument;
     void (*touchCallback)(InstanceContext* other, u32 hull, void* argument);
     void* touchArgument;
-    u8 unknown374[0xC];
+    u8 unused374[0xC];
 
     static DynamicBody* Construct(DynamicBody* body) RETAIL(FUN_0028be00);
     // Whether its instance may go through a link into another chunk: when the linked chunk is loaded it goes along (its momentums,
@@ -276,7 +325,8 @@ struct DynamicBody : RigidBody
     // Out of the world, its collision cache freed
     void Destroy(u32 destroyFlags) RETAIL(FUN_00292300);
     void SetOwner(InstanceContext* owner) RETAIL(FUN_00292240);
-    void Slot11() RETAIL(FUN_00292238);
+    // Floated at a water level: not the spheres
+    void Float() RETAIL(FUN_00292238);
     // Moved so that its centre of mass is at a new point of its own space
     void SetCenterOfMass(const Vector4* center) RETAIL(FUN_0028bf48);
     // A contact answered: an impulse along the normal, one against the sliding (at most the first one times the friction), and
@@ -295,19 +345,20 @@ struct DynamicBody : RigidBody
     // Put where an instance is (its centre of mass where the instance's place puts it, turned as the place is), and when asked
     // moving and turning as the instance's movement node did over its last frame
     void MoveTo(InstanceContext* instance, u32 withMotion) RETAIL(FUN_0028d6e0);
-    // After a frame: its instance put where its centre of mass is (only its position when bit 6 says so; the instance queued
+    // After a frame: its instance put where its centre of mass is (only its position when its bits say so; the instance queued
     // when that moved it), and the object node's sound stopped once it has gone 5 frames (2 a sphere) without a hard landing
     // or a scrape
     void PlaceInstance() RETAIL(FUN_0028d490);
-    // A step's damping: its momentums made shorter by the step's share of the drag at 0x320, then scaled down by the drag at
-    // 0x31C (times 70, or 4 a sphere, when 0x324 isn't negative, and then only while a step force pushes it)
+    // A step's damping: its momentums made shorter by the step's share of its length drag, then scaled down by its drag (times 70,
+    // or 4 a sphere, when its buoyancy isn't negative, and then only while a step force pushes it)
     void StepDamping(f32 seconds) RETAIL_N32(FUN_0028da10);
     // Pushed out of something: half the push kept in the frame's pushes, and moved by it, or (when limited) by half of it
     // again while the frame's pushes stay within 0.2, by what's left of 0.2 then
     void PushOut(const Vector4* push, u32 limited) RETAIL(FUN_0028db88);
     void LimitedPush(const Vector4* push) RETAIL(FUN_0028dca8);
 
-    // Its collision cache, made when it has none (its instance's, surfaces of mask 0x50), and the mask set
+    // Its collision cache, made when it has none (its instance's, the surfaces solid to the player's probes and to objects), and
+    // the mask set
     CollisionCache* Cache() RETAIL(FUN_002922a0);
     void SetCacheMask(u32 mask) RETAIL(FUN_00292468);
     // How it bounces and rubs (the softness squared)
@@ -333,13 +384,13 @@ struct SphereBody : DynamicBody
     f32 scaleY;
     f32 scaleZ;
     u8 ellipsoid;
-    u8 unknown391[0xF];
+    u8 unused391[0xF];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00292a68);
     // Collided with another body: a sphere (as ellipsoids when either is one) or a hull; each pair once (from its first body in
     // memory), but from either side when the other one is out of the world's steps
     u32 Collide(DynamicBody* other) RETAIL(FUN_00292ae0);
-    // Collided with its chunk's triangles (none when its bit 1 says so): solid ones push it out and are answered as surfaces,
+    // Collided with its chunk's triangles (none when it doesn't collide): solid ones push it out and are answered as surfaces,
     // others are water, which lifts it by how deep its centre is below the highest (times its mass and buoyancy, less a 0.3
     // of its rising speed)
     u32 CollideWithWorld() RETAIL(FUN_0028e140);
@@ -360,7 +411,7 @@ struct HullBody : DynamicBody
 {
     CollisionHull* hulls;
     s32 hullCount;
-    u8 unknown388[8];
+    u8 unused388[8];
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_00292c28);
     u32 Collide(DynamicBody* other) RETAIL(FUN_00292d40);
@@ -370,7 +421,7 @@ struct HullBody : DynamicBody
     void SetCenterOfMass(const Vector4* center) RETAIL(FUN_00292d08);
     // Its hulls copied again from its instance's collision under the identity (its centre of mass taken off)
     void CopyHulls(ObjectCollision* collision) RETAIL(FUN_0028f590);
-    // Collided with its chunk's triangles, a hull at a time (none when its bit 1 says so): solid ones push it out and are
+    // Collided with its chunk's triangles, a hull at a time (none when it doesn't collide): solid ones push it out and are
     // answered as surfaces, water sets the level it floats at (from the deepest point below its instance's box)
     u32 CollideWithWorld() RETAIL(FUN_0028f728);
     // Floated: every corner of its instance's box more than 0.1 below the water level lifted (by the depth times its mass and
@@ -386,8 +437,6 @@ struct HullBody : DynamicBody
 CHECK_OFFSET(HullBody, hulls, 0x380);
 CHECK_SIZE(HullBody, 0x390);
 
-// The world the bodies are stepped in (0x14 bytes, made by the game context): 200 slots of bodies, the free slots' indexes (a
-// stack, the next one at the count of used slots) and the count
 // What the test of two ellipsoids works with (0x190 bytes): each one's radii, their inverses, squares and inverse squares, the
 // products of the other two axes' inverse radii (the first) and squares (the second), all three's (inverse squares, squares),
 // the direction between them in the first's unit sphere and its length squared, the point a step of the search finds, the
@@ -407,16 +456,16 @@ struct EllipsoidPair
     f32 inverseVolume;
     f32 otherVolume;
     f32 distanceSquared;
-    u8 unknown84[0xC];
+    u8 unused84[0xC];
     Vector4 direction;
     Vector4 point;
     Vector4 cosines[3];
-    u8 unknownE0[0x10];
+    u8 unusedE0[0x10];
     f32 sum;
-    u8 unknownF4[0xC];
+    u8 unusedF4[0xC];
     Matrix4x4 first;
     f32 otherSum;
-    u8 unknown144[0xC];
+    u8 unused144[0xC];
     Matrix4x4 second;
 };
 CHECK_OFFSET(EllipsoidPair, direction, 0x90);
@@ -425,8 +474,12 @@ CHECK_OFFSET(EllipsoidPair, first, 0x100);
 CHECK_OFFSET(EllipsoidPair, second, 0x150);
 CHECK_SIZE(EllipsoidPair, 0x190);
 
+// The world the bodies are stepped in (0x14 bytes, made by the game context): 200 slots of bodies, the free slots' indexes (a
+// stack, the next one at the count of used slots) and the count
 struct PhysicsWorld
 {
+    static constexpr s32 Slots = 200;
+
     DynamicBody** bodies;
     s32 capacity;
     s16* freeSlots;

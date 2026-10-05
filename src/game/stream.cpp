@@ -7,7 +7,7 @@
 
 namespace
 {
-constexpr u32 CopyChunk = 0x800;
+constexpr u32 ScratchSize = 0x800;
 
 // A memory stream's values are wherever they are: they're copied as unaligned
 template <typename T>
@@ -23,7 +23,7 @@ extern "C"
     // What File::Open puts before every path. Nothing ever sets it
     extern String g_FilePathPrefix RETAIL(D_003C6F40);
     // 2 KB of scratch memory, CopyTo's and the decals' loader's
-    extern u8 g_ScratchBuffer[0x800] RETAIL(DecalUnusedInt);
+    extern u8 g_ScratchBuffer[ScratchSize] RETAIL(DecalUnusedInt);
     // The module's statics made (g_FilePathPrefix emptied), and the static constructor that runs it
     void InitStreamStatics(s32 initialise, s32 priority) RETAIL(FUN_002b5938);
     void StreamStaticInit() RETAIL(FUN_002b7850);
@@ -41,7 +41,7 @@ EABI_EXPORT(FUN_002b6378, &MemoryStream::WriteF32);
 void Stream::DestroyStream(u32 flags)
 {
     vtable = g_StreamVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -54,7 +54,7 @@ void Stream::CopyTo(Stream* destination)
     Rewind();
     while (!AtEnd() && remaining != 0)
     {
-        u32 chunk = remaining <= CopyChunk ? remaining : CopyChunk;
+        u32 chunk = remaining <= ScratchSize ? remaining : ScratchSize;
         Read(g_ScratchBuffer, chunk, 1);
         remaining -= chunk;
         destination->Write(g_ScratchBuffer, chunk);
@@ -65,7 +65,7 @@ void Stream::CopyTo(Stream* destination)
 
 File* File::Construct(File* file)
 {
-    file->descriptor = -1;
+    file->descriptor = Closed;
     file->vtable = g_FileVTable;
     return file;
 }
@@ -75,7 +75,7 @@ void File::Destroy(u32 flags)
     vtable = g_FileVTable;
     Close();
     vtable = g_StreamVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -282,7 +282,7 @@ void File::Close()
         Platform::Files::Close(descriptor);
     }
 
-    descriptor = -1;
+    descriptor = Closed;
 }
 
 s32 File::ReadChecked(void* buffer, u32 size, bool endIsError)
@@ -290,7 +290,7 @@ s32 File::ReadChecked(void* buffer, u32 size, bool endIsError)
     s32 read = Platform::Files::Read(descriptor, buffer, static_cast<s32>(size));
     if (static_cast<u32>(read) < size && endIsError && read == 0)
     {
-        return -1;
+        return ReadNothing;
     }
 
     return read;
@@ -302,7 +302,9 @@ MemoryStream* MemoryStream::Construct(MemoryStream* stream, void* memory, u32 si
     stream->position = static_cast<u8*>(memory);
     stream->begin = static_cast<u8*>(memory);
     stream->vtable = g_MemoryStreamVTable;
-    stream->flags = static_cast<u16>(ownsMemory & FlagOwnsMemory);
+    MemoryStreamFlags flags{};
+    flags.ownsMemory = ownsMemory;
+    stream->flags = flags;
     stream->alignment = alignment;
     return stream;
 }
@@ -313,11 +315,14 @@ MemoryStream* MemoryStream::ConstructAllocated(MemoryStream* stream, u32 size, u
     stream->begin = nullptr;
     stream->position = nullptr;
     stream->size = 0;
-    stream->flags = static_cast<u16>(FlagOwnsMemory | (grows & 1) << 1);
+    MemoryStreamFlags flags{};
+    flags.ownsMemory = 1;
+    flags.grows = grows;
+    stream->flags = flags;
     stream->alignment = alignment;
     u8* memory = static_cast<u8*>(MemoryAllocateAligned(GetHeapManager(), size, stream->alignment));
     stream->begin = memory;
-    stream->flags |= FlagOwnsMemory;
+    stream->flags.ownsMemory = 1;
     stream->position = memory;
     stream->size = memory != nullptr ? size : 0;
     return stream;
@@ -329,8 +334,10 @@ MemoryStream* MemoryStream::ConstructFromFile(MemoryStream* stream, const char* 
     stream->position = nullptr;
     stream->size = 0;
     stream->vtable = g_MemoryStreamVTable;
-    stream->flags = FlagOwnsMemory;
-    stream->alignment = 0x40;
+    MemoryStreamFlags flags{};
+    flags.ownsMemory = 1;
+    stream->flags = flags;
+    stream->alignment = FileAlignment;
     stream->LoadFile(path, terminate);
     return stream;
 }
@@ -338,7 +345,7 @@ MemoryStream* MemoryStream::ConstructFromFile(MemoryStream* stream, const char* 
 void MemoryStream::Destroy(u32 destroyFlags)
 {
     vtable = g_MemoryStreamVTable;
-    if ((flags & FlagOwnsMemory) != 0)
+    if (flags.ownsMemory)
     {
         FreeMemory(GetHeapManager(), begin);
         begin = nullptr;
@@ -347,7 +354,7 @@ void MemoryStream::Destroy(u32 destroyFlags)
     }
 
     vtable = g_StreamVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -373,7 +380,7 @@ s32 MemoryStream::Write(const void* buffer, u32 count)
     u32 room = size - at;
     if (room < count)
     {
-        if ((flags & FlagGrows) != 0)
+        if (flags.grows)
         {
             u32 newSize = size * 2;
             while (newSize - at < count)
@@ -565,7 +572,7 @@ void MemoryStream::WriteF32(f32 value)
 
 void InitStreamStatics(s32 initialise, s32 priority)
 {
-    if (priority != 0xFFFF || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -577,13 +584,13 @@ void InitStreamStatics(s32 initialise, s32 priority)
 
 void StreamStaticInit()
 {
-    InitStreamStatics(1, 0xFFFF);
+    InitStreamStatics(1, DefaultInitPriority);
 }
 
 void DestroyStreamItemBuilder(void* builder, u32 destroyFlags)
 {
     *static_cast<const GccVTableEntry**>(builder) = g_ItemBuilderBaseVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(builder);
     }

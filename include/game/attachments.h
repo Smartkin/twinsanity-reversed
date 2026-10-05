@@ -11,56 +11,90 @@ struct ChunkData;
 struct ChunkLinkData;
 struct TimeClock;
 
-// The attachments hanging on an instance (0x44 bytes): 16 at most, their count in bits 0-4
+// An attachments path's bits: how many attachments hang on it
+union AttachmentsPathBits
+{
+    u32 value;
+    struct
+    {
+        u32 count : 5;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(AttachmentsPathBits, 4);
+
+// The attachments hanging on an instance (0x44 bytes): 16 at most, and its bits
 struct AttachmentsPath
 {
-    static constexpr u32 CountMask = 0x1F;
     static constexpr u32 Most = 16;
 
     Attachment* entries[Most];
-    u32 bits;
+    AttachmentsPathBits bits;
 
     u32 Count() const
     {
-        return bits & CountMask;
+        return bits.count;
     }
 };
 CHECK_SIZE(AttachmentsPath, 0x44);
 
+// An attachments node's bits: the linked instances' count, bit 5 (set when its path is freed, cleared when it gets one, which
+// nothing reads) and the linked instance the scripts' linked object commands are at (cleared by its step and its making)
+union AttachmentsNodeBits
+{
+    u32 value;
+    struct
+    {
+        u32 linkedCount : 5;
+        // No path hangs the attachments (the scripts' condition reading it clears it)
+        u32 noPath : 1;
+        u32 unused6 : 1;
+        u32 currentLinked : 5;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(AttachmentsNodeBits, 4);
+
+// A linked instance's flags: it stays linked unless it's unlinked by force, and the mark an attach gives it (AttachFlags'
+// marksLink: ReleaseLinkedInstances unlinks the marked ones)
+union AttachmentLinkFlags
+{
+    u8 value;
+    struct
+    {
+        u8 kept : 1;
+        u8 marked : 1;
+        u8 unused2 : 6;
+    };
+
+    enum Mask : u8
+    {
+        Kept = 0x1,
+        Marked = 0x2,
+    };
+};
+CHECK_SIZE(AttachmentLinkFlags, 1);
+
 // An instance's attachments node (kind 6, 0x74 bytes, vtable D_002F6010: 2 the destructor, 4 whether its instance may change
-// chunks, 7 its step, 8 its update, the rest the base's): the instances linked to its instance (16 at most) with a byte of
-// flags each, and the path of what hangs on it. Its bits: the linked instances' count (bits 0-4), it has no path (bit 5, set
-// when its path is freed), and bits 7-11, which its step and making it clear; how far attaching pushes an instance from the
-// middle of its holder's box (a motion block's stickiness)
+// chunks, 7 its step, 8 its update, the rest the base's): its bits, the instances linked to its instance (16 at most) with their
+// flags, and the path of what hangs on it; how far attaching pushes an instance from the middle of its holder's box (a motion
+// block's stickiness)
 struct AttachmentsNode : GameNode
 {
-    enum Bits : u32
-    {
-        CountMask = 0x1F,
-        NoPath = 0x20,
-        Bits7To11 = 0xF80,
-    };
-
-    // A linked instance's flags: it stays linked unless it's unlinked by force, and the mark an attach gives it
-    enum LinkFlags : u8
-    {
-        LinkKept = 0x1,
-        LinkMarked = 0x2,
-    };
-
-    static constexpr u32 Kind = 6;
     static constexpr u32 ClassId = 0x130A;
     static constexpr u32 MostLinked = 16;
+    // The most the count field holds
+    static constexpr u32 CountMask = 0x1F;
 
-    u32 bits;
+    AttachmentsNodeBits bits;
     f32 stickiness;
     InstanceContext* linked[MostLinked];
-    u8 linkFlags[MostLinked];
+    AttachmentLinkFlags linkFlags[MostLinked];
     AttachmentsPath* path;
 
     u32 LinkedCount() const
     {
-        return bits & CountMask;
+        return bits.linkedCount;
     }
 
     static AttachmentsNode* Construct(AttachmentsNode* node) RETAIL(FUN_00196030);
@@ -68,9 +102,9 @@ struct AttachmentsNode : GameNode
     void Destroy(u32 destroyFlags) RETAIL(FUN_00196070);
     // Whether every linked instance went along into the chunk a link leads to (none goes before the linked chunk's RM2 is loaded)
     u32 CanChangeChunk(ChunkData* from, ChunkLinkData* link) RETAIL(FUN_001960b8);
-    // Its instance starting again: everything let go of but what stays linked, its instance holding and held by nothing, and the
-    // node itself taken off the instance once nothing stays linked
-    void Step(TimeClock* clock, u32 unknown) RETAIL(FUN_00196168);
+    // Its instance starting again: everything let go of but what stays linked, its instance holding and held by nothing, the
+    // scripts' current linked instance the first again, and the node itself taken off the instance once nothing stays linked
+    void Step(TimeClock* clock, u32 way) RETAIL(FUN_00196168);
     // While the clock runs, what hangs on it follows (its instance holds nothing once its path is gone); the base's update after
     u32 Update(TimeClock* clock) RETAIL(FUN_00197548);
     // Its kind and its class (its vtable's functions 5 and 10)
@@ -100,19 +134,34 @@ struct AttachmentsNode : GameNode
     // What hangs on it follows: whether its path is gone (an instance that lost its holder is unlinked)
     u32 FollowPath() RETAIL(FUN_001974e8);
 };
+CHECK_OFFSET(AttachmentsNode, bits, 0x18);
 CHECK_OFFSET(AttachmentsNode, linked, 0x20);
 CHECK_OFFSET(AttachmentsNode, linkFlags, 0x60);
 CHECK_SIZE(AttachmentsNode, 0x74);
 
 // How an instance is attached (HangOnExitPoint's and AttachInstance's flags): keeping its matrix to the holder, what hangs there
 // taken off first (and launched), and its link marked
-enum AttachFlags : u32
+union AttachFlags
 {
-    AttachWithOffset = 0x1,
-    AttachReplaces = 0x2,
-    AttachLaunchesReplaced = 0x4,
-    AttachMarksLink = 0x8,
+    u32 value;
+    struct
+    {
+        u32 withOffset : 1;
+        u32 replaces : 1;
+        u32 launchesReplaced : 1;
+        u32 marksLink : 1;
+        u32 unused4 : 28;
+    };
+
+    enum Mask : u32
+    {
+        WithOffset = 0x1,
+        Replaces = 0x2,
+        LaunchesReplaced = 0x4,
+        MarksLink = 0x8,
+    };
 };
+CHECK_SIZE(AttachFlags, 4);
 
 extern "C"
 {
@@ -177,7 +226,7 @@ extern "C"
     void UnlinkAll(void* attachments) RETAIL(FUN_00196e88);
     // The first linked instance unlinked (by force when asked): it, none when it stays
     InstanceContext* TakeFirstLinked(void* attachments, u32 force) RETAIL(FUN_00196e50);
-    // The linked instances with an ID unlinked, put to sleep when asked (their object nodes' links let go first)
+    // The linked instances with an ID unlinked, put to sleep when asked (their object nodes' parts let go first)
     void UnlinkSpawned(void* attachments, u32 sleep) RETAIL(FUN_00197348);
     // An instance linked and hung on the holder's exit point (AttachFlags; placed by a matrix in the holder's space when there's
     // one, which the attach makes the world's in place despite the const its callers give it; linked already when forced), and

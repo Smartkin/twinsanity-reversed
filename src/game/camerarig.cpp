@@ -19,11 +19,6 @@ EABI_EXPORT(FUN_0027ca90, &ScriptedCameraPositioner::Take);
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// 65536ths of a turn to radians and back
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
-
 // The place of the shake's centre with its position up to date, none without a centre
 ObjectPlace* CentrePlace(CameraShake* shake)
 {
@@ -62,7 +57,7 @@ CameraShake* ConstructCameraShake(CameraShake* shake)
     InitIdentityMatrix(&shake->toCentre);
     shake->limit = 1.0f;
     shake->damping = Rounded(0.1);
-    shake->unknown84 = 1.0f;
+    shake->unused84 = 1.0f;
     AssignReference(&shake->centre, nullptr);
     return shake;
 }
@@ -206,9 +201,11 @@ void CameraShakeOffset(const CameraShake* shake, Vector4* offset)
 void VibrateForShake(f32 strength)
 {
     constexpr u32 FirstPad = 1;
+    constexpr f32 MotorPerStrength = 1024.0f;
     constexpr s32 Weakest = 20;
     constexpr s32 Strongest = 255;
-    s32 motor = static_cast<s32>(strength * 1024.0f);
+    constexpr f32 Seconds = Rounded(0.4);
+    s32 motor = static_cast<s32>(strength * MotorPerStrength);
     if (motor > Strongest)
     {
         motor = Strongest;
@@ -220,8 +217,11 @@ void VibrateForShake(f32 strength)
     }
 
     VibrationRequest request;
-    request.bits = FirstPad | VibrationRequest::Pending | static_cast<u32>(motor) << VibrationRequest::BigMotorShift;
-    request.seconds = Rounded(0.4);
+    request.bits.value = 0;
+    request.bits.pad = FirstPad;
+    request.bits.pending = 1;
+    request.bits.bigMotor = motor;
+    request.seconds = Seconds;
     RequestVibration(&request);
 }
 
@@ -231,7 +231,10 @@ CameraPointFollower* CameraPointFollower::Construct(CameraPointFollower* followe
     follower->vtable = g_CameraPointFollowerVTable;
     follower->ownRate = OwnRate;
     follower->rate = OwnRate;
-    follower->bits = WayLinear | WayLinear << OwnWayShift;
+    CameraFollowerBits linear = {};
+    linear.way = WayLinear;
+    linear.ownWay = WayLinear;
+    follower->bits = linear;
     follower->point = g_DefaultBox.min;
     follower->point.w = 1.0f;
     return follower;
@@ -258,8 +261,8 @@ void CameraPointFollower::Take(const Vector4*, const Vector4* to)
 
 void CameraPointFollower::Reset()
 {
-    bits = (bits & ~WayMask) | (bits >> OwnWayShift & WayMask);
-    if ((bits & BitKeepsRate) == 0)
+    bits.way = bits.ownWay;
+    if (bits.keepsRate == 0)
     {
         rate = ownRate;
     }
@@ -268,12 +271,12 @@ void CameraPointFollower::Reset()
 void CameraPointFollower::Step(TimeClock* clock, const Vector4*, Vector4* to)
 {
     constexpr f32 MostKeptRate = 100.0f;
-    if ((clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock->flags.running == 0)
     {
         return;
     }
 
-    if ((bits & BitKeepsRate) != 0 && rate < MostKeptRate)
+    if (bits.keepsRate != 0 && rate < MostKeptRate)
     {
         rate = rate + 1.0f;
     }
@@ -286,7 +289,7 @@ void CameraPointFollower::Step(TimeClock* clock, const Vector4*, Vector4* to)
     else
     {
         f32 step;
-        switch (bits & WayMask)
+        switch (bits.way)
         {
         case WayLinear:
             step = share;
@@ -316,20 +319,20 @@ void CameraPointFollower::Step(TimeClock* clock, const Vector4*, Vector4* to)
 
 void CameraPointFollower::FollowSubtype(const CameraSubtype* subtype)
 {
-    if (subtype == nullptr || (subtype->flags & CameraSubtype::FollowMask) == CameraSubtype::FollowOwnWay)
+    if (subtype == nullptr || subtype->flags.follow == CameraSubtype::FollowOwnWay)
     {
         Reset();
         return;
     }
 
-    if ((subtype->flags & CameraSubtype::FollowMask) != CameraSubtype::FollowAtRate)
+    if (subtype->flags.follow != CameraSubtype::FollowAtRate)
     {
-        bits = bits & ~WayMask;
+        bits.way = WayAtOnce;
         return;
     }
 
-    bits = (bits & ~WayMask) | WayLinear;
-    if ((bits & BitKeepsRate) == 0)
+    bits.way = WayLinear;
+    if (bits.keepsRate == 0)
     {
         rate = subtype->rate;
     }
@@ -339,12 +342,12 @@ void CameraPointFollower::SetRate(f32 newRate)
 {
     if (!(0.0f <= newRate))
     {
-        bits = bits & ~WayMask;
+        bits.way = WayAtOnce;
         return;
     }
 
-    bits = (bits & ~WayMask) | WayLinear;
-    if ((bits & BitKeepsRate) == 0)
+    bits.way = WayLinear;
+    if (bits.keepsRate == 0)
     {
         rate = newRate;
     }
@@ -352,12 +355,12 @@ void CameraPointFollower::SetRate(f32 newRate)
 
 void CameraPointFollower::SetKeepsRate(u32 keeps)
 {
-    bits = (bits & ~BitKeepsRate) | (keeps & 1) << 8;
+    bits.keepsRate = keeps;
 }
 
 u32 CameraPointFollower::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -393,7 +396,7 @@ void CameraPositioner::Destroy(u32 destroyFlags)
 
 u32 CameraPositioner::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -416,7 +419,7 @@ CameraRig* CameraRig::Construct(CameraRig* rig)
     rig->target = nullptr;
     rig->positioner = nullptr;
     rig->vtable = g_CameraRigVTable;
-    rig->bits = 0;
+    rig->bits.value = 0;
     return rig;
 }
 
@@ -426,7 +429,7 @@ void CameraRig::Destroy(u32 destroyFlags)
     DropTargetFollower();
     DropCameraFollower();
     DropTarget();
-    if ((bits & BitOwnsPositioner) != 0 && positioner != nullptr)
+    if (bits.ownsPositioner != 0 && positioner != nullptr)
     {
         positioner->DestroyVirtual(DestroyAndFree);
     }
@@ -440,7 +443,7 @@ void CameraRig::Destroy(u32 destroyFlags)
 
 void CameraRig::DropTargetFollower()
 {
-    if ((bits & BitOwnsTargetFollower) != 0 && targetFollower != nullptr)
+    if (bits.ownsTargetFollower != 0 && targetFollower != nullptr)
     {
         targetFollower->DestroyVirtual(DestroyAndFree);
     }
@@ -450,7 +453,7 @@ void CameraRig::DropTargetFollower()
 
 void CameraRig::DropCameraFollower()
 {
-    if ((bits & BitOwnsCameraFollower) != 0 && cameraFollower != nullptr)
+    if (bits.ownsCameraFollower != 0 && cameraFollower != nullptr)
     {
         cameraFollower->DestroyVirtual(DestroyAndFree);
     }
@@ -460,7 +463,7 @@ void CameraRig::DropCameraFollower()
 
 void CameraRig::DropTarget()
 {
-    if ((bits & BitOwnsTarget) != 0 && target != nullptr)
+    if (bits.ownsTarget != 0 && target != nullptr)
     {
         target->DestroyVirtual(DestroyAndFree);
     }
@@ -495,12 +498,12 @@ void CameraRig::Step(TimeClock* clock)
     if (target != nullptr)
     {
         target->StepVirtual(clock);
-        if ((bits & BitIgnoresTrigger) == 0)
+        if (bits.ignoresTrigger == 0)
         {
             value = target->ValueVirtual(trigger);
         }
 
-        if ((bits & BitSmoothed) == 0 || target->smoothed == 0)
+        if (bits.smoothed == 0 || target->smoothed == 0)
         {
             if (targetFollower != nullptr)
             {
@@ -509,19 +512,19 @@ void CameraRig::Step(TimeClock* clock)
         }
         else if (targetFollower != nullptr)
         {
-            // The trigger's camera says how the point is followed, unless its value is the rate (as it set the way, it's always
-            // set back to the follower's own)
+            // The trigger's camera says how the point is followed, unless it sets the rate (as it set the way, it's always set
+            // back to the follower's own)
             targetFollower->StepVirtual(clock, &target->rotation, &target->point);
             MainCamera* camera = nullptr;
-            if ((bits & BitIgnoresTrigger) == 0)
+            if (bits.ignoresTrigger == 0)
             {
                 camera = trigger != nullptr ? trigger->camera : nullptr;
                 targetFollower->FollowSubtypeVirtual(camera != nullptr ? camera->first : nullptr);
             }
 
-            if (camera != nullptr && (camera->flags & MainCamera::FlagPassesFirstValue) != 0)
+            if (camera != nullptr && camera->flags.setsTargetFollowRate != 0)
             {
-                targetFollower->SetRateVirtual(camera->firstValue);
+                targetFollower->SetRateVirtual(camera->targetFollowRate);
             }
             else
             {
@@ -535,13 +538,13 @@ void CameraRig::Step(TimeClock* clock)
         return;
     }
 
-    if ((bits & BitIgnoresTrigger) == 0)
+    if (bits.ignoresTrigger == 0)
     {
         positioner->TakeVirtual(value, trigger, target);
     }
 
     positioner->StepVirtual(clock, target);
-    if ((bits & BitSmoothed) == 0 || positioner->smoothed == 0)
+    if (bits.smoothed == 0 || positioner->smoothed == 0)
     {
         if (cameraFollower != nullptr)
         {
@@ -567,16 +570,16 @@ void CameraRig::Step(TimeClock* clock)
     }
 
     cameraFollower->StepVirtual(clock, &positioner->rotation, &positioner->position);
-    if ((bits & BitIgnoresTrigger) != 0)
+    if (bits.ignoresTrigger != 0)
     {
         return;
     }
 
     MainCamera* camera = trigger != nullptr ? trigger->camera : nullptr;
     cameraFollower->FollowSubtypeVirtual(camera != nullptr ? camera->second : nullptr);
-    if (camera != nullptr && (camera->flags & MainCamera::FlagPassesSecondValue) != 0)
+    if (camera != nullptr && camera->flags.setsPositionFollowRate != 0)
     {
-        cameraFollower->SetRateVirtual(camera->secondValue);
+        cameraFollower->SetRateVirtual(camera->positionFollowRate);
         return;
     }
 
@@ -585,7 +588,7 @@ void CameraRig::Step(TimeClock* clock)
 
 u32 CameraRig::CanChangeChunk(ChunkData* from, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -663,7 +666,8 @@ s32* CameraRigPlace(s32* fov, CameraRig* rig, const Matrix4x4* matrix, Vector4* 
 
 CameraLensNode* CameraLensNode::Construct(CameraLensNode* node)
 {
-    constexpr f32 Fov = 0x1.921fb6p-1f;
+    // 45 degrees in radians
+    constexpr f32 Fov = QuarterPi;
     constexpr f32 NearPlane = Rounded(0.1);
     constexpr f32 FarPlane = 1500.0f;
     constexpr f32 NtscPixelAspect = Rounded(0.96);
@@ -671,7 +675,8 @@ CameraLensNode* CameraLensNode::Construct(CameraLensNode* node)
     node->rig = nullptr;
     node->next = nullptr;
     node->vtable = g_CameraLensNodeVTable;
-    node->bits = BitProjectionChanged;
+    node->bits.value = 0;
+    node->bits.projectionChanged = 1;
     AngleFrom(&node->fov, Fov, AngleRadians);
     node->nearPlane = NearPlane;
     node->farPlane = FarPlane;
@@ -684,25 +689,25 @@ CameraLensNode* CameraLensNode::Construct(CameraLensNode* node)
 void CameraLensNode::Destroy(u32 destroyFlags)
 {
     vtable = g_CameraLensNodeVTable;
-    if ((bits & BitOwnsRig) != 0)
+    if (bits.ownsRig != 0)
     {
         if (rig != nullptr)
         {
             rig->DestroyVirtual(DestroyAndFree);
         }
 
-        bits &= ~BitOwnsRig;
+        bits.ownsRig = 0;
     }
 
     rig = nullptr;
-    if ((bits & BitOwnsNext) != 0)
+    if (bits.ownsNext != 0)
     {
         if (next != nullptr)
         {
             next->DestroyVirtual(DestroyAndFree);
         }
 
-        bits &= ~BitOwnsNext;
+        bits.ownsNext = 0;
     }
 
     next = nullptr;
@@ -711,7 +716,7 @@ void CameraLensNode::Destroy(u32 destroyFlags)
 
 u32 CameraLensNode::CanChangeChunk(ChunkData* from, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -757,14 +762,14 @@ void CameraLensNode::Step(TimeClock* clock, u32)
 
 u32 CameraLensNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) != 0)
+    if (clock->flags.running != 0)
     {
         ObjectPlace* place = owner->place;
         RotateAndTranslate(place);
         Matrix4x4 matrix = place->matrix;
         s32 angle;
         CameraLensBlend(&angle, this, clock, &matrix);
-        bits |= BitProjectionChanged;
+        bits.projectionChanged = 1;
         fov = angle;
         if (SetPlaceMatrix(owner->place, &matrix) != 0)
         {
@@ -796,20 +801,20 @@ s32* CameraLensBlend(s32* fov, CameraLensNode* lens, TimeClock* clock, Matrix4x4
         if (elapsed >= lens->blendTicks)
         {
             // Done: the rig blended to takes over
-            if ((lens->bits & CameraLensNode::BitOwnsRig) != 0)
+            if (lens->bits.ownsRig != 0)
             {
                 if (lens->rig != nullptr)
                 {
                     lens->rig->DestroyVirtual(DestroyAndFree);
                 }
 
-                lens->bits &= ~CameraLensNode::BitOwnsRig;
+                lens->bits.ownsRig = 0;
             }
 
-            u32 bits = lens->bits;
+            // (It goes on saying it owns the next rig, which it no longer has)
             lens->rig = lens->next;
             lens->next = nullptr;
-            lens->bits = (bits & ~CameraLensNode::BitOwnsRig) | (bits >> 1 & CameraLensNode::BitOwnsRig);
+            lens->bits.ownsRig = lens->bits.ownsNext;
             share = 1.0f;
             lens->blendStart = 0;
         }
@@ -819,7 +824,7 @@ s32* CameraLensBlend(s32* fov, CameraLensNode* lens, TimeClock* clock, Matrix4x4
             CameraRigPlace(&nextAngle, lens->next, matrix, &nextRotation, &nextPosition);
             share = static_cast<f32>(elapsed) * g_SecondsPerClockUnit /
                     (static_cast<f32>(lens->blendTicks) * g_SecondsPerClockUnit);
-            if ((lens->bits >> CameraLensNode::CurveShift & 7) == CameraLensNode::CurveEased)
+            if (lens->bits.curve == CurveSmooth)
             {
                 f32 squared = share * share;
                 f32 cubed = share * squared;
@@ -863,33 +868,33 @@ CameraRig* CameraLensNode::SetRig(CameraRig* to, u32 reset)
 {
     if (rig != to)
     {
-        if ((bits & BitOwnsRig) != 0)
+        if (bits.ownsRig != 0)
         {
             if (rig != nullptr)
             {
                 rig->DestroyVirtual(DestroyAndFree);
             }
 
-            bits &= ~BitOwnsRig;
+            bits.ownsRig = 0;
         }
 
         rig = to;
-        bits &= ~BitOwnsRig;
+        bits.ownsRig = 0;
     }
 
-    if ((bits & BitOwnsNext) != 0)
+    if (bits.ownsNext != 0)
     {
         if (next != nullptr)
         {
             next->DestroyVirtual(DestroyAndFree);
         }
 
-        bits &= ~BitOwnsNext;
+        bits.ownsNext = 0;
     }
 
     blendStart = 0;
     next = nullptr;
-    bits &= ~BitOwnsNext;
+    bits.ownsNext = 0;
     if (reset != 0 && rig != nullptr)
     {
         rig->ResetVirtual(owner);
@@ -909,21 +914,22 @@ CameraRig* CameraLensNode::BlendTo(CameraRig* to, s32 ticks, u8 curve)
     if (blendStart != 0)
     {
         // The blend going on ends at once
-        if ((bits & BitOwnsRig) != 0)
+        if (bits.ownsRig != 0)
         {
             rig->DestroyVirtual(DestroyAndFree);
-            bits &= ~BitOwnsRig;
+            bits.ownsRig = 0;
         }
 
         rig = next;
-        bits = (bits & ~BitOwnsRig) | (bits >> 1 & BitOwnsRig);
+        bits.ownsRig = bits.ownsNext;
     }
     else if (rig == to)
     {
         return next;
     }
 
-    bits = (bits & ~BitOwnsNext & ~CurveMask) | (curve & 7) << CurveShift;
+    bits.ownsNext = 0;
+    bits.curve = curve;
     blendTicks = ticks;
     next = to;
     blendStart = 0;
@@ -952,7 +958,7 @@ void CameraTarget::ConstructBase(CameraTarget* target)
 void CameraPositioner::ConstructBase(CameraPositioner* positioner)
 {
     positioner->vtable = g_CameraPositionerVTable;
-    positioner->unknown00 = 0;
+    positioner->unused00 = 0;
     positioner->smoothed = 1;
     positioner->fov = g_DefaultFov;
     positioner->rotation.z = 0.0f;
@@ -1011,7 +1017,7 @@ void CutsceneCameraRig::Prepare(InstanceContext*)
     AssembleVirtual();
 }
 
-void CutsceneCameraRig::Nothing()
+void CutsceneCameraRig::RestoreDefaults()
 {
 }
 
@@ -1030,7 +1036,8 @@ GameCameraRig* GameCameraRig::Construct(GameCameraRig* rig)
     rig->ownTarget.vtable = g_ScriptedCameraTargetVTable;
     rig->ownTarget.Reset();
     ScriptedCameraPositioner::Construct(&rig->ownPositioner);
-    rig->scriptBits = (rig->scriptBits & ~3u) | 4;
+    rig->scriptBits.unused0 = 0;
+    rig->scriptBits.unused2 = 1;
     rig->ResetScript();
     rig->Assemble();
     return rig;
@@ -1050,14 +1057,12 @@ void GameCameraRig::Prepare(InstanceContext*)
 {
     constexpr f32 OwnRate = 6.0f;
     ownCameraFollower.ownRate = OwnRate;
-    ownTargetFollower.bits = (ownTargetFollower.bits & ~CameraPointFollower::OwnWayMask) |
-                             CameraPointFollower::WaySquareRoot << CameraPointFollower::OwnWayShift;
-    ownCameraFollower.bits = (ownCameraFollower.bits & ~CameraPointFollower::OwnWayMask) |
-                             CameraPointFollower::WayLinear << CameraPointFollower::OwnWayShift;
+    ownTargetFollower.bits.ownWay = CameraPointFollower::WaySquareRoot;
+    ownCameraFollower.bits.ownWay = CameraPointFollower::WayLinear;
     ownTargetFollower.ownRate = OwnRate;
 }
 
-void GameCameraRig::Nothing()
+void GameCameraRig::RestoreDefaults()
 {
 }
 
@@ -1083,25 +1088,29 @@ void ClearPlace(Vector4* place)
 void GameCameraRig::ResetScript()
 {
     secondObject = nullptr;
-    scriptBits = (scriptBits & ~0x8u) | BitFrameWanted | BitFrameChanged;
-    scriptBits = (scriptBits & ~(BitHasFirstPlace | BitHasSecondPlace)) | BitWorldUp;
+    scriptBits.mirrored = 0;
+    scriptBits.frameWanted = 1;
+    scriptBits.frameChanged = 1;
+    scriptBits.hasFirstPlace = 0;
+    scriptBits.hasSecondPlace = 0;
+    scriptBits.worldUp = 1;
     firstObject = nullptr;
     ClearPlace(&firstPlace);
     ClearPlace(&secondPlace);
-    unknownB8 = 0;
-    unknownB4 = 0;
+    cameraPath = nullptr;
+    targetPath = nullptr;
 }
 
 void GameCameraRig::ClearFirstPlace()
 {
     ClearPlace(&firstPlace);
-    scriptBits &= ~BitHasFirstPlace;
+    scriptBits.hasFirstPlace = 0;
 }
 
 void GameCameraRig::ClearSecondPlace()
 {
     ClearPlace(&secondPlace);
-    scriptBits &= ~BitHasSecondPlace;
+    scriptBits.hasSecondPlace = 0;
 }
 
 namespace
@@ -1149,7 +1158,8 @@ void ScriptedCameraTarget::Destroy(u32 destroyFlags)
 
 void ScriptedCameraTarget::Reset()
 {
-    bits &= ~(BitMoving | CurveMask);
+    bits.moving = 0;
+    bits.curve = CurveEven;
     rotation.z = 0.0f;
     rotation.y = 0.0f;
     rotation.x = 0.0f;
@@ -1168,7 +1178,8 @@ f32 ScriptedCameraTarget::Value(CameraNode*)
 
 void ScriptedCameraTarget::Stop()
 {
-    bits &= ~(BitMoving | CurveMask);
+    bits.moving = 0;
+    bits.curve = CurveEven;
     moveTicks = 0;
     end = point;
     moveStart = 0;
@@ -1183,9 +1194,9 @@ f32 ScriptedCameraTarget::MoveShare(TimeClock* clock)
         return share;
     }
 
-    if ((bits & BitMoving) == 0)
+    if (bits.moving == 0)
     {
-        bits |= BitMoving;
+        bits.moving = 1;
         moveStart = clock->time;
         return 0.0f;
     }
@@ -1194,12 +1205,12 @@ f32 ScriptedCameraTarget::MoveShare(TimeClock* clock)
     if (!(since < moveTicks))
     {
         moveTicks = 0;
-        bits &= ~BitMoving;
+        bits.moving = 0;
         return share;
     }
 
     share = static_cast<f32>(since) * g_SecondsPerClockUnit / (static_cast<f32>(moveTicks) * g_SecondsPerClockUnit);
-    if ((bits >> CurveShift & 7) == CurveSmooth)
+    if (bits.curve == CurveSmooth)
     {
         share = SmoothStep(share);
     }
@@ -1277,7 +1288,9 @@ void ScriptedCameraPositioner::Take(f32, CameraNode*, CameraTarget*)
 
 void ScriptedCameraPositioner::Clear()
 {
-    bits &= ~(BitEasesIn | BitEasesOut | CurveMask);
+    bits.easesIn = 0;
+    bits.easesOut = 0;
+    bits.curve = CurveEven;
     rotation.z = 0.0f;
     rotation.y = 0.0f;
     rotation.x = 0.0f;
@@ -1291,12 +1304,12 @@ void ScriptedCameraPositioner::Clear()
     start = OriginPoint();
     end = OriginPoint();
     startFov = 0;
-    bits &= ~BitArcs;
+    bits.arcs = 0;
     endFov = 0;
     easeStart = 0;
     moveStart = 0;
-    unknown00 = 0;
-    unknown44 = 0;
+    unused00 = 0;
+    unused44 = 0;
     path = nullptr;
     fov = g_DefaultFov;
 }
@@ -1308,7 +1321,10 @@ void ScriptedCameraPositioner::Stop()
     f32 kept = start.w;
     start = g_DefaultBox.min;
     start.w = kept;
-    bits &= ~(BitEasesIn | BitEasesOut | BitArcs | CurveMask);
+    bits.easesIn = 0;
+    bits.easesOut = 0;
+    bits.arcs = 0;
+    bits.curve = CurveEven;
     fov = endFov;
     end = position;
 }
@@ -1317,7 +1333,7 @@ f32 ScriptedCameraPositioner::LinearShare(const u32* now)
 {
     s32 elapsed = static_cast<s32>(*now - static_cast<u32>(RoundTripTime(moveStart)));
     f32 share = TimeShare(&elapsed, moveTicks);
-    if ((bits >> CurveShift & 7) == CurveSmooth)
+    if (bits.curve == CurveSmooth)
     {
         share = SmoothStep(share);
     }
@@ -1329,10 +1345,10 @@ f32 ScriptedCameraPositioner::EaseShare(const u32* now)
 {
     s32 elapsed = static_cast<s32>(*now - static_cast<u32>(RoundTripTime(easeStart)));
     f32 share = TimeShare(&elapsed, easeTicks);
-    if ((bits >> CurveShift & 7) == CurveSmooth)
+    if (bits.curve == CurveSmooth)
     {
         share = SmoothStep(share);
-        if ((bits & BitEasesOut) != 0)
+        if (bits.easesOut != 0)
         {
             share = 1.0f - share;
         }
@@ -1354,7 +1370,7 @@ f32 ScriptedCameraPositioner::MoveShare(TimeClock* clock)
 
     if (!(moveTicks < static_cast<s32>(now - static_cast<u32>(RoundTripTime(moveStart)))))
     {
-        if ((bits & BitEasesIn) != 0)
+        if (bits.easesIn != 0)
         {
             if (easeStart == 0)
             {
@@ -1366,10 +1382,10 @@ f32 ScriptedCameraPositioner::MoveShare(TimeClock* clock)
             if (ease == 1.0f)
             {
                 easeStart = 0;
-                bits &= ~BitEasesIn;
+                bits.easesIn = 0;
             }
         }
-        else if ((bits & BitEasesOut) != 0)
+        else if (bits.easesOut != 0)
         {
             if (easeStart == 0)
             {
@@ -1383,7 +1399,7 @@ f32 ScriptedCameraPositioner::MoveShare(TimeClock* clock)
             if (ease == 1.0f)
             {
                 easeStart = 0;
-                bits &= ~BitEasesOut;
+                bits.easesOut = 0;
             }
         }
         else
@@ -1461,7 +1477,7 @@ void ScriptedCameraPositioner::Step(TimeClock* clock, CameraTarget* target)
 
         s32 from = startFov;
         fov = *AddRadiansToAngle(&from, share * (static_cast<f32>(endFov - startFov) * AngleToRadians));
-        if ((bits & BitArcs) != 0)
+        if (bits.arcs != 0)
         {
             f32 x = start.x - point.x;
             f32 y = start.y - point.y;
@@ -1499,7 +1515,7 @@ void ScriptedCameraPositioner::Step(TimeClock* clock, CameraTarget* target)
 
 void GameCameraRig::MakeFrame()
 {
-    if ((scriptBits & (BitFrameWanted | BitFrameChanged)) == 0)
+    if (scriptBits.frameWanted == 0 && scriptBits.frameChanged == 0)
     {
         return;
     }
@@ -1515,7 +1531,7 @@ void GameCameraRig::MakeFrame()
             other->SyncPosition();
             secondPlace = other->position;
         }
-        else if ((scriptBits & BitHasSecondPlace) == 0)
+        else if (scriptBits.hasSecondPlace == 0)
         {
             place = firstObject->place;
             RotateAndTranslate(place);
@@ -1528,7 +1544,7 @@ void GameCameraRig::MakeFrame()
             secondPlace = ahead;
         }
     }
-    else if ((scriptBits & BitHasFirstPlace) != 0 && secondObject != nullptr)
+    else if (scriptBits.hasFirstPlace != 0 && secondObject != nullptr)
     {
         ObjectPlace* other = secondObject->place;
         other->SyncPosition();
@@ -1557,7 +1573,7 @@ void GameCameraRig::MakeFrame()
     side.x = side.x * inverse;
     side.y = side.y * inverse;
     side.z = side.z * inverse;
-    if ((scriptBits & BitWorldUp) == 0)
+    if (scriptBits.worldUp == 0)
     {
         up.x = side.x;
         up.y = side.y;
@@ -1583,19 +1599,18 @@ void GameCameraRig::MakeFrame()
     origin.z = 0.0f;
     origin.w = 1.0f;
     MatrixFromColumns(&frame, &side, &up, &way, &origin);
-    scriptBits &= ~BitFrameChanged;
+    scriptBits.frameChanged = 0;
 }
 
 void InitCameraModule(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
 
     ConstructCameraShake(&g_CameraShake);
-    AngleFrom(&g_UnreadCameraAngle9A0, 0x1.921fb6p-1f, AngleRadians);
+    AngleFrom(&g_UnreadCameraAngle9A0, QuarterPi, AngleRadians);
     AngleFrom(&g_CameraAngleDeadZone, Rounded(0.1), AngleDegrees);
     AngleFrom(&g_UnreadCameraAngle9B0, 135.0f, AngleDegrees);
     AngleFrom(&g_UnreadCameraAngle9B8, -135.0f, AngleDegrees);
@@ -1628,5 +1643,5 @@ void InitCameraModule(u32 initialise, u32 priority)
 
 void ConstructCameraModule()
 {
-    InitCameraModule(1, 0xFFFF);
+    InitCameraModule(1, DefaultInitPriority);
 }

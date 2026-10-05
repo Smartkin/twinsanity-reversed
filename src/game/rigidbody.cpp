@@ -14,12 +14,13 @@
 
 namespace
 {
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// A rotation's length that's still one, and the one InverseLength4 squares
+// A rotation's length that's still one
 constexpr f32 ShortRotation = 0x1.5798ecp-27f;
-constexpr f32 RotationEpsilon = 0x1.b7cdfep-34f;
-// Radians in a 65536th of a turn
-constexpr f32 TurnStep = 0x1.921fb6p-14f;
+// A body's mass and the sides of its box when it's made, a sphere's sides and radius
+constexpr f32 DefaultMass = 1.0f;
+constexpr f32 DefaultSize = 1.5f;
+constexpr f32 SphereSize = Rounded(1.3);
+constexpr f32 SphereRadius = 0.5f;
 
 Vector4* PositionOf(Matrix4x4* matrix)
 {
@@ -65,14 +66,14 @@ EABI_EXPORT(FUN_002924e0, NegativeEllipsoidValue);
 
 void ConstrainPosition(BodyConstraint* constraint, Vector4* position)
 {
-    u32 flags = constraint->flags;
-    if ((flags & BodyConstraint::FlagFixed) != 0)
+    BodyConstraintFlags flags = constraint->flags;
+    if (flags.fixed != 0)
     {
         *position = constraint->fixedPosition;
         return;
     }
 
-    if ((flags & BodyConstraint::FlagOnLine) != 0)
+    if (flags.onLine != 0)
     {
         const Vector4& point = constraint->linePoint;
         const Vector4& direction = constraint->lineDirection;
@@ -89,7 +90,7 @@ void ConstrainPosition(BodyConstraint* constraint, Vector4* position)
         return;
     }
 
-    if ((flags & BodyConstraint::FlagOnPlane) != 0)
+    if (flags.onPlane != 0)
     {
         const Vector4& plane = constraint->plane;
         f32 distance = plane.x * position->x + plane.y * position->y + plane.z * position->z + plane.w;
@@ -101,14 +102,14 @@ void ConstrainPosition(BodyConstraint* constraint, Vector4* position)
 
 void ConstrainVelocity(BodyConstraint* constraint, Vector4* velocity)
 {
-    u32 flags = constraint->flags;
-    if ((flags & BodyConstraint::FlagFixed) != 0)
+    BodyConstraintFlags flags = constraint->flags;
+    if (flags.fixed != 0)
     {
         SetOrigin(velocity);
         return;
     }
 
-    if ((flags & BodyConstraint::FlagOnLine) != 0)
+    if (flags.onLine != 0)
     {
         const Vector4& direction = constraint->lineDirection;
         f32 along = direction.x * velocity->x + direction.y * velocity->y + direction.z * velocity->z;
@@ -121,7 +122,7 @@ void ConstrainVelocity(BodyConstraint* constraint, Vector4* velocity)
         return;
     }
 
-    if ((flags & BodyConstraint::FlagOnPlane) != 0)
+    if (flags.onPlane != 0)
     {
         const Vector4& plane = constraint->plane;
         f32 distance = plane.x * velocity->x + plane.y * velocity->y + plane.z * velocity->z;
@@ -133,7 +134,7 @@ void ConstrainVelocity(BodyConstraint* constraint, Vector4* velocity)
 
 void ConstrainRotation(BodyConstraint* constraint, Vector4* rotation)
 {
-    if ((constraint->flags & BodyConstraint::FlagHinge) != 0)
+    if (constraint->flags.hinge != 0)
     {
         // The nearest of the rotations s * a + t * b (a and b unit)
         const Vector4& a = constraint->hinge[0];
@@ -151,7 +152,7 @@ void ConstrainRotation(BodyConstraint* constraint, Vector4* rotation)
         nearest.w = a.w * s + b.w * t;
         if (ShortRotation < nearest.x * nearest.x + nearest.y * nearest.y + nearest.z * nearest.z + nearest.w * nearest.w)
         {
-            f32 inverse = InverseLength4(0.0f, RotationEpsilon, &nearest);
+            f32 inverse = InverseLength4(0.0f, InverseEpsilon, &nearest);
             nearest.x = nearest.x * inverse;
             nearest.y = nearest.y * inverse;
             nearest.z = nearest.z * inverse;
@@ -168,7 +169,7 @@ void ConstrainRotation(BodyConstraint* constraint, Vector4* rotation)
         rotation->w = nearest.w;
     }
 
-    if ((constraint->flags & BodyConstraint::FlagLimited) != 0)
+    if (constraint->flags.limited != 0)
     {
         LimitRotation(constraint, rotation);
     }
@@ -178,7 +179,7 @@ void LimitRotation(BodyConstraint* constraint, Vector4* rotation)
 {
     Vector4 given = *rotation;
     Vector4 center = constraint->limitCenter;
-    f32 inverse = InverseLength4(0.0f, RotationEpsilon, &center);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, &center);
     // The turn from the center
     Vector4 turn;
     turn.w = center.w * inverse;
@@ -190,7 +191,7 @@ void LimitRotation(BodyConstraint* constraint, Vector4* rotation)
     Vector4 axis;
     s32 angle;
     AxisAngleOfRotation(&turn, &axis, &angle, 0);
-    f32 radians = static_cast<f32>(angle) * TurnStep;
+    f32 radians = static_cast<f32>(angle) * AngleToRadians;
     f32 limit = constraint->limit;
     if (radians < -limit)
     {
@@ -219,7 +220,7 @@ void LimitRotation(BodyConstraint* constraint, Vector4* rotation)
 
 void SetHinge(BodyConstraint* constraint, const Vector4* localAxis, const Vector4* axis)
 {
-    constraint->flags |= BodyConstraint::FlagHinge;
+    constraint->flags.hinge = 1;
     constraint->hingeLocalAxis = *localAxis;
     constraint->hingeAxis = *axis;
     const Vector4& from = constraint->hingeLocalAxis;
@@ -248,12 +249,12 @@ void SetHinge(BodyConstraint* constraint, const Vector4* localAxis, const Vector
     turned.y = (normal.z * from.x - normal.x * from.z) + from.y * cosine;
     turned.z = (normal.x * from.y - normal.y * from.x) + from.z * cosine;
     turned.w = -(from.x * normal.x + from.y * normal.y + from.z * normal.z);
-    f32 scale = InverseLength4(0.0f, RotationEpsilon, &turn);
+    f32 scale = InverseLength4(0.0f, InverseEpsilon, &turn);
     turn.x = turn.x * scale;
     turn.y = turn.y * scale;
     turn.z = turn.z * scale;
     turn.w = turn.w * scale;
-    scale = InverseLength4(0.0f, RotationEpsilon, &turned);
+    scale = InverseLength4(0.0f, InverseEpsilon, &turned);
     turned.x = turned.x * scale;
     turned.y = turned.y * scale;
     turned.z = turned.z * scale;
@@ -277,7 +278,7 @@ void SetLocalHinge(BodyConstraint* constraint, const Vector4* localAxis)
 void SetRotationLimit(f32 limit, BodyConstraint* constraint)
 {
     constraint->limit = limit;
-    constraint->flags |= BodyConstraint::FlagLimited;
+    constraint->flags.limited = 1;
     const Vector4& rotation = constraint->body->rotation;
     constraint->limitCenter.x = rotation.x;
     constraint->limitCenter.y = rotation.y;
@@ -292,13 +293,17 @@ void FixHere(BodyConstraint* constraint)
 
 void FixAt(BodyConstraint* constraint, const Vector4* position)
 {
-    constraint->flags = (constraint->flags & ~BodyConstraint::FlagPositionKinds) | BodyConstraint::FlagFixed;
+    constraint->flags.onLine = 0;
+    constraint->flags.onPlane = 0;
+    constraint->flags.fixed = 1;
     constraint->fixedPosition = *position;
 }
 
 void KeepOnLine(BodyConstraint* constraint, const Vector4* direction)
 {
-    constraint->flags = (constraint->flags & ~BodyConstraint::FlagPositionKinds) | BodyConstraint::FlagOnLine;
+    constraint->flags.fixed = 0;
+    constraint->flags.onPlane = 0;
+    constraint->flags.onLine = 1;
     constraint->linePoint = *PositionOf(&constraint->body->matrix);
     constraint->lineDirection = *direction;
     f32 inverse = InverseLength(&constraint->lineDirection, LengthEpsilon);
@@ -316,20 +321,22 @@ void KeepOnPlaneThrough(BodyConstraint* constraint, const Vector4* normal)
 
 void KeepOnPlane(BodyConstraint* constraint, const Vector4* plane)
 {
-    constraint->flags = (constraint->flags & ~BodyConstraint::FlagPositionKinds) | BodyConstraint::FlagOnPlane;
+    constraint->flags.fixed = 0;
+    constraint->flags.onLine = 0;
+    constraint->flags.onPlane = 1;
     constraint->plane = *plane;
 }
 
 RigidBody* RigidBody::Construct(RigidBody* body)
 {
     GameNode::Construct(body);
-    body->constraint.flags = 0;
+    body->constraint.flags.value = 0;
     body->vtable = g_RigidBodyVTable;
     body->constraint.body = body;
     SetOrigin(&body->inverseInertia);
     SetOrigin(&body->restInverseInertia);
     SetOrigin(PositionOf(&body->matrix));
-    body->spin = {0.0f, 0.0f, 0.0f, 0.0f};
+    body->rotationRate = {0.0f, 0.0f, 0.0f, 0.0f};
     for (auto& row : body->worldInverseInertia.m)
     {
         for (f32& value : row)
@@ -350,15 +357,17 @@ RigidBody* RigidBody::Construct(RigidBody* body)
     body->lastVelocity = body->velocity;
     SetOrigin(&body->stepForce);
     SetOrigin(&body->stepTorque);
-    body->waterLevel = -0x1.93e594p+99f;
+    body->waterLevel = -Infinite;
     // The most it moves and turns are set after its state is made: what the heap had then
-    body->bodyFlags = FlagMoved | FlagTurned;
-    body->SetMassAndSize(1.0f, 1.5f, 1.5f, 1.5f);
-    body->maxSpin = 0x1.93e594p+99f;
-    body->maxSpeed = 0x1.93e594p+99f;
+    body->bodyFlags.value = 0;
+    body->bodyFlags.velocityStale = 1;
+    body->bodyFlags.rotationStale = 1;
+    body->SetMassAndSize(DefaultMass, DefaultSize, DefaultSize, DefaultSize);
+    body->maxSpin = Infinite;
+    body->maxSpeed = Infinite;
     SetOrigin(&body->force);
     SetOrigin(&body->torque);
-    body->unknown60 = 1.0f;
+    body->knockScale = 1.0f;
     body->lastTouched = nullptr;
     body->ignoredInstance = nullptr;
     return body;
@@ -377,7 +386,7 @@ u32 RigidBody::CanChangeChunk()
 
 u32 RigidBody::Kind()
 {
-    return 5;
+    return NodeRigidBody;
 }
 
 u32 RigidBody::Update()
@@ -385,14 +394,14 @@ u32 RigidBody::Update()
     return 0;
 }
 
-u32 RigidBody::Slot10()
+u32 RigidBody::GetClassId()
 {
-    return 0x1309;
+    return ClassId;
 }
 
 void RigidBody::UpdateState()
 {
-    if ((bodyFlags & FlagMoved) != 0)
+    if (bodyFlags.velocityStale != 0)
     {
         velocity = momentum;
         f32 scale = inverseMass;
@@ -416,10 +425,10 @@ void RigidBody::UpdateState()
             momentum = limited;
         }
 
-        bodyFlags &= ~FlagMoved;
+        bodyFlags.velocityStale = 0;
     }
 
-    if ((bodyFlags & FlagTurned) == 0)
+    if (bodyFlags.rotationStale == 0)
     {
         return;
     }
@@ -464,11 +473,11 @@ void RigidBody::UpdateState()
     // Half the angular velocity times the rotation
     const Vector4& q = rotation;
     const Vector4& w = angularVelocity;
-    spin.x = ((q.w * w.x - q.z * w.y) + q.y * w.z) * 0.5f;
-    spin.w = ((-q.x * w.x - q.y * w.y) - q.z * w.z) * 0.5f;
-    spin.z = ((-q.y * w.x + q.x * w.y) + q.w * w.z) * 0.5f;
-    spin.y = ((q.z * w.x + q.w * w.y) - q.x * w.z) * 0.5f;
-    bodyFlags &= ~FlagTurned;
+    rotationRate.x = ((q.w * w.x - q.z * w.y) + q.y * w.z) * 0.5f;
+    rotationRate.w = ((-q.x * w.x - q.y * w.y) - q.z * w.z) * 0.5f;
+    rotationRate.z = ((-q.y * w.x + q.x * w.y) + q.w * w.z) * 0.5f;
+    rotationRate.y = ((q.z * w.x + q.w * w.y) - q.x * w.z) * 0.5f;
+    bodyFlags.rotationStale = 0;
 }
 
 void RigidBody::ApplyConstraint()
@@ -477,7 +486,7 @@ void RigidBody::ApplyConstraint()
     ConstrainVelocity(&constraint, &momentum);
     ConstrainVelocity(&constraint, &velocity);
     ConstrainRotation(&constraint, &rotation);
-    if ((constraint.flags & BodyConstraint::FlagHinge) != 0)
+    if (constraint.flags.hinge != 0)
     {
         const Vector4& axis = constraint.hingeAxis;
         f32 along = angularMomentum.x * axis.x + angularMomentum.y * axis.y + angularMomentum.z * axis.z;
@@ -489,7 +498,7 @@ void RigidBody::ApplyConstraint()
         angularMomentum = alongAxis;
     }
 
-    if ((constraint.flags & BodyConstraint::FlagHinge) != 0)
+    if (constraint.flags.hinge != 0)
     {
         const Vector4& axis = constraint.hingeAxis;
         f32 along = angularVelocity.x * axis.x + angularVelocity.y * axis.y + angularVelocity.z * axis.z;
@@ -600,10 +609,9 @@ void RigidBody::SetAngularVelocity(const Vector4* value)
 
 void RigidBody::Damp(f32 amount, f32 share)
 {
-    constexpr f32 Tiny = 0x1.a36e2ep-15f;
     f32 cut = amount * share;
     f32 length = __builtin_sqrtf(momentum.x * momentum.x + momentum.y * momentum.y + momentum.z * momentum.z);
-    if (!(__builtin_fabsf(length) <= Tiny))
+    if (!(__builtin_fabsf(length) <= Epsilon))
     {
         f32 left = length - cut;
         if (left < 0.0f)
@@ -622,7 +630,7 @@ void RigidBody::Damp(f32 amount, f32 share)
 
     length = __builtin_sqrtf(angularMomentum.x * angularMomentum.x + angularMomentum.y * angularMomentum.y +
                              angularMomentum.z * angularMomentum.z);
-    if (__builtin_fabsf(length) <= Tiny)
+    if (__builtin_fabsf(length) <= Epsilon)
     {
         return;
     }
@@ -642,7 +650,7 @@ void RigidBody::Damp(f32 amount, f32 share)
     }
 
     // Retail marks the velocity out of date, not the angular one
-    bodyFlags |= FlagMoved;
+    bodyFlags.velocityStale = 1;
 }
 
 void RigidBody::Step(f32 seconds)
@@ -678,16 +686,17 @@ void RigidBody::Step(f32 seconds)
     angularMomentum.x = angularMomentum.x + stepTorque.x * seconds;
     angularMomentum.y = angularMomentum.y + stepTorque.y * seconds;
     angularMomentum.z = angularMomentum.z + stepTorque.z * seconds;
-    rotation.x = rotation.x + spin.x * seconds;
-    rotation.y = rotation.y + spin.y * seconds;
-    rotation.z = rotation.z + spin.z * seconds;
-    rotation.w = rotation.w + spin.w * seconds;
-    f32 inverse = InverseLength4(0.0f, RotationEpsilon, &rotation);
+    rotation.x = rotation.x + rotationRate.x * seconds;
+    rotation.y = rotation.y + rotationRate.y * seconds;
+    rotation.z = rotation.z + rotationRate.z * seconds;
+    rotation.w = rotation.w + rotationRate.w * seconds;
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, &rotation);
     rotation.x = rotation.x * inverse;
     rotation.y = rotation.y * inverse;
     rotation.z = rotation.z * inverse;
     rotation.w = rotation.w * inverse;
-    bodyFlags |= FlagMoved | FlagTurned;
+    bodyFlags.velocityStale = 1;
+    bodyFlags.rotationStale = 1;
     inverseInertia = restInverseInertia;
     UpdateState();
     SetOrigin(&stepForce);
@@ -702,7 +711,7 @@ void RigidBody::ApplyImpulse(const Vector4* impulse, const Vector4* point)
     momentum.x = momentum.x + impulse->x;
     momentum.y = momentum.y + impulse->y;
     momentum.z = momentum.z + impulse->z;
-    bodyFlags |= FlagMoved;
+    bodyFlags.velocityStale = 1;
     Vector4 local;
     VuRotateVector(&inverseMatrix, impulse, &local);
     Vector4 turn;
@@ -721,7 +730,7 @@ void RigidBody::ApplyImpulse(const Vector4* impulse, const Vector4* point)
     angularMomentum.x = angularMomentum.x - worldTurn.x;
     angularMomentum.y = angularMomentum.y - worldTurn.y;
     angularMomentum.z = angularMomentum.z - worldTurn.z;
-    bodyFlags |= FlagTurned;
+    bodyFlags.rotationStale = 1;
     impulseTotal = impulseTotal + __builtin_sqrtf(impulse->x * impulse->x + impulse->y * impulse->y + impulse->z * impulse->z);
 }
 
@@ -1023,7 +1032,7 @@ void VelocitiesBetween(f32 seconds, const Matrix4x4* before, const Matrix4x4* no
     Vector4 axis;
     s32 angle;
     AxisAngleOfRotation(&rotation, &axis, &angle, 0);
-    f32 radians = static_cast<f32>(angle) * TurnStep;
+    f32 radians = static_cast<f32>(angle) * AngleToRadians;
     f32 backRate = 1.0f / -seconds;
     axis.z = axis.z * radians * backRate;
     axis.x = axis.x * radians * backRate;
@@ -1034,7 +1043,10 @@ void VelocitiesBetween(f32 seconds, const Matrix4x4* before, const Matrix4x4* no
 DynamicBody* DynamicBody::Construct(DynamicBody* body)
 {
     RigidBody::Construct(body);
-    body->bits = (((body->bits | 0x1) & ~0x2u) | 0x4) & ~0x40u;
+    body->bits.placesInstance = 1;
+    body->bits.noCollisions = 0;
+    body->bits.tellsLanding = 1;
+    body->bits.placesPositionOnly = 0;
     body->vtable = g_DynamicBodyVTable;
     body->instance = nullptr;
     body->centerOfMass = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -1046,7 +1058,7 @@ DynamicBody* DynamicBody::Construct(DynamicBody* body)
     body->buoyancy = -1.0f;
     body->spinFriction = Rounded(0.01);
     body->drag = Rounded(0.001);
-    body->unknown32C = 1.0f;
+    body->unused32C = 1.0f;
     body->cache = nullptr;
     body->restingFrames = 0;
     body->collisionMask = 0;
@@ -1055,7 +1067,7 @@ DynamicBody* DynamicBody::Construct(DynamicBody* body)
     body->pushedLength = 0.0f;
     body->contactCallback = nullptr;
     body->touchCallback = nullptr;
-    SetOrigin(&body->unknown200);
+    SetOrigin(&body->unused200);
     return body;
 }
 
@@ -1078,7 +1090,7 @@ void DynamicBody::SetOwner(InstanceContext* owner)
     GameNode::SetOwner(owner);
 }
 
-void DynamicBody::Slot11()
+void DynamicBody::Float()
 {
 }
 
@@ -1106,12 +1118,10 @@ void SphereBody::Destroy(u32 destroyFlags)
 
 namespace
 {
-constexpr u32 IsSphereSlot = 15;
-
 // Each pair once, from the body first in memory, unless the other one is left out of the frames
 bool CollidesFromHere(const DynamicBody* body, const DynamicBody* other)
 {
-    return (other->bodyFlags & RigidBody::FlagLeftOut) != 0 || !(other < body);
+    return other->bodyFlags.leftOut != 0 || !(other < body);
 }
 }
 
@@ -1208,7 +1218,7 @@ void HullBody::SetCenterOfMass(const Vector4* center)
 
 PhysicsWorld* ConstructPhysicsWorld(PhysicsWorld* world)
 {
-    constexpr s32 Slots = 200;
+    constexpr s32 Slots = PhysicsWorld::Slots;
     world->capacity = Slots;
     world->bodies = static_cast<DynamicBody**>(MemoryAllocate2(Slots * sizeof(DynamicBody*)));
     world->freeCapacity = Slots;
@@ -1225,7 +1235,8 @@ PhysicsWorld* ConstructPhysicsWorld(PhysicsWorld* world)
 
 DynamicBody* AddPhysicsBody(PhysicsWorld* world, InstanceContext* instance, u32 sphere)
 {
-    constexpr u32 AttachToInstance = 1;
+    // Taken by a body (a free slot's index is no slot's)
+    constexpr s16 TakenSlot = -1;
     s16 slot = world->freeSlots[world->used];
     DynamicBody* body;
     if (sphere != 0)
@@ -1233,9 +1244,9 @@ DynamicBody* AddPhysicsBody(PhysicsWorld* world, InstanceContext* instance, u32 
         auto* made = static_cast<SphereBody*>(MemoryAllocate(sizeof(SphereBody)));
         DynamicBody::Construct(made);
         made->vtable = g_SphereBodyVTable;
-        made->SetMassAndSize(1.0f, Rounded(1.3), Rounded(1.3), Rounded(1.3));
+        made->SetMassAndSize(DefaultMass, SphereSize, SphereSize, SphereSize);
         made->scaleX = 1.0f;
-        made->radius = 0.5f;
+        made->radius = SphereRadius;
         made->ellipsoid = 0;
         made->scaleZ = 1.0f;
         made->scaleY = 1.0f;
@@ -1251,17 +1262,16 @@ DynamicBody* AddPhysicsBody(PhysicsWorld* world, InstanceContext* instance, u32 
         body = made;
     }
 
-    RegisterNode(instance, AttachToInstance, body);
+    RegisterNode(instance, AttachNode, body);
     body->slot = slot;
     world->bodies[slot] = body;
-    world->freeSlots[world->used] = -1;
+    world->freeSlots[world->used] = TakenSlot;
     world->used++;
     return body;
 }
 
 void RemovePhysicsBody(PhysicsWorld* world, DynamicBody* body)
 {
-    constexpr u32 ObjectNodeKind = 1;
     s16 slot = body->slot;
     if (world->bodies[slot] != body)
     {
@@ -1271,7 +1281,7 @@ void RemovePhysicsBody(PhysicsWorld* world, DynamicBody* body)
     if (body->owner->chunk == nullptr)
     {
         // Retail looks the object node up and does nothing with it
-        GetGameNode(&body->owner->nodes, ObjectNodeKind);
+        GetGameNode(&body->owner->nodes, NodeObject);
     }
     else
     {
@@ -1283,33 +1293,15 @@ void RemovePhysicsBody(PhysicsWorld* world, DynamicBody* body)
     world->freeSlots[world->used] = slot;
 }
 
-namespace
-{
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 MovementNodeKind = 0;
-// The object node's slots a body's contacts call: it collided (with what, where, the impulse), its rigid body landed, landed
-// hard and scraped on a surface (where, how fast), and slot 32 (what it touched, the body's velocity, the impulse)
-constexpr u32 CollidedSlot = 28;
-constexpr u32 LandedSlot = 29;
-constexpr u32 LandedHardSlot = 30;
-constexpr u32 ScrapedSlot = 31;
-constexpr u32 TouchedSlot = 32;
-// The agent's slot told a surface's contact message
-constexpr u32 AgentContactSlot = 9;
-// Bit 8 of a surface's collision mask: touching it sends its contact message (and marks the node's rigid body)
-constexpr u32 SendsContactMessage = 0x100;
-constexpr u64 TouchedMessageSurface = 0x100000;
-}
-
 u32 DynamicBody::SurfaceContact(const Vector4* localPoint, const Vector4* normal, CollisionSurface* surface, Vector4* impulseOut)
 {
     constexpr f32 HardLanding = Rounded(1.8);
     constexpr f32 Sliding = Rounded(0.01);
     constexpr f32 ScrapeShare = Rounded(0.3);
     f32 most = __builtin_fminf(surface->friction, friction);
-    f32 spin = spinFriction * surface->unknown1C;
-    f32 roll = rollFriction * surface->unknown18;
-    f32 strength = PointImpulse(restitution * surface->physics7, softness, localPoint, normal);
+    f32 spin = spinFriction * surface->spinFriction;
+    f32 roll = rollFriction * surface->rollFriction;
+    f32 strength = PointImpulse(restitution * surface->restitution, softness, localPoint, normal);
     Vector4 impulse;
     impulse.x = normal->x * strength;
     impulse.y = normal->y * strength;
@@ -1324,18 +1316,18 @@ u32 DynamicBody::SurfaceContact(const Vector4* localPoint, const Vector4* normal
         impulseOut->z = -impulseOut->z;
     }
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     ObjectRigidBody* rider = node->rigidBody;
-    if (surface != nullptr && rider != nullptr && (surface->collisionMask & SendsContactMessage) != 0)
+    if (surface != nullptr && rider != nullptr && surface->flags.sendsContactMessageToObjects != 0)
     {
         Agent* agent = node->agent;
-        CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &surface->contact, owner, 0u);
-        rider->bits90 |= TouchedMessageSurface;
+        CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &surface->contact, owner, 0u);
+        rider->state.touchedMessageSurface = 1;
     }
 
     // Its velocity before the impulse (its state isn't made again yet)
     Vector4 velocityBefore = velocity;
-    if ((bits & BitTellsLanding) != 0)
+    if (bits.tellsLanding != 0)
     {
         Vector4 change = impulse;
         change.x = change.x * inverseMass;
@@ -1345,8 +1337,8 @@ u32 DynamicBody::SurfaceContact(const Vector4* localPoint, const Vector4* normal
         {
             Vector4 point = *localPoint;
             VuTransformPoint(&matrix, &point, &point);
-            u32 told = CallVirtual<u32>(node, node->vtable, LandedSlot, surface, &point, &change);
-            bits = (bits & ~BitLanded) | (told & 1) << 3;
+            u32 told = CallVirtual<u32>(node, node->vtable, ObjectNode::LandedSlot, surface, &point, &change);
+            bits.landed = told & 1;
         }
     }
 
@@ -1394,13 +1386,13 @@ u32 DynamicBody::SurfaceContact(const Vector4* localPoint, const Vector4* normal
         scraping.y = velocityBefore.y * ScrapeShare;
         scraping.z = velocityBefore.z * ScrapeShare;
         scraping.w = 1.0f;
-        u32 told = CallVirtual<u32>(node, node->vtable, ScrapedSlot, surface, &point, &scraping);
-        bits = (bits & ~BitScraped) | (told & 1) << 5;
+        u32 told = CallVirtual<u32>(node, node->vtable, ObjectNode::ScrapedSlot, surface, &point, &scraping);
+        bits.scraped = told & 1;
     }
-    else if ((bits & BitLanded) == 0)
+    else if (bits.landed == 0)
     {
-        u32 told = CallVirtual<u32>(node, node->vtable, LandedHardSlot, surface, &point, &velocityBefore);
-        bits = (bits & ~BitLandedHard) | (told & 1) << 4;
+        u32 told = CallVirtual<u32>(node, node->vtable, ObjectNode::LandedHardSlot, surface, &point, &velocityBefore);
+        bits.landedHard = told & 1;
     }
 
     AngularFriction(spin, roll, &impulse, &g_DefaultBox.min);
@@ -1424,20 +1416,20 @@ u32 DynamicBody::BodyContact(const Vector4* point, const Vector4* normal, Dynami
     impulse.z = normal->z * negative;
     impulse.w = 1.0f;
     ApplyImpulse(&impulse, &local);
-    if ((owner->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (owner->flags.physicsBody)
     {
-        auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-        CallVirtual<void>(node, node->vtable, CollidedSlot, other->owner, point, &impulse);
+        auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
+        CallVirtual<void>(node, node->vtable, ObjectNode::CollidedSlot, other->owner, point, &impulse);
     }
 
     impulse.x = -impulse.x;
     impulse.y = -impulse.y;
     impulse.z = -impulse.z;
-    if ((other->owner->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (other->owner->flags.physicsBody)
     {
         // The other's node is looked up through its owner, this one's through its instance
-        auto* node = static_cast<ObjectNode*>(GetGameNode(&other->owner->nodes, ObjectNodeKind));
-        CallVirtual<void>(node, node->vtable, CollidedSlot, owner, point, &impulse);
+        auto* node = static_cast<ObjectNode*>(GetGameNode(&other->owner->nodes, NodeObject));
+        CallVirtual<void>(node, node->vtable, ObjectNode::CollidedSlot, owner, point, &impulse);
     }
 
     other->ApplyImpulse(&impulse, &otherLocal);
@@ -1545,13 +1537,13 @@ u32 DynamicBody::MovingPointContact(const Vector4* point, const Vector4* normal,
 
 u32 DynamicBody::InstanceContact(const Vector4* localPoint, const Vector4* normal, CollisionSurface* surface, InstanceContext* other)
 {
-    auto* otherNode = static_cast<ObjectNode*>(GetGameNode(&other->nodes, ObjectNodeKind));
+    auto* otherNode = static_cast<ObjectNode*>(GetGameNode(&other->nodes, NodeObject));
     u32 answer = 1;
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
     MovementNode* movement = nullptr;
     if (other != nullptr)
     {
-        movement = static_cast<MovementNode*>(GetGameNode(&other->nodes, MovementNodeKind));
+        movement = static_cast<MovementNode*>(GetGameNode(&other->nodes, NodeMovement));
     }
 
     if (movement != nullptr)
@@ -1582,27 +1574,27 @@ u32 DynamicBody::InstanceContact(const Vector4* localPoint, const Vector4* norma
         if (otherNode != nullptr)
         {
             Vector4 knock = pushed;
-            knock.x = knock.x * unknown60;
-            knock.y = knock.y * unknown60;
-            knock.z = knock.z * unknown60;
-            answer = CallVirtual<u32>(otherNode, otherNode->vtable, CollidedSlot, instance, &point, &knock);
+            knock.x = knock.x * knockScale;
+            knock.y = knock.y * knockScale;
+            knock.z = knock.z * knockScale;
+            answer = CallVirtual<u32>(otherNode, otherNode->vtable, ObjectNode::CollidedSlot, instance, &point, &knock);
         }
 
         if (node != nullptr)
         {
-            CallVirtual<void>(node, node->vtable, TouchedSlot, other, &velocity, &pushed);
-            if ((instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+            CallVirtual<void>(node, node->vtable, ObjectNode::BumpedSlot, other, &velocity, &pushed);
+            if (instance->flags.physicsBody)
             {
                 Vector4 knock;
                 knock.x = -pushed.x;
                 knock.y = -pushed.y;
                 knock.z = -pushed.z;
                 knock.w = 1.0f;
-                CallVirtual<void>(node, node->vtable, CollidedSlot, other, &point, &knock);
+                CallVirtual<void>(node, node->vtable, ObjectNode::CollidedSlot, other, &point, &knock);
             }
         }
 
-        bits &= ~BitTellsLanding;
+        bits.tellsLanding = 0;
         if (answer == 0)
         {
             return 0;
@@ -1625,16 +1617,16 @@ u32 DynamicBody::InstanceContact(const Vector4* localPoint, const Vector4* norma
         VuTransformPoint(&matrix, localPoint, &point);
         pointMade = true;
         Vector4 knock = pushed;
-        knock.x = knock.x * unknown60;
-        knock.y = knock.y * unknown60;
-        knock.z = knock.z * unknown60;
-        answer = CallVirtual<u32>(otherNode, otherNode->vtable, CollidedSlot, instance, &point, &knock);
+        knock.x = knock.x * knockScale;
+        knock.y = knock.y * knockScale;
+        knock.z = knock.z * knockScale;
+        answer = CallVirtual<u32>(otherNode, otherNode->vtable, ObjectNode::CollidedSlot, instance, &point, &knock);
     }
 
     if (node != nullptr)
     {
-        CallVirtual<void>(node, node->vtable, TouchedSlot, other, &velocity, &pushed);
-        if ((instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+        CallVirtual<void>(node, node->vtable, ObjectNode::BumpedSlot, other, &velocity, &pushed);
+        if (instance->flags.physicsBody)
         {
             if (!pointMade)
             {
@@ -1647,11 +1639,11 @@ u32 DynamicBody::InstanceContact(const Vector4* localPoint, const Vector4* norma
             knock.y = -pushed.y;
             knock.z = -pushed.z;
             knock.w = 1.0f;
-            CallVirtual<void>(node, node->vtable, CollidedSlot, other, &point, &knock);
+            CallVirtual<void>(node, node->vtable, ObjectNode::CollidedSlot, other, &point, &knock);
         }
     }
 
-    bits &= ~BitTellsLanding;
+    bits.tellsLanding = 0;
     if (answer == 0)
     {
         return 0;
@@ -1662,9 +1654,6 @@ u32 DynamicBody::InstanceContact(const Vector4* localPoint, const Vector4* norma
 
 namespace
 {
-// The object node's slot that stops its sound
-constexpr u32 StopSoundSlot = 44;
-
 // The inverse matrix made again from the matrix
 void InvertMatrix(RigidBody* body)
 {
@@ -1689,16 +1678,16 @@ void PlaceInstanceAt(InstanceContext* instance, Matrix4x4* placed, bool position
     }
 
     ObjectPlace* place = instance->place;
-    if ((place->bits & ObjectPlace::BitMatrixMoved) != 0)
+    if (place->bits.matrixMoved != 0)
     {
         place->position = *RowAt(&place->matrix, 3);
-        place->bits = place->bits & ~ObjectPlace::BitMoved & ~ObjectPlace::BitMatrixMoved;
+        place->MarkPositionSynced();
     }
 
     const Vector4* position = RowAt(placed, 3);
     if (!(position->x == place->position.x && position->y == place->position.y && position->z == place->position.z))
     {
-        place->bits = (place->bits | ObjectPlace::BitMoved) & ~ObjectPlace::BitMatrixMoved;
+        place->MarkMoved();
         place->position = *position;
         QueueObject(instance);
     }
@@ -1714,7 +1703,7 @@ void PlaceInstanceAtCenter(DynamicBody* body)
     position->x = position->x - center.x;
     position->y = position->y - center.y;
     position->z = position->z - center.z;
-    PlaceInstanceAt(body->instance, &placed, (body->bits & DynamicBody::BitPlacesPosition) != 0);
+    PlaceInstanceAt(body->instance, &placed, body->bits.placesPositionOnly != 0);
 }
 }
 
@@ -1733,13 +1722,14 @@ void DynamicBody::MoveTo(InstanceContext* to, u32 withMotion)
     Matrix4x4 turn;
     TransposeMatrix(&placed, 3, &turn);
     GetRotationVec(&rotation, &turn);
-    bodyFlags |= FlagMoved | FlagTurned;
+    bodyFlags.velocityStale = 1;
+    bodyFlags.rotationStale = 1;
     if (withMotion == 0)
     {
         return;
     }
 
-    auto* movement = to != nullptr ? static_cast<MovementNode*>(GetGameNode(&to->nodes, MovementNodeKind)) : nullptr;
+    auto* movement = to != nullptr ? static_cast<MovementNode*>(GetGameNode(&to->nodes, NodeMovement)) : nullptr;
     if (movement == nullptr)
     {
         return;
@@ -1760,7 +1750,7 @@ void DynamicBody::MoveTo(InstanceContext* to, u32 withMotion)
     speed.x = speed.x * rate;
     speed.y = speed.y * rate;
     speed.z = speed.z * rate;
-    bodyFlags &= ~FlagMoved;
+    bodyFlags.velocityStale = 0;
     velocity = speed;
     Vector4 pushed;
     pushed.x = velocity.x * mass;
@@ -1778,7 +1768,7 @@ void DynamicBody::MoveTo(InstanceContext* to, u32 withMotion)
     Vector4 axis;
     s32 angle;
     AxisAngleOfRotation(&turned, &axis, &angle, 0);
-    f32 radians = static_cast<f32>(angle) * TurnStep;
+    f32 radians = static_cast<f32>(angle) * AngleToRadians;
     f32 backRate = 1.0f / -seconds;
     axis.z = axis.z * radians * backRate;
     axis.x = axis.x * radians * backRate;
@@ -1788,30 +1778,35 @@ void DynamicBody::MoveTo(InstanceContext* to, u32 withMotion)
 
 void DynamicBody::PlaceInstance()
 {
-    if ((bits & BitPlacesInstance) != 0)
+    // The frames without a hard landing or a scrape its sound goes on for (a sphere's)
+    constexpr u32 QuietFrames = 5;
+    constexpr u32 SphereQuietFrames = 2;
+    if (bits.placesInstance != 0)
     {
         PlaceInstanceAtCenter(this);
     }
 
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, ObjectNodeKind));
-    if ((bits & (BitLandedHard | BitScraped)) != 0)
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, NodeObject));
+    if (bits.landedHard != 0 || bits.scraped != 0)
     {
         restingFrames = 0;
         return;
     }
 
     restingFrames++;
-    u32 most = CallVirtual<u32>(this, vtable, IsSphereSlot) != 0 ? 2 : 5;
+    u32 most = CallVirtual<u32>(this, vtable, IsSphereSlot) != 0 ? SphereQuietFrames : QuietFrames;
     if (most < restingFrames)
     {
-        CallVirtual<void>(node, node->vtable, StopSoundSlot);
+        CallVirtual<void>(node, node->vtable, ObjectNode::StopSoundSlot);
     }
 }
 
 void DynamicBody::StepDamping(f32 seconds)
 {
-    constexpr f32 FramesPerSecond = 60.0f;
     constexpr f32 Pushed = Rounded(0.01);
+    // The drag's scale while a step force pushes a floating body (a sphere's)
+    constexpr f32 PushedDragScale = 70.0f;
+    constexpr f32 SphereDragScale = 4.0f;
     Damp(lengthDrag, seconds);
     f32 kept;
     if (buoyancy < 0.0f)
@@ -1825,7 +1820,7 @@ void DynamicBody::StepDamping(f32 seconds)
             return;
         }
 
-        f32 scale = CallVirtual<u32>(this, vtable, IsSphereSlot) != 0 ? 4.0f : 70.0f;
+        f32 scale = CallVirtual<u32>(this, vtable, IsSphereSlot) != 0 ? SphereDragScale : PushedDragScale;
         kept = 1.0f - drag * scale * seconds * FramesPerSecond;
     }
 
@@ -1840,7 +1835,7 @@ void DynamicBody::StepDamping(f32 seconds)
     angularMomentum.x = angularMomentum.x * kept;
     angularMomentum.y = angularMomentum.y * kept;
     angularMomentum.z = angularMomentum.z * kept;
-    bodyFlags |= FlagMoved;
+    bodyFlags.velocityStale = 1;
 }
 
 void DynamicBody::PushOut(const Vector4* push, u32 limited)
@@ -1905,7 +1900,7 @@ void DynamicBody::LimitedPush(const Vector4* push)
 u32 DynamicBody::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
     constexpr f32 Slowed = Rounded(0.8);
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         *PositionOf(&matrix) = instance->box;
         InvertMatrix(this);
@@ -1919,7 +1914,7 @@ u32 DynamicBody::CanChangeChunk(ChunkData*, ChunkLinkData* link)
         slowedMomentum.y = velocity.y * mass;
         slowedMomentum.z = velocity.z * mass;
         slowedMomentum.w = 1.0f;
-        bodyFlags &= ~FlagMoved;
+        bodyFlags.velocityStale = 0;
         momentum = slowedMomentum;
         UpdateState();
         Vector4 spin = angularVelocity;
@@ -1943,7 +1938,8 @@ u32 DynamicBody::CanChangeChunk(ChunkData*, ChunkLinkData* link)
     TransformVectorThroughLink(link, &position, 1);
     *PositionOf(&matrix) = position;
     InvertMatrix(this);
-    bodyFlags |= FlagMoved | FlagTurned;
+    bodyFlags.velocityStale = 1;
+    bodyFlags.rotationStale = 1;
     return 1;
 }
 
@@ -1951,15 +1947,13 @@ u32 SphereBody::CollideWithWorld()
 {
     constexpr f32 BoxMargin = Rounded(0.01);
     constexpr f32 RisingDamping = Rounded(0.3);
-    // A surface's collision mask bit 6: solid to objects (else it's water to them)
-    constexpr u32 SolidToObjects = 0x40;
-    if ((bits & BitNoCollisions) != 0)
+    if (bits.noCollisions != 0)
     {
         return 0;
     }
 
     u32 inWater = 0;
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, NodeObject));
     CollisionCache* hits = Cache();
     UpdateState();
     // What SphereTouchesTriangle pushes (its w stays 1)
@@ -1979,7 +1973,7 @@ u32 SphereBody::CollideWithWorld()
         triangle.vertices[1] = hit->vertices[1];
         triangle.vertices[2] = hit->vertices[2];
         triangle.surface = hit->surface;
-        triangle.unknown32 = hit->unknown32;
+        triangle.unused32 = hit->unused32;
         TransformCollisionHit(&triangle, &inverseMatrix);
         if (ellipsoid != 0)
         {
@@ -1997,7 +1991,7 @@ u32 SphereBody::CollideWithWorld()
             continue;
         }
 
-        if ((GetTriangleSurface(&triangle)->collisionMask & SolidToObjects) != 0)
+        if (GetTriangleSurface(&triangle)->flags.solidToObjects != 0)
         {
             // Where it touches, on the sphere toward the triangle
             Vector4 point = out;
@@ -2037,7 +2031,7 @@ u32 SphereBody::CollideWithWorld()
             normal.y = normal.y * inverse;
             normal.z = normal.z * inverse;
             Damp(lengthDrag, 1.0f);
-            bits |= BitTellsLanding;
+            bits.tellsLanding = 1;
             SurfaceContact(&point, &normal, GetTriangleSurface(&triangle), nullptr);
         }
         else
@@ -2062,7 +2056,7 @@ u32 SphereBody::CollideWithWorld()
             }
         }
 
-        bodyFlags |= FlagTouched;
+        bodyFlags.touchedWorld = 1;
         if (contactCallback != nullptr)
         {
             contactCallback(hit, contactArgument);
@@ -2071,7 +2065,7 @@ u32 SphereBody::CollideWithWorld()
 
     if (inWater == 0)
     {
-        node->unknown134 = -1;
+        node->waterSurface = ObjectNode::NoSurface;
     }
     else if (0.0f < highest)
     {
@@ -2094,13 +2088,13 @@ constexpr f32 OtherShare = Rounded(0.50005);
 // Both bodies told they touched each other (and their callbacks, each given the other's hull it touched)
 void TellTouched(DynamicBody* body, DynamicBody* other, u32 hull, u32 otherHull)
 {
-    body->bodyFlags |= RigidBody::FlagTouchedBody;
+    body->bodyFlags.touchedBody = 1;
     if (body->touchCallback != nullptr)
     {
         body->touchCallback(other->instance, hull, body->touchArgument);
     }
 
-    other->bodyFlags |= RigidBody::FlagTouchedBody;
+    other->bodyFlags.touchedBody = 1;
     if (other->touchCallback != nullptr)
     {
         other->touchCallback(body->instance, otherHull, other->touchArgument);
@@ -2246,24 +2240,21 @@ u32 CollideSphereWithHulls(SphereBody* sphere, DynamicBody* other)
 void SphereBody::CollideWithInstances()
 {
     constexpr u16 MostInstances = 20;
-    // Instances with a sphere contact (bit 4), all the wanted flags, awake
-    constexpr u32 WantedFlags = ReferencedObject::FlagSphereContact;
-    constexpr u32 PhysicsNodeKind = 5;
-    constexpr u32 CollideSlot = 14;
     Box box;
     box.min = *PositionOf(&matrix);
     box.max = *PositionOf(&matrix);
     GrowBox(radius, &box);
     InstanceContext* results[MostInstances];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = reinterpret_cast<void**>(results);
     query.most = MostInstances;
     query.count = 0;
-    query.distance = 0x1.93e594p+99f;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
-    query.wantedFlags = WantedFlags;
+    query.distance = Infinite;
+    // Instances with their collision active, all the wanted flags, awake
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
+    query.wantedFlags = ReferencedObjectFlags::CollisionActive;
     // Retail clears bit 0 and sets bit 1 of what its stack had (nothing reads the rest)
-    query.bits = 0x2;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.skipped[0] = nullptr;
     query.instance = nullptr;
     query.skipped[1] = nullptr;
@@ -2278,9 +2269,9 @@ void SphereBody::CollideWithInstances()
             continue;
         }
 
-        if ((other->nodes.mask & (1u << PhysicsNodeKind)) != 0)
+        if ((other->nodes.mask & (1u << NodeRigidBody)) != 0)
         {
-            auto* body = other != nullptr ? static_cast<DynamicBody*>(GetGameNode(&other->nodes, PhysicsNodeKind)) : nullptr;
+            auto* body = other != nullptr ? static_cast<DynamicBody*>(GetGameNode(&other->nodes, NodeRigidBody)) : nullptr;
             CallVirtual<u32>(this, vtable, CollideSlot, body);
         }
         else
@@ -2317,7 +2308,7 @@ u32 SphereBody::TouchHulls(InstanceContext* other)
             }
         }
 
-        bodyFlags |= FlagTouchedBody;
+        bodyFlags.touchedBody = 1;
         if (touchCallback != nullptr)
         {
             touchCallback(other, index, touchArgument);
@@ -2417,9 +2408,7 @@ void HullBody::CopyHulls(ObjectCollision* collision)
     hulls = nullptr;
     s32 count = GetHullCount(collision);
     hullCount = count;
-    auto* block = static_cast<u32*>(MemoryAllocate2(static_cast<u32>(count) << 5 | 0x10));
-    block[0] = count;
-    auto* made = reinterpret_cast<CollisionHull*>(block + 4);
+    CollisionHull* made = NewArray<CollisionHull>(count);
     CollisionHull* hull = made;
     for (s32 left = count - 1; left != -1; left--, hull++)
     {
@@ -2449,16 +2438,14 @@ void HullBody::CopyHulls(ObjectCollision* collision)
 
 u32 HullBody::CollideWithWorld()
 {
-    constexpr u32 SolidToObjects = 0x40;
-    constexpr u32 FloatSlot = 11;
-    if ((bits & BitNoCollisions) != 0)
+    if (bits.noCollisions != 0)
     {
         return 0;
     }
 
     u32 inWater = 0;
     f32 deepest = 0.0f;
-    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNode*>(GetGameNode(&owner->nodes, NodeObject));
     const Box* ownerBox = owner->CollisionBox();
     for (s32 index = 0; index < hullCount;)
     {
@@ -2492,7 +2479,7 @@ u32 HullBody::CollideWithWorld()
                 continue;
             }
 
-            if ((GetTriangleSurface(hit)->collisionMask & SolidToObjects) != 0)
+            if (GetTriangleSurface(hit)->flags.solidToObjects != 0)
             {
                 Vector4 normal = push;
                 f32 inverse = InverseLength(&normal, LengthEpsilon);
@@ -2500,7 +2487,7 @@ u32 HullBody::CollideWithWorld()
                 normal.y = normal.y * inverse;
                 normal.z = normal.z * inverse;
                 PushOut(&push, 0);
-                bits |= BitTellsLanding;
+                bits.tellsLanding = 1;
                 VuTransformPoint(&inverseMatrix, &point, &point);
                 SurfaceContact(&point, &normal, GetTriangleSurface(hit), nullptr);
                 Damp(lengthDrag, 1.0f);
@@ -2523,7 +2510,7 @@ u32 HullBody::CollideWithWorld()
                 }
             }
 
-            bodyFlags |= FlagTouched;
+            bodyFlags.touchedWorld = 1;
             if (contactCallback != nullptr)
             {
                 contactCallback(hit, contactArgument);
@@ -2533,7 +2520,7 @@ u32 HullBody::CollideWithWorld()
 
     if (inWater == 0)
     {
-        node->unknown134 = -1;
+        node->waterSurface = ObjectNode::NoSurface;
         // Still floating while its box is below the last level
         if (0.0f < buoyancy && ownerBox->max.y < waterLevel)
         {
@@ -2583,10 +2570,6 @@ void HullBody::Float(f32 level)
 void HullBody::CollideWithInstances()
 {
     constexpr u16 MostInstances = 20;
-    constexpr u32 PhysicsNodeKind = 5;
-    constexpr u32 CollideSlot = 14;
-    constexpr u32 FloatSlot = 11;
-    constexpr u32 SolidToObjects = 0x40;
     if (hulls == nullptr)
     {
         CopyHulls(&instance->collision);
@@ -2607,15 +2590,15 @@ void HullBody::CollideWithInstances()
     }
 
     InstanceContext* results[MostInstances];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.most = MostInstances;
     query.results = reinterpret_cast<void**>(results);
     query.count = 0;
-    query.distance = 0x1.93e594p+99f;
+    query.distance = Infinite;
     // Any instance awake: all of no flags wanted (retail clears bit 0 and sets bit 1 of what its stack had)
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.wantedFlags = 0;
-    query.bits = 0x2;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.skipped[0] = nullptr;
     query.instance = nullptr;
     query.skipped[1] = nullptr;
@@ -2632,12 +2615,12 @@ void HullBody::CollideWithInstances()
             continue;
         }
 
-        if ((other->nodes.mask & (1u << PhysicsNodeKind)) != 0)
+        if ((other->nodes.mask & (1u << NodeRigidBody)) != 0)
         {
-            auto* body = other != nullptr ? static_cast<DynamicBody*>(GetGameNode(&other->nodes, PhysicsNodeKind)) : nullptr;
+            auto* body = other != nullptr ? static_cast<DynamicBody*>(GetGameNode(&other->nodes, NodeRigidBody)) : nullptr;
             CallVirtual<u32>(this, vtable, CollideSlot, body);
         }
-        else if ((other->flags & ReferencedObject::FlagSphereContact) != 0)
+        else if (other->flags.collisionActive)
         {
             TouchInstanceHulls(other);
         }
@@ -2645,7 +2628,7 @@ void HullBody::CollideWithInstances()
         {
             // A water volume: floated on at the top of its box
             CollisionSurface* surface = GetHullSurface(&other->collision, 0);
-            if (surface != nullptr && (surface->collisionMask & SolidToObjects) == 0)
+            if (surface != nullptr && surface->flags.solidToObjects == 0)
             {
                 CallVirtual<void>(this, vtable, FloatSlot, other->CollisionBox()->max.y);
             }
@@ -2705,7 +2688,7 @@ u32 HullBody::TouchInstanceHulls(InstanceContext* other)
                 }
             }
 
-            bodyFlags |= FlagTouchedBody;
+            bodyFlags.touchedBody = 1;
             if (touchCallback != nullptr)
             {
                 touchCallback(other, index, touchArgument);
@@ -2732,9 +2715,9 @@ u32 CollideHullBodies(HullBody* body, DynamicBody* other)
         {
             // Both instances put at their bodies' matrices as they are (the first one's flag the other way round)
             Matrix4x4 bodyMatrix = body->matrix;
-            PlaceInstanceAt(body->instance, &bodyMatrix, (body->bits & DynamicBody::BitPlacesPosition) == 0);
+            PlaceInstanceAt(body->instance, &bodyMatrix, body->bits.placesPositionOnly == 0);
             Matrix4x4 otherMatrix = other->matrix;
-            PlaceInstanceAt(other->instance, &otherMatrix, (other->bits & DynamicBody::BitPlacesPosition) != 0);
+            PlaceInstanceAt(other->instance, &otherMatrix, other->bits.placesPositionOnly != 0);
             CollisionHull* hull = &body->hulls[own];
             CollisionHull* otherHull = &otherHulls->hulls[index];
             Box box;
@@ -2780,9 +2763,7 @@ u32 CollideHullBodies(HullBody* body, DynamicBody* other)
 
 void StepPhysicsWorld(PhysicsWorld* world)
 {
-    constexpr s32 Slots = 200;
-    constexpr u32 CollideWithWorldSlot = 12;
-    constexpr u32 CollideWithInstancesSlot = 13;
+    constexpr s32 Slots = PhysicsWorld::Slots;
     DynamicBody* bodies[Slots];
     f32 seconds[Slots];
     s32 count = 0;
@@ -2795,19 +2776,19 @@ void StepPhysicsWorld(PhysicsWorld* world)
         }
 
         InstanceContext* instance = body->instance;
-        if ((instance->flags & ReferencedObject::FlagAsleep) != 0)
+        if (instance->flags.asleep)
         {
             continue;
         }
 
         TimeClock* clock = GetContextClock(instance);
-        if ((clock->flags & TimeClock::FlagRunning) == 0)
+        if (clock->flags.running == 0)
         {
             continue;
         }
 
         body = world->bodies[slot];
-        if ((body->bodyFlags & RigidBody::FlagLeftOut) != 0)
+        if (body->bodyFlags.leftOut != 0)
         {
             continue;
         }
@@ -2821,8 +2802,11 @@ void StepPhysicsWorld(PhysicsWorld* world)
     {
         DynamicBody* body = bodies[index];
         s32 substeps = body->substeps;
-        body->bits &= ~DynamicBody::BitLanded & ~DynamicBody::BitLandedHard & ~DynamicBody::BitScraped;
-        body->bodyFlags &= ~RigidBody::FlagTouched & ~RigidBody::FlagTouchedBody;
+        body->bits.landed = 0;
+        body->bits.landedHard = 0;
+        body->bits.scraped = 0;
+        body->bodyFlags.touchedWorld = 0;
+        body->bodyFlags.touchedBody = 0;
         body->impulseTotal = 0.0f;
         f32 step = seconds[index] / static_cast<f32>(substeps);
         SetOrigin(&body->limitedPushes);
@@ -2831,8 +2815,8 @@ void StepPhysicsWorld(PhysicsWorld* world)
         for (s32 left = substeps; left > 0; left--)
         {
             body->Step(step);
-            CallVirtual<void>(body, body->vtable, CollideWithInstancesSlot);
-            CallVirtual<void>(body, body->vtable, CollideWithWorldSlot);
+            CallVirtual<void>(body, body->vtable, DynamicBody::CollideWithInstancesSlot);
+            CallVirtual<void>(body, body->vtable, DynamicBody::CollideWithWorldSlot);
             body->lastVelocity = body->velocity;
         }
     }
@@ -2850,7 +2834,7 @@ void StepPhysicsWorld(PhysicsWorld* world)
 
 void InitRigidBodyStatics(u32 initialise, u32 priority)
 {
-    if (priority == 0xFFFF && initialise != 0)
+    if (priority == DefaultInitPriority && initialise != 0)
     {
         g_RigidBodyStatic = 0;
     }
@@ -2858,7 +2842,7 @@ void InitRigidBodyStatics(u32 initialise, u32 priority)
 
 void ConstructRigidBodyModule()
 {
-    InitRigidBodyStatics(1, 0xFFFF);
+    InitRigidBodyStatics(1, DefaultInitPriority);
 }
 
 f32 InverseLengthKeepingSquare(const Vector4* vector, f32* lengthSquared)
@@ -2875,7 +2859,7 @@ f32 InverseLengthKeepingSquare(const Vector4* vector, f32* lengthSquared)
 
 void RigidBody::StartRide()
 {
-    bodyFlags |= FlagLeftOut;
+    bodyFlags.leftOut = 1;
     f32 kept = momentum.w;
     momentum = g_DefaultBox.min;
     momentum.w = kept;
@@ -2887,19 +2871,17 @@ void RigidBody::StartRide()
 
 void RigidBody::ReleaseRide()
 {
-    constexpr u32 ObjectNodeKind = 1;
-    constexpr u32 TakesPacketsSlot = 15;
-    if ((bodyFlags & FlagLeftOut) == 0)
+    if (bodyFlags.leftOut == 0)
     {
         return;
     }
 
-    bodyFlags &= ~FlagLeftOut;
+    bodyFlags.leftOut = 0;
     InstanceContext* instance = owner;
-    if ((instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+    if (instance->flags.physicsBody)
     {
-        auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
-        if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0)
+        auto* node = static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
+        if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0)
         {
             RestartTrajectory(node->trajectory);
         }
@@ -2932,7 +2914,8 @@ void RigidBody::SetMatrix(const Matrix4x4* placed)
     Matrix4x4 turn;
     TransposeMatrix(placed, 3, &turn);
     GetRotationVec(&rotation, &turn);
-    bodyFlags |= FlagMoved | FlagTurned;
+    bodyFlags.velocityStale = 1;
+    bodyFlags.rotationStale = 1;
 }
 
 void RigidBody::SetPosition(const Vector4* position)
@@ -2955,7 +2938,8 @@ void RigidBody::SetTurn(const Matrix4x4* turned)
     Matrix4x4 turn;
     TransposeMatrix(turned, 3, &turn);
     GetRotationVec(&rotation, &turn);
-    bodyFlags |= FlagMoved | FlagTurned;
+    bodyFlags.velocityStale = 1;
+    bodyFlags.rotationStale = 1;
 }
 
 void RigidBody::SetVelocity(const Vector4* moving)
@@ -2966,7 +2950,7 @@ void RigidBody::SetVelocity(const Vector4* moving)
     pushed.y = velocity.y * mass;
     pushed.z = velocity.z * mass;
     pushed.w = 1.0f;
-    bodyFlags &= ~FlagMoved;
+    bodyFlags.velocityStale = 0;
     momentum = pushed;
     UpdateState();
 }
@@ -2976,7 +2960,7 @@ namespace
 // What's left of a share for every 60th of a second of a time, none past all of it
 f32 LeftAfter(f32 share, f32 seconds)
 {
-    f32 left = 1.0f - share * seconds * 60.0f;
+    f32 left = 1.0f - share * seconds * FramesPerSecond;
     if (left < 0.0f)
     {
         left = 0.0f;
@@ -2992,7 +2976,7 @@ void SlowAlongAxis(RigidBody* body, f32 share, f32 seconds, u32 axis)
     RotateAndTranslate(place);
     Vector4 along = *RowOf(&place->matrix, axis);
     ScaleAlongAxis(left, &body->momentum, &along, 1);
-    body->bodyFlags |= RigidBody::FlagMoved;
+    body->bodyFlags.velocityStale = 1;
 }
 }
 
@@ -3005,7 +2989,7 @@ void RigidBody::Slow(f32 share, f32 seconds)
     angularMomentum.x = angularMomentum.x * left;
     angularMomentum.y = angularMomentum.y * left;
     angularMomentum.z = angularMomentum.z * left;
-    bodyFlags |= FlagMoved;
+    bodyFlags.velocityStale = 1;
 }
 
 void RigidBody::SlowAlongX(f32 share, f32 seconds)
@@ -3089,7 +3073,7 @@ void DynamicBody::SetInstancePosition(const Vector4* position)
 
 void DynamicBody::SetCacheMask(u32 mask)
 {
-    Cache()->mask = mask;
+    Cache()->surfaceMask = mask;
 }
 
 void SphereBody::SetEllipsoid(f32 x, f32 y, f32 z)
@@ -3228,7 +3212,7 @@ u32 EllipsoidsApart(EllipsoidPair* pair, Vector4* separation, Vector4* other, co
 {
     constexpr s32 Steps = 12;
     constexpr f32 FirstStep = 0x1.3b13b2p-4f;
-    constexpr f32 Tolerance = 0x1.a36e2ep-15f;
+    constexpr f32 Tolerance = Epsilon;
     f32 largest = -1.0f;
     f32 step = FirstStep;
     f32 along = 0.0f + step;
@@ -3346,12 +3330,10 @@ f32 NegativeEllipsoidValue(EllipsoidPair* pair, f32 along)
 
 void EllipsoidProducts(EllipsoidPair* pair)
 {
-    // Each axis's next one (retail's table at D_00305430)
-    constexpr s32 Next[3] = {1, 2, 0};
     for (s32 axis = 0; axis < 3; axis++)
     {
-        s32 next = Next[axis];
-        s32 after = Next[next];
+        s32 next = NextAxis[axis];
+        s32 after = NextAxis[next];
         pair->inverseProducts[axis] = pair->inverseRadii[next] * pair->inverseRadii[after];
         pair->otherProducts[axis] = pair->otherSquares[next] * pair->otherSquares[after];
     }

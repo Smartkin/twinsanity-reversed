@@ -23,11 +23,20 @@ namespace
 {
 constexpr s32 ChromaRoutines = 8;
 // A reference's macroblocks in the scratchpad: the column of two its block starts in, then the column to its right
-constexpr s32 ReferenceBytes = 4 * MacroblockBytes;
 constexpr u32 ColumnQuadwords = 2 * MacroblockQuadwords;
-constexpr s32 LumaBytes = 0x100;
-// The prediction: the luma's rows of 16 bit pixels, then the chroma's
-constexpr s32 PredictionChroma = 0x200;
+constexpr u32 ColumnBytes = ColumnQuadwords * 16;
+// A macroblock's luma: 16 rows of 16 pixels (a byte each), then its chroma's Cb and Cr: 8 rows of 8 each
+constexpr s32 LumaShift = 4;
+constexpr s32 LumaRows = 1 << LumaShift;
+constexpr s32 LumaRowBytes = 1 << LumaShift;
+constexpr s32 LumaBytes = LumaRows * LumaRowBytes;
+constexpr s32 ChromaShift = 3;
+constexpr s32 ChromaRows = 1 << ChromaShift;
+constexpr s32 ChromaRowBytes = 1 << ChromaShift;
+// The prediction: the luma's rows of 16 bit pixels (32 bytes), then the chroma's (16 bytes)
+constexpr s32 PredictionLumaRowShift = 5;
+constexpr s32 PredictionChromaRowShift = 4;
+constexpr s32 PredictionChroma = LumaRows << PredictionLumaRowShift;
 
 // (vector * distance + (vector > 0)) / 2: a vector scaled to a field one or three away, rounded away from zero
 s32 DualPrimeScaled(s32 vector, s32 distance)
@@ -91,34 +100,36 @@ void GetReferences(MpegSystem* sys, s32 x, s32 y, s32 type, s32 motionType, Mpeg
                    s32* dmVector)
 {
     sys->buffers[sys->bufferIndex].referenceCount = 0;
+    MacroblockType macroblock = {static_cast<u32>(type)};
     // A backward prediction is averaged with the forward one
     s32 forward = 0;
-    if ((type & MacroblockForward) != 0 || sys->pictureCodingType == MpegPictureP)
+    if (macroblock.forward || sys->pictureCodingType == MpegPictureP)
     {
         MpegVector* first = &predictors[0][0];
         MpegVector* second = &predictors[1][0];
         if (sys->pictureStructure == MpegFrame)
         {
             // A P picture's macroblock without vectors has frame prediction
-            if (motionType == MpegMotionFrame || (type & MacroblockForward) == 0)
+            if (motionType == MpegMotionFrame || !macroblock.forward)
             {
-                GetReference(sys, sys->frames[0], 0, 0, 0, 16, x, y, first->horizontal, first->vertical, 0, 0);
+                GetReference(sys, sys->frames[MpegPast], 0, 0, 0, 16, x, y, first->horizontal, first->vertical, 0, 0);
             }
             else if (motionType == MpegMotionField)
             {
-                GetReference(sys, sys->frames[0], fieldSelect[0][0], 0, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1, 0);
-                GetReference(sys, sys->frames[0], fieldSelect[1][0], 1, 0, 8, x, y, second->horizontal, second->vertical >> 1, 1,
-                             0);
+                GetReference(sys, sys->frames[MpegPast], fieldSelect[0][0], 0, 0, 8, x, y, first->horizontal, first->vertical >> 1,
+                             1, 0);
+                GetReference(sys, sys->frames[MpegPast], fieldSelect[1][0], 1, 0, 8, x, y, second->horizontal,
+                             second->vertical >> 1, 1, 0);
             }
             else if (motionType == MpegMotionDualPrime)
             {
                 // Each field from the field of its parity averaged with the other's
                 MpegVector vectors[2];
                 DualPrimeVectors(sys, vectors, dmVector, first->horizontal, first->vertical >> 1);
-                GetReference(sys, sys->frames[0], 0, 0, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1, 0);
-                GetReference(sys, sys->frames[0], 1, 0, 0, 8, x, y, vectors[0].horizontal, vectors[0].vertical, 1, 1);
-                GetReference(sys, sys->frames[0], 1, 1, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1, 0);
-                GetReference(sys, sys->frames[0], 0, 1, 0, 8, x, y, vectors[1].horizontal, vectors[1].vertical, 1, 1);
+                GetReference(sys, sys->frames[MpegPast], 0, 0, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1, 0);
+                GetReference(sys, sys->frames[MpegPast], 1, 0, 0, 8, x, y, vectors[0].horizontal, vectors[0].vertical, 1, 1);
+                GetReference(sys, sys->frames[MpegPast], 1, 1, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1, 0);
+                GetReference(sys, sys->frames[MpegPast], 0, 1, 0, 8, x, y, vectors[1].horizontal, vectors[1].vertical, 1, 1);
             }
             else
             {
@@ -130,14 +141,15 @@ void GetReferences(MpegSystem* sys, s32 x, s32 y, s32 type, s32 motionType, Mpeg
             // A field picture's references are fields: the past frame's, and in a P picture's second field the frame's first
             // field when it's of the other parity
             s32 bottom = sys->pictureStructure == MpegBottomField;
-            MpegImage* fields[2][2] = {{sys->topFields[0], sys->bottomFields[0]}, {sys->topFields[1], sys->bottomFields[1]}};
+            MpegImage* fields[2][2] = {{sys->topFields[MpegPast], sys->bottomFields[MpegPast]},
+                                       {sys->topFields[MpegFuture], sys->bottomFields[MpegFuture]}};
             s32 sameFrame = 0;
             if (sys->pictureCodingType == MpegPictureP && sys->secondFieldMissing != 0)
             {
                 sameFrame = (bottom ^ fieldSelect[0][0]) != 0;
             }
 
-            if (motionType == MpegMotionField || (type & MacroblockForward) == 0)
+            if (motionType == MpegMotionField || !macroblock.forward)
             {
                 GetReference(sys, fields[sameFrame][fieldSelect[0][0]], 0, 0, 0, 16, x, y, first->horizontal, first->vertical,
                              0, 0);
@@ -173,7 +185,7 @@ void GetReferences(MpegSystem* sys, s32 x, s32 y, s32 type, s32 motionType, Mpeg
         forward = 1;
     }
 
-    if ((type & MacroblockBackward) == 0)
+    if (!macroblock.backward)
     {
         return;
     }
@@ -184,27 +196,27 @@ void GetReferences(MpegSystem* sys, s32 x, s32 y, s32 type, s32 motionType, Mpeg
     {
         if (motionType == MpegMotionFrame)
         {
-            GetReference(sys, sys->frames[1], 0, 0, 0, 16, x, y, first->horizontal, first->vertical, 0, forward);
+            GetReference(sys, sys->frames[MpegFuture], 0, 0, 0, 16, x, y, first->horizontal, first->vertical, 0, forward);
         }
         else
         {
             // Field prediction, and so is any other motion type (B pictures have no dual prime)
-            GetReference(sys, sys->frames[1], fieldSelect[0][1], 0, 0, 8, x, y, first->horizontal, first->vertical >> 1, 1,
-                         forward);
-            GetReference(sys, sys->frames[1], fieldSelect[1][1], 1, 0, 8, x, y, second->horizontal, second->vertical >> 1, 1,
-                         forward);
+            GetReference(sys, sys->frames[MpegFuture], fieldSelect[0][1], 0, 0, 8, x, y, first->horizontal,
+                         first->vertical >> 1, 1, forward);
+            GetReference(sys, sys->frames[MpegFuture], fieldSelect[1][1], 1, 0, 8, x, y, second->horizontal,
+                         second->vertical >> 1, 1, forward);
         }
     }
     else if (motionType == MpegMotionField)
     {
-        GetReference(sys, fieldSelect[0][1] != 0 ? sys->bottomFields[1] : sys->topFields[1], 0, 0, 0, 16, x, y,
+        GetReference(sys, fieldSelect[0][1] != 0 ? sys->bottomFields[MpegFuture] : sys->topFields[MpegFuture], 0, 0, 0, 16, x, y,
                      first->horizontal, first->vertical, 0, forward);
     }
     else if (motionType == MpegMotion16x8)
     {
-        GetReference(sys, fieldSelect[0][1] != 0 ? sys->bottomFields[1] : sys->topFields[1], 0, 0, 0, 8, x, y,
+        GetReference(sys, fieldSelect[0][1] != 0 ? sys->bottomFields[MpegFuture] : sys->topFields[MpegFuture], 0, 0, 0, 8, x, y,
                      first->horizontal, first->vertical, 0, forward);
-        GetReference(sys, fieldSelect[1][1] != 0 ? sys->bottomFields[1] : sys->topFields[1], 0, 0, 8, 8, x, y,
+        GetReference(sys, fieldSelect[1][1] != 0 ? sys->bottomFields[MpegFuture] : sys->topFields[MpegFuture], 0, 0, 8, 8, x, y,
                      second->horizontal, second->vertical, 0, forward);
     }
     else
@@ -216,7 +228,8 @@ void GetReferences(MpegSystem* sys, s32 x, s32 y, s32 type, s32 motionType, Mpeg
 s32 MotionCompensate(MpegSystem* sys, s32 address, s32 increment, s32 type, s32 motionType, MpegVector predictors[2][2],
                      s32 fieldSelect[2][2], s32* dmVector)
 {
-    s32 intra = type & MacroblockIntra;
+    MacroblockType macroblock = {static_cast<u32>(type)};
+    s32 intra = macroblock.intra;
     s32 row = address / sys->widthMacroblocks;
     s32 column = address % sys->widthMacroblocks;
     if (intra != 0)
@@ -226,30 +239,30 @@ s32 MotionCompensate(MpegSystem* sys, s32 address, s32 increment, s32 type, s32 
     }
     else
     {
-        if (static_cast<u32>(motionType - 1) >= 3)
+        if (static_cast<u32>(motionType - MpegMotionField) > MpegMotionDualPrime - MpegMotionField)
         {
             ErrorValue(sys, g_MpegMotionTypeIgnored, motionType);
             sys->macroblockError = 1;
             return 0;
         }
 
-        GetReferences(sys, column << 4, row << 4, type, motionType, predictors, fieldSelect, dmVector);
+        GetReferences(sys, column << LumaShift, row << LumaShift, type, motionType, predictors, fieldSelect, dmVector);
         // The macroblock before's references are in the scratchpad until it's finished
         WaitScratchpadDma();
         FetchReferences(sys);
         sys->buffers[sys->bufferIndex].predicted = 1;
     }
 
-    sys->buffers[sys->bufferIndex].unknown134 = increment == 1 && (type & MacroblockPattern) != 0;
+    sys->buffers[sys->bufferIndex].unused134 = increment == 1 && macroblock.pattern;
     sys->buffers[sys->bufferIndex].intra = intra;
     MpegImage* image;
     if (sys->pictureStructure == MpegFrame)
     {
-        image = sys->frames[2];
+        image = sys->frames[MpegCurrent];
     }
     else
     {
-        image = sys->pictureStructure == MpegBottomField ? sys->bottomFields[2] : sys->topFields[2];
+        image = sys->pictureStructure == MpegBottomField ? sys->bottomFields[MpegCurrent] : sys->topFields[MpegCurrent];
     }
 
     sys->buffers[sys->bufferIndex].destination = image->pixels + (column * image->heightMacroblocks + row) * MacroblockBytes;
@@ -266,84 +279,87 @@ void GetReference(MpegSystem* sys, MpegImage* image, s32 field, s32 destinationF
     MpegPredictionBlock* chroma = &buffer->chroma[reference];
 
     // The luma's block, in pixels (a field's rows are every other one of the frame's)
-    s32 lumaX = x + (vectorX >> 1);
-    s32 down = vectorY >> 1;
+    HalfPixels across = {vectorX};
+    HalfPixels downwards = {vectorY};
+    s32 lumaX = x + across.whole;
+    s32 down = downwards.whole;
     if (fieldPrediction != 0)
     {
         down <<= 1;
     }
 
     s32 lumaY = y + down + destinationRow + field;
-    s32 column = lumaX >> 4;
-    s32 row = lumaY >> 4;
+    s32 column = lumaX >> LumaShift;
+    s32 row = lumaY >> LumaShift;
     s32 index = column * image->heightMacroblocks + row;
     u8* source = image->pixels + index * MacroblockBytes;
     u8* rightSource = image->pixels + (index + image->heightMacroblocks) * MacroblockBytes;
-    s32 lumaRow = lumaY - (row << 4);
-    s32 halfAcross = vectorX & 1;
-    s32 halfDown = vectorY & 1;
-    luma->prediction = prediction + ((destinationField + destinationRow) << 5);
-    luma->column = lumaX - (column << 4);
+    s32 lumaRow = lumaY - (row << LumaShift);
+    s32 halfAcross = across.half;
+    s32 halfDown = downwards.half;
+    luma->prediction = prediction + ((destinationField + destinationRow) << PredictionLumaRowShift);
+    luma->column = lumaX - (column << LumaShift);
     buffer->sources[reference] = source;
     buffer->rightSources[reference] = rightSource;
-    SplitRows(luma, lumaRow, height, 16, halfDown, fieldPrediction);
+    SplitRows(luma, lumaRow, height, LumaRows, halfDown, fieldPrediction);
     u8* fetched;
     if (sys->bufferType == MpegBuffersScratchpad)
     {
-        fetched = buffer->references + reference * ReferenceBytes;
-        luma->left = fetched + lumaRow * 16;
-        luma->right = fetched + lumaRow * 16 + ColumnQuadwords * 16;
+        fetched = buffer->references + reference * FetchedReferenceBytes;
+        luma->left = fetched + lumaRow * LumaRowBytes;
+        luma->right = fetched + lumaRow * LumaRowBytes + ColumnBytes;
     }
     else
     {
         fetched = source;
-        luma->left = source + lumaRow * 16;
-        luma->right = rightSource + lumaRow * 16;
+        luma->left = source + lumaRow * LumaRowBytes;
+        luma->right = rightSource + lumaRow * LumaRowBytes;
     }
 
     // The chroma's, of half the size and half the vector (rounded towards zero)
-    s32 chromaVectorX = vectorX / 2;
-    s32 chromaVectorY = vectorY / 2;
-    luma->stride = 16 << fieldPrediction;
-    s32 chromaX = (chromaVectorX >> 1) + (x >> 1);
-    s32 chromaDown = chromaVectorY >> 1;
+    HalfPixels chromaAcross = {vectorX / 2};
+    HalfPixels chromaDownwards = {vectorY / 2};
+    luma->stride = LumaRowBytes << fieldPrediction;
+    s32 chromaX = chromaAcross.whole + (x >> 1);
+    s32 chromaDown = chromaDownwards.whole;
     if (fieldPrediction != 0)
     {
         chromaDown <<= 1;
     }
 
     s32 chromaY = chromaDown + (y >> 1) + (destinationRow >> 1) + field;
-    s32 chromaColumn = chromaX >> 3;
-    s32 chromaRow = chromaY >> 3;
-    s32 chromaRowInBlock = chromaY - (chromaRow << 3);
-    chroma->column = chromaX - (chromaColumn << 3);
-    chroma->prediction = prediction + ((destinationField + (destinationRow >> 1)) << 4) + PredictionChroma;
-    s32 chromaHalfAcross = chromaVectorX & 1;
-    s32 chromaHalfDown = chromaVectorY & 1;
-    SplitRows(chroma, chromaRowInBlock, height >> 1, 8, chromaHalfDown, fieldPrediction);
+    s32 chromaColumn = chromaX >> ChromaShift;
+    s32 chromaRow = chromaY >> ChromaShift;
+    s32 chromaRowInBlock = chromaY - (chromaRow << ChromaShift);
+    chroma->column = chromaX - (chromaColumn << ChromaShift);
+    chroma->prediction =
+        prediction + ((destinationField + (destinationRow >> 1)) << PredictionChromaRowShift) + PredictionChroma;
+    s32 chromaHalfAcross = chromaAcross.half;
+    s32 chromaHalfDown = chromaDownwards.half;
+    SplitRows(chroma, chromaRowInBlock, height >> 1, ChromaRows, chromaHalfDown, fieldPrediction);
     // The chroma's macroblock among the four fetched (it can be right of the luma's)
     s32 offset = ((chromaColumn - column) * 2 + (chromaRow - row)) * MacroblockBytes;
     if (sys->bufferType == MpegBuffersScratchpad)
     {
-        chroma->left = fetched + offset + chromaRowInBlock * 8 + LumaBytes;
-        chroma->right = fetched + offset + chromaRowInBlock * 8 + ColumnQuadwords * 16 + LumaBytes;
+        chroma->left = fetched + offset + chromaRowInBlock * ChromaRowBytes + LumaBytes;
+        chroma->right = fetched + offset + chromaRowInBlock * ChromaRowBytes + ColumnBytes + LumaBytes;
     }
     else
     {
-        u32 left = offset + chromaRowInBlock * 8 + LumaBytes;
-        if (left <= ColumnQuadwords * 16)
+        u32 left = offset + chromaRowInBlock * ChromaRowBytes + LumaBytes;
+        if (left <= ColumnBytes)
         {
             chroma->left = source + left;
         }
         else
         {
-            chroma->left = rightSource + left - ColumnQuadwords * 16;
+            chroma->left = rightSource + left - ColumnBytes;
         }
 
-        chroma->right = rightSource + offset + chromaRowInBlock * 8 + LumaBytes;
+        chroma->right = rightSource + offset + chromaRowInBlock * ChromaRowBytes + LumaBytes;
     }
 
-    chroma->stride = 8 << fieldPrediction;
+    chroma->stride = ChromaRowBytes << fieldPrediction;
     buffer->lumaRoutines[reference] = g_MpegPredictionRoutines[average << 2 | halfAcross << 1 | halfDown];
     sys->buffers[sys->bufferIndex].referenceCount++;
     buffer->chromaRoutines[reference] =
@@ -395,10 +411,16 @@ void FetchReferences(MpegSystem* sys)
     u64* tag = reinterpret_cast<u64*>((reinterpret_cast<u32>(g_MpegReferenceChain) & PhysicalMask) | UncachedSegment);
     for (s32 reference = 0; reference < count; reference++)
     {
-        u64 source = reinterpret_cast<u32>(buffer->sources[reference]) & PhysicalMask;
-        u64 rightSource = reinterpret_cast<u32>(buffer->rightSources[reference]) & PhysicalMask;
-        tag[0] = source << 32 | DmaTagRef | ColumnQuadwords;
-        tag[2] = rightSource << 32 | (reference == count - 1 ? DmaTagRefe : DmaTagRef) | ColumnQuadwords;
+        DmaTag column = {};
+        column.quadwords = ColumnQuadwords;
+        column.id = DMA_TAG_REF;
+        column.address = reinterpret_cast<u32>(buffer->sources[reference]) & PhysicalMask;
+        DmaTag rightColumn = {};
+        rightColumn.quadwords = ColumnQuadwords;
+        rightColumn.id = reference == count - 1 ? DMA_TAG_REFE : DMA_TAG_REF;
+        rightColumn.address = reinterpret_cast<u32>(buffer->rightSources[reference]) & PhysicalMask;
+        tag[0] = column.value;
+        tag[2] = rightColumn.value;
         tag += 4;
     }
 

@@ -33,7 +33,7 @@ constexpr u32 ChunkDataClassId = 0x1611;
 constexpr u32 HullClassId = 0x1616;
 constexpr s32 PlaneCount = 6;
 // A segment this short has no direction to move its ends along
-constexpr f32 NoLength = Rounded(5e-5);
+constexpr f32 NoLength = Epsilon;
 }
 
 void* MakeSceneryItem(void*, u32 classId)
@@ -56,8 +56,8 @@ void* MakeSceneryItem(void*, u32 classId)
         return LoadWallConstruct(static_cast<LoadWall*>(MemoryAllocate(sizeof(LoadWall))));
     case ChunkDataClassId:
     {
-        auto* data = static_cast<ChunkData*>(MemoryAllocate(sizeof(ChunkData)));
-        return ConstructChunkData(data, GetChunkList(), nullptr);
+        auto* chunk = static_cast<ChunkData*>(MemoryAllocate(sizeof(ChunkData)));
+        return ConstructChunkData(chunk, GetChunkList(), nullptr);
     }
     case HullClassId:
         return HullConstruct(static_cast<CollisionHull*>(MemoryAllocate(sizeof(CollisionHull))));
@@ -173,7 +173,7 @@ void InitHullBuilderStatics(s32, s32)
 
 void HullStaticInit()
 {
-    InitHullBuilderStatics(1, 0xFFFF);
+    InitHullBuilderStatics(1, DefaultInitPriority);
 }
 
 u32 ClipSegmentToPlanes(const Vector4* planes, const Vector4* segment, Vector4* clipped)

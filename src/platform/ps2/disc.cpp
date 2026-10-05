@@ -13,7 +13,8 @@ s32 Platform::Disc::SetMedia(Media media)
     return sceCdMmode(media == Media::Dvd ? SCECdMmodeDvd : SCECdMmodeCd);
 }
 
-s32 Platform::Disc::WaitReady()
+// Mode 0 waits until it's ready
+Platform::Disc::Readiness Platform::Disc::WaitReady()
 {
-    return sceCdDiskReady(0);
+    return static_cast<Readiness>(sceCdDiskReady(0));
 }

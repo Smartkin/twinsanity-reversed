@@ -18,6 +18,13 @@ struct TimeClock;
 class ControlsHandler
 {
 public:
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        ResetSlot = 2,
+        FrameSlot = 3,
+    };
+
     enum Action : u32
     {
         ActionCross = 0,
@@ -55,17 +62,17 @@ public:
 
     void DestroyVirtual(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     void ResetVirtual()
     {
-        CallVirtual<void>(this, vtable, 2);
+        CallVirtual<void>(this, vtable, ResetSlot);
     }
 
     void FrameVirtual(TimeClock* clock, GamePad* pad, InstanceContext* instance)
     {
-        CallVirtual<void>(this, vtable, 3, clock, pad, instance);
+        CallVirtual<void>(this, vtable, FrameSlot, clock, pad, instance);
     }
 };
 CHECK_OFFSET(ControlsHandler, vtable, 0xC);
@@ -88,7 +95,7 @@ class VehicleControls : public ControlsHandler
 {
 public:
     u8 stickIsCross;
-    u8 unknown11[3];
+    u8 unused11[3];
 
     static VehicleControls* Construct(VehicleControls* handler, u32 stickIsCross) RETAIL(InitVehicleButtonBindings);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00164d78);

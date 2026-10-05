@@ -2,6 +2,7 @@
 
 #include "game/agents.h"
 #include "game/attachments.h"
+#include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/collision.h"
@@ -10,6 +11,7 @@
 #include "game/layout.h"
 #include "game/math.h"
 #include "game/memory.h"
+#include "game/nodecontrollers.h"
 #include "game/objectcollision.h"
 #include "game/objectnode.h"
 #include "game/physics.h"
@@ -39,41 +41,20 @@ EABI_EXPORT(FUN_00158ef8, &HumiliskateVehicle::SendEvents);
 EABI_EXPORT(FUN_001593c0, &HumiliskateVehicle::Tricks);
 EABI_EXPORT(FUN_00159730, &HumiliskateVehicle::Frame);
 
-namespace
-{
-// The object node's part at 0x114 when its kind byte is 3: a character's sounds (the surface it's on, its landings,
-// its leans)
-struct CharacterSounds
-{
-    u8 kind;
-};
-}
-
 extern "C"
 {
-    // A character's sounds told the surface it's on and its velocity, a landing's fall, a lean (how far across)
-    void SetCharacterSurface(CharacterSounds* sounds, CollisionSurface* surface, const Vector4* velocity);
-    void PlayCharacterSurfaceSound(CharacterSounds* sounds, f32 fall) RETAIL_N32(PlayCharacterSurfaceSound);
-    void PlayCharacterSurfaceSound2(CharacterSounds* sounds, f32 lean) RETAIL_N32(PlayCharacterSurfaceSound2);
+    // The board character's skate controller (game/commandscharacters.cpp) told the surface it skates on and the velocity, a
+    // landing's fall, a lean (how far across)
+    void SetCharacterSurface(SkateController* skate, CollisionSurface* surface, const Vector4* velocity);
+    void PlayCharacterSurfaceSound(SkateController* skate, f32 fall) RETAIL_N32(PlayCharacterSurfaceSound);
+    void PlayCharacterSurfaceSound2(SkateController* skate, f32 lean) RETAIL_N32(PlayCharacterSurfaceSound2);
 }
-
 
 namespace
 {
-constexpr u8 CharacterSoundsKind = 3;
-
-// The nodes: an instance's object node and attachments, a playable character's agent node
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 CharacterNodeKind = 0xC;
-
-// The agent's bump and the object node's collision
-constexpr u32 BumpedSlot = 8;
-constexpr u32 CollidedSlot = 28;
-
 // The script events: riding (the character and the board both; 1 more leaning left, 2 right, 3 more riding backwards), riding
 // crouched (the character; 1 more leaning right, 2 left), a trick landed, the half spin and the flip (both), grinding (3 more
-// backwards), the jump and the crash (both), and none
+// backwards), the jump and the crash (both); characters.h's EventNone for none
 constexpr u32 EventRiding = 0x56;
 constexpr u32 EventLeft = 1;
 constexpr u32 EventRight = 2;
@@ -82,30 +63,19 @@ constexpr u32 EventCrouched = 0x5C;
 constexpr u32 EventCrouchedRight = 0x5D;
 constexpr u32 EventCrouchedLeft = 0x5E;
 constexpr u32 EventTrickLanded = 0x5F;
-constexpr u32 EventSpin = 0x60;
+constexpr u32 EventHalfSpin = 0x60;
 constexpr u32 EventFlip = 0x61;
 constexpr u32 EventGrinding = 0x62;
 constexpr u32 EventGrindingBackwards = 0x63;
 constexpr u32 EventJump = 0x6D;
 constexpr u32 EventCrash = 0x6E;
-constexpr u32 EventNone = 0x6F;
 
-// The surfaces' bits: solid to the probes (its cache's and the ray down) and solid to the player (what pushes the board)
-constexpr u32 SolidToProbes = 0x10;
-constexpr u32 SolidToPlayer = 0x100000;
-
-// The instances it hits: the kinds of nodes (kind 4's hulls, characters, crates, creatures, generic objects and pay gates), those
-// with either flag, at most 20, and at most 19 attached to the characters left out with the other character
-constexpr u32 HitNodeKinds = 0x5B010;
-constexpr u32 HitFlags = ReferencedObject::FlagTriggerSignals | ReferencedObject::FlagSphereContact;
+// The instances it hits: the solid ones (dynamic scenery's hulls, characters, crates, creatures, generic objects and pay gates),
+// those with either flag, at most 20, and at most 19 attached to the characters left out with the other character
+constexpr u32 HitFlags = ReferencedObjectFlags::ReceivesTriggerSignals | ReferencedObjectFlags::CollisionActive;
 constexpr u16 MostHits = 20;
 constexpr s32 MostLeftOut = 20;
-constexpr f32 NoHit = Rounded(1e30);
 
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 Pi = 0x1.921fb6p+1f;
-constexpr f32 TwoPi = 0x1.921fb6p+2f;
-constexpr f32 InversePi = 0x1.45f306p-2f;
 constexpr f32 InverseTwoPi = 0x1.45f306p-3f;
 
 // The board: its ellipsoid's radii, how far around it it looks, gravity, how far below its middle the riders stand, how fast it
@@ -152,6 +122,7 @@ constexpr s32 MostTriangles = 0x100;
 // sharing two corners (within 0.1); a rail is the one it's on when its ends are within 0.1 of its ends
 constexpr s32 MostRails = 30;
 constexpr s32 MostRailTriangles = 32;
+constexpr s32 TriangleCorners = 3;
 constexpr f32 SteepLimit = 0.5f;
 constexpr f32 AcrossLimit = Rounded(0.707);
 constexpr f32 RailBoxMargin = 0.01f;
@@ -183,6 +154,7 @@ constexpr f32 PushShare = 0.25f;
 // up's y) and the board turned with a tenth of it (10 a second at most); on the ground when the normal's y passes 0.2
 constexpr f32 UpEase = 0.04f;
 constexpr f32 HardHit = -2.0f;
+constexpr f32 HardHitShare = 0.5f;
 constexpr f32 CrashSpeed = 3.0f;
 constexpr f32 CrashFacing = -0.5f;
 constexpr f32 CrashBounce = 1.3f;
@@ -248,11 +220,11 @@ constexpr f32 OffRailTime = Rounded(0.2);
 
 ObjectNode* ObjectNodeOf(InstanceContext* instance)
 {
-    return static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind));
+    return static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject));
 }
 
-// The board character's sounds (none without one)
-CharacterSounds* BoardSounds(const HumiliskateVehicle* vehicle)
+// The board character's skate controller (none without one)
+SkateController* BoardSkate(const HumiliskateVehicle* vehicle)
 {
     if (vehicle->other == nullptr)
     {
@@ -265,13 +237,13 @@ CharacterSounds* BoardSounds(const HumiliskateVehicle* vehicle)
         return nullptr;
     }
 
-    auto* sounds = reinterpret_cast<CharacterSounds*>(node->unknown114);
-    if (sounds == nullptr || sounds->kind != CharacterSoundsKind)
+    NodeController* controller = node->controller;
+    if (controller == nullptr || controller->kind != NodeController::KindSkate)
     {
         return nullptr;
     }
 
-    return sounds;
+    return static_cast<SkateController*>(controller);
 }
 
 // An event run on the character (its instance with it)
@@ -284,7 +256,7 @@ void RunOnRider(HumiliskateVehicle* vehicle, u32 event)
 // 0 for its instance. Retail doesn't check the other for none
 void RunOnBoard(HumiliskateVehicle* vehicle, u32 event)
 {
-    auto* node = static_cast<AgentNode*>(GetGameNode(&vehicle->other->instance->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&vehicle->other->instance->nodes, NodeCharacter));
     Agent* board = node != nullptr ? node->agent : nullptr;
     std::uintptr_t address = reinterpret_cast<std::uintptr_t>(board) + offsetof(Agent, instance);
     RunAgentEvent(board, event, *reinterpret_cast<const u32*>(address), 0, 0);
@@ -474,11 +446,12 @@ bool Grind(HumiliskateVehicle* vehicle, f32 seconds)
 HumiliskateVehicle* HumiliskateVehicle::Construct(HumiliskateVehicle* vehicle, CharacterAgent* agent, CharacterAgent* other)
 {
     vehicle->agent = agent;
-    vehicle->bits = 0;
+    vehicle->bits.value = 0;
     vehicle->other = other;
     vehicle->vtable = g_HumiliskateVehicleVTable;
-    vehicle->Bits() = (vehicle->Bits() | BitDrives) & ~u64{BitHeld};
-    ConstructCollisionCache(&vehicle->cache, agent->instance, SolidToProbes);
+    vehicle->bits.drives = 1;
+    vehicle->bits.held = 0;
+    ConstructCollisionCache(&vehicle->cache, agent->instance, SurfaceFlags::SolidToPlayerProbes);
     ConstructSkidMarks(&vehicle->leftMarks);
     ConstructSkidMarks(&vehicle->rightMarks);
     vehicle->Start();
@@ -498,7 +471,7 @@ void HumiliskateVehicle::Start()
     ObjectPlace* place = agent->instance->place;
     RotateAndTranslate(place);
     board = place->matrix;
-    unknown140 = 0;
+    unused140 = 0;
     RowOf(&board, 3)->y = RowOf(&board, 3)->y + radiusY;
     const Vector4* heading = RowOf(&place->matrix, 2);
     Vector4 start = {heading->x * StartSpeed, heading->y * StartSpeed, heading->z * StartSpeed, 1.0f};
@@ -514,7 +487,7 @@ void HumiliskateVehicle::Start()
     crouched = 0;
     leanLeft = 0;
     crouchedSpeed = CrouchedTopSpeed;
-    unknown224 = 1.0f;
+    unused224 = 1.0f;
     jumpReleased = 1.0f;
     leanRight = 0;
     backwards = 0;
@@ -524,17 +497,17 @@ void HumiliskateVehicle::Start()
     spinTarget = 0.0f;
     flipTarget = 0.0f;
     jumped = 0;
-    unknown250 = 0;
-    unknown254 = 0;
+    unused250 = 0;
+    unused254 = 0;
     grinding = 0;
     railCooldown = 0.0f;
-    unknown25C = 0;
+    unused25C = 0;
     touched = 0;
     jumpCooldown = 0.0f;
     jumpedOffRail = 0;
-    otherEvent = EventNone;
+    unused220 = EventNone;
     topSpeed = TopSpeed;
-    event = EventNone;
+    unused21C = EventNone;
     ClearSkidMarks(&leftMarks);
     ClearSkidMarks(&rightMarks);
     railStart = g_DefaultBox.min;
@@ -542,7 +515,7 @@ void HumiliskateVehicle::Start()
     railEnd = g_DefaultBox.min;
     railEnd.w = 1.0f;
     surface = nullptr;
-    startTime = GetContextClock(agent->instance)->time;
+    unused640 = GetContextClock(agent->instance)->time;
     Vehicle::Start();
 }
 
@@ -611,9 +584,9 @@ u32 HumiliskateVehicle::Place()
 void HumiliskateVehicle::Destroy(u32 destroyFlags)
 {
     vtable = g_HumiliskateVehicleVTable;
-    DestroySkidMarks(&rightMarks, 2);
-    DestroySkidMarks(&leftMarks, 2);
-    DestroyCollisionCache(&cache, 2);
+    DestroySkidMarks(&rightMarks, DestroyOnly);
+    DestroySkidMarks(&leftMarks, DestroyOnly);
+    DestroyCollisionCache(&cache, DestroyOnly);
     Vehicle::Destroy(destroyFlags);
 }
 
@@ -639,7 +612,7 @@ void HumiliskateVehicle::Push(const Vector4* push, InstanceContext* instance)
 // Through a link whose chunk isn't loaded it stays, put back at the instance's kept position and stopped
 u32 HumiliskateVehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         *RowOf(&board, 3) = agent->instance->box;
         velocity = g_DefaultBox.min;
@@ -660,7 +633,7 @@ u32 HumiliskateVehicle::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 void HumiliskateVehicle::Frame(f32 seconds)
 {
     f32 step = seconds * SubstepShare;
-    if ((bits & BitHeld) == 0)
+    if (bits.held == 0)
     {
         for (s32 substep = 0; substep < Substeps; substep++)
         {
@@ -816,10 +789,10 @@ u32 HumiliskateVehicle::JumpTells()
 }
 
 // Turned about y by the stick across the board; crouched while circle is held; leaning past 0.6 across (the board character's
-// sounds told on the ground)
+// skate controller playing it on the ground)
 void HumiliskateVehicle::Steer(f32 seconds)
 {
-    CharacterSounds* sounds = BoardSounds(this);
+    SkateController* skate = BoardSkate(this);
     // (retail inverts the board's place here and drops it)
     Matrix4x4 inverse = board;
     VuInvertRigidInPlace(&inverse);
@@ -863,9 +836,9 @@ void HumiliskateVehicle::Steer(f32 seconds)
     }
     else if (across < -LeanStart)
     {
-        if (sounds != nullptr && onGround != 0)
+        if (skate != nullptr && onGround != 0)
         {
-            PlayCharacterSurfaceSound2(sounds, across);
+            PlayCharacterSurfaceSound2(skate, across);
         }
 
         leanRight = 0;
@@ -881,9 +854,9 @@ void HumiliskateVehicle::Steer(f32 seconds)
     }
     else if (LeanStart < across)
     {
-        if (sounds != nullptr && onGround != 0)
+        if (skate != nullptr && onGround != 0)
         {
-            PlayCharacterSurfaceSound2(sounds, across);
+            PlayCharacterSurfaceSound2(skate, across);
         }
 
         leanLeft = 0;
@@ -1005,7 +978,7 @@ void HumiliskateVehicle::Collide(f32 seconds)
                     }
                 }
 
-                HullDestroy(&hull, 2);
+                HullDestroy(&hull, DestroyOnly);
             }
 
             if (best != -1)
@@ -1035,7 +1008,7 @@ void HumiliskateVehicle::Collide(f32 seconds)
     for (s32 i = 0; i < count; i++)
     {
         CollisionHit* triangle = triangles[i];
-        bool solid = (GetTriangleSurface(triangle)->collisionMask & SolidToPlayer) != 0;
+        bool solid = GetTriangleSurface(triangle)->flags.solidToPlayer != 0;
         Vector4 normal;
         TriangleNormal(triangle, &normal);
         Vector4 outward = {-normal.x, -normal.y, -normal.z, 1.0f};
@@ -1087,10 +1060,10 @@ void HumiliskateVehicle::Collide(f32 seconds)
         }
     }
 
-    CharacterSounds* sounds = BoardSounds(this);
-    if (sounds != nullptr)
+    SkateController* skate = BoardSkate(this);
+    if (skate != nullptr)
     {
-        SetCharacterSurface(sounds, surface, &velocity);
+        SetCharacterSurface(skate, surface, &velocity);
     }
 }
 
@@ -1171,7 +1144,7 @@ void HumiliskateVehicle::GroundResponse(f32 friction, f32 seconds, const Vector4
     if (into < HardHit)
     {
         Vector4 hit = {unit.x * into, unit.y * into, unit.z * into, 1.0f};
-        Vector4 taken = {hit.x * 0.5f, hit.y * 0.5f, hit.z * 0.5f, 1.0f};
+        Vector4 taken = {hit.x * HardHitShare, hit.y * HardHitShare, hit.z * HardHitShare, 1.0f};
         Vector4 flat = velocity;
         flat.y = 0.0f;
         f32 impact = Length(&taken);
@@ -1267,7 +1240,7 @@ u32 HumiliskateVehicle::TouchesHull(const Matrix4x4* place, const Vector4* radii
 }
 
 // The touched instance's object node told (whether it responds), the character bumped and, with a physics body, its object node
-// told; a solid hull of an instance that responds (with its FlagSphereContact) pushes the board out with friction 1
+// told; a solid hull of an instance that responds (with its collisionActive flag) pushes the board out with friction 1
 void HumiliskateVehicle::TouchedHull(f32 seconds, const Vector4* point, const Vector4* push, const Vector4* normal,
                                      InstanceContext* instance, u32, u32 solid)
 {
@@ -1278,21 +1251,21 @@ void HumiliskateVehicle::TouchedHull(f32 seconds, const Vector4* point, const Ve
     VuTransformPoint(&board, point, &contact);
     if (node != nullptr)
     {
-        responds = CallVirtual<u32>(node, node->vtable, CollidedSlot, agent->instance, &contact, &velocity);
+        responds = CallVirtual<u32>(node, node->vtable, ObjectNode::CollidedSlot, agent->instance, &contact, &velocity);
     }
 
     if (riderNode != nullptr)
     {
         Vector4 back = {-velocity.x, -velocity.y, -velocity.z, 1.0f};
-        CallVirtual<void>(agent, agent->vtable, BumpedSlot, instance, &velocity, &back);
-        if ((agent->instance->flags & ReferencedObject::FlagPhysicsBody) != 0)
+        CallVirtual<void>(agent, agent->vtable, Agent::BumpedSlot, instance, &velocity, &back);
+        if (agent->instance->flags.physicsBody)
         {
             back = {-velocity.x, -velocity.y, -velocity.z, 1.0f};
-            CallVirtual<u32>(riderNode, riderNode->vtable, CollidedSlot, instance, &contact, &back);
+            CallVirtual<u32>(riderNode, riderNode->vtable, ObjectNode::CollidedSlot, instance, &contact, &back);
         }
     }
 
-    if ((instance->flags & ReferencedObject::FlagSphereContact) == 0)
+    if (!instance->flags.collisionActive)
     {
         responds = 0;
     }
@@ -1335,7 +1308,7 @@ void HumiliskateVehicle::CollideHulls(f32 seconds, InstanceContext* instance)
         if (TouchesHull(&board, &radii, &hullMatrix, hull, &push, &point, &normal) != 0)
         {
             CollisionSurface* hullSurface = &g_CollisionSurfaces.surfaces[HullSurfaceIndex(collision, static_cast<u8>(index))];
-            if ((hullSurface->collisionMask & SolidToPlayer) != 0)
+            if (hullSurface->flags.solidToPlayer != 0)
             {
                 TouchedHull(seconds, &point, &push, &normal, instance, index, 1);
             }
@@ -1369,32 +1342,32 @@ void HumiliskateVehicle::CollideInstances(f32 seconds)
     Box box = {*position, *position};
     GrowBox(reach + InstanceMargin, &box);
     void* results[MostHits];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = results;
     query.most = MostHits;
     query.count = 0;
-    query.distance = NoHit;
+    query.distance = Infinite;
     query.wantedFlags = HitFlags;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     // (retail clears bits 0 and 1 and leaves the others as the stack had them)
-    query.bits = 0;
+    query.bits.value = 0;
     query.skipped[0] = nullptr;
     query.skipped[1] = nullptr;
     query.instance = nullptr;
     ChunkData* chunk = agent->instance->chunk;
     SkipInQuery(&query, agent->instance);
-    QueryChunkInstances(chunk, &box, HitNodeKinds, &query);
+    QueryChunkInstances(chunk, &box, SolidNodeKinds, &query);
 
     // (more than 19 attached overflow the list: retail. Retail doesn't check the other for none)
     InstanceContext* leftOut[MostLeftOut];
     s32 leftOutCount = 0;
-    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, AttachmentsKind));
+    auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&agent->instance->nodes, NodeAttachments));
     if (attachments != nullptr && attachments->path != nullptr)
     {
         leftOutCount = AttachedInstances(attachments->path, leftOut, MostLeftOut - 1);
     }
 
-    attachments = static_cast<AttachmentsNode*>(GetGameNode(&other->instance->nodes, AttachmentsKind));
+    attachments = static_cast<AttachmentsNode*>(GetGameNode(&other->instance->nodes, NodeAttachments));
     if (attachments != nullptr && attachments->path != nullptr)
     {
         leftOutCount += AttachedInstances(attachments->path, &leftOut[leftOutCount], MostLeftOut - 1 - leftOutCount);
@@ -1404,17 +1377,17 @@ void HumiliskateVehicle::CollideInstances(f32 seconds)
     for (s32 i = 0; i < query.count; i++)
     {
         auto* hit = static_cast<InstanceContext*>(query.results[i]);
-        bool left = false;
-        for (s32 k = 0; k < leftOutCount; k++)
+        bool isLeftOut = false;
+        for (s32 index = 0; index < leftOutCount; index++)
         {
-            if (leftOut[k] == hit)
+            if (leftOut[index] == hit)
             {
-                left = true;
+                isLeftOut = true;
                 break;
             }
         }
 
-        if (!left)
+        if (!isLeftOut)
         {
             CollideHulls(seconds, hit);
         }
@@ -1440,7 +1413,7 @@ s32 HumiliskateVehicle::FindRails(CollisionHit** triangles, s32 count, u8* used,
     for (s16 i = 0; i < count; i++)
     {
         CollisionHit* triangle = triangles[i];
-        bool solid = (GetTriangleSurface(triangle)->collisionMask & SolidToPlayer) != 0;
+        bool solid = GetTriangleSurface(triangle)->flags.solidToPlayer != 0;
         Vector4 normal;
         TriangleNormal(triangle, &normal);
         Vector4 outward = {-normal.x, -normal.y, -normal.z, 1.0f};
@@ -1470,16 +1443,16 @@ s32 HumiliskateVehicle::FindRails(CollisionHit** triangles, s32 count, u8* used,
         found++;
     }
 
-    for (s16 a = 0; a < found; a++)
+    for (s16 firstIndex = 0; firstIndex < found; firstIndex++)
     {
-        CollisionHit* first = triangles[candidates[a]];
+        CollisionHit* first = triangles[candidates[firstIndex]];
         Vector4 normal;
         TriangleNormal(first, &normal);
         Vector4 firstNormal = {normal.x, normal.y, normal.z, 1.0f};
-        for (s16 b = a + 1; b < found; b++)
+        for (s16 secondIndex = firstIndex + 1; secondIndex < found; secondIndex++)
         {
-            CollisionHit* second = triangles[candidates[b]];
-            if (BoxesOverlap(&boxes[a], &boxes[b]) == 0)
+            CollisionHit* second = triangles[candidates[secondIndex]];
+            if (BoxesOverlap(&boxes[firstIndex], &boxes[secondIndex]) == 0)
             {
                 continue;
             }
@@ -1492,14 +1465,15 @@ s32 HumiliskateVehicle::FindRails(CollisionHit** triangles, s32 count, u8* used,
                 continue;
             }
 
-            // The corners they share (first's index by remainder, second's by quotient)
-            s32 shared[9];
+            // The corners they share (each pair of corners: first's by remainder, second's by quotient)
+            s32 shared[TriangleCorners * TriangleCorners];
             s32 sharedCount = 0;
-            for (s32 k = 0; k < 9; k++)
+            for (s32 pair = 0; pair < TriangleCorners * TriangleCorners; pair++)
             {
-                if (DistanceSquared(&first->vertices[k % 3], &second->vertices[k / 3]) < SamePoint)
+                const Vector4* firstCorner = &first->vertices[pair % TriangleCorners];
+                if (DistanceSquared(firstCorner, &second->vertices[pair / TriangleCorners]) < SamePoint)
                 {
-                    shared[sharedCount++] = k;
+                    shared[sharedCount++] = pair;
                 }
             }
 
@@ -1508,11 +1482,11 @@ s32 HumiliskateVehicle::FindRails(CollisionHit** triangles, s32 count, u8* used,
                 continue;
             }
 
-            starts[rails] = first->vertices[shared[0] % 3];
-            ends[rails] = first->vertices[shared[1] % 3];
+            starts[rails] = first->vertices[shared[0] % TriangleCorners];
+            ends[rails] = first->vertices[shared[1] % TriangleCorners];
             rails++;
-            used[candidates[a]] = 1;
-            used[candidates[b]] = 1;
+            used[candidates[firstIndex]] = 1;
+            used[candidates[secondIndex]] = 1;
         }
     }
 
@@ -1555,7 +1529,7 @@ void HumiliskateVehicle::LaySkidMarks()
     IdleSkidMarks(&rightMarks);
 }
 
-// Landing squashes it by the fall (the board character's sounds play it); a damped spring within 0.5
+// Landing squashes it by the fall (the board character's skate controller plays it); a damped spring within 0.5
 void HumiliskateVehicle::Suspension(f32 seconds)
 {
     if (onGround != 0 && wasOnGround == 0)
@@ -1567,10 +1541,10 @@ void HumiliskateVehicle::Suspension(f32 seconds)
             suspensionSpeed = squash;
         }
 
-        CharacterSounds* sounds = BoardSounds(this);
-        if (sounds != nullptr)
+        SkateController* skate = BoardSkate(this);
+        if (skate != nullptr)
         {
-            PlayCharacterSurfaceSound(sounds, fall);
+            PlayCharacterSurfaceSound(skate, fall);
         }
     }
 
@@ -1611,7 +1585,8 @@ void HumiliskateVehicle::FallTime(f32* time, f32* below)
     end.y = end.y + ahead.y;
     end.z = end.z + ahead.z;
     Vector4 ground;
-    if (GetCollisionCheck(agent->instance->chunk, &start, &end, SolidToProbes, nullptr, &ground, nullptr) != 0)
+    if (GetCollisionCheck(agent->instance->chunk, &start, &end, SurfaceFlags::SolidToPlayerProbes, nullptr, &ground, nullptr)
+        != 0)
     {
         *below = __builtin_sqrtf(DistanceSquared(&start, &ground));
     }
@@ -1652,11 +1627,11 @@ void HumiliskateVehicle::Tricks(f32 seconds)
 
         if (trick == TrickFlip || trick == TrickSpin)
         {
-            u32 started = trick == TrickFlip ? EventFlip : EventSpin;
+            u32 started = trick == TrickFlip ? EventFlip : EventHalfSpin;
             RunOnRider(this, started);
             RunOnBoard(this, started);
-            otherEvent = EventNone;
-            event = EventNone;
+            unused220 = EventNone;
+            unused21C = EventNone;
         }
     }
 
@@ -1726,8 +1701,8 @@ void HumiliskateVehicle::SendEvents(f32 seconds)
         trickTime = 0.0f;
         RunOnRider(this, EventTrickLanded);
         RunOnBoard(this, RidingEvent(this));
-        otherEvent = EventNone;
-        event = EventNone;
+        unused220 = EventNone;
+        unused21C = EventNone;
         break;
     case TrickLanded:
         trickTime = trickTime + seconds;
@@ -1751,8 +1726,8 @@ void HumiliskateVehicle::SendEvents(f32 seconds)
         break;
     }
 
-    event = riderEvent;
+    unused21C = riderEvent;
     RunOnRider(this, riderEvent);
-    otherEvent = boardEvent;
+    unused220 = boardEvent;
     RunOnBoard(this, boardEvent);
 }

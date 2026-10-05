@@ -8,29 +8,65 @@
 #include "game/stream.h"
 #include "platform/graphics.h"
 
+#include <libgs.h>
+
 namespace
 {
-// Particles and decals go to VU1 at 0x4F: the matrix to the screen first (an UNPACK of four quadwords)
-constexpr u32 MatrixUnpack = 0x6C04004F;
-constexpr u32 RefsTag = 0x40000000;
+// Where the particles' and the decals' data goes in VU1's memory: the matrix to the screen (four quadwords), then a render
+// table's head's two quadwords (or the decals' UV packet), then the table's corners and steps
+constexpr u32 VuMatrixAddress = 0x4F;
+constexpr u32 VuHeadAddress = 0x53;
+constexpr u32 VuStepsAddress = 0x55;
+constexpr u32 MatrixQuadwords = 4;
+constexpr u32 MatrixUnpack = VifUnpackTo(VifUnpackV4Count, VuMatrixAddress, MatrixQuadwords);
+// The hexagons' distortion VU1 gets: the system's across and down (by these), and the depth they fade out to nothing at
+constexpr f32 DistortionAcross = 0x1p-14f;
+constexpr f32 DistortionDown = -0x1p-12f;
+constexpr f32 DistortionFadeDepth = 40.0f;
+// VU1's programs collapse the particles whose clip space W is below this
+constexpr f32 ParticleNearClip = 0.5f;
+// Where a decal type's variants go in VU0's memory, and their size
+constexpr u32 Vu0VariantsAddress = 0x10;
+constexpr u32 VariantQuadwords = sizeof(DecalVariant) / 0x10;
 
-// The writer's packet of a particle block: the matrix, the header's DMA tag and its two quadwords (the hexagons' distortion in
-// the second), CALLs of the header's packet (the texture page's set-up) and of the particles
+// A system's render table (Platform::Graphics::ParticleRenderTableBytes): its head, the texture's corners (UV in 12.4: start, end
+// and the two mixed) or the hexagons' corners, each step's shape (six floats, the colour's and alpha's bytes over the low bytes
+// of the first four) and a quadword of VIF1's codes after them (FLUSHE and MSCAL, what VU1 runs on them), which its head's RET
+// tag sends with them
+struct ParticleRenderTable
+{
+    struct Step
+    {
+        f32 shape[6];
+        u32 unused18[2];
+    };
+
+    ParticleHeader head;
+    s32 corners[12];
+    Step steps[Platform::Graphics::ParticleRenderSteps];
+    u32 end[4];
+};
+CHECK_OFFSET(ParticleRenderTable, steps, 0x70);
+CHECK_OFFSET(ParticleRenderTable, end, 0x870);
+static_assert(sizeof(ParticleRenderTable) <= Platform::Graphics::ParticleRenderTableBytes);
+
+// The writer's packet of a particle block: the matrix, the table's head's DMA tag and its two quadwords (the hexagons'
+// distortion in the second), CALLs of the head's RET tag (the table's corners and steps) and of the particles
 void WriteParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matrix, Material* material)
 {
     RenderBucket& writer = material->writer;
     auto* at = BeginPacket(writer);
-    at[0] = CountTag | 4;
+    at[0] = CountTag | MatrixQuadwords;
     at[1] = 0;
     at[2] = 0;
     at[3] = MatrixUnpack;
     *reinterpret_cast<Matrix4x4*>(at + 4) = *matrix;
     auto* quadwords = reinterpret_cast<Vector4*>(at + 20);
     quadwords[0] = *reinterpret_cast<const Vector4*>(header->tag);
-    quadwords[1] = *reinterpret_cast<const Vector4*>(header->values);
+    quadwords[1] = *reinterpret_cast<const Vector4*>(&header->nearClip);
     quadwords[2] = *reinterpret_cast<const Vector4*>(header->distortion);
     at[32] = CallTag;
-    at[33] = Address(header->packet);
+    at[33] = Address(header->stepsTag);
     at[34] = 0;
     at[35] = 0;
     at[36] = CallTag;
@@ -43,19 +79,19 @@ void WriteParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matr
 
 extern "C"
 {
-    void DrawParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matrix, Material* material, f32 scale)
+    void DrawParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matrix, Material* material, f32 time)
     {
         if (material->writer.first == nullptr)
         {
             StartMaterialWriter(material);
         }
 
-        header->values[0] = 0.5f;
-        header->values[3] = scale;
+        header->nearClip = ParticleNearClip;
+        header->time = time;
         WriteParticleBlock(block, header, matrix, material);
     }
 
-    void DrawHexagonParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matrix, Material* material, f32 scale,
+    void DrawHexagonParticleBlock(u8* block, ParticleHeader* header, const Matrix4x4* matrix, Material* material, f32 time,
                                   f32 distortionX, f32 distortionY)
     {
         if (material->writer.first == nullptr)
@@ -63,11 +99,11 @@ extern "C"
             StartMaterialWriter(material);
         }
 
-        header->values[0] = 0.5f;
-        header->values[3] = scale;
-        header->distortion[0] = distortionX * 0x1p-14f;
-        header->distortion[1] = distortionY * -0x1p-12f;
-        header->distortion[2] = 40.0f;
+        header->nearClip = ParticleNearClip;
+        header->time = time;
+        header->distortion[0] = distortionX * DistortionAcross;
+        header->distortion[1] = distortionY * DistortionDown;
+        header->distortion[2] = DistortionFadeDepth;
         *reinterpret_cast<u32*>(&header->distortion[3]) = 0;
         WriteParticleBlock(block, header, matrix, material);
     }
@@ -88,35 +124,37 @@ extern "C"
         }
 
         Matrix4x4 toScreen = view->toScreen;
-        for (u32 type = 0; type < 4; type++)
+        for (u32 key = 0; key < DecalData::KeyCount; key++)
         {
-            DecalBlock* decal = decals->drawLists[type];
-            decals->drawLists[type] = nullptr;
+            DecalBlock* decal = decals->drawLists[key];
+            decals->drawLists[key] = nullptr;
             if (decal == nullptr)
             {
                 continue;
             }
 
-            Material* material = decals->page.materials[type];
+            Material* material = decals->page.materials[key];
             if (material->writer.first == nullptr)
             {
                 StartMaterialWriter(material);
             }
 
-            // The matrix, the UV packet by REFS (VU1 runs the program at 0 on it), and each block's 0x4C quadwords
+            // The matrix, the UV packet by REFS (its GIF tag's quadword and two rectangles for each type and one more; VU1 runs
+            // the program at 0 on it), and each block's quadwords from its places' UNPACK on
+            constexpr u32 BlockQuadwords = (sizeof(DecalBlock) - offsetof(DecalBlock, placesUnpack)) / 0x10;
             RenderBucket& writer = material->writer;
             u32* at = BeginPacket(writer);
-            at[0] = CountTag | 4;
+            at[0] = CountTag | MatrixQuadwords;
             at[1] = 0;
             at[2] = 0;
             at[3] = MatrixUnpack;
             *reinterpret_cast<Matrix4x4*>(at + 4) = toScreen;
             at += 20;
             u32 size = (decals->typeCount + 1) * 2 + 1;
-            at[0] = size | RefsTag;
-            at[1] = Address(decals->uvPacket);
+            at[0] = size | ReferenceStallTag;
+            at[1] = Address(&decals->uvPacket);
             at[2] = 0;
-            at[3] = size << 16 | 0x6C000053;
+            at[3] = VifUnpackTo(VifUnpackV4Count, VuHeadAddress, size);
             at[4] = CountTag;
             at[5] = 0;
             at[6] = 0;
@@ -124,7 +162,7 @@ extern "C"
             at += 8;
             for (; decal != nullptr; decal = decal->drawNext)
             {
-                at[0] = RefsTag | 0x4C;
+                at[0] = ReferenceStallTag | BlockQuadwords;
                 at[1] = Address(decal->placesUnpack);
                 at[2] = 0;
                 at[3] = 0;
@@ -136,22 +174,25 @@ extern "C"
     }
 }
 
-// A packet of quadwords for VU0's memory as the asm makes it: how many there are, and room for them
+// A packet of quadwords for VU0's memory as the asm makes it (BigVu0Packet's smaller kind): how many there are (a word after the
+// count is written 0 with it), and room for them
 struct Vu0Packet
 {
+    static constexpr s32 Capacity = 16;
+
     s32 count;
-    s32 unknown04;
+    s32 unused04;
     s32 capacity;
-    s32 unknown0C;
-    u32 data[16][4];
+    s32 unused0C;
+    u32 data[Capacity][4];
 };
 
 extern "C"
 {
     // A packet started: no quadwords
     Vu0Packet* StartVu0Packet(Vu0Packet* packet) RETAIL(FUN_001ba2f0);
-    // The disk node of the screen effects' buffers (none at start-up), the wave shader the particles' start-up makes and type 0x1C's
-    // vtable
+    // The disk node of the screen effects' buffers (none at start-up), the wave shader the particles' start-up makes and type
+    // 0x1C's vtable
     extern s32 g_EffectsDiskNode RETAIL(D_0030A848);
     extern WaveShader g_ParticleWaveShader RETAIL(G_PrecompShader_0x1C_3323C0);
     extern const GccVTableEntry g_ShaderType1CVTable[] RETAIL(PrecompiledShader__Type_0x1C_Methods);
@@ -163,74 +204,85 @@ EABI_EXPORT(DrawHexagonParticleBlock, DrawHexagonParticleBlock);
 
 namespace Platform::Graphics
 {
-// A block's first quadword is its DMA tag: RET ends the chain, NEXT goes on at the address in its second word
+// A block's first quadword is its DMA tag (its ID replaced, the rest kept): RET ends the chain, NEXT goes on at the address in
+// its second word (main memory's: SPR, bit 31, clear)
+constexpr u32 TagId = 0x70000000;
+
 void EndParticleBlock(u8* block)
 {
-    constexpr u32 TagKept = 0x8FFFFFFF;
     auto* tag = reinterpret_cast<u32*>(block);
     tag[1] = 0;
-    tag[0] = (tag[0] & TagKept) | ReturnTag;
+    tag[0] = (tag[0] & ~TagId) | ReturnTag;
 }
 
 void ChainParticleBlocks(u8* const* blocks, s32 count)
 {
-    constexpr u32 TagKept = 0x8FFFFFFF;
-    constexpr u32 AddressKept = 0x7FFFFFFF;
     EndParticleBlock(blocks[count - 1]);
     for (s32 block = count - 2; block >= 0; block--)
     {
         auto* tag = reinterpret_cast<u32*>(blocks[block]);
-        tag[0] = (tag[0] & TagKept) | NextTag;
-        tag[1] = Address(blocks[block + 1]) & AddressKept;
+        tag[0] = (tag[0] & ~TagId) | NextTag;
+        tag[1] = Address(blocks[block + 1]) & ~DmaScratchpad;
     }
 }
 
-// A block: a RET tag of its particles' quadwords with VIF1's UNPACK of them, the GIF tag of their draws and its registers, and
-// after them an MSCNT starting the VU1 program (the hexagons' as the fourth word of the last quadword)
+// A block: a RET tag of its quadwords with VIF1's UNPACK of all but the last (to VU1's double buffer's place), the GIF tag of
+// their draws (triangle strips, PRIM preset, ending the GIF's packet: 8 loops of a particle's four corners, UV, RGBAQ and XYZ2
+// then UV and XYZ2 for the other three, or 6 loops of a hexagon's 13 registers) and its registers, the particles, and the last
+// quadword's VIF1 codes: an MSCNT starting the VU1 program (the hexagons' in the fourth word)
 void InitParticleBlock(u8* block, bool hexagons)
 {
+    constexpr u32 ParticleLoops = 8;
+    constexpr u32 HexagonLoops = 6;
+    constexpr u32 ParticleRegisterCount = 9;
+    constexpr u32 HexagonRegisterCount = 13;
+    constexpr u64 ParticleRegisters = GifDescriptors(GifUv, GifRgbaq, GifXyz2, GifUv, GifXyz2, GifUv, GifXyz2, GifUv, GifXyz2);
+    constexpr u64 HexagonRegisters = GifDescriptors(GifSt, GifRgbaq, GifXyz2, GifSt, GifXyz2, GifRgbaq, GifSt, GifXyz2, GifRgbaq,
+                                                    GifSt, GifXyz2, GifSt, GifXyz2);
     auto* words = reinterpret_cast<u32*>(block);
-    auto* gifTag = reinterpret_cast<u64*>(block + 0x10);
-    u32 footer = hexagons ? 0x1A0 : 0x420;
-    auto* last = reinterpret_cast<u32*>(block + footer);
+    auto* gifTag = reinterpret_cast<GifTag*>(block + 0x10);
+    u32 quadwords = (hexagons ? HexagonBlockBytes : ParticleBlockBytes) / 0x10 - 1;
+    auto* last = reinterpret_cast<u32*>(block + quadwords * 0x10);
     last[0] = 0;
     last[1] = 0;
     last[2] = 0;
     last[3] = 0;
     words[0] = 0;
     words[1] = 0;
+    GifTag tag = {};
+    tag.endOfPacket = 1;
+    tag.setsPrim = 1;
+    tag.prim = GS_PRIM_TRI_STRIP;
     if (hexagons)
     {
-        *gifTag = 0xD002400000008006;
-        words[0] = 0x6000001A;
+        tag.loops = HexagonLoops;
+        tag.registerCount = HexagonRegisterCount;
+        gifTag[0] = tag;
+        words[0] = ReturnTag | quadwords;
         words[2] = 0;
-        words[3] = 0x6C198000;
-        words[6] = 0x52152512;
-        words[7] = 0x52521;
+        words[3] = VifUnpackTo(VifUnpackV4Count | VifTops, 0, quadwords - 1);
+        *reinterpret_cast<u64*>(words + 6) = HexagonRegisters;
         last[3] = VifMscnt;
         return;
     }
 
-    *gifTag = 0x9002400000008008;
-    words[0] = 0x60000042;
+    tag.loops = ParticleLoops;
+    tag.registerCount = ParticleRegisterCount;
+    gifTag[0] = tag;
+    words[0] = ReturnTag | quadwords;
     words[2] = 0;
-    words[3] = 0x6C418000;
-    words[6] = 0x35353513;
-    words[7] = 5;
+    words[3] = VifUnpackTo(VifUnpackV4Count | VifTops, 0, quadwords - 1);
+    *reinterpret_cast<u64*>(words + 6) = ParticleRegisters;
     last[0] = VifMscnt;
 }
 
-// The table's data for VU1: the gravity in the first packet's second quadword, the texture's corners (UV in 12.4: start, end
-// and the two mixed) or the hexagons' corners from 0x40, then each step's two quadwords from 0x70: the shape's six floats with
-// the colour and alpha in the low bytes of the first four
+// The table's data for VU1: the gravity in its head, the texture's corners or the hexagons' corners (none for other systems),
+// then each step's shape with the colour and alpha
 void WriteParticleRenderTable(u8* table, const ParticleLook& look)
 {
-    constexpr u32 GravityAt = 0x14;
-    constexpr u32 CornersAt = 0x40;
-    constexpr u32 StepsAt = 0x70;
-    constexpr u32 StepBytes = 0x20;
-    *reinterpret_cast<f32*>(table + GravityAt) = look.gravity;
-    auto* corners = reinterpret_cast<s32*>(table + CornersAt);
+    auto* render = reinterpret_cast<ParticleRenderTable*>(table);
+    render->head.gravity = look.gravity;
+    s32* corners = render->corners;
     corners[4] = look.texture[0];
     corners[0] = look.texture[0];
     corners[6] = look.texture[2];
@@ -241,7 +293,7 @@ void WriteParticleRenderTable(u8* table, const ParticleLook& look)
     corners[5] = look.texture[3];
     for (u32 step = 0; step < ParticleRenderSteps; step++)
     {
-        auto* entry = reinterpret_cast<f32*>(table + StepsAt + step * StepBytes);
+        f32* entry = render->steps[step].shape;
         for (u32 value = 0; value < 6; value++)
         {
             entry[value] = look.steps[step].shape[value];
@@ -254,7 +306,7 @@ void WriteParticleRenderTable(u8* table, const ParticleLook& look)
         }
     }
 
-    auto* hexagon = reinterpret_cast<f32*>(table + CornersAt);
+    auto* hexagon = reinterpret_cast<f32*>(render->corners);
     if (!look.hexagons)
     {
         hexagon[11] = 0.0f;
@@ -280,12 +332,13 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
     DrawHexagonParticleBlock(block, reinterpret_cast<ParticleHeader*>(table), matrix, material, time, distortionX, distortionY);
 }
 
-// The view's quadwords: the chunk's four rows and four copies of the fifth, each four transposed, then the other chunk's matrix when
-// there is one; the program to run on each decal in vi27 (its address in instructions)
+// The view's quadwords: the chunk's four rows and four copies of the fifth, each four transposed, then the other chunk's matrix
+// when there is one; the program to run on each decal in vi27 (its address in instructions)
 void LoadDecalView(const Matrix4x4* chunkMatrices, const Matrix4x4* fromChunk)
 {
     constexpr u32 SameChunkProgram = 0x1C0;
     constexpr u32 OtherChunkProgram = 0x360;
+    constexpr u32 InstructionShift = 3;
     alignas(16) Vu0Packet packet;
     alignas(16) u32 fifth[4];
     StartVu0Packet(&packet);
@@ -313,31 +366,26 @@ void LoadDecalView(const Matrix4x4* chunkMatrices, const Matrix4x4* fromChunk)
             packet.data[packet.count + word / 4][word % 4] = from[word];
         }
 
-        packet.unknown04 = 0;
+        packet.unused04 = 0;
         packet.count = packet.count + 4;
     }
 
     SendToVu0(g_Vu0Programs, packet.data, packet.count, 0);
-    u32 start = program >> 3;
+    u32 start = program >> InstructionShift;
     asm volatile("ctc2.ni %0, $vi27" : : "r"(start));
 }
 
-// The type's first quadword made the DMA tag and UNPACK that send its variants to VU0 from quadword 0x10 (written through the
-// uncached mirror, which the DMA reads), the transfer waited for
+// The type's first quadword made the DMA tag and UNPACK that send its variants to VU0's memory (written through the uncached
+// mirror, which the DMA reads), the transfer waited for
 void LoadDecalType(DecalType* type)
 {
-    constexpr u32 Uncached = 0x20000000;
-    constexpr u32 EndTag = 0x70000000;
-    constexpr u32 UnpackVariants = 0x6C000010;
-    constexpr u32 VariantQuadwords = 8;
-    constexpr s32 Vif0Channel = 0;
-    s32 count = *reinterpret_cast<const s32*>(reinterpret_cast<u8*>(type) + 0x790);
-    auto* tag = reinterpret_cast<volatile u32*>(Address(type) | Uncached);
+    s32 count = type->variantCount;
+    auto* tag = reinterpret_cast<volatile u32*>(Address(type) | UncachedSegment);
     tag[0] = 0;
     tag[1] = 0;
     tag[2] = 0;
     tag[3] = 0;
-    tag[3] = static_cast<u32>(count) * VariantQuadwords << 16 | UnpackVariants;
+    tag[3] = VifUnpackTo(VifUnpackV4Count, Vu0VariantsAddress, static_cast<u32>(count) * VariantQuadwords);
     tag[0] = static_cast<u32>(count) * VariantQuadwords | EndTag;
     StartDmaChain(Vif0Channel, type, true);
     while (IsDmaChannelBusy(Vif0Channel))
@@ -354,8 +402,6 @@ void DrawDecals(DecalData* decals)
 // its offsets in vf31 and vf30 (12.4: the half words are their low ones)
 void AgeDecal(const f32* place, const s32* frame, s32 variant, DecalLook* look)
 {
-    constexpr s32 VariantsAddress = 0x10;
-    constexpr s32 VariantQuadwords = 8;
     alignas(16) f32 in[4] = {place[0], place[1], place[2], place[3]};
     alignas(16) s32 normal[4] = {frame[0], frame[1], frame[2], frame[3]};
     alignas(16) s32 direction[4] = {frame[4], frame[5], frame[6], frame[7]};
@@ -363,7 +409,7 @@ void AgeDecal(const f32* place, const s32* frame, s32 variant, DecalLook* look)
     alignas(16) u32 colour[4];
     alignas(16) u32 sizes[4];
     alignas(16) u32 moreSizes[4];
-    s32 address = variant * VariantQuadwords + VariantsAddress;
+    auto address = static_cast<s32>(variant * VariantQuadwords + Vu0VariantsAddress);
     asm volatile("lqc2 $vf1, 0(%4)\n\t"
                  "lqc2 $vf2, 0(%5)\n\t"
                  "lqc2 $vf3, 0(%6)\n\t"
@@ -404,27 +450,31 @@ s32 LoadParticleView(const Matrix4x4* matrices, s32 index)
     return UploadParticleView(const_cast<Matrix4x4*>(matrices), index);
 }
 
-// A render table: a CNT tag of its first two quadwords (VIF1's FLUSH and UNPACK), a RET of the steps that follow (the same), and
-// after them a CNT tag with VIF1's MSCAL
+// A render table: a CNT tag of its head's two quadwords (VIF1's FLUSH and UNPACK), a RET of the corners and steps that follow
+// (the same) and of their VIF1 codes after them (FLUSHE, as the word of a CNT tag reads, and MSCAL)
 void InitParticleRenderTable(u8* table)
 {
-    auto* words = reinterpret_cast<u32*>(table);
-    words[0] = 0;
-    words[1] = 0;
-    words[12] = 0;
-    words[13] = 0;
-    words[0] = CountTag | 2;
-    words[2] = VifFlush;
-    words[3] = 0x6C020053;
-    words[12] = ReturnTag | 0x84;
-    words[15] = 0x6C830055;
-    words[14] = VifFlush;
-    auto* end = reinterpret_cast<u32*>(table + 0x870);
+    constexpr u32 HeadQuadwords = 2;
+    constexpr u32 StepsQuadwords = (offsetof(ParticleRenderTable, end) - offsetof(ParticleRenderTable, corners)) / 0x10;
+    auto* render = reinterpret_cast<ParticleRenderTable*>(table);
+    u32* tag = render->head.tag;
+    u32* stepsTag = render->head.stepsTag;
+    tag[0] = 0;
+    tag[1] = 0;
+    stepsTag[0] = 0;
+    stepsTag[1] = 0;
+    tag[0] = CountTag | HeadQuadwords;
+    tag[2] = VifFlush;
+    tag[3] = VifUnpackTo(VifUnpackV4Count, VuHeadAddress, HeadQuadwords);
+    stepsTag[0] = ReturnTag | (StepsQuadwords + 1);
+    stepsTag[3] = VifUnpackTo(VifUnpackV4Count, VuStepsAddress, StepsQuadwords);
+    stepsTag[2] = VifFlush;
+    u32* end = render->end;
     end[0] = 0;
     end[1] = 0;
     end[2] = 0;
     end[3] = 0;
-    end[0] = CountTag;
+    end[0] = VifFlushE;
     end[2] = VifMscal;
 }
 }
@@ -439,63 +489,38 @@ extern "C"
 
 namespace
 {
-// The pages' materials go in the particles' render bucket, and every mode's shader drops what's under 5/128 alpha (ATST GEQUAL 5,
-// kept in neither buffer). The page material's and the blended modes' test depth GEQUAL without writing it
-constexpr u32 ParticleBucket = 0x16;
-constexpr u64 AlphaGreaterOrEqual = 5;
-constexpr u64 AlphaKept = 5;
-constexpr u64 DepthGreaterOrEqual = 2;
-// The blended modes' presets: Cs·As + Cd and Cd - Cs·As
-constexpr u64 PresetAdd = 1;
-constexpr u64 PresetSubtract = 2;
-// Settings bits the files have that nothing uses
-constexpr u32 SettingUnused23 = 23;
-constexpr u32 SettingUnused57 = 57;
-constexpr u32 ShaderSettingsSlot = 5;
-constexpr u32 MaterialShaders = 4;
+// Every mode's shader drops what's under 5/128 alpha (ATST GEQUAL 5, kept in neither buffer). The page material's and the blended
+// modes' test depth GEQUAL without writing it
+constexpr u64 AlphaThreshold = 5;
 
-// A page's blend modes: additive, subtractive, the page material's own and cutout
-enum PageMode : u32
+void SetPageAlphaTest(ShaderSettings& settings)
 {
-    ModeAdd,
-    ModeSubtract,
-    ModeOwn,
-    ModeCutout,
-};
-
-u64 With(u64 settings, u32 shift, u32 width, u64 value)
-{
-    u64 mask = ((1ull << width) - 1) << shift;
-    return (settings & ~mask) | value << shift;
+    settings.alphaTest = 1;
+    settings.alphaMethod = GS_ALPHA_GEQUAL;
+    settings.alphaReference = AlphaThreshold;
+    settings.alphaFail = GS_ALPHA_NO_UPDATE;
 }
 
-u64 WithPageAlphaTest(u64 settings)
+// What a mode's shader leaves out: the unused bits, the destination test, the scrolls, Gouraud shading, fog and the second
+// context
+void LeaveOutExtras(ShaderSettings& settings)
 {
-    settings = With(settings, SettingAlphaTest, 1, 1);
-    settings = With(settings, SettingAlphaMethod, 3, AlphaGreaterOrEqual);
-    settings = With(settings, SettingAlphaReference, 8, AlphaKept);
-    return With(settings, SettingAlphaFail, 2, 0);
-}
-
-// What a mode's shader leaves out: the unused bits, the destination test, the scrolls, Gouraud shading, fog and the second context
-u64 WithoutExtras(u64 settings)
-{
-    settings = With(settings, SettingUnused57, 1, 0);
-    settings = With(settings, SettingDestinationTest, 1, 0);
-    settings = With(settings, SettingUScroll, 3, 0);
-    settings = With(settings, SettingVScroll, 3, 0);
-    settings = With(settings, SettingUnused23, 3, 0);
-    settings = With(settings, SettingGouraud, 1, 0);
-    settings = With(settings, SettingFog, 1, 0);
-    return With(settings, SettingSecondContext, 1, 0);
+    settings.unused57 = 0;
+    settings.destinationTest = 0;
+    settings.uScroll = ScrollNone;
+    settings.vScroll = ScrollNone;
+    settings.unused23 = 0;
+    settings.gouraud = 0;
+    settings.fog = 0;
+    settings.secondContext = 0;
 }
 
 // A mode's material in the particles' bucket with the page material's programs' key, no shaders yet
-Material* MakeModeMaterial(ParticlePage* page, PageMode mode, u64 activated)
+Material* MakeModeMaterial(ParticlePage* page, ParticleBlendMode mode, u64 activated)
 {
     Material* material = MaterialConstruct(static_cast<Material*>(MemoryAllocate(Platform::Graphics::MaterialStorage)));
     page->materials[mode] = material;
-    material->bucket = ParticleBucket;
+    material->bucket = BucketParticles;
     material->shaderCount = 0;
     material->activatedShaders = activated;
     return material;
@@ -509,19 +534,19 @@ Shader* MakePageShader(bool decals)
     {
         shader->vtable = g_ShaderType12VTable;
         ShaderType12SetUp(shader);
-        shader->settings = With(shader->settings, SettingStq, 1, 0);
+        shader->settings.stq = 0;
         return shader;
     }
 
     shader->vtable = g_ShaderType13VTable;
     ShaderType13SetUp(shader);
-    shader->settings = With(shader->settings, SettingStq, 1, 1);
+    shader->settings.stq = 1;
     return shader;
 }
 
 void AddShader(Material* material, Shader* shader)
 {
-    if (material->shaderCount < MaterialShaders)
+    if (material->shaderCount < MaxMaterialShaders)
     {
         material->shaders[material->shaderCount] = shader;
         material->shaderCount++;
@@ -531,24 +556,24 @@ void AddShader(Material* material, Shader* shader)
 // A mode's shader drawn with the FBA in a grey that leaves the texture as it is
 void StartModeShader(Shader* shader)
 {
-    shader->settings = With(shader->settings, SettingNoFba, 1, 0);
+    shader->settings.noFba = 0;
     shader->shaderColour[0] = 0.5f;
     shader->shaderColour[3] = 1.0f;
     shader->shaderColour[2] = 0.5f;
     shader->shaderColour[1] = 0.5f;
 }
 
-void SetUpBlendedShader(Shader* shader, u64 preset)
+void SetUpBlendedShader(Shader* shader, AlphaPreset preset)
 {
     StartModeShader(shader);
-    u64 settings = shader->settings;
-    settings = With(settings, SettingBlends, 1, 1);
-    settings = With(settings, SettingNoDepthWrites, 1, 1);
-    settings = WithPageAlphaTest(settings);
-    settings = With(settings, SettingDepthTest, 2, DepthGreaterOrEqual);
-    settings = WithoutExtras(settings);
-    settings = With(settings, SettingOwnAlpha, 1, 0);
-    shader->settings = With(settings, SettingPreset, 4, preset);
+    ShaderSettings& settings = shader->settings;
+    settings.blends = 1;
+    settings.noDepthWrites = 1;
+    SetPageAlphaTest(settings);
+    settings.depthTest = GS_ZBUFF_GEQUAL;
+    LeaveOutExtras(settings);
+    settings.ownAlpha = 0;
+    settings.preset = preset;
 }
 
 // The page shader's texture (a reference of it taken) and mip choice given to a mode's shader, drawn textured, its GS settings
@@ -557,7 +582,7 @@ void FinishModeShader(Shader* shader, const Shader* pageShader)
 {
     SetShaderTexture(shader, HeaderOf(pageShader->texture)->id);
     shader->lodK = pageShader->lodK;
-    shader->settings = With(shader->settings, SettingTextured, 1, 1);
+    shader->settings.textured = 1;
     shader->lodL = pageShader->lodL;
     CallVirtual<void>(shader, shader->vtable, ShaderSettingsSlot);
 }
@@ -580,24 +605,23 @@ void ReadParticlePageData(ParticlePage* page, Stream* stream, u32 fromStream, u3
     }
 
     Material* own = page->material->material;
-    page->materials[ModeOwn] = own;
-    own->bucket = ParticleBucket;
-    u64 activated = page->materials[ModeOwn]->activatedShaders;
-    Shader* pageShader = page->materials[ModeOwn] != nullptr ? page->materials[ModeOwn]->shaders[0] : nullptr;
-    u64 settings = pageShader->settings;
-    settings = With(settings, SettingBlends, 1, 1);
-    settings = With(settings, SettingNoDepthWrites, 1, 1);
-    settings = WithPageAlphaTest(settings);
-    pageShader->settings = With(settings, SettingDepthTest, 2, DepthGreaterOrEqual);
+    page->materials[BlendPageMaterial] = own;
+    own->bucket = BucketParticles;
+    u64 activated = page->materials[BlendPageMaterial]->activatedShaders;
+    Shader* pageShader = page->materials[BlendPageMaterial] != nullptr ? page->materials[BlendPageMaterial]->shaders[0] : nullptr;
+    pageShader->settings.blends = 1;
+    pageShader->settings.noDepthWrites = 1;
+    SetPageAlphaTest(pageShader->settings);
+    pageShader->settings.depthTest = GS_ZBUFF_GEQUAL;
     CallVirtual<void>(pageShader, pageShader->vtable, ShaderSettingsSlot);
 
-    Material* material = MakeModeMaterial(page, ModeAdd, activated);
+    Material* material = MakeModeMaterial(page, BlendAdditive, activated);
     Shader* shader = MakePageShader(decals != 0);
     AddShader(material, shader);
     SetUpBlendedShader(shader, PresetAdd);
     FinishModeShader(shader, pageShader);
 
-    material = MakeModeMaterial(page, ModeSubtract, activated);
+    material = MakeModeMaterial(page, BlendSubtractive, activated);
     auto* dropped = ShaderConstruct(static_cast<Shader*>(MemoryAllocate(sizeof(Shader))));
     dropped->vtable = g_ShaderType12VTable;
     ShaderType12SetUp(dropped);
@@ -606,16 +630,15 @@ void ReadParticlePageData(ParticlePage* page, Stream* stream, u32 fromStream, u3
     SetUpBlendedShader(subtractive, PresetSubtract);
     FinishModeShader(subtractive, pageShader);
 
-    material = MakeModeMaterial(page, ModeCutout, activated);
+    material = MakeModeMaterial(page, BlendCutout, activated);
     shader = MakePageShader(decals != 0);
     AddShader(material, shader);
     StartModeShader(shader);
-    settings = shader->settings;
-    settings = With(settings, SettingBlends, 1, 0);
-    settings = With(settings, SettingNoDepthWrites, 1, 0);
-    shader->settings = WithPageAlphaTest(settings);
-    subtractive->settings = With(subtractive->settings, SettingDepthTest, 2, DepthGreaterOrEqual);
-    shader->settings = WithoutExtras(shader->settings);
+    shader->settings.blends = 0;
+    shader->settings.noDepthWrites = 0;
+    SetPageAlphaTest(shader->settings);
+    subtractive->settings.depthTest = GS_ZBUFF_GEQUAL;
+    LeaveOutExtras(shader->settings);
     FinishModeShader(shader, pageShader);
 }
 
@@ -634,9 +657,9 @@ void UpdateParticleWaves(const TimeClock* clock)
 
 Vu0Packet* StartVu0Packet(Vu0Packet* packet)
 {
-    packet->capacity = 16;
+    packet->capacity = Vu0Packet::Capacity;
     packet->count = 0;
-    packet->unknown04 = 0;
+    packet->unused04 = 0;
     return packet;
 }
 

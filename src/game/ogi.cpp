@@ -54,7 +54,7 @@ void* MakeModelItem(void*, u32 classId)
 void DestroyModelItemBuilder(void* builder, u32 destroyFlags)
 {
     *static_cast<const GccVTableEntry**>(builder) = g_ItemBuilderBaseVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(builder);
     }
@@ -132,12 +132,12 @@ void DrawOgiRigidModels(GameOGI* ogi, const Matrix4x4* matrix, const ChunkLights
 
 namespace
 {
-// The instance's seen stamp past the node's own (0xFFFF none), past the update rate's grace: 0 within it
+// The instance's seen stamp past the node's own (none: 0), past the update rate's grace: 0 within it
 u32 StampsUnseen(const ModelNode* node)
 {
-    u32 seen = node->owner->seen[0] | node->owner->seen[1] << 8 | node->owner->seen[2] << 16;
-    u32 since = node->unknown06;
-    if (since == 0xFFFF || !(since < seen))
+    u32 seen = node->owner->seen;
+    u32 since = node->nearDistance;
+    if (since == GameNode::AnyNearDistance || !(since < seen))
     {
         return 0;
     }
@@ -190,7 +190,7 @@ void ModelNode::Destroy(u32 destroyFlags)
 
     if (lighting != nullptr)
     {
-        CallVirtual<void>(lighting, lighting->vtable, 1, u32{DestroyAndFree});
+        CallVirtual<void>(lighting, lighting->vtable, Light::SlotDestroy, u32{DestroyAndFree});
     }
 
     GameNode::Destroy(destroyFlags);
@@ -209,7 +209,7 @@ void ModelNode::SetOwner(InstanceContext* instance)
 
 u32 ModelNode::Kind()
 {
-    return NodeKind;
+    return NodeModel;
 }
 
 void ModelNode::Step(TimeClock*, u32)
@@ -232,18 +232,18 @@ u32 ModelNode::Update(TimeClock* clock)
     drawnOgi = ogi;
     if (ogi == nullptr)
     {
-        bits &= ~MatricesMade;
+        bits.matricesMade = 0;
         return GameNode::Update(clock);
     }
 
     InstanceContext* instance = owner;
-    u32 inDrawnCell = (instance->flags & ReferencedObject::FlagInDrawnCell) != 0;
-    u32 visible = (instance->flags & ReferencedObject::FlagVisible) != 0;
+    u32 inDrawnCell = instance->flags.inDrawnCell;
+    u32 visible = instance->flags.visible;
     if (own == nullptr)
     {
-        bits = (bits & ~UnseenMask) | (StampsUnseen(this) & UnseenMask);
+        bits.unseen = StampsUnseen(this);
         // Drawn only while its instance is seen, in a drawn cell and not unseen for too long
-        if (visible == 0 || !((bits & UnseenMask) < g_ModelUpdateRate.cutoff) || inDrawnCell == 0)
+        if (visible == 0 || !(bits.unseen < g_ModelUpdateRate.cutoff) || inDrawnCell == 0)
         {
             drawnOgi = nullptr;
         }
@@ -252,8 +252,8 @@ u32 ModelNode::Update(TimeClock* clock)
     }
 
     u8 detail = own->matrices.detail;
-    bits = (bits & ~UnseenMask) | (StampsUnseen(this) & UnseenMask);
-    u32 unseen = bits & UnseenMask;
+    bits.unseen = StampsUnseen(this);
+    u32 unseen = bits.unseen;
     bool recent = unseen < g_ModelUpdateRate.cutoff;
     u32 drawn = 0;
     if (visible != 0 && recent)
@@ -261,27 +261,28 @@ u32 ModelNode::Update(TimeClock* clock)
         drawn = inDrawnCell;
     }
 
-    if ((bits & (OgiChanged | AlwaysAnimated)) != 0 || detail != 0)
+    if (bits.ogiChanged != 0 || bits.alwaysAnimated != 0 || detail != 0)
     {
         u32 made = AnimateOgi(drawnAnimator, drawnOgi, clock, 1, 0);
-        bits = ((bits & ~MatricesMade) | ((bits >> 26 & 1) | made) << 26) & ~OgiChanged;
+        bits.matricesMade = bits.matricesMade | made;
+        bits.ogiChanged = 0;
     }
     else if (!recent)
     {
-        u32 kept = ForgetJointMatrices(drawnAnimator);
-        bits = (bits & ~MatricesMade) | (kept & 1) << 26;
+        bits.matricesMade = ForgetJointMatrices(drawnAnimator);
     }
     else
     {
-        // Every 2^n frames, staggered by the node's address
+        // Every 2^n frames, n growing with the stamps it went unseen, staggered by the node's address (the bits keep 24 bits of the
+        // stamps, never UpdateRate::NoCount)
         bool now = true;
-        if ((bits & MatricesMade) != 0 && unseen != 0)
+        if (bits.matricesMade != 0 && unseen != 0)
         {
-            u32 mask = 0xFFFF;
-            if (unseen != 0xFFFFFFFF)
+            u32 mask = UpdateRate::RarestMask;
+            if (unseen != UpdateRate::NoCount)
             {
                 s32 power = static_cast<s32>(g_ModelUpdateRate.slope * static_cast<f32>(unseen)) + 1;
-                mask = (1u << (power & 0x1F)) - 1;
+                mask = (1u << (power & ShiftMask)) - 1;
             }
 
             now = ((g_RenderedFrames + (reinterpret_cast<u32>(this) >> 8)) & mask) == 0;
@@ -290,13 +291,13 @@ u32 ModelNode::Update(TimeClock* clock)
         if (now)
         {
             u32 made = AnimateOgi(drawnAnimator, drawnOgi, clock, drawn, 0);
-            bits = (bits & ~MatricesMade) | (((bits >> 26 & 1) | made) & 1) << 26;
+            bits.matricesMade = bits.matricesMade | made;
         }
         else
         {
             u32 made = ReuseJointMatrices(drawnAnimator, drawnOgi, drawn, 0);
-            GameNode::flags |= FlagKeepTime;
-            bits = (bits & ~MatricesMade) | (((bits >> 26 & 1) | made) & 1) << 26;
+            GameNode::flags.keepsTime = 1;
+            bits.matricesMade = bits.matricesMade | made;
         }
     }
 
@@ -315,12 +316,12 @@ u32 ModelNode::GetClassId()
     return ClassId;
 }
 
-void ModelNode::SetOgi(GameOGI* newOgi, u32 cameraJoints, u32 exitPoints)
+void ModelNode::SetOgi(GameOGI* newOgi, u32 reactJoints, u32 exitPoints)
 {
     if (ogi != newOgi)
     {
         ogi = newOgi;
-        bits |= OgiChanged;
+        bits.ogiChanged = 1;
         if (newOgi == nullptr || (newOgi->jointCount == 1 && newOgi->exitPointCount == 0))
         {
             OgiAnimator* own = animator;
@@ -333,11 +334,11 @@ void ModelNode::SetOgi(GameOGI* newOgi, u32 cameraJoints, u32 exitPoints)
         else if (animator == nullptr)
         {
             animator = InitOgiAnimatorService(static_cast<OgiAnimator*>(MemoryAllocate(sizeof(OgiAnimator))), ogi,
-                                              cameraJoints, exitPoints);
+                                              reactJoints, exitPoints);
         }
         else
         {
-            SetAnimatorOgi(animator, ogi, cameraJoints, exitPoints);
+            SetAnimatorOgi(animator, ogi, reactJoints, exitPoints);
         }
 
         AttachCollision();
@@ -359,10 +360,10 @@ void ModelNode::AttachCollision()
 
 void ModelNode::SetSolid(u32 solid)
 {
-    bits = (bits & ~Solid) | (solid & 1) << 27;
+    bits.solid = solid;
     if (ogi != nullptr)
     {
-        SetCollisionSolid(&owner->collision, (bits & Solid) != 0 ? 1 : 0);
+        SetCollisionSolid(&owner->collision, bits.solid);
     }
 }
 
@@ -402,16 +403,16 @@ void DrawInstanceModel(InstanceContext* instance, const Matrix4x4* chunkMatrix, 
 
 void DrawQueuedInstances()
 {
-    constexpr u32 StandardPrograms = 1;
     constexpr u32 WhollyInView = 1;
     constexpr u32 Clipped = 2;
-    constexpr s32 LastSlot = 0x3FF;
+    // The clipped instances are queued from the array's end
+    constexpr s32 LastSlot = sizeof(g_DrawnInstances) / sizeof(g_DrawnInstances[0]) - 1;
     if (g_DrawnInstanceCount == 0)
     {
         return;
     }
 
-    Platform::Graphics::UseHelperPrograms(StandardPrograms, true);
+    Platform::Graphics::UseHelperPrograms(Platform::Graphics::StandardPrograms, true);
     // The chunk's matrix is kept while its instances follow each other (the first instance always has a chunk)
     ChunkData* chunk = nullptr;
     ChunkLights* lights = nullptr;

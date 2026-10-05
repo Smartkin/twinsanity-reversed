@@ -8,9 +8,11 @@
 #include "game/objectnode.h"
 #include "game/objects.h"
 #include "game/properties.h"
+#include "game/sound.h"
 
 #include <bit>
 #include <cstddef>
+#include <cstdint>
 
 // The commands that make and set up the object nodes' controllers (game/nodecontrollers.h)
 
@@ -23,10 +25,6 @@ extern "C"
 
 namespace
 {
-// The object nodes' vtable functions: a designator's instance and position
-constexpr u32 GetDesignatorSlot = 36;
-constexpr u32 GetDesignatorPositionSlot = 37;
-
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
     return static_cast<ObjectNode*>(runner->agentNode);
@@ -36,7 +34,7 @@ ObjectNode* NodeOf(BehaviourRunner* runner)
 template <typename Controller>
 Controller* ControllerOf(ObjectNode* node, u8 kind)
 {
-    auto* controller = reinterpret_cast<NodeController*>(node->unknown114);
+    NodeController* controller = node->controller;
     if (controller == nullptr || controller->kind != kind)
     {
         return nullptr;
@@ -55,17 +53,16 @@ void DestroyConditionBuilder(void* builder, u32 destroyFlags)
     }
 }
 
-// The controller of the command's kind made and given to the agent's node (with the 0xFD token only when it has none)
+// The controller of the command's kind made and given to the agent's node (not when the node has one the command keeps)
 void CreateNodeControllerCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 OnlyWithoutOne = 0x100;
     ObjectNode* node = NodeOf(runner);
-    if ((controller & OnlyWithoutOne) != 0 && node->unknown114 != 0)
+    if (controller.keepsExisting && node->controller != nullptr)
     {
         return;
     }
 
-    u32 kind = controller & 0xFF;
+    u32 kind = controller.kind;
     NodeController* made;
     switch (kind)
     {
@@ -89,44 +86,44 @@ void CreateNodeControllerCommand::Execute(TimeClock*, BehaviourRunner* runner, B
     SetNodeController(node, made);
 }
 
-// The final boss's weapons (the node's JointAimController) set up by the mode: 0 its three joints (the slots' bytes) hooked on the
-// node's model, 1 the weapons (bits 0-2) turned back to their animation's pose or left resting, 2 raised to aim (taking the pose
-// they're at), 3 the target (a designator's instance, else its position), 4 the weapons' scale and turn rate
-void FinalBossInitWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The final boss's weapons (the node's JointAimController) set up by the mode: their joints hooked on the node's model, the
+// weapons picked turned back to their animation's pose or left resting, raised to aim (taking the pose they're at), the target (a
+// designator's instance, else its position), the weapons' scale and turn rate
+void FinalBossWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 WeaponCount = 3;
     ObjectNode* node = NodeOf(runner);
     // A retail bug: the controller's kind isn't checked, nor whether there's one (then it writes from address 0x10 on)
-    auto* aimer = reinterpret_cast<JointAimer*>(node->unknown114 + offsetof(JointAimController, aimer));
+    auto* aimer = reinterpret_cast<JointAimer*>(reinterpret_cast<std::uintptr_t>(node->controller)
+                                                + offsetof(JointAimController, aimer));
     switch (mode)
     {
-    case 0:
+    case ModeHookJoints:
     {
         for (u32 index = 0; index < WeaponCount; index++)
         {
-            aimer->joints[index].id = static_cast<u8>(slots >> (8 * index));
+            aimer->joints[index].id = joints[index];
             aimer->joints[index].node = node;
         }
 
         aimer->node = node;
-        auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, ModelNode::NodeKind));
+        auto* model = static_cast<ModelNode*>(GetGameNode(&node->owner->nodes, NodeModel));
         aimer->AttachVirtual(model->animator);
         break;
     }
-    case 1:
+    case ModeReturn:
         for (u32 index = 0; index < WeaponCount; index++)
         {
-            if ((weapons & 1u << index) != 0)
+            if ((weapons.value & 1u << index) != 0)
             {
                 aimer->joints[index].returning = aimer->joints[index].resting ^ 1;
             }
         }
 
         break;
-    case 2:
+    case ModeRaise:
         for (u32 index = 0; index < WeaponCount; index++)
         {
-            if ((weapons & 1u << index) != 0)
+            if ((weapons.value & 1u << index) != 0)
             {
                 AimedJoint& aimed = aimer->joints[index];
                 u8 resting = aimed.resting;
@@ -137,9 +134,9 @@ void FinalBossInitWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         }
 
         break;
-    case 3:
+    case ModeTarget:
     {
-        auto* instance = CallVirtual<InstanceContext*>(node, node->vtable, GetDesignatorSlot, target & 0xFF);
+        auto* instance = CallVirtual<InstanceContext*>(node, node->vtable, ObjectNode::GetDesignatorSlot, target.designator);
         if (instance != nullptr)
         {
             aimer->targetInstance = instance;
@@ -148,7 +145,7 @@ void FinalBossInitWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         }
 
         Vector4 position;
-        if (CallVirtual<u32>(node, node->vtable, GetDesignatorPositionSlot, target & 0xFF, &position) != 0)
+        if (CallVirtual<u32>(node, node->vtable, ObjectNode::GetDesignatorPositionSlot, target.designator, &position) != 0)
         {
             aimer->target = JointAimer::TargetPosition;
             aimer->targetPosition = position;
@@ -156,13 +153,13 @@ void FinalBossInitWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
 
         break;
     }
-    case 4:
+    case ModeScaleAndRate:
         for (u32 index = 0; index < WeaponCount; index++)
         {
-            if ((weapons & 1u << index) != 0)
+            if ((weapons.value & 1u << index) != 0)
             {
-                aimer->joints[index].scale = std::bit_cast<f32>(value1);
-                aimer->joints[index].rate = std::bit_cast<f32>(value2);
+                aimer->joints[index].scale = scale;
+                aimer->joints[index].rate = turnRate;
             }
         }
 
@@ -176,6 +173,15 @@ void FinalBossInitWeaponsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
 // third ID, the unused one the second, the invincibility's three the first and the two after it (from exit point 5)
 void SetMaskControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
+    // The mask's IDs: the invincibility's first trail, the unused trail, the boost trail
+    enum MaskId : u32
+    {
+        InvincibleId = 0,
+        UnusedTrailId = 1,
+        BoostId = 2,
+    };
+
+    constexpr u16 InvincibleTrails = 3;
     constexpr u8 InvincibleExitPoint = 5;
     auto* mask = ControllerOf<MaskController>(NodeOf(runner), NodeController::KindMask);
     if (mask == nullptr)
@@ -183,21 +189,20 @@ void SetMaskControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         return;
     }
 
-    const u16* given = reinterpret_cast<const u16*>(&ids1);
-    for (u32 index = 0; index < (count & 0xF); index++)
+    const u16* given = ids;
+    for (u32 index = 0; index < count.ids; index++)
     {
         // A retail bug: the count is never reset, so IDs given again go past the three (into the boost trail's arguments from
         // the ninth on)
-        u32 at = mask->flags >> MaskController::IdCountShift & MaskController::IdCountMask;
-        mask->flags = (mask->flags & ~(MaskController::IdCountMask << MaskController::IdCountShift))
-                      | ((at + 1) & MaskController::IdCountMask) << MaskController::IdCountShift;
+        u32 at = mask->flags.idCount;
+        mask->flags.idCount = at + 1;
         reinterpret_cast<u16*>(&mask->ids)[at] = given[index];
     }
 
-    SetTrailSystem(&mask->boostTrail, mask->ids[2]);
-    SetTrailSystem(&mask->unusedTrail, mask->ids[1]);
-    u16 first = mask->ids[0];
-    for (u16 index = 0; index < 3; index++)
+    SetTrailSystem(&mask->boostTrail, mask->ids[BoostId]);
+    SetTrailSystem(&mask->unusedTrail, mask->ids[UnusedTrailId]);
+    u16 first = mask->ids[InvincibleId];
+    for (u16 index = 0; index < InvincibleTrails; index++)
     {
         SetTrailSystem(&mask->trails[index], static_cast<u16>(first + index));
         mask->trails[index].exitPoint = InvincibleExitPoint;
@@ -215,27 +220,24 @@ void SetSplineControllerValuesCommand::Execute(TimeClock*, BehaviourRunner* runn
     }
 
     PropertyHolder* properties = node->PacketProperties();
-    f32 offsetX = x.FloatWith(properties);
-    f32 offsetY = y.FloatWith(properties);
-    f32 offsetZ = z.FloatWith(properties);
-    f32 pull = value4.FloatWith(properties);
-    f32 turnRate = value5.FloatWith(properties);
-    f32 unknown28 = value6.FloatWith(properties);
-    f32 drop = value7.FloatWith(properties);
-    spline->offset = {offsetX, offsetY, offsetZ, 1.0f};
-    spline->pull = pull;
-    spline->turnRate = turnRate;
-    spline->unknown28 = unknown28;
-    spline->drop = drop;
+    f32 x = offsetX.FloatWith(properties);
+    f32 y = offsetY.FloatWith(properties);
+    f32 z = offsetZ.FloatWith(properties);
+    f32 pullValue = pull.FloatWith(properties);
+    f32 turnRateValue = turnRate.FloatWith(properties);
+    f32 unused = unusedValue.FloatWith(properties);
+    f32 dropValue = drop.FloatWith(properties);
+    spline->offset = {x, y, z, 1.0f};
+    spline->pull = pullValue;
+    spline->turnRate = turnRateValue;
+    spline->unused28 = unused;
+    spline->drop = dropValue;
 }
 
 // The skate controller's trails' particle systems (added to its IDs when it has none or the command says so, every trail given
 // its ID) and its sounds (the node's own object's sounds of the slots given, added when it has none or the command says so)
 void SetSkateControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 AddAgain = 0x200;
-    constexpr u16 NoSound = 0xFFFF;
-    constexpr u16 SoundIdMask = 0x7FFF;
     ObjectNode* node = NodeOf(runner);
     auto* skate = ControllerOf<SkateController>(node, NodeController::KindSkate);
     if (skate == nullptr)
@@ -243,14 +245,14 @@ void SetSkateControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         return;
     }
 
-    if ((counts & AddAgain) != 0 || (skate->counts & SkateController::IdCountMask) == 0)
+    if (counts.addsAgain || skate->counts.idCount == 0)
     {
-        const u16* given = reinterpret_cast<const u16*>(&ids1);
-        for (u32 index = 0; index < (counts & 0xF); index++)
+        const u16* given = ids;
+        for (u32 index = 0; index < counts.ids; index++)
         {
             // Retail bug: the count is never reset, so IDs added again go past the eight into the sounds
-            u32 at = skate->counts & SkateController::IdCountMask;
-            skate->counts = (skate->counts & ~SkateController::IdCountMask) | ((at + 1) & SkateController::IdCountMask);
+            u32 at = skate->counts.idCount;
+            skate->counts.idCount = at + 1;
             reinterpret_cast<u16*>(&skate->ids)[at] = given[index];
         }
 
@@ -260,7 +262,7 @@ void SetSkateControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         }
     }
 
-    if ((counts & AddAgain) == 0 && (skate->counts >> SkateController::SoundCountShift & SkateController::SoundCountMask) != 0)
+    if (!counts.addsAgain && skate->counts.soundCount != 0)
     {
         return;
     }
@@ -271,25 +273,24 @@ void SetSkateControllerIdsCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         return;
     }
 
-    const u16* slots = reinterpret_cast<const u16*>(&sounds1);
-    for (u32 index = 0; index < (counts >> 4 & 0x1F); index++)
+    const u16* slots = soundSlots;
+    for (u32 index = 0; index < counts.sounds; index++)
     {
-        if (slots[index] == NoSound)
+        if (slots[index] == NoSoundSlot)
         {
             continue;
         }
 
         u16 sound;
         GetObjectSoundId(&sound, object, slots[index]);
-        if (sound == NoSound)
+        if (sound == NoSoundId)
         {
             continue;
         }
 
         // Retail bug: past the thirteenth the sounds go into the padding before the trails
-        u32 at = skate->counts >> SkateController::SoundCountShift & SkateController::SoundCountMask;
-        skate->counts = (skate->counts & ~(SkateController::SoundCountMask << SkateController::SoundCountShift))
-                        | ((at + 1) & SkateController::SoundCountMask) << SkateController::SoundCountShift;
-        reinterpret_cast<u16*>(&skate->sounds)[at] = sound & SoundIdMask;
+        u32 at = skate->counts.soundCount;
+        skate->counts.soundCount = at + 1;
+        reinterpret_cast<u16*>(&skate->sounds)[at] = sound & ResourceIndexMask;
     }
 }

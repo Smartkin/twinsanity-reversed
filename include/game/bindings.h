@@ -6,21 +6,30 @@
 struct GamePad;
 struct PadButtons;
 
+// A binding's flags: how many buttons it has, whether it has a modifier and whether the modifier's buttons have to be held (else
+// not held), and the modifier (an action)
+union ButtonBindingFlags
+{
+    u32 value;
+    struct
+    {
+        u32 count : 4;
+        u32 hasModifier : 1;
+        u32 modifierHeld : 1;
+        u32 modifier : 8;
+        u32 unused14 : 18;
+    };
+};
+CHECK_SIZE(ButtonBindingFlags, 4);
+
 // An action's buttons: up to four bit numbers of the pad's report (any of them does it), and maybe a modifier, another action whose
-// buttons have to be held for it (or not held, without ModifierHeld)
+// buttons have to be held for it (or not held)
 struct ButtonBinding
 {
-    enum Flags : u32
-    {
-        CountMask = 0xF,
-        HasModifier = 0x10,
-        ModifierHeld = 0x20,
-        ModifierShift = 6,
-        ModifierMask = 0xFF,
-    };
+    static constexpr u32 MostButtons = 4;
 
-    u8 buttons[4];
-    u32 flags;
+    u8 buttons[MostButtons];
+    ButtonBindingFlags flags;
 };
 CHECK_SIZE(ButtonBinding, 8);
 
@@ -37,9 +46,19 @@ CHECK_SIZE(AxisBinding, 0x10);
 // The game's button bindings (no vtable): a list of actions' bindings and a second list
 struct ButtonBindings
 {
+    // The dead zone the game's bindings give the sticks' axes
+    static constexpr f32 AxisDeadZone = Rounded(0.3);
+
+    // Has's onPress: whether the action is held, or was pressed this frame
+    enum Edge : u32
+    {
+        WhileHeld = 0,
+        OnPress = 1,
+    };
+
     u8 actionCount;
     u8 axisCount;
-    u8 unknown02[2];
+    u8 unused02[2];
     ButtonBinding* actions;
     AxisBinding* axes;
 

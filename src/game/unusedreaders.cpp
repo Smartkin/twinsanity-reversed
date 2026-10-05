@@ -22,11 +22,6 @@ extern "C"
 
 namespace
 {
-// The OGI's data streams' alignment
-constexpr u16 StreamAlignment = 0x40;
-// The graphics tables' vtable slot letting go of a reference of an ID (GraphicsTable::Release)
-constexpr u32 ReleaseSlot = 5;
-
 // A reader's references let go of: its table's pending IDs released through the table's vtable (GraphicsKindReader::Unload, which
 // calls the table's own Release)
 template <typename Kind>
@@ -38,7 +33,8 @@ void UnloadReader(GraphicsKindReader<Kind>* reader, const GccVTableEntry* vtable
     {
         for (u32 index = 0; index < table->pending->count; index++)
         {
-            CallVirtual<void>(table, table->vtable, ReleaseSlot, static_cast<const u32*>(&table->pending->ids[index]));
+            CallVirtual<void>(table, table->vtable, GraphicsTable<Kind>::ReleaseSlot,
+                              static_cast<const u32*>(&table->pending->ids[index]));
         }
 
         table->pending = nullptr;
@@ -52,7 +48,7 @@ void UnloadReader(GraphicsKindReader<Kind>* reader, const GccVTableEntry* vtable
 // of its vtable
 struct GraphicsReaders
 {
-    u32 unknown00;
+    u32 unused00;
     GraphicsKindReader<MaterialKind> materials;
     GraphicsKindReader<TextureKind> textures;
     GraphicsKindReader<ModelKind> models;
@@ -97,7 +93,7 @@ extern "C"
 void EmptySectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -110,7 +106,7 @@ void EmptySectionReader::Read(u8*, u32, ReaderStack*)
 void OgiSectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -119,7 +115,7 @@ void OgiSectionReader::Destroy(u32 flags)
 void OgiSectionReader::Read(u8* data, u32 size, ReaderStack*)
 {
     MemoryStream stream;
-    MemoryStream::Construct(&stream, data, size, 0, StreamAlignment);
+    MemoryStream::Construct(&stream, data, size, 0, MemoryStream::FileAlignment);
     ReadOgi(ogi, &stream);
     stream.Destroy(DestroyOnly);
 }
@@ -127,7 +123,7 @@ void OgiSectionReader::Read(u8* data, u32 size, ReaderStack*)
 void GraphicsReadersSectionReader::Destroy(u32 flags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -149,7 +145,7 @@ void DestroyGraphicsReaders(GraphicsReaders* graphics, u32 destroyFlags)
     UnloadReader(&graphics->models, g_ModelReaderVTable);
     UnloadReader(&graphics->textures, g_TextureReaderVTable);
     UnloadReader(&graphics->materials, g_MaterialReaderVTable);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(graphics);
     }

@@ -34,12 +34,12 @@ void RenderView::SetProjection(CameraLensNode* lens)
     projection.m[0][0] = inverseAspect * cotangent;
     projection.m[2][2] = (farPlane + nearPlane) / depth;
     projection.m[3][2] = -((farPlane + farPlane) * nearPlane) / depth;
-    lens->bits &= ~CameraLensNode::BitProjectionChanged;
+    lens->bits.projectionChanged = 0;
 }
 
 void RenderView::Update(f32 aspect)
 {
-    constexpr f32 SameAspect = 0x1.5798ecp-29f;
+    constexpr f32 SameAspect = LengthEpsilon;
     static constexpr Vector4 Forward = {0.0f, 0.0f, 1.0f, 0.0f};
     ReferencedObject* object = cameraObject != nullptr ? cameraObject->object : nullptr;
     if (object == nullptr)
@@ -56,7 +56,7 @@ void RenderView::Update(f32 aspect)
     bool same = difference * difference <= SameAspect;
     InvertMatrix(&place->matrix, 4, &toCamera);
     VuRotateVector(&place->matrix, &Forward, &forward);
-    if ((lens->bits & CameraLensNode::BitProjectionChanged) != 0 || same)
+    if (lens->bits.projectionChanged != 0 || same)
     {
         inverseAspect = 1.0f / scaled;
         SetProjection(lens);

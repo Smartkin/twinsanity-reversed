@@ -3,6 +3,10 @@
 #include "common.h"
 #include "game/agentlab.h"
 #include "game/behaviours.h"
+#include "game/chunkdata.h"
+#include "game/nodecontrollers.h"
+#include "game/objectnode.h"
+#include "game/pickups.h"
 #include "game/properties.h"
 
 class GameNode;
@@ -13,42 +17,28 @@ struct OgiAnimator;
 struct TimeClock;
 
 // The script commands the builder makes (generated from the retail builder and TT Lab's AgentLabDefsPS2.json, whose names
-// they have): the base's bits, next command and vtable, then their arguments as a script has them, which the reader copies
-// over the object whole (game/agentlab.h)
+// they had, and named by what they do where their code shows otherwise): the base's bits, next command and vtable, then their
+// arguments as a script has them, which the reader copies over the object whole (game/agentlab.h). Arguments nothing reads
+// are unusedN (N the argument's number), what only the development tools' parsers (commandtokens*.cpp) write included
 
-// 1, 541
+// An argument whose bit 0 switches something on (the commands name it by what it switches)
+union SwitchArgument
+{
+    u32 value;
+    struct
+    {
+        u32 on : 1;
+        u32 unused1 : 31;
+    };
+};
+CHECK_SIZE(SwitchArgument, 4);
+
+// 1, 541: a particle trail the node leaves (its trails keep the command's trail arguments)
 class AddTrailCommand : public ScriptCommand
 {
 public:
-    f32 lifetime;
-    u32 flags;
-    TaggedValue flags2;
-    u32 unused4;
-    u32 ids1;
-    u32 ids2;
-    u32 ids3;
-    u32 ids4;
-    u32 ids5;
-    u32 ids6;
-    f32 value11;
-    f32 value12;
-    f32 value13;
-    u32 unused14;
-    s32 value15;
-    f32 value16;
-    s32 value17;
-    u32 unused18;
-    f32 value19;
-    f32 scale;
-    f32 value21;
-    f32 value22;
-    f32 value23;
-    f32 value24;
-    f32 value25;
-    s32 posX;
-    s32 posY;
-    s32 posZ;
-    u32 posW;
+    f32 unused1;
+    TrailArguments trail;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd1_AddTrail_Execute);
     void ExecuteOn(GameNode* node) RETAIL(Cmd1_AddTrail_ExecuteOn);
@@ -69,15 +59,59 @@ public:
 };
 CHECK_SIZE(ClearTrailCommand, 0xC);
 
+// A command's argument word that only names a designator (its low byte, game/objectnode.h's Designator)
+union DesignatorArgument
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(DesignatorArgument, 4);
+
+// A command's argument word that only names a DesignatorSlot
+union DesignatorSlotArgument
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 3;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(DesignatorSlotArgument, 4);
+
 // 3, 105
 class PositionWarpCommand : public ScriptCommand
 {
 public:
-    u32 targetAndSpace;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
+    // Where the instance warps to: a receiver's position, else a designator's, else the space's (game/objectnode.h's
+    // DesignatedPosition, the offset added when it's given; unused20 is handed to its unused argument), or the last contact's
+    // point (moved by the offset in the instance's frame); turning toward it instead of moving there, its body too
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 receiver : 8;
+            u32 designator : 8;
+            u32 space : 4;
+            u32 unused20 : 1;
+            u32 offsetGiven : 1;
+            u32 turns : 1;
+            u32 turnsBody : 1;
+            u32 toContact : 1;
+            u32 unused25 : 7;
+        };
+    };
+
+    Target target;
+    f32 offsetX;
+    f32 offsetY;
+    f32 offsetZ;
+    f32 offsetW;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd3_PositionWarp_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd3_PositionWarp_Dtor);
@@ -86,11 +120,32 @@ public:
 };
 CHECK_SIZE(PositionWarpCommand, 0x20);
 
-// 4
+// SetKey's key: its index (Waypoints::NoKey none), else a random one of a range (a different one from the current key with
+// noRepeat), the one of the range nearest the instance or the last key (game/commandsmotion.cpp). The development tools' parser
+// sets bit 24, which nothing reads
+union KeyChoice
+{
+    u32 value;
+    struct
+    {
+        u32 index : 8;
+        u32 rangeStart : 8;
+        u32 rangeEnd : 8;
+        u32 unused24 : 1;
+        u32 noRepeat : 1;
+        u32 nearest : 1;
+        u32 random : 1;
+        u32 last : 1;
+        u32 unused29 : 3;
+    };
+};
+CHECK_SIZE(KeyChoice, 4);
+
+// 4: the key the agent's waypoints are at
 class SetKeyCommand : public ScriptCommand
 {
 public:
-    u32 keyAndFlags;
+    KeyChoice key;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd4_SetKey_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd4_SetKey_Execute);
@@ -119,19 +174,75 @@ public:
 };
 CHECK_SIZE(RestartPreviousCommand, 0xC);
 
-// 8, 112
+// SpawnResidentAgent's object (its ID's resource index, unless the flags take the agent's own or AgentRef2's), the designator
+// whose position it's made at, and the distance within which its node's updates aren't thinned out (the square root of
+// GameNode::nearDistance: 0 leaves the node's own, AnyDistance never thins them)
+union SpawnedObject
+{
+    static constexpr u8 AnyDistance = 0xFF;
+
+    u32 value;
+    struct
+    {
+        u32 id : 16;
+        u32 designator : 8;
+        u32 nearDistance : 8;
+    };
+};
+CHECK_SIZE(SpawnedObject, 4);
+
+// SpawnResidentAgent's 64 bits (the retail code reads them whole; game/commandsmotion.cpp says what each does): the trigger message
+// the instance is sent (NoMessage none), the exit point it's made at (0xFF none), the space it's placed in, then
+// how it's made and placed and what it's given of the agent's
+union SpawnFlags
+{
+    u64 value;
+    struct
+    {
+        u64 message : 16;
+        u64 exitPoint : 8;
+        u64 space : 5;
+        u64 unsignalled : 1;
+        u64 offsetGiven : 1;
+        u64 atAgent : 1;
+        u64 linksToAgent : 1;
+        u64 atFocusPosition : 1;
+        u64 atFocus : 1;
+        u64 turnedBySpace : 1;
+        u64 ownObject : 1;
+        u64 becomesFocus : 1;
+        u64 becomesAgentRef2 : 1;
+        u64 agentsId : 1;
+        u64 agentRef2Object : 1;
+        u64 linksSpawner : 1;
+        u64 sharesAgentRef1 : 1;
+        u64 sharesAgentRef2 : 1;
+        u64 sharesFocus : 1;
+        u64 sharesStoredPosition : 1;
+        u64 sharesLinked : 1;
+        u64 subtypeGiven : 1;
+        u64 atStoredPosition : 1;
+        u64 marksBusy : 1;
+        u64 clearsBusy : 1;
+        u64 sharesKeys : 1;
+        u64 sharesPaths : 1;
+        u64 unused53 : 11;
+    };
+};
+CHECK_SIZE(SpawnFlags, 8);
+
+// 8, 112: an instance made for the agent
 class SpawnResidentAgentCommand : public ScriptCommand
 {
 public:
-    u32 effect;
+    u32 unused1;
     f32 offsetX;
     f32 offsetY;
     f32 offsetZ;
     f32 offsetW;
     TaggedValue subtype;
-    u32 objectAndKey;
-    u32 flags;
-    TaggedValue flags2;
+    SpawnedObject object;
+    SpawnFlags flags;
 
     static SpawnResidentAgentCommand* Construct(SpawnResidentAgentCommand* command, u32 mode) RETAIL(FUN_00225540);
     void Destroy(u32 destroyFlags) RETAIL(SpawnResidentAgentCommand_dtor);
@@ -141,16 +252,44 @@ public:
 };
 CHECK_SIZE(SpawnResidentAgentCommand, 0x30);
 
+// DoAnimation's flags: how many of its slots it picks from, the joint whose chain plays it (0xFF the root), it loops, a blend
+// time given, a speed given (else 1, or with speedIsDuration how long it lasts), a random part of the speed given, it starts part
+// way (at startPosition), where the one before it is, backward, queued even after the same one, and the instance's shadow given
+// a slot
+union DoAnimationFlags
+{
+    u32 value;
+    struct
+    {
+        u32 slotCount : 4;
+        u32 joint : 8;
+        u32 loops : 1;
+        u32 blendTimeGiven : 1;
+        u32 speedGiven : 1;
+        u32 speedIsDuration : 1;
+        u32 speedRandomGiven : 1;
+        u32 startsPartWay : 1;
+        u32 continues : 1;
+        u32 backward : 1;
+        u32 queuedAlways : 1;
+        u32 shadowGiven : 1;
+        u32 shadowSlot : 4;
+        u32 unused26 : 6;
+    };
+};
+CHECK_SIZE(DoAnimationFlags, 4);
+
 // 9, 543
 class DoAnimationCommand : public ScriptCommand
 {
 public:
-    s32 flags;
+    DoAnimationFlags flags;
     TaggedValue blendTime;
     TaggedValue speed;
     TaggedValue speedRandom;
     f32 startPosition;
-    s32 animSlots;
+    // The object's animation slots it picks from (a count past 4 reads past them, as retail does)
+    u8 slots[4];
 
     static DoAnimationCommand* Construct(DoAnimationCommand* command) RETAIL(FUN_00221af8);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(ExecutePlayAnimationCommand);
@@ -166,46 +305,54 @@ public:
 };
 CHECK_SIZE(DoAnimationCommand, 0x24);
 
+// What DoParticle plays: the system (an index into the particle systems' table), the emitter's value, it leaves from its
+// instance's frame (unless a key or a designator's position is taken) or from an exit point's, and the exit point (0x3F none)
+union ParticleEmission
+{
+    u32 value;
+    struct
+    {
+        u32 system : 16;
+        u32 emitterValue : 7;
+        u32 fromFrame : 1;
+        u32 fromExitPoint : 1;
+        u32 exitPoint : 6;
+        u32 unused31 : 1;
+    };
+};
+CHECK_SIZE(ParticleEmission, 4);
+
+// Where DoParticle plays: the frame turned with the instance, its axes mode (game/instanceparticles.h's ParticleFrameAxes), a
+// position given, a designator whose position it is (DesignatesNone none), the surface mode (NoSurfaceMode none) and a key of
+// the waypoints (Waypoints::NoKey none)
+union ParticlePlacement
+{
+    static constexpr u8 NoSurfaceMode = 0xFF;
+
+    u32 value;
+    struct
+    {
+        u32 turned : 1;
+        u32 axes : 4;
+        u32 hasPosition : 1;
+        u32 designator : 8;
+        u32 surfaceMode : 8;
+        u32 key : 8;
+        u32 unused30 : 2;
+    };
+};
+CHECK_SIZE(ParticlePlacement, 4);
+
 // 10, 544
 class DoParticleCommand : public ScriptCommand
 {
 public:
-    u32 systemAndFlags;
-    u32 flags2;
-    u32 flags3;
-    u32 unknown4;
-    u32 unknown5;
-    u32 posX;
-    u32 posY;
-    u32 posZ;
-    u32 posW;
-
-    // The bits of systemAndFlags: the system (an index into the particle systems' table), the emitter's value, a position taken
-    // from a key (cleared once taken), from a frame (with bit 24), the exit point the frame is of (0x3F none); of flags2: the frame
-    // turned with the instance, its axes mode, a position given (posX to posW), and a designator whose position it is, a surface's
-    // mode and a key of the waypoints (0xFF each: none)
-    enum Bits : u32
-    {
-        SystemMask = 0xFFFF,
-        ValueShift = 16,
-        ValueMask = 0x7F,
-        FromKeyPending = 0x800000,
-        FromFrame = 0x1800000,
-        ExitPointShift = 25,
-        ExitPointMask = 0x3F,
-    };
-
-    enum Flags2 : u32
-    {
-        Turned = 0x1,
-        AxesShift = 1,
-        AxesMask = 0xF,
-        HasPosition = 0x20,
-        DesignatorShift = 6,
-        SurfaceShift = 14,
-        KeyShift = 22,
-        NoneByte = 0xFF,
-    };
+    ParticleEmission emission;
+    ParticlePlacement placement;
+    u32 unused3;
+    u32 unused4;
+    u32 unused5;
+    Vector4 position;
 
     // A system's emitter started on the node's instance: from a frame (its exit point's or its place's, turned by the axes mode,
     // moved by the position given) it then follows, else at the position (a key's, a designator's, the one given), or at the
@@ -218,39 +365,47 @@ public:
 };
 CHECK_SIZE(DoParticleCommand, 0x30);
 
+// DoSound's flags: how many of its slots it picks from, the sound's group, played without a place (or following the instance,
+// with followed or tracked), a random part of the pitch and of the volume given, a pitch and a volume given, the camera shaken,
+// the contact kind with the node's surface whose sound it plays (game/collision.h's GetSurfaceSound: 0 impact, 1 and 2 steps, 3
+// land, 4 hard impact, 5 scrape; 0xF its slots), the sound kept in the node's tracked sound slot
+union DoSoundFlags
+{
+    static constexpr u32 SlotsKind = 0xF;
+
+    u32 value;
+    struct
+    {
+        u32 slotCount : 4;
+        u32 unused4 : 4;
+        u32 group : 3;
+        u32 unplaced : 1;
+        u32 followed : 1;
+        u32 unused13 : 1;
+        u32 randomPitch : 1;
+        u32 randomVolume : 1;
+        u32 pitchGiven : 1;
+        u32 volumeGiven : 1;
+        u32 shakes : 1;
+        u32 contactKind : 4;
+        u32 tracked : 1;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(DoSoundFlags, 4);
+
 // 11, 545
 class DoSoundCommand : public ScriptCommand
 {
 public:
-    // Its flags: how many of its slots it picks from (bits 0-3), the group (8-10), played without a place (11; or followed with
-    // the instance, 12 and 23), a random pitch (14), the volume's random part (15), a pitch (16), a volume (17), the camera shaken
-    // (18), the contact kind of the node's surface it plays (19-22, 0xF: its slots), the sound kept in the node's tracked sound
-    // slot (23)
-    enum Flags : u32
-    {
-        SlotCountMask = 0xF,
-        GroupShift = 8,
-        GroupMask = 0x7,
-        Unplaced = 0x800,
-        Followed = 0x801000,
-        RandomPitch = 0x4000,
-        RandomVolume = 0x8000,
-        HasPitch = 0x10000,
-        HasVolume = 0x20000,
-        Shakes = 0x40000,
-        KindShift = 19,
-        KindMask = 0x780000,
-        Tracked = 0x800000,
-    };
-
-    u32 flags;
+    DoSoundFlags flags;
     u16 soundSlots[8];
     TaggedValue volume;
     f32 unused7;
     f32 pitch;
     f32 pitchRandom;
     f32 volumeRandom;
-    u32 unknown11;
+    u32 unused11;
     // The camera's shake: its strength, or its strengths across and up, and how it falls off
     f32 shakeStrength;
     f32 shakeAcross;
@@ -267,44 +422,11 @@ public:
 };
 CHECK_SIZE(DoSoundCommand, 0x48);
 
-// 12
+// 12: the node follows the motion block of its arguments (cycles moving or turning the instance)
 class SetWobbleCommand : public ScriptCommand
 {
 public:
-    u32 amplitudeX;
-    u32 amplitudeY;
-    u32 amplitudeZ;
-    f32 rateX;
-    f32 rateY;
-    f32 rateZ;
-    u32 phaseX;
-    u32 phaseY;
-    u32 phaseZ;
-    f32 value10;
-    f32 value11;
-    f32 value12;
-    u32 keyAndObject;
-    u32 unknown14;
-    u32 unknown15;
-    u32 unused16;
-    u32 unused17;
-    u32 unknown18;
-    u32 unknown19;
-    u32 unknown20;
-    u32 unknown21;
-    u32 unknown22;
-    u32 unknown23;
-    u32 unknown24;
-    u32 unknown25;
-    u32 unknown26;
-    u32 flags27;
-    u32 flags28;
-    s32 unused29;
-    u32 unused30;
-    u32 unused31;
-    u32 unused32;
-    u32 unknown33;
-    u32 unknown34;
+    MotionBlock block;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd12_SetWobble_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd12_SetWobble_ParseTokens);
@@ -327,7 +449,8 @@ CHECK_SIZE(ClearWobbleCommand, 0xC);
 class NowMoveForwardsCommand : public ScriptCommand
 {
 public:
-    TaggedValue distance;
+    // How far it goes a second
+    TaggedValue speed;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd14_NowMoveForwards_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd14_NowMoveForwards_ParseTokens);
@@ -336,24 +459,25 @@ public:
 };
 CHECK_SIZE(NowMoveForwardsCommand, 0x10);
 
-// 15
-class NowMoveBackwardsCommand : public ScriptCommand
+// 15: nothing (the instance hanging on its holder's place is looked up when it holds others, and dropped)
+class NoOpNowMoveBackwardsCommand : public ScriptCommand
 {
 public:
-    TaggedValue distance;
+    TaggedValue unused1;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd15_NowMoveBackwards_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd15_NowMoveBackwards_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd15_NowMoveBackwards_Dtor);
     u32 Size() RETAIL(Cmd15_NowMoveBackwards_GetSize);
 };
-CHECK_SIZE(NowMoveBackwardsCommand, 0x10);
+CHECK_SIZE(NoOpNowMoveBackwardsCommand, 0x10);
 
 // 16
 class NowStrafeLeftCommand : public ScriptCommand
 {
 public:
-    TaggedValue distance;
+    // How far it goes a second
+    TaggedValue speed;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd16_NowStrafeLeft_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd16_NowStrafeLeft_ParseTokens);
@@ -366,7 +490,8 @@ CHECK_SIZE(NowStrafeLeftCommand, 0x10);
 class NowStrafeRightCommand : public ScriptCommand
 {
 public:
-    TaggedValue distance;
+    // How far it goes a second
+    TaggedValue speed;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd17_NowStrafeRight_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd17_NowStrafeRight_ParseTokens);
@@ -379,7 +504,8 @@ CHECK_SIZE(NowStrafeRightCommand, 0x10);
 class NowTurnLeftCommand : public ScriptCommand
 {
 public:
-    TaggedValue angleValue;
+    // An angle a second
+    TaggedValue turnRate;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd18_NowTurnLeft_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd18_NowTurnLeft_Dtor);
@@ -393,7 +519,7 @@ CHECK_SIZE(NowTurnLeftCommand, 0x10);
 class NowTurnRightCommand : public ScriptCommand
 {
 public:
-    TaggedValue angleValue;
+    TaggedValue turnRate;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(FUN_00215fd0);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(func_00222B50);
@@ -402,23 +528,53 @@ public:
 };
 CHECK_SIZE(NowTurnRightCommand, 0x10);
 
-// 23, 24
-class NowRotateJointCommand : public ScriptCommand
+// Which instance a command takes (its bits 0-2, a DesignatorSlot): the focus, AgentRef1, AgentRef2 (none for the others)
+union LinkedTarget
+{
+    u32 value;
+    struct
+    {
+        u32 kind : 3;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(LinkedTarget, 4);
+
+// 23, 24: the focus, AgentRef1 or AgentRef2 linked to the instance (its attachments made when it has none)
+class LinkTargetCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
+    LinkedTarget target;
 
     void Destroy(u32 destroyFlags) RETAIL(Cmd23_NowRotateJoint_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd23_NowRotateJoint_Execute);
     u32 Size() RETAIL(Cmd23_NowRotateJoint_GetSize);
 };
-CHECK_SIZE(NowRotateJointCommand, 0x10);
+CHECK_SIZE(LinkTargetCommand, 0x10);
 
-// 27
+// A command's target (game/objectnode.h's DesignatedPosition and SpaceOfRequest): a receiver of the starter (0xFF none), a
+// designator (0xFF none), else a space, and a bit the target's search is handed and doesn't read; bit 21 says an offset is given
+// (the commands that take one)
+union TargetRequest
+{
+    u32 value;
+    struct
+    {
+        u32 receiver : 8;
+        u32 designator : 8;
+        u32 space : 4;
+        u32 unused20 : 1;
+        u32 offsetGiven : 1;
+        u32 unused22 : 10;
+    };
+};
+CHECK_SIZE(TargetRequest, 4);
+
+// 27: the node's stored place is the target's place (none when the request gives none; its space and bit 20 unread)
 class StoreCurrentSpaceCommand : public ScriptCommand
 {
 public:
-    u32 targetAndSpace;
+    TargetRequest request;
 
     static StoreCurrentSpaceCommand* Construct(StoreCurrentSpaceCommand* command) RETAIL(FUN_00221170);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd27_StoreCurrentSpace_ParseTokens);
@@ -432,7 +588,23 @@ CHECK_SIZE(StoreCurrentSpaceCommand, 0x10);
 class SetFocusToKeyCommand : public ScriptCommand
 {
 public:
-    u32 keyAndFlags;
+    // The key (its index, or the current or the next one: DesignatesCurrentKey, DesignatesNextKey) of the waypoints of the focus
+    // instance, of AgentRef1 or else the agent's own, and what its position is given to (SlotFocus or SlotStoredPosition)
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 key : 8;
+            u32 unused8 : 1;
+            u32 slot : 3;
+            u32 focusKeys : 1;
+            u32 agentRef1Keys : 1;
+            u32 unused14 : 18;
+        };
+    };
+
+    Target target;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd28_SetFocusToKey_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd28_SetFocusToKey_Dtor);
@@ -441,11 +613,31 @@ public:
 };
 CHECK_SIZE(SetFocusToKeyCommand, 0x10);
 
-// 29
+// RotationWarp's and RotateAgent's word: the space the rotation is in (ControlPacket::Space: the world, the start, the instance's
+// own place, the stored place; nothing in the others), whether a rotation is given (the instance's own place needs one), and the
+// instance rolled level after. The development tools' parser writes a receiver (bits 0-7), a designator (8-15) and bit 20 as
+// for PositionWarp, which nothing reads
+union RotationWarpBits
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 8;
+        u32 unused8 : 8;
+        u32 space : 4;
+        u32 unused20 : 1;
+        u32 rotationGiven : 1;
+        u32 levels : 1;
+        u32 unused23 : 9;
+    };
+};
+CHECK_SIZE(RotationWarpBits, 4);
+
+// 29: the agent's instance turned to a rotation (a quaternion)
 class RotationWarpCommand : public ScriptCommand
 {
 public:
-    u32 targetAndSpace;
+    RotationWarpBits warp;
     f32 quatX;
     f32 quatY;
     f32 quatZ;
@@ -458,24 +650,24 @@ public:
 };
 CHECK_SIZE(RotationWarpCommand, 0x20);
 
-// 31
-class ClearThreatsCommand : public ScriptCommand
+// 31: whether the same starter queued again restarts the running one
+class SetRestartableCommand : public ScriptCommand
 {
 public:
-    u32 designator;
+    SwitchArgument restartable;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd31_ClearThreats_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd31_ClearThreats_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd31_ClearThreats_Execute);
     u32 Size() RETAIL(Cmd31_ClearThreats_GetSize);
 };
-CHECK_SIZE(ClearThreatsCommand, 0x10);
+CHECK_SIZE(SetRestartableCommand, 0x10);
 
-// 33
+// 33: every linked object's agent sent the trigger event, from the instance or from the runner's originator
 class TriggerLinkedObjectsCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    SwitchArgument fromOriginator;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd33_TriggerLinkedObjects_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd33_TriggerLinkedObjects_Dtor);
@@ -484,11 +676,22 @@ public:
 };
 CHECK_SIZE(TriggerLinkedObjectsCommand, 0x10);
 
-// 34
+// 34: the agent's persistent flag set (in its chunk's own store or the other one)
 class SetStateCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    // What the flag is set to (the development tools' parser writes 1 for On)
+    union State
+    {
+        u32 value;
+        struct
+        {
+            u32 flag : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    State state;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd34_SetState_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd34_SetState_Dtor);
@@ -527,12 +730,24 @@ public:
 };
 CHECK_SIZE(DiscardRouteCommand, 0xC);
 
-// 40
+// SetLogicalRadius's bits: the radius made half the largest side of the instance's box
+union LogicalRadiusBits
+{
+    u32 value;
+    struct
+    {
+        u32 fromBox : 1;
+        u32 unused1 : 31;
+    };
+};
+CHECK_SIZE(LogicalRadiusBits, 4);
+
+// 40: the node's roll radius and its physics sphere's radius
 class SetLogicalRadiusCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    f32 value2;
+    LogicalRadiusBits flags;
+    f32 radius;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd40_SetLogicalRadius_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd40_SetLogicalRadius_Dtor);
@@ -541,11 +756,23 @@ public:
 };
 CHECK_SIZE(SetLogicalRadiusCommand, 0x14);
 
-// 42
+// SetBehaviourPriority's priority (past 100 the starter's own)
+union PriorityArgument
+{
+    u32 value;
+    struct
+    {
+        u32 priority : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(PriorityArgument, 4);
+
+// 42: the starter's priority (past 100 the starter's own)
 class SetBehaviourPriorityCommand : public ScriptCommand
 {
 public:
-    u32 priorityValue;
+    PriorityArgument priority;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd42_SetBehaviourPriority_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd42_SetBehaviourPriority_Dtor);
@@ -554,27 +781,68 @@ public:
 };
 CHECK_SIZE(SetBehaviourPriorityCommand, 0x10);
 
-// 44
+// SetCollisions' settings: the kinds of the rigid body's motion and of its collisions (ObjectRigidBodyBits) and whether each is
+// given, the values given (the roll radius, gravity, drag, friction, restitution, size, centre of mass, spin friction and length
+// drag), its launch, and what it sets of the rigid body's bits and state of the same names: it doesn't move for others, it steers
+// itself, its size is the least slope it stands on and its restitution the rate its contact normal follows (given alone), its
+// impulses capped or fixed at the impulse length, the volume controllers push it; the roll radius made half the largest side of
+// the instance's box, or half its height (the width scale its half width or depth over that). Bits 25 and 26 go to state bits
+// nothing reads
+union CollisionSettings
+{
+    u32 value;
+    struct
+    {
+        u32 motionKind : 4;
+        u32 collisionKind : 4;
+        u32 motionKindGiven : 1;
+        u32 collisionKindGiven : 1;
+        u32 rollRadiusGiven : 1;
+        u32 gravityGiven : 1;
+        u32 immovable : 1;
+        u32 dragGiven : 1;
+        u32 frictionGiven : 1;
+        u32 restitutionGiven : 1;
+        u32 sizeGiven : 1;
+        u32 launch : 2;
+        u32 centerOfMassGiven : 1;
+        u32 steersItself : 1;
+        u32 slopeLimited : 1;
+        u32 ownNormalRate : 1;
+        u32 spinFrictionGiven : 1;
+        u32 lengthDragGiven : 1;
+        u32 unused25 : 1;
+        u32 unused26 : 1;
+        u32 rollRadiusFromBox : 1;
+        u32 rollRadiusFromHeight : 1;
+        u32 impulseCapped : 1;
+        u32 impulseFixed : 1;
+        u32 pushedByVolumes : 1;
+    };
+};
+CHECK_SIZE(CollisionSettings, 4);
+
+// 44: the node's roll radius and its rigid body's kinds and values
 class SetCollisionsCommand : public ScriptCommand
 {
 public:
-    f32 unknown1;
-    s32 value2;
-    s32 value3;
-    s32 value4;
-    f32 one5;
-    u32 flags;
-    f32 height;
-    f32 value8;
-    f32 value9;
-    f32 value10;
-    f32 value11;
-    f32 value12;
-    s32 value13;
-    f32 value14;
-    f32 value15;
-    TaggedValue radius;
-    u32 unknown17;
+    f32 unused1;
+    f32 centerOfMassX;
+    f32 centerOfMassY;
+    f32 centerOfMassZ;
+    f32 centerOfMassW;
+    CollisionSettings settings;
+    f32 rollRadius;
+    f32 drag;
+    f32 lengthDrag;
+    f32 friction;
+    f32 restitution;
+    f32 size;
+    f32 spinFriction;
+    f32 widthScale;
+    f32 impulseLength;
+    TaggedValue gravity;
+    u32 unused17;
 
     static SetCollisionsCommand* Construct(SetCollisionsCommand* command) RETAIL(FUN_00252ff0);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd44_SetCollisions_ParseTokens);
@@ -588,7 +856,22 @@ CHECK_SIZE(SetCollisionsCommand, 0x50);
 class SetFocusToAgentCommand : public ScriptCommand
 {
 public:
-    u32 targetAndSlot;
+    // The designator only this command answers: the instance the agent's own hangs from
+    static constexpr u8 DesignatesParent = 0xDE;
+
+    // The designator whose instance is given to a DesignatorSlot
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 designator : 8;
+            u32 slot : 3;
+            u32 unused11 : 21;
+        };
+    };
+
+    Target target;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd45_SetFocusToAgent_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd45_SetFocusToAgent_Dtor);
@@ -597,19 +880,43 @@ public:
 };
 CHECK_SIZE(SetFocusToAgentCommand, 0x10);
 
-// 47, 64, 94
+// How AttachFocusObject attaches: the target it takes (a DesignatorSlot), the exit point (0xFF none), how the attached
+// instance follows its holder (game/attachment.h's Attachment::Bits), an offset and angles given, a linked object's index (0xF:
+// the target), the attached instance marked busy, and the instance attached to the focus instead. Bit 21 is only the
+// development tools' parser's
+union AttachFocusFlags
+{
+    static constexpr u32 NoLinked = 0xF;
+
+    u32 value;
+    struct
+    {
+        u32 target : 3;
+        u32 exitPoint : 8;
+        u32 follow : 4;
+        u32 offsetGiven : 1;
+        u32 anglesGiven : 1;
+        u32 linked : 4;
+        u32 unused21 : 1;
+        u32 marksBusy : 1;
+        u32 toFocus : 1;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(AttachFocusFlags, 4);
+
+// 47, 64, 94: the target, or a linked object, attached to the instance (or the instance to the focus) at an exit point, with an
+// offset and angles when given
 class AttachFocusObjectCommand : public ScriptCommand
 {
 public:
-    u32 flags;
-    f32 offsetX;
-    f32 offsetY;
-    f32 offsetZ;
-    f32 offsetW;
-    u32 rotX;
-    u32 rotY;
-    u32 rotZ;
-    u32 unknown9;
+    AttachFocusFlags flags;
+    Vector4 offset;
+    // 65536ths of a turn
+    s32 angleX;
+    s32 angleY;
+    s32 angleZ;
+    u32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd47_AttachFocusObject_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd47_AttachFocusObject_Execute);
@@ -618,11 +925,38 @@ public:
 };
 CHECK_SIZE(AttachFocusObjectCommand, 0x30);
 
-// 48
+// What DropAttachedObject does: the message the dropped instance is sent (0xFFFF none), the exit point it's at (0xFF the one at
+// none), how it's let go of, and its busy flag cleared
+union DropRequest
+{
+    // Just let go of, launched with the velocity it had, made to fall, made to fall when it's a crate (launched otherwise)
+    enum Mode : u32
+    {
+        LetGo = 0,
+        Launched = 1,
+        Falls = 2,
+        FallsIfCrate = 3,
+        Modes = 4,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 message : 16;
+        u32 exitPoint : 8;
+        u32 mode : 3;
+        u32 unused27 : 2;
+        u32 clearsBusy : 1;
+        u32 unused30 : 2;
+    };
+};
+CHECK_SIZE(DropRequest, 4);
+
+// 48: the instance at an exit point let go of (dropped, launched, made to fall) and sent a message
 class DropAttachedObjectCommand : public ScriptCommand
 {
 public:
-    u32 message;
+    DropRequest request;
     u32 unused2;
     u32 unused3;
     u32 unused4;
@@ -639,18 +973,36 @@ public:
 };
 CHECK_SIZE(DropAttachedObjectCommand, 0x30);
 
-// 49
+// Where a throw goes: the exit point of the thrown instance (0xFF the one at none), the target (a space, a receiver of the
+// starter and a designator: game/objectnode.h's DesignatedPosition), a bit the target's search is handed and doesn't read, an
+// offset and a spread given, and the thrown instance's busy flag cleared
+union ThrowRequest
+{
+    u32 value;
+    struct
+    {
+        u32 exitPoint : 8;
+        u32 space : 4;
+        u32 receiver : 8;
+        u32 designator : 8;
+        u32 unused28 : 1;
+        u32 offsetGiven : 1;
+        u32 spreadGiven : 1;
+        u32 clearsBusy : 1;
+    };
+};
+CHECK_SIZE(ThrowRequest, 4);
+
+// 49: the instance at an exit point let go of and thrown at a target at a speed under a gravity (30 when it's negative)
 class ThrowAttachedObjectCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    f32 x;
-    f32 y;
-    f32 z;
-    u32 unused5;
-    TaggedValue radius;
-    TaggedValue angleValue;
-    f32 value8;
+    ThrowRequest request;
+    Vector4 offset;
+    TaggedValue gravity;
+    TaggedValue speed;
+    // How far the target is moved at random
+    f32 spread;
     u32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd49_ThrowAttachedObject_ParseTokens);
@@ -660,7 +1012,7 @@ public:
 };
 CHECK_SIZE(ThrowAttachedObjectCommand, 0x30);
 
-// 50
+// 50: the agent told it lost its support
 class UnsupportOverFocusCommand : public ScriptCommand
 {
 public:
@@ -670,15 +1022,12 @@ public:
 };
 CHECK_SIZE(UnsupportOverFocusCommand, 0xC);
 
-// 51
+// 51: the instance 4 units above the target made to fall
 class UnsupportAboveCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    f32 x;
-    f32 y;
-    f32 z;
-    u32 value5;
+    TargetRequest request;
+    Vector4 offset;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd51_UnsupportAbove_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd51_UnsupportAbove_Execute);
@@ -707,14 +1056,56 @@ public:
 };
 CHECK_SIZE(ClearCollisionsCommand, 0xC);
 
-// 54, 65
+// SendUserMessage's message and its recipient: a linked object's index, a designator (a receiver's index below 0xDE), or for an
+// object's linked objects 0 when only the first gets it
+union UserMessageTarget
+{
+    u32 value;
+    struct
+    {
+        u32 message : 16;
+        u32 recipient : 8;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(UserMessageTarget, 4);
+
+// The object ID of none of the commands that pick linked objects by their object (SendUserMessage, RunSlotBehaviourOnLinked):
+// retail takes 0xFF (the IDs' none, NoObjectId, finds nothing)
+constexpr u16 NoLinkedObjectId = 0xFF;
+
+// Which linked objects SendUserMessage sends to: those of an object (NoLinkedObjectId none), the one of an index (the current
+// one, the last), every one, those a field of bits picks (a bit each, the field's index), only those on or off the attachments'
+// path; and the linked objects aimed at unlinked
+union UserMessageFlags
+{
+    u32 value;
+    struct
+    {
+        u32 object : 16;
+        u32 byIndex : 1;
+        u32 everyLinked : 1;
+        u32 currentLinked : 1;
+        u32 unlinks : 1;
+        u32 lastLinked : 1;
+        u32 unused21 : 3;
+        u32 byField : 1;
+        u32 field : 5;
+        u32 onlyOffPath : 1;
+        u32 onlyOnPath : 1;
+    };
+};
+CHECK_SIZE(UserMessageFlags, 4);
+
+// 54, 65: a user message sent to linked objects or to a designator's instance
 class SendUserMessageCommand : public ScriptCommand
 {
 public:
-    u32 messageTarget;
-    u32 messageFlags;
-    TaggedValue value1;
-    TaggedValue value2;
+    UserMessageTarget target;
+    UserMessageFlags flags;
+    // The linked objects' field: the bits, and the width of a field
+    TaggedValue fieldBits;
+    TaggedValue fieldWidth;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd54_SendUserMessage_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd54_SendUserMessage_Execute);
@@ -723,23 +1114,47 @@ public:
 };
 CHECK_SIZE(SendUserMessageCommand, 0x1C);
 
-// 55
+// BroadcastUserMessage's message and the middle of its sphere: an offset given, a space, a receiver of the starter and a
+// designator (game/objectnode.h's DesignatedPosition)
+union BroadcastTarget
+{
+    u32 value;
+    struct
+    {
+        u32 message : 11;
+        u32 offsetGiven : 1;
+        u32 space : 4;
+        u32 receiver : 8;
+        u32 designator : 8;
+    };
+};
+CHECK_SIZE(BroadcastTarget, 4);
+
+// 55: a user message sent to the awake instances in a sphere around a target
 class BroadcastUserMessageCommand : public ScriptCommand
 {
 public:
-    u32 messageTarget;
+    BroadcastTarget target;
     f32 radius;
     u32 unused3;
     u32 unused4;
     u32 unused5;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
-    u32 unknown10;
-    u32 unknown11;
-    u32 unknown12;
-    u32 unknown13;
+    Vector4 offset;
+    // Only the instances of this object get it (0xFFFF every one)
+    union Object
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 16;
+            u32 unused16 : 16;
+        };
+    };
+
+    Object object;
+    u32 unused11;
+    u32 unused12;
+    u32 unused13;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd55_BroadcastUserMessage_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd55_BroadcastUserMessage_Execute);
@@ -748,12 +1163,23 @@ public:
 };
 CHECK_SIZE(BroadcastUserMessageCommand, 0x40);
 
-// 56
+// 56: the model's animation of a joint stopped, blending out
 class ClearAnimationCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    TaggedValue value2;
+    // The joint whose animation stops (0xFF the root)
+    union Joint
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    Joint joint;
+    TaggedValue blendTime;
 
     static ClearAnimationCommand* Construct(ClearAnimationCommand* command) RETAIL(FUN_00221bd0);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd56_ClearAnimation_Execute);
@@ -763,11 +1189,22 @@ public:
 };
 CHECK_SIZE(ClearAnimationCommand, 0x14);
 
-// 57
+// 57: the focus is the instance hanging on an exit point
 class RequestAttachmentFocusCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    // The exit point the instance hangs on (0xFF: the one hanging on none)
+    union Hanging
+    {
+        u32 value;
+        struct
+        {
+            u32 exitPoint : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    Hanging hanging;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd57_RequestAttachmentFocus_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd57_RequestAttachmentFocus_Dtor);
@@ -780,7 +1217,7 @@ CHECK_SIZE(RequestAttachmentFocusCommand, 0x10);
 class RequestMessengersFocusCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    DesignatorSlotArgument copied;
 
     void Destroy(u32 destroyFlags) RETAIL(Cmd59_RequestMessengersFocus_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd59_RequestMessengersFocus_Execute);
@@ -792,33 +1229,84 @@ CHECK_SIZE(RequestMessengersFocusCommand, 0x10);
 class SetFocusPositionCommand : public ScriptCommand
 {
 public:
-    u32 flags;
+    // Where the position is: a receiver's, else a designator's (the route's steps tuned by the route's values), else the space's
+    // (game/objectnode.h's DesignatedPosition, the offset added when it's given; unused20 is handed to its unused argument); noise
+    // added, the DesignatorSlot it's given to (SlotFocus or SlotStoredPosition), the axes of the instance's frame (its start's
+    // with fromStart) it's kept to (bit 0 x, 1 y, 2 z) and the instance's move since its start added (with fromStart)
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 receiver : 8;
+            u32 designator : 8;
+            u32 space : 4;
+            u32 unused20 : 1;
+            u32 offsetGiven : 1;
+            u32 noise : 1;
+            u32 slot : 3;
+            u32 keptAxes : 3;
+            u32 fromStart : 1;
+            u32 unused30 : 1;
+            u32 addsMove : 1;
+        };
+    };
+
+    // The joint's instance is the focus instance (else the agent's own); the position put straight ahead of the agent's instance as
+    // far away (retail keeps these as the bits after the target's, a 64 bit word)
+    union Options
+    {
+        u32 value;
+        struct
+        {
+            u32 focusJoint : 1;
+            u32 straightAhead : 1;
+            u32 unused2 : 30;
+        };
+    };
+
+    // The joint whose position it is (0xFF none)
+    union Joint
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    u32 unused0C;
     f32 offsetX;
     f32 offsetY;
     f32 offsetZ;
     f32 offsetW;
-    u32 targetFlags;
-    u32 angleValue;
-    f32 value8;
-    f32 scale;
-    f32 value10;
-    f32 value11;
-    f32 value12;
-    f32 value13;
-    s32 value14;
-    s32 value15;
-    s32 value16;
-    u32 keyAndObject;
-    s32 value18;
-    u32 unknown19;
-    u32 unknown20;
-    u32 unknown21;
+    Target target;
+    Options options;
+    f32 noiseSpread;
+    f32 noiseUpScale;
+    // The route's step's (game/objectnode.h's RouteStepPosition)
+    f32 routeCorner;
+    f32 routeScatter;
+    // How far along the perception's direction from the instance, else away from the player
+    f32 alongPerception;
+    f32 awayFromPlayer;
+    f32 routeSideways;
+    f32 routeLift;
+    f32 routeToward;
+    Joint joint;
+    u32 unused50;
+    u32 unused54;
+    u32 unused58;
+    u32 unused5C;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd60_SetFocusPosition_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd60_SetFocusPosition_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd60_SetFocusPosition_Execute);
     u32 Size() RETAIL(Cmd60_SetFocusPosition_GetSize);
 };
+CHECK_OFFSET(SetFocusPositionCommand, target, 0x20);
+CHECK_OFFSET(SetFocusPositionCommand, joint, 0x4C);
 CHECK_SIZE(SetFocusPositionCommand, 0x60);
 
 // 61
@@ -835,11 +1323,11 @@ CHECK_SIZE(StopMovingCommand, 0xC);
 class AddNoiseToFocusPositionCommand : public ScriptCommand
 {
 public:
-    u32 flags;
-    TaggedValue amount;
-    f32 factorA;
-    f32 factorB;
-    f32 factorC;
+    DesignatorSlotArgument moved;
+    TaggedValue spread;
+    f32 xScale;
+    f32 yScale;
+    f32 zScale;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd62_AddNoiseToFocusPosition_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd62_AddNoiseToFocusPosition_Dtor);
@@ -872,7 +1360,7 @@ CHECK_SIZE(ClearUserMessageCommand, 0xC);
 class RequestMessSourceAsFocusCommand : public ScriptCommand
 {
 public:
-    u32 slot;
+    DesignatorSlotArgument given;
 
     void Destroy(u32 destroyFlags) RETAIL(Cmd67_RequestMessSourceAsFocus_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd67_RequestMessSourceAsFocus_Execute);
@@ -884,7 +1372,23 @@ CHECK_SIZE(RequestMessSourceAsFocusCommand, 0x10);
 class SetCounterCommand : public ScriptCommand
 {
 public:
-    u32 counterTarget;
+    // The counter: the game's, else an agent's (a designator's, 0xFF the agent's own, or every linked object's), set to the value
+    // or to a random number below it
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 counter : 16;
+            u32 designator : 8;
+            u32 agentCounter : 1;
+            u32 randomBelow : 1;
+            u32 everyLinked : 1;
+            u32 unused27 : 5;
+        };
+    };
+
+    Target target;
     TaggedValue value;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd68_SetCounter_ParseTokens);
@@ -898,9 +1402,34 @@ CHECK_SIZE(SetCounterCommand, 0x14);
 class ModifyCounterCommand : public ScriptCommand
 {
 public:
-    u32 counterTarget;
+    // The counter: the game's, else an agent's (a designator's, 0xFF the agent's own, or the linked objects' of an object)
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 counter : 16;
+            u32 designator : 8;
+            u32 agentCounter : 1;
+            u32 linkedObjects : 1;
+            u32 unused26 : 6;
+        };
+    };
+
+    // The object whose linked objects' counters change (0xFFFF any)
+    union LinkedObject
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 16;
+            u32 unused16 : 16;
+        };
+    };
+
+    Target target;
     TaggedValue delta;
-    u32 unknown3;
+    LinkedObject linkedObject;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd69_ModifyCounter_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd69_ModifyCounter_Dtor);
@@ -909,18 +1438,35 @@ public:
 };
 CHECK_SIZE(ModifyCounterCommand, 0x18);
 
-// 70
+// ContinueColliderMotion's bits: a velocity given (the node's velocity is set, never to the one given: game/commandsphysics.cpp),
+// the drag, friction and restitution given, and the rigid body stopping once it rests
+union ColliderMotionBits
+{
+    u32 value;
+    struct
+    {
+        u32 velocityGiven : 1;
+        u32 dragGiven : 1;
+        u32 frictionGiven : 1;
+        u32 restitutionGiven : 1;
+        u32 stops : 1;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(ColliderMotionBits, 4);
+
+// 70: the rigid body moving again with its values
 class ContinueColliderMotionCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
-    s32 velX;
-    s32 velY;
-    s32 velZ;
+    ColliderMotionBits flags;
+    f32 unused2;
+    f32 unused3;
+    f32 unused4;
     u32 unused5;
-    s32 value6;
-    s32 value7;
-    s32 value8;
+    f32 drag;
+    f32 friction;
+    f32 restitution;
     u32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd70_ContinueColliderMotion_ParseTokens);
@@ -940,27 +1486,71 @@ public:
 };
 CHECK_SIZE(RevertColliderMotionCommand, 0xC);
 
-// 72
+// ColliderLaunchNow's bits: the launch's target (the space it's in, a receiver's instance, a designator's or the route's step,
+// whose position the step values move), the velocity given (else the throw to the target, in a time or over a height), the
+// offset given, the drag, friction, restitution and turn given, and the rigid body stopping once it rests. The development
+// tools' parser sets bit 26, which nothing reads
+union ColliderLaunchBits
+{
+    u32 value;
+    struct
+    {
+        u32 space : 4;
+        u32 receiver : 8;
+        u32 designator : 8;
+        u32 velocityGiven : 1;
+        u32 offsetGiven : 1;
+        u32 dragGiven : 1;
+        u32 frictionGiven : 1;
+        u32 restitutionGiven : 1;
+        u32 turnGiven : 1;
+        u32 unused26 : 1;
+        u32 stops : 1;
+        u32 thrownInTime : 1;
+        u32 thrownOverHeight : 1;
+        u32 unused30 : 2;
+    };
+};
+CHECK_SIZE(ColliderLaunchBits, 4);
+
+// ColliderLaunchNow's second word: the target's height above the node added to the throw's. The development tools' parser marks
+// the step values given in bits 0-2, which nothing reads, and bit 4 goes to a rigid body state bit nothing reads
+union ColliderLaunchExtras
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 unused1 : 1;
+        u32 unused2 : 1;
+        u32 addsRise : 1;
+        u32 unused4 : 1;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(ColliderLaunchExtras, 4);
+
+// 72: the node's velocity (given or a throw to a target) and its rigid body's values
 class ColliderLaunchNowCommand : public ScriptCommand
 {
 public:
-    f32 unknown1;
+    f32 unused1;
     f32 x;
     f32 y;
     f32 z;
     f32 w;
-    u32 flags;
-    u32 flags2;
-    s32 value8;
-    f32 value9;
-    s32 value10;
-    u32 value11;
-    s32 value12;
-    s32 value13;
-    s32 value14;
-    f32 power;
-    u32 unknown16;
-    u32 unknown17;
+    ColliderLaunchBits launch;
+    ColliderLaunchExtras extras;
+    f32 drag;
+    f32 friction;
+    f32 restitution;
+    f32 turn;
+    f32 stepCorner;
+    f32 stepToward;
+    f32 stepScatter;
+    f32 heightOrTime;
+    u32 unused16;
+    u32 unused17;
 
     static ColliderLaunchNowCommand* Construct(ColliderLaunchNowCommand* command) RETAIL(FUN_002532d8);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd72_ColliderLaunchNow_ParseTokens);
@@ -970,11 +1560,29 @@ public:
 };
 CHECK_SIZE(ColliderLaunchNowCommand, 0x50);
 
-// 74
+// How ForceAnimationUpdate animates the model: once (at its next update), always, or not any more (any other mode)
+union AnimationUpdate
+{
+    enum Mode : u32
+    {
+        UpdateOnce = 1,
+        UpdateAlways = 2,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 mode : 4;
+        u32 unused4 : 28;
+    };
+};
+CHECK_SIZE(AnimationUpdate, 4);
+
+// 74: the model node animated at its next update however long its instance went unseen, always animated, or not any more
 class ForceAnimationUpdateCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
+    AnimationUpdate update;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd74_ForceAnimationUpdate_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd74_ForceAnimationUpdate_Dtor);
@@ -983,11 +1591,25 @@ public:
 };
 CHECK_SIZE(ForceAnimationUpdateCommand, 0x10);
 
-// 75
+// DestroySpawnedAttachment's attachment: the exit point it hangs at (GameOGI::NoExitPoint the one attached without one), or with
+// none every linked object
+union SpawnedAttachment
+{
+    u32 value;
+    struct
+    {
+        u32 exitPoint : 8;
+        u32 everyLinked : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(SpawnedAttachment, 4);
+
+// 75: an instance a script made let go of by the agent's attachments and put to sleep
 class DestroySpawnedAttachmentCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    SpawnedAttachment attachment;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd75_DestroySpawnedAttachment_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd75_DestroySpawnedAttachment_Execute);
@@ -996,18 +1618,36 @@ public:
 };
 CHECK_SIZE(DestroySpawnedAttachmentCommand, 0x10);
 
-// 76
+// ApplyImpulse's bits: the designator whose instance is pushed (0xFF none: the originator's when asked, else the agent's own),
+// and whether an impulse or else a spin is given. The development tools' parser writes bits 8 and 9, which nothing reads
+union ImpulseBits
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 unused8 : 1;
+        u32 unused9 : 1;
+        u32 fromOriginator : 1;
+        u32 spinGiven : 1;
+        u32 impulseGiven : 1;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(ImpulseBits, 4);
+
+// 76: an instance pushed by an impulse (turned from the agent's instance's space) or spun (its physics body's angular momentum)
 class ApplyImpulseCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    f32 velX;
-    f32 velY;
-    f32 velZ;
-    f32 value5;
-    f32 value6;
-    f32 value7;
-    f32 value8;
+    ImpulseBits flags;
+    f32 impulseX;
+    f32 impulseY;
+    f32 impulseZ;
+    f32 impulseW;
+    f32 spinX;
+    f32 spinY;
+    f32 spinZ;
     f32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd76_ApplyImpulse_ParseTokens);
@@ -1027,12 +1667,53 @@ public:
 };
 CHECK_SIZE(RequestDetachCommand, 0xC);
 
-// 78
+// SetObject's switches of the instance (two bits each: 1 on, 2 off, else left): busy, visible, its collision, asleep (1 woken, 2
+// put to sleep), its physics body's flag 0x20 (game/objectnode.h's MotionBlockBody: pushable); then the squared near distances of
+// its node and its model (a byte each, 0xFF none) and whether they're given
+union ObjectSwitches
+{
+    static constexpr u8 NoDistance = 0xFF;
+
+    u32 value;
+    struct
+    {
+        u32 busy : 2;
+        u32 visible : 2;
+        u32 collision : 2;
+        u32 asleep : 2;
+        u32 unused8 : 2;
+        u32 pushable20 : 2;
+        u32 unused12 : 1;
+        u32 modelDistance : 8;
+        u32 nodeDistance : 8;
+        u32 modelDistanceGiven : 1;
+        u32 nodeDistanceGiven : 1;
+        u32 unused31 : 1;
+    };
+};
+CHECK_SIZE(ObjectSwitches, 4);
+
+// SetObject's other switches: its physics body's flag 0x40 (pushable), its movement node carrying what stands on it, its model
+// solid
+union ObjectBodySwitches
+{
+    u32 value;
+    struct
+    {
+        u32 pushable40 : 2;
+        u32 carries : 2;
+        u32 solid : 2;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(ObjectBodySwitches, 4);
+
+// 78: the instance's and its nodes' switches and near distances
 class SetObjectCommand : public ScriptCommand
 {
 public:
-    u32 flags;
-    u32 flags2;
+    ObjectSwitches switches;
+    ObjectBodySwitches bodySwitches;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd78_SetObject_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd78_SetObject_Dtor);
@@ -1042,11 +1723,29 @@ public:
 };
 CHECK_SIZE(SetObjectCommand, 0x14);
 
-// 79
+// What Keep makes a runner finishing leave the node: its particles, its trajectory and its perception; bits 2-4 go to node
+// flags nothing reads
+union KeepFlags
+{
+    u32 value;
+    struct
+    {
+        u32 particles : 1;
+        u32 trajectory : 1;
+        u32 unused2 : 1;
+        u32 unused3 : 1;
+        u32 unused4 : 1;
+        u32 perception : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(KeepFlags, 4);
+
+// 79: what a runner finishing leaves the node
 class KeepCommand : public ScriptCommand
 {
 public:
-    TaggedValue flags;
+    KeepFlags keeps;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd79_Keep_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd79_Keep_Dtor);
@@ -1055,24 +1754,50 @@ public:
 };
 CHECK_SIZE(KeepCommand, 0x10);
 
-// 80
+// How AttachSpring makes its spring: the space of its target (game/objectnode.h's DesignatedPosition), the object whose instance
+// is made at its end (0xFFFF none), an offset given, its target in the focus's space, its rest length given, the instance at its
+// end without collisions
+union SpringFlags
+{
+    u32 value;
+    struct
+    {
+        u32 space : 4;
+        u32 object : 16;
+        u32 offsetGiven : 1;
+        u32 toFocus : 1;
+        u32 lengthGiven : 1;
+        u32 endUncollidable : 1;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(SpringFlags, 4);
+
+// The joints of a spring's ends: the focus's its target is at, and the instance's (0xFF its place)
+union SpringJoints
+{
+    u32 value;
+    struct
+    {
+        u32 focusJoint : 8;
+        u32 joint : 8;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(SpringJoints, 4);
+
+// 80: a spring attached to the instance from its joint or its place to a target, with an instance made at its end when asked
 class AttachSpringCommand : public ScriptCommand
 {
 public:
     f32 unused1;
-    f32 offsetX;
-    f32 offsetY;
-    f32 offsetZ;
-    f32 value5;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 value9;
-    TaggedValue offsetX2;
-    u32 value11;
-    f32 value12;
-    f32 value13;
-    f32 value14;
+    Vector4 offset;
+    Vector4 target;
+    SpringFlags flags;
+    SpringJoints joints;
+    f32 power;
+    f32 damping;
+    f32 length;
     u32 unused15;
     u32 unused16;
     f32 unused17;
@@ -1094,44 +1819,11 @@ public:
 };
 CHECK_SIZE(DetachAllSpringsCommand, 0xC);
 
-// 82, 83
+// 82, 83: the motion block of its arguments the node's own (pointing back at the node), its instance given a physics body
 class SetContactSpringyCommand : public ScriptCommand
 {
 public:
-    f32 drag;
-    s32 mode1;
-    s32 hitType;
-    s32 gravity;
-    s32 friction;
-    s32 rollingFriction;
-    s32 bounce;
-    s32 maxSpeed;
-    f32 value8;
-    f32 value9;
-    f32 value10;
-    u32 unused11;
-    s32 offsetX;
-    s32 offsetY;
-    s32 offsetZ;
-    s32 value15;
-    s32 value16;
-    f32 value17;
-    s32 value18;
-    u32 unused19;
-    u32 unused20;
-    u32 unused21;
-    f32 one22;
-    TaggedValue motionFlags;
-    s32 value24;
-    s32 value25;
-    u32 motionType;
-    u32 motionFlags2;
-    u32 unused29;
-    u32 unused30;
-    u32 unused31;
-    u32 id;
-    u32 unused33;
-    u32 unused34;
+    MotionBlock block;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd82_SetContactSpringy_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd82_SetContactSpringy_ParseTokens);
@@ -1150,11 +1842,26 @@ public:
 };
 CHECK_SIZE(ClearContactResponseCommand, 0xC);
 
-// 85
+// DestroyMe's mode (3 and up do nothing); the development tools' parser puts another one in bits 3-5, which nothing reads
+union DestroyMeSettings
+{
+    static constexpr u32 Modes = 3;
+
+    u32 value;
+    struct
+    {
+        u32 mode : 3;
+        u32 unused3 : 3;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(DestroyMeSettings, 4);
+
+// 85: the node and its instance put to sleep (in modes 0 to 2)
 class DestroyMeCommand : public ScriptCommand
 {
 public:
-    u32 mode;
+    DestroyMeSettings settings;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd85_DestroyMe_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd85_DestroyMe_Dtor);
@@ -1163,33 +1870,42 @@ public:
 };
 CHECK_SIZE(DestroyMeCommand, 0x10);
 
-// 86
-class SetSoundCommand : public ScriptCommand
+// 86: the chunk's reverb, or its box reverb
+class SetReverbCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    f32 value2;
-    f32 value3;
-    f32 value4;
-    u32 unused5;
-    u32 unused6;
-    u32 value7;
+    ReverbSettings reverb;
+    SwitchArgument boxReverb;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd86_SetSound_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd86_SetSound_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd86_SetSound_Execute);
     u32 Size() RETAIL(Cmd86_SetSound_GetSize);
 };
-CHECK_SIZE(SetSoundCommand, 0x28);
+CHECK_SIZE(SetReverbCommand, 0x28);
 
-// 87
+// Which of the trajectory controller's wobble phases (about x, y and z) a command sets
+union WobbleAxes
+{
+    u32 value;
+    struct
+    {
+        u32 x : 1;
+        u32 y : 1;
+        u32 z : 1;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(WobbleAxes, 4);
+
+// 87: the trajectory controller's wobble phases set (degrees)
 class AlterWobblePhaseCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
-    TaggedValue value2;
-    TaggedValue value3;
-    TaggedValue value4;
+    TaggedValue phaseX;
+    TaggedValue phaseY;
+    TaggedValue phaseZ;
+    WobbleAxes axes;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd87_AlterWobblePhase_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd87_AlterWobblePhase_Execute);
@@ -1198,13 +1914,29 @@ public:
 };
 CHECK_SIZE(AlterWobblePhaseCommand, 0x1C);
 
+// BeginMusic's music slot (game/sound.h's PlayMusicRequest: 0 the main one, its volume the track's; 1 the context's; 2 in the
+// effects' volume group; 3 a music emitter where the instance is, heard to the range; none past it) and whether it loops
+union BeginMusicFlags
+{
+    static constexpr u32 EmitterSlot = 3;
+
+    u32 value;
+    struct
+    {
+        u32 unused0 : 12;
+        u32 slot : 3;
+        u32 loops : 1;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(BeginMusicFlags, 4);
+
 // 88
 class BeginMusicCommand : public ScriptCommand
 {
 public:
     TaggedValue track;
-    // Bits 12-14 the music slot (3: played where the instance is, heard to the range), bit 15 it loops
-    u32 flags;
+    BeginMusicFlags flags;
     f32 volume;
     f32 fadeTime;
     f32 range;
@@ -1218,11 +1950,11 @@ public:
 };
 CHECK_SIZE(BeginMusicCommand, 0x20);
 
-// 89
+// 89: the context music's slot faded out
 class EndContextMusicCommand : public ScriptCommand
 {
 public:
-    f32 time;
+    f32 fadeSeconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd89_EndContextMusic_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd89_EndContextMusic_Dtor);
@@ -1235,7 +1967,7 @@ CHECK_SIZE(EndContextMusicCommand, 0x10);
 class AddLivesCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    s32 lives;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd92_AddLives_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd92_AddLives_Dtor);
@@ -1244,11 +1976,23 @@ public:
 };
 CHECK_SIZE(AddLivesCommand, 0x10);
 
-// 95
+// 95: AgentRef2 unlinked from the instance and sent a message
 class ReleaseAgentRef2Command : public ScriptCommand
 {
 public:
-    u32 event;
+    // The message AgentRef2 is sent (0xFFFF none); the development tools' parser sets bit 16 for MakeIdle, which nothing reads
+    union Release
+    {
+        u32 value;
+        struct
+        {
+            u32 message : 16;
+            u32 unused16 : 1;
+            u32 unused17 : 15;
+        };
+    };
+
+    Release release;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd95_ReleaseAgentRef2_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd95_ReleaseAgentRef2_Execute);
@@ -1257,55 +2001,41 @@ public:
 };
 CHECK_SIZE(ReleaseAgentRef2Command, 0x10);
 
-// 96
+// How LaunchAgentRef2 launches: an offset and a spread given, AgentRef2's busy flag cleared, AgentRef1 passed on to it (bit 0 is
+// handed to the target's search, which doesn't read it)
+union LaunchFlags
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 offsetGiven : 1;
+        u32 spreadGiven : 1;
+        u32 clearsBusy : 1;
+        u32 unused4 : 2;
+        u32 unused6 : 1;
+        u32 passesAgentRef1 : 1;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(LaunchFlags, 4);
+
+// 96: AgentRef2 let go of and launched at a target by the motion block of its arguments
 class LaunchAgentRef2Command : public ScriptCommand
 {
 public:
-    u32 unused;
-    f32 offsetX;
-    f32 offsetY;
-    f32 offsetZ;
-    f32 offsetW;
-    f32 motion0;
-    s32 motion1;
-    f32 motion2;
-    f32 gravity;
-    f32 motion4;
-    s32 motion5;
-    f32 angleX;
-    s32 angleY;
-    s32 angleZ;
-    s32 motion9;
-    s32 motion10;
-    u32 motion11;
-    s32 motionDesignator;
-    s32 motion13;
-    f32 motion14;
-    s32 motion15;
-    s32 motion16;
-    f32 motion17;
-    s32 motion18;
-    u32 motion19;
-    u32 motion20;
-    u32 motion21;
-    f32 motion22;
-    TaggedValue motionFlags;
-    s32 motionFlags2;
-    s32 motion25;
-    u32 motion26;
-    f32 motion27;
-    s32 motion28;
     u32 unused1;
-    u32 unused2;
-    u32 unused3;
-    u32 unused4;
-    u32 unused5;
-    u32 launch;
-    TaggedValue launchFlags;
-    TaggedValue timeOrDistance;
-    f32 scaleFactor;
-    f32 height;
-    f32 value44;
+    Vector4 offset;
+    MotionBlock block;
+    // Its target (its exit point and the bits above the designator unread)
+    ThrowRequest launch;
+    LaunchFlags flags;
+    TaggedValue speed;
+    // How far the target is moved at random
+    f32 spread;
+    // How fast it spins about its x axis, else about its y axis
+    f32 spinX;
+    f32 spinY;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd96_LaunchAgentRef2_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd96_LaunchAgentRef2_Execute);
@@ -1354,22 +2084,38 @@ public:
 };
 CHECK_SIZE(CacheLinkedInstanceCommand, 0xC);
 
-// 113
-// Which angles it sets (bits 0-2), then the angles (TT Lab's names are an argument off: rotX, rotY, rotZ, set)
-class SetRotationComponentsCommand : public ScriptCommand
+// The axes an argument picks: x, y and z
+union AxisSelection
+{
+    static constexpr u32 All = 0x7;
+
+    u32 value;
+    struct
+    {
+        u32 x : 1;
+        u32 y : 1;
+        u32 z : 1;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(AxisSelection, 4);
+
+// 113: the instance's rotation about its axes snapped to the nearest multiple of a step
+class SnapRotationCommand : public ScriptCommand
 {
 public:
-    u32 components;
-    f32 x;
-    f32 y;
-    f32 z;
+    AxisSelection axes;
+    // Radians
+    f32 stepX;
+    f32 stepY;
+    f32 stepZ;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd113_SetRotationComponents_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd113_SetRotationComponents_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd113_SetRotationComponents_Execute);
     u32 Size() RETAIL(Cmd113_SetRotationComponents_GetSize);
 };
-CHECK_SIZE(SetRotationComponentsCommand, 0x1C);
+CHECK_SIZE(SnapRotationCommand, 0x1C);
 
 // 114
 class StopHeadTrackingCommand : public ScriptCommand
@@ -1415,12 +2161,29 @@ public:
 };
 CHECK_SIZE(MakeNoiseCommand, 0x14);
 
-// 118
+// SetHeadTrackingTarget's target: a starter receiver's instance (DesignatesNone none), else the focus instance, the player or
+// AgentRef2; and whether the head tracking remembers it with its weight
+union HeadTrackingTargetBits
+{
+    u32 value;
+    struct
+    {
+        u32 receiver : 8;
+        u32 player : 1;
+        u32 agentRef2 : 1;
+        u32 focus : 1;
+        u32 remembers : 1;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(HeadTrackingTargetBits, 4);
+
+// 118: the head tracking's target given with a weight
 class SetHeadTrackingTargetCommand : public ScriptCommand
 {
 public:
-    u32 target;
-    f32 weightValue;
+    HeadTrackingTargetBits target;
+    f32 weight;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd118_SetHeadTrackingTarget_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd118_SetHeadTrackingTarget_Execute);
@@ -1429,15 +2192,15 @@ public:
 };
 CHECK_SIZE(SetHeadTrackingTargetCommand, 0x14);
 
-// 119
-class ClearNodeByte154Command : public ScriptCommand
+// 119: the node's knock countdown cleared
+class ClearKnockCountdownCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd119_ClearNodeByte154_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd119_ClearNodeByte154_Execute);
     u32 Size() RETAIL(Cmd119_ClearNodeByte154_GetSize);
 };
-CHECK_SIZE(ClearNodeByte154Command, 0xC);
+CHECK_SIZE(ClearKnockCountdownCommand, 0xC);
 
 // 120
 class PhysicsResetVelocityCommand : public ScriptCommand
@@ -1454,7 +2217,7 @@ class SetFocusPositionBesidePlayerCommand : public ScriptCommand
 {
 public:
     f32 distance;
-    u32 unused;
+    u32 unused10;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd121_SetFocusPositionBesidePlayer_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd121_SetFocusPositionBesidePlayer_Dtor);
@@ -1464,19 +2227,33 @@ public:
 CHECK_SIZE(SetFocusPositionBesidePlayerCommand, 0x14);
 
 // 122
-class SetFocusPositionToAgentCommand : public ScriptCommand
+class CopyDesignatorCommand : public ScriptCommand
 {
 public:
-    u32 targets;
+    // A designator of the agent whose designators the source is (DesignatesItself: the agent's own) and the agent's designator
+    // given its instance, else its position
+    union Designators
+    {
+        u32 value;
+        struct
+        {
+            u32 source : 8;
+            u32 destination : 8;
+            u32 sourceAgent : 8;
+            u32 unused24 : 8;
+        };
+    };
+
+    Designators designators;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd122_SetFocusPositionToAgent_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd122_SetFocusPositionToAgent_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd122_SetFocusPositionToAgent_Execute);
     u32 Size() RETAIL(Cmd122_SetFocusPositionToAgent_GetSize);
 };
-CHECK_SIZE(SetFocusPositionToAgentCommand, 0x10);
+CHECK_SIZE(CopyDesignatorCommand, 0x10);
 
-// 123
+// 123: the agent's instance attached to the AI position nearest it
 class LinkToNearestPointCommand : public ScriptCommand
 {
 public:
@@ -1486,11 +2263,24 @@ public:
 };
 CHECK_SIZE(LinkToNearestPointCommand, 0xC);
 
-// 124
+// What RunScriptSlot starts: the object's behaviour slot, and the node's runner it runs in
+union BehaviourSlotRequest
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 16;
+        u32 runner : 1;
+        u32 unused17 : 15;
+    };
+};
+CHECK_SIZE(BehaviourSlotRequest, 4);
+
+// 124: the behaviour of the object's slot started on the node (forced) in one of its two runners
 class RunScriptSlotCommand : public ScriptCommand
 {
 public:
-    u32 slotAndFlags;
+    BehaviourSlotRequest request;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd124_RunScriptSlot_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd124_RunScriptSlot_Dtor);
@@ -1499,15 +2289,12 @@ public:
 };
 CHECK_SIZE(RunScriptSlotCommand, 0x10);
 
-// 125
+// 125: the focus position moved
 class OffsetFocusPositionCommand : public ScriptCommand
 {
 public:
-    u32 unused;
-    f32 x;
-    f32 y;
-    f32 z;
-    u32 w;
+    u32 unused1;
+    Vector4 offset;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd125_OffsetFocusPosition_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd125_OffsetFocusPosition_Dtor);
@@ -1559,23 +2346,24 @@ public:
 };
 CHECK_SIZE(PhysicsBodyActivateCommand, 0xC);
 
-// 130
-class SetPhysicsSizesCommand : public ScriptCommand
+// 130: the rigid body's magnet: its pull and its modes (and its first size, which nothing reads)
+class SetMagnetCommand : public ScriptCommand
 {
 public:
     f32 size;
-    f32 size2;
-    u32 mode1;
-    TaggedValue mode2;
+    f32 magnetPull;
+    // game/objectnode.h's ObjectRigidBodyState: the magnet's way, and its strength's mode
+    u32 magnetWay;
+    u32 magnetStrength;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd130_SetPhysicsSizes_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd130_SetPhysicsSizes_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd130_SetPhysicsSizes_Execute);
     u32 Size() RETAIL(Cmd130_SetPhysicsSizes_GetSize);
 };
-CHECK_SIZE(SetPhysicsSizesCommand, 0x1C);
+CHECK_SIZE(SetMagnetCommand, 0x1C);
 
-// 131
+// 131: the pull of the focus's rigid body's magnet on the agent's rigid body
 class MagnetPullToFocusCommand : public ScriptCommand
 {
 public:
@@ -1585,10 +2373,11 @@ public:
 };
 CHECK_SIZE(MagnetPullToFocusCommand, 0xC);
 
-// 132
+// 132: the linked object the linked object commands are at
 class SetLinkedObjectIndexCommand : public ScriptCommand
 {
 public:
+    // Counting from 1 (left as it is past the count)
     s32 number;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd132_SetLinkedObjectIndex_ParseTokens);
@@ -1628,12 +2417,13 @@ public:
 };
 CHECK_SIZE(DestroyPerceptionsCommand, 0xC);
 
-// 136
+// 136: a sense's weight
 class SetPerceptionWeightCommand : public ScriptCommand
 {
 public:
-    TaggedValue slot;
-    s32 weightValue;
+    // Its low byte
+    u32 sense;
+    f32 weight;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd136_SetPerceptionWeight_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd136_SetPerceptionWeight_Dtor);
@@ -1642,12 +2432,13 @@ public:
 };
 CHECK_SIZE(SetPerceptionWeightCommand, 0x14);
 
-// 137
+// 137: a weight added to a sense's
 class AddPerceptionWeightCommand : public ScriptCommand
 {
 public:
-    TaggedValue slot;
-    s32 value;
+    // Its low byte
+    u32 sense;
+    f32 weight;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd137_AddPerceptionWeight_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd137_AddPerceptionWeight_Dtor);
@@ -1656,12 +2447,12 @@ public:
 };
 CHECK_SIZE(AddPerceptionWeightCommand, 0x14);
 
-// 138
+// 138: the agent's rigid body pushed along its perception's direction over the ground, for the time since its node's last update
 class PushFromPerceptionCommand : public ScriptCommand
 {
 public:
-    TaggedValue mode;
-    f32 factor;
+    u32 perceptionSlot;
+    f32 strength;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd138_PushFromPerception_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd138_PushFromPerception_Execute);
@@ -1670,21 +2461,21 @@ public:
 };
 CHECK_SIZE(PushFromPerceptionCommand, 0x14);
 
-// 139
-class SetCharacterAnalogCommand : public ScriptCommand
+// 139: how much the instance makes itself felt to the perceptions around (the scripts' character analog, kept between -1 and 1)
+class SetPresenceCommand : public ScriptCommand
 {
 public:
-    f32 value;
+    f32 presence;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd139_SetCharacterAnalog_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd139_SetCharacterAnalog_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd139_SetCharacterAnalog_Execute);
     u32 Size() RETAIL(Cmd139_SetCharacterAnalog_GetSize);
 };
-CHECK_SIZE(SetCharacterAnalogCommand, 0x10);
+CHECK_SIZE(SetPresenceCommand, 0x10);
 
-// 140
-class AddCharacterAnalogCommand : public ScriptCommand
+// 140: a change of how much the instance makes itself felt (kept between -1 and 1)
+class AddPresenceCommand : public ScriptCommand
 {
 public:
     f32 delta;
@@ -1694,33 +2485,35 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd140_AddCharacterAnalog_Execute);
     u32 Size() RETAIL(Cmd140_AddCharacterAnalog_GetSize);
 };
-CHECK_SIZE(AddCharacterAnalogCommand, 0x10);
+CHECK_SIZE(AddPresenceCommand, 0x10);
 
-// 141
-class PerceptionOp141Command : public ScriptCommand
+// 141: a sense turned off
+class TurnSenseOffCommand : public ScriptCommand
 {
 public:
-    TaggedValue slot;
+    // Its low byte
+    u32 sense;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd141_PerceptionOp141_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd141_PerceptionOp141_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd141_PerceptionOp141_Execute);
     u32 Size() RETAIL(Cmd141_PerceptionOp141_GetSize);
 };
-CHECK_SIZE(PerceptionOp141Command, 0x10);
+CHECK_SIZE(TurnSenseOffCommand, 0x10);
 
-// 142
-class PerceptionOp142Command : public ScriptCommand
+// 142: a sense turned on
+class TurnSenseOnCommand : public ScriptCommand
 {
 public:
-    TaggedValue slot;
+    // Its low byte
+    u32 sense;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd142_PerceptionOp142_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd142_PerceptionOp142_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd142_PerceptionOp142_Execute);
     u32 Size() RETAIL(Cmd142_PerceptionOp142_GetSize);
 };
-CHECK_SIZE(PerceptionOp142Command, 0x10);
+CHECK_SIZE(TurnSenseOnCommand, 0x10);
 
 // 143
 class DisableAllPerceptionsCommand : public ScriptCommand
@@ -1742,11 +2535,21 @@ public:
 };
 CHECK_SIZE(EnableAllPerceptionsCommand, 0xC);
 
-// 145
+// 145: the message given to the behaviour level below (none on the first level)
 class SetParentExecutionValueCommand : public ScriptCommand
 {
 public:
-    u32 value;
+    union Message
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 16;
+            u32 unused16 : 16;
+        };
+    };
+
+    Message message;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd145_SetParentExecutionValue_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd145_SetParentExecutionValue_Dtor);
@@ -1759,7 +2562,26 @@ CHECK_SIZE(SetParentExecutionValueCommand, 0x10);
 class SetFocusToLinkedObjectCommand : public ScriptCommand
 {
 public:
-    u32 target;
+    // A linked object (of the focus instance's attachments, AgentRef1's, else of the agent's instance's or of its source node's
+    // instance's: the current one, the last or the one of the index) or else a receiver's or a designator's instance (the index),
+    // given to a DesignatorSlot
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 index : 8;
+            u32 linked : 1;
+            u32 current : 1;
+            u32 focusLinked : 1;
+            u32 agentRef1Linked : 1;
+            u32 slot : 3;
+            u32 last : 1;
+            u32 unused16 : 16;
+        };
+    };
+
+    Target target;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd146_SetFocusToLinkedObject_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd146_SetFocusToLinkedObject_Dtor);
@@ -1778,28 +2600,49 @@ public:
 };
 CHECK_SIZE(PreviousKeyCommand, 0xC);
 
-// 148
-class SetMotionFloatsCommand : public ScriptCommand
+// 148: the trajectory's cycles' amplitudes about the axes it picks
+class SetCycleAmplitudesCommand : public ScriptCommand
 {
 public:
-    TaggedValue a;
-    TaggedValue b;
-    TaggedValue c;
-    TaggedValue set;
+    TaggedValue amplitudeX;
+    TaggedValue amplitudeY;
+    TaggedValue amplitudeZ;
+    AxisSelection axes;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd148_SetMotionFloats_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd148_SetMotionFloats_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd148_SetMotionFloats_Dtor);
     u32 Size() RETAIL(Cmd148_SetMotionFloats_GetSize);
 };
-CHECK_SIZE(SetMotionFloatsCommand, 0x1C);
+CHECK_SIZE(SetCycleAmplitudesCommand, 0x1C);
 
-// 149
+// RotateWithLinked's axes: the instance's own it turns about (the first of x, y and z), and the instance's it hangs from that
+// instance moves along (the first of x, y and z)
+union TurnAlongAxes
+{
+    static constexpr u32 TurnsMask = 0x7;
+    static constexpr u32 AlongMask = 0x38;
+
+    u32 value;
+    struct
+    {
+        u32 turnsX : 1;
+        u32 turnsY : 1;
+        u32 turnsZ : 1;
+        u32 alongX : 1;
+        u32 alongY : 1;
+        u32 alongZ : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(TurnAlongAxes, 4);
+
+// 149: the instance turned about one of its axes as the instance it hangs from moves along one of that one's
 class RotateWithLinkedCommand : public ScriptCommand
 {
 public:
     f32 degreesPerSecond;
-    TaggedValue axes;
+    TurnAlongAxes axes;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd149_RotateWithLinked_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd149_RotateWithLinked_Execute);
@@ -1808,11 +2651,26 @@ public:
 };
 CHECK_SIZE(RotateWithLinkedCommand, 0x14);
 
-// 150
+// StrafeTowardsTarget's target: the designator it goes toward, the space whose x axis it moves along (ControlPacket::Space: the
+// start's or its own, else the way to the target itself), and whether it turns toward the target
+union StrafeTarget
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 space : 4;
+        u32 faces : 1;
+        u32 unused13 : 19;
+    };
+};
+CHECK_SIZE(StrafeTarget, 4);
+
+// 150: the agent's instance moved along an axis toward a target
 class StrafeTowardsTargetCommand : public ScriptCommand
 {
 public:
-    u32 target;
+    StrafeTarget target;
     f32 speed;
     f32 maxDistance;
 
@@ -1823,41 +2681,41 @@ public:
 };
 CHECK_SIZE(StrafeTowardsTargetCommand, 0x18);
 
-// 151
-class NextKeyOfPath34Command : public ScriptCommand
+// 151: the waypoints' route a step back (routes are followed down their steps)
+class PreviousRouteNodeCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd151_NextKeyOfPath34_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd151_NextKeyOfPath34_Execute);
     u32 Size() RETAIL(Cmd151_NextKeyOfPath34_GetSize);
 };
-CHECK_SIZE(NextKeyOfPath34Command, 0xC);
+CHECK_SIZE(PreviousRouteNodeCommand, 0xC);
 
-// 152
-class AddMotionAnglesCommand : public ScriptCommand
+// 152: the trajectory controller's wobble phases turned (degrees)
+class AddWobblePhaseCommand : public ScriptCommand
 {
 public:
-    TaggedValue x;
-    TaggedValue y;
-    TaggedValue z;
-    TaggedValue set;
+    TaggedValue turnX;
+    TaggedValue turnY;
+    TaggedValue turnZ;
+    WobbleAxes axes;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd152_AddMotionAngles_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd152_AddMotionAngles_Execute);
     void Destroy(u32 destroyFlags) RETAIL(Cmd152_AddMotionAngles_Dtor);
     u32 Size() RETAIL(Cmd152_AddMotionAngles_GetSize);
 };
-CHECK_SIZE(AddMotionAnglesCommand, 0x1C);
+CHECK_SIZE(AddWobblePhaseCommand, 0x1C);
 
-// 153
+// 153: the agent's instance moved toward a designator's position at a speed
 class MoveTowardsDesignatorCommand : public ScriptCommand
 {
 public:
-    u32 target;
-    s32 distance;
-    f32 value2;
-    s32 value3;
-    s32 value4;
+    DesignatorArgument target;
+    f32 unused2;
+    f32 speed;
+    f32 unused4;
+    f32 unused5;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd153_MoveTowardsDesignator_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd153_MoveTowardsDesignator_Execute);
@@ -1866,24 +2724,55 @@ public:
 };
 CHECK_SIZE(MoveTowardsDesignatorCommand, 0x20);
 
-// 156
-class SetNode150FieldsCommand : public ScriptCommand
+// The noise message SetNoiseMessage gives the node (0xFFFF keeps its own) and whether its noises are passed on (a message given
+// sets it, kept in the command)
+union NoiseSettings
+{
+    u32 value;
+    struct
+    {
+        u32 message : 16;
+        u32 passesNoises : 1;
+        u32 unused17 : 15;
+    };
+};
+CHECK_SIZE(NoiseSettings, 4);
+
+// 156: the node's noise message (one given makes its noises passed on) and whether its noises are passed on to its instance
+class SetNoiseMessageCommand : public ScriptCommand
 {
 public:
-    u32 values;
+    NoiseSettings settings;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd156_SetNode150Fields_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd156_SetNode150Fields_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd156_SetNode150Fields_Execute);
     u32 Size() RETAIL(Cmd156_SetNode150Fields_GetSize);
 };
-CHECK_SIZE(SetNode150FieldsCommand, 0x10);
+CHECK_SIZE(SetNoiseMessageCommand, 0x10);
 
-// 157
+// Which linked object UnlinkTarget unlinks: every one, the current one, the one of the index, else the designator's instance when
+// it's linked
+union UnlinkRequest
+{
+    u32 value;
+    struct
+    {
+        // A linked object's index or a designator
+        u32 target : 8;
+        u32 all : 1;
+        u32 byIndex : 1;
+        u32 current : 1;
+        u32 unused11 : 21;
+    };
+};
+CHECK_SIZE(UnlinkRequest, 4);
+
+// 157: a linked object unlinked
 class UnlinkTargetCommand : public ScriptCommand
 {
 public:
-    TaggedValue target;
+    UnlinkRequest request;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd157_UnlinkTarget_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd157_UnlinkTarget_Dtor);
@@ -1892,45 +2781,13 @@ public:
 };
 CHECK_SIZE(UnlinkTargetCommand, 0x10);
 
-// 158
+// 158: the motion block of its arguments the node's own when it has none, its touch message given
 class AttachMotionBlockCommand : public ScriptCommand
 {
 public:
-    s32 id;
-    u32 block1;
-    u32 block2;
-    u32 block3;
-    u32 block4;
-    u32 block5;
-    u32 block6;
-    u32 block7;
-    u32 block8;
-    u32 block9;
-    u32 block10;
-    u32 block11;
-    u32 block12;
-    u32 block13;
-    u32 block14;
-    u32 block15;
-    u32 block16;
-    u32 block17;
-    u32 block18;
-    u32 block19;
-    u32 block20;
-    u32 block21;
-    u32 block22;
-    u32 block23;
-    u32 block24;
-    u32 block25;
-    u32 block26;
-    u32 block27;
-    u32 block28;
-    u32 block29;
-    u32 block30;
-    u32 block31;
-    u32 block32;
-    u32 block33;
-    u32 block34;
+    // The message what touches the block is sent (0 none)
+    s32 touchMessage;
+    MotionBlock block;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd158_AttachMotionBlock_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd158_AttachMotionBlock_ParseTokens);
@@ -1939,55 +2796,83 @@ public:
 };
 CHECK_SIZE(AttachMotionBlockCommand, 0x98);
 
-// 159
-class ResetNode120Command : public ScriptCommand
+// 159: the node's motion block's touch message forgotten
+class ClearTouchMessageCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd159_ResetNode120_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd159_ResetNode120_Execute);
     u32 Size() RETAIL(Cmd159_ResetNode120_GetSize);
 };
-CHECK_SIZE(ResetNode120Command, 0xC);
+CHECK_SIZE(ClearTouchMessageCommand, 0xC);
 
-// 160
-class ClearMotionBlockFlag16Command : public ScriptCommand
+// 160: what touches the node's motion block no longer sent its touch message
+class StopTouchMessagesCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd160_ClearMotionBlockFlag16_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd160_ClearMotionBlockFlag16_Execute);
     u32 Size() RETAIL(Cmd160_ClearMotionBlockFlag16_GetSize);
 };
-CHECK_SIZE(ClearMotionBlockFlag16Command, 0xC);
+CHECK_SIZE(StopTouchMessagesCommand, 0xC);
 
-// 161
-class SetMotionBlockFlag16Command : public ScriptCommand
+// 161: what touches the node's motion block sent its touch message
+class SendTouchMessagesCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd161_SetMotionBlockFlag16_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd161_SetMotionBlockFlag16_Execute);
     u32 Size() RETAIL(Cmd161_SetMotionBlockFlag16_GetSize);
 };
-CHECK_SIZE(SetMotionBlockFlag16Command, 0xC);
+CHECK_SIZE(SendTouchMessagesCommand, 0xC);
+
+// A command's argument word that only names an agent's counter (game/agents.h's Agent::counters)
+union CounterArgument
+{
+    u32 value;
+    struct
+    {
+        u32 counter : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(CounterArgument, 4);
 
 // 162
-class AddToFocusObjectByteCommand : public ScriptCommand
+class AddToFocusCounterCommand : public ScriptCommand
 {
 public:
-    u32 index;
-    TaggedValue value;
+    CounterArgument counter;
+    TaggedValue amount;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd162_AddToFocusObjectByte_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd162_AddToFocusObjectByte_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd162_AddToFocusObjectByte_Execute);
     u32 Size() RETAIL(Cmd162_AddToFocusObjectByte_GetSize);
 };
-CHECK_SIZE(AddToFocusObjectByteCommand, 0x14);
+CHECK_SIZE(AddToFocusCounterCommand, 0x14);
 
 // 163
 class UnlinkFromTargetCommand : public ScriptCommand
 {
 public:
-    u32 target;
+    // What lets go of the agent's instance: a designator's instance (0xFF none), else the agent's own linked objects: every one,
+    // the current one or the one of the index; unlinking by force
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 designatorOrIndex : 8;
+            u32 everyLinked : 1;
+            u32 byIndex : 1;
+            u32 current : 1;
+            u32 force : 1;
+            u32 unused12 : 20;
+        };
+    };
+
+    Target target;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd163_UnlinkFromTarget_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd163_UnlinkFromTarget_Dtor);
@@ -1996,35 +2881,78 @@ public:
 };
 CHECK_SIZE(UnlinkFromTargetCommand, 0x10);
 
-// 164
-class AddToLinkedObjectsByteCommand : public ScriptCommand
+// AddToLinkedCounter's counter: its index (game/instances.h's Agent::counters), of the linked objects of an object
+// (AnyObjectId: every one)
+union LinkedCounter
+{
+    u32 value;
+    struct
+    {
+        u32 object : 16;
+        u32 index : 16;
+    };
+};
+CHECK_SIZE(LinkedCounter, 4);
+
+// Which of the agent's linked objects a command takes: the one of an index (NoIndex none), or every one, the current one, the
+// first or the last (written into the index)
+union LinkedObjectChoice
+{
+    static constexpr u8 NoIndex = 0xFF;
+
+    u32 value;
+    struct
+    {
+        u32 index : 8;
+        u32 every : 1;
+        u32 current : 1;
+        u32 first : 1;
+        u32 last : 1;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(LinkedObjectChoice, 4);
+
+// 164: a counter of the agent's linked objects changed by an amount
+class AddToLinkedCounterCommand : public ScriptCommand
 {
 public:
-    u32 filter;
-    u32 target;
-    TaggedValue value;
+    LinkedCounter counter;
+    LinkedObjectChoice linked;
+    TaggedValue amount;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd164_AddToLinkedObjectsByte_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd164_AddToLinkedObjectsByte_Execute);
     void Destroy(u32 destroyFlags) RETAIL(Cmd164_AddToLinkedObjectsByte_Dtor);
     u32 Size() RETAIL(Cmd164_AddToLinkedObjectsByte_GetSize);
 };
-CHECK_SIZE(AddToLinkedObjectsByteCommand, 0x18);
+CHECK_SIZE(AddToLinkedCounterCommand, 0x18);
 
-// 165
+// Whether ForceVolumeController turns the volume controller on or off (neither: left)
+union VolumeSwitch
+{
+    u32 value;
+    struct
+    {
+        u32 on : 1;
+        u32 off : 1;
+        u32 unused2 : 30;
+    };
+};
+CHECK_SIZE(VolumeSwitch, 4);
+
+// 165: a force given to the volume controller of an instance overlapping the instance's box, turned on or off
 class ForceVolumeControllerCommand : public ScriptCommand
 {
 public:
-    TaggedValue x;
-    TaggedValue y;
-    TaggedValue z;
+    TaggedValue forceX;
+    TaggedValue forceY;
+    TaggedValue forceZ;
     u32 unused4;
     u32 unused5;
-    s32 value6;
-    u32 value7;
-    u32 value8;
-    u32 value9;
-    TaggedValue value10;
+    // The force given (w 1), kept in the command
+    Vector4 force;
+    VolumeSwitch turns;
     u32 unused11;
     u32 unused12;
     u32 unused13;
@@ -2049,11 +2977,25 @@ public:
 };
 CHECK_SIZE(NotifyInstancesWithinCommand, 0x10);
 
-// 167
+// What SetSurface sets: a collision surface ID, for every hull or for the hull of an index
+union SurfaceRequest
+{
+    u32 value;
+    struct
+    {
+        u32 surface : 16;
+        u32 allHulls : 1;
+        u32 hull : 8;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(SurfaceRequest, 4);
+
+// 167: the surface of the instance's hulls, or of one of them
 class SetSurfaceCommand : public ScriptCommand
 {
 public:
-    u32 surface;
+    SurfaceRequest request;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd167_SetSurface_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd167_SetSurface_Dtor);
@@ -2063,32 +3005,64 @@ public:
 };
 CHECK_SIZE(SetSurfaceCommand, 0x10);
 
-// 168
-class MoveInstancesInBoxCommand : public ScriptCommand
+// PushInstancesAway's bits: the push grows from the middle's to the edge's with the distance (any of the low byte)
+union PushAwayBits
+{
+    u32 value;
+    struct
+    {
+        u32 byDistance : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(PushAwayBits, 4);
+
+// 168: the physics bodies within a radius of a point by the agent's instance pushed away from it
+class PushInstancesAwayCommand : public ScriptCommand
 {
 public:
-    u32 unused;
+    u32 unused1;
     f32 offsetX;
     f32 offsetY;
     f32 offsetZ;
-    f32 size;
-    f32 value5;
-    f32 value6;
-    u32 flags;
-    u32 unused2;
+    f32 radius;
+    f32 push;
+    f32 edgePush;
+    PushAwayBits flags;
+    u32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd168_MoveInstancesInBox_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd168_MoveInstancesInBox_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd168_MoveInstancesInBox_Execute);
     u32 Size() RETAIL(Cmd168_MoveInstancesInBox_GetSize);
 };
-CHECK_SIZE(MoveInstancesInBoxCommand, 0x30);
+CHECK_SIZE(PushInstancesAwayCommand, 0x30);
 
 // 169
 class SetFocusPositionAlongCommand : public ScriptCommand
 {
 public:
-    u32 targets;
+    // OwnPositionMode: the agent's own position stands in for a start without one
+    enum Mode : u32
+    {
+        OwnPositionMode = 2,
+    };
+
+    // The designator given the position, and the designators it's between
+    union Designators
+    {
+        u32 value;
+        struct
+        {
+            u32 destination : 8;
+            u32 from : 8;
+            u32 to : 8;
+            u32 mode : 4;
+            u32 unused28 : 4;
+        };
+    };
+
+    Designators designators;
     f32 distance;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd169_SetFocusPositionAlong_ParseTokens);
@@ -2099,10 +3073,13 @@ public:
 CHECK_SIZE(SetFocusPositionAlongCommand, 0x14);
 
 // 170
-class SetFocusObjectByteCommand : public ScriptCommand
+class SetFocusCounterCommand : public ScriptCommand
 {
 public:
-    u32 index;
+    // The source's value: the value rather than a counter of the agent's
+    static constexpr s32 FromValue = 0xFF;
+
+    CounterArgument counter;
     s32 source;
     TaggedValue value;
 
@@ -2111,14 +3088,41 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd170_SetFocusObjectByte_Execute);
     u32 Size() RETAIL(Cmd170_SetFocusObjectByte_GetSize);
 };
-CHECK_SIZE(SetFocusObjectByteCommand, 0x18);
+CHECK_SIZE(SetFocusCounterCommand, 0x18);
 
 // 171
 class RunSlotBehaviourOnLinkedCommand : public ScriptCommand
 {
 public:
-    u32 targetAndObject;
-    u32 slotAndFlags;
+    // A designator's instance (0xFF none), else the linked objects of an object (NoLinkedObjectId none)
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 designator : 8;
+            u32 unused8 : 8;
+            u32 objectId : 16;
+        };
+    };
+
+    // The object's behaviour slot run, in which runner slot, on every linked object; the node it's run on made to take its object
+    // from the agent's node
+    union Slot
+    {
+        u32 value;
+        struct
+        {
+            u32 slot : 16;
+            u32 runnerSlot : 1;
+            u32 everyLinked : 1;
+            u32 givesSource : 1;
+            u32 unused19 : 13;
+        };
+    };
+
+    Target target;
+    Slot slot;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd171_RunSlotBehaviourOnLinked_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd171_RunSlotBehaviourOnLinked_Dtor);
@@ -2127,11 +3131,26 @@ public:
 };
 CHECK_SIZE(RunSlotBehaviourOnLinkedCommand, 0x14);
 
-// 172
+// Whose object nodes StopTargetBehaviour gives back their own object: a designator's instance's (0xFF none), else every linked
+// object's when asked. Bit 8 is only the development tools' parser's
+union StopTargetRequest
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 unused8 : 1;
+        u32 everyLinked : 1;
+        u32 unused10 : 22;
+    };
+};
+CHECK_SIZE(StopTargetRequest, 4);
+
+// 172: a designator's instance's object node made to take its object from itself again, or every linked object's
 class StopTargetBehaviourCommand : public ScriptCommand
 {
 public:
-    u32 targetAndFlags;
+    StopTargetRequest request;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd172_StopTargetBehaviour_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd172_StopTargetBehaviour_Dtor);
@@ -2140,18 +3159,28 @@ public:
 };
 CHECK_SIZE(StopTargetBehaviourCommand, 0x10);
 
-// 173
-class SetKeyPathByte43Command : public ScriptCommand
+// 173: the path the node's waypoints are on
+class SetPathIndexCommand : public ScriptCommand
 {
 public:
-    u32 value;
+    union Path
+    {
+        u32 value;
+        struct
+        {
+            u32 index : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    Path path;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd173_SetKeyPathByte43_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd173_SetKeyPathByte43_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd173_SetKeyPathByte43_Execute);
     u32 Size() RETAIL(Cmd173_SetKeyPathByte43_GetSize);
 };
-CHECK_SIZE(SetKeyPathByte43Command, 0x10);
+CHECK_SIZE(SetPathIndexCommand, 0x10);
 
 // 174
 class SetFocusToOwnerCommand : public ScriptCommand
@@ -2173,29 +3202,59 @@ public:
 };
 CHECK_SIZE(SetAgentRef1ToOwnerCommand, 0xC);
 
-// 176
-class FadeSoundGroupCommand : public ScriptCommand
+// A music slot in an argument's bits 0-2 (game/sound.h's four: 0 the main music's, 1 the context music's and the cutscenes')
+union MusicSlotArgument
+{
+    u32 value;
+    struct
+    {
+        u32 index : 3;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(MusicSlotArgument, 4);
+
+// 176: a music slot faded out
+class FadeOutMusicSlotCommand : public ScriptCommand
 {
 public:
-    f32 value;
-    TaggedValue group;
+    f32 fadeSeconds;
+    MusicSlotArgument slot;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd176_FadeSoundGroup_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd176_FadeSoundGroup_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd176_FadeSoundGroup_Execute);
     u32 Size() RETAIL(Cmd176_FadeSoundGroup_GetSize);
 };
-CHECK_SIZE(FadeSoundGroupCommand, 0x14);
+CHECK_SIZE(FadeOutMusicSlotCommand, 0x14);
 
 // 177, 179
 class WarpAgentCommand : public ScriptCommand
 {
 public:
-    u32 warp;
-    u32 source;
-    u32 unused1;
-    u32 unused2;
-    u32 unused3;
+    // Where an agent's instance (a designator's, 0xFF the agent's own) warps to like PositionWarp's target says
+    union Warp
+    {
+        u32 value;
+        struct
+        {
+            u32 receiver : 8;
+            u32 designator : 8;
+            u32 space : 4;
+            u32 unused20 : 1;
+            u32 offsetGiven : 1;
+            u32 turns : 1;
+            u32 turnsBody : 1;
+            u32 agent : 8;
+        };
+    };
+
+    Warp warp;
+    // The designator whose position it warps to instead (0xFF none)
+    DesignatorArgument source;
+    u32 unused14;
+    u32 unused18;
+    u32 unused1C;
     f32 offsetX;
     f32 offsetY;
     f32 offsetZ;
@@ -2208,15 +3267,29 @@ public:
 };
 CHECK_SIZE(WarpAgentCommand, 0x30);
 
-// 178
+// RotateAgent's agent: the designator whose instance turns (0xFF the agent's own). The development tools' parser writes a second
+// designator in byte 1, which nothing reads
+union RotatedAgent
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 unused8 : 8;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(RotatedAgent, 4);
+
+// 178: an agent's instance turned like RotationWarp turns the agent's own
 class RotateAgentCommand : public ScriptCommand
 {
 public:
-    u32 rotate;
-    u32 subject;
-    u32 unused1;
-    u32 unused2;
+    RotationWarpBits warp;
+    RotatedAgent agent;
     u32 unused3;
+    u32 unused4;
+    u32 unused5;
     f32 quatX;
     f32 quatY;
     f32 quatZ;
@@ -2233,8 +3306,8 @@ CHECK_SIZE(RotateAgentCommand, 0x30);
 class QueueObjectVideoCommand : public ScriptCommand
 {
 public:
-    s32 value;
-    TaggedValue value2;
+    s32 cutscene;
+    f32 unused2;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd180_QueueObjectVideo_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd180_QueueObjectVideo_Dtor);
@@ -2243,8 +3316,8 @@ public:
 };
 CHECK_SIZE(QueueObjectVideoCommand, 0x14);
 
-// 181
-class VideoControllerUpdateCommand : public ScriptCommand
+// 181: the cutscene QueueObjectVideo queued started once its music is prepared
+class StartObjectVideoCommand : public ScriptCommand
 {
 public:
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd181_VideoControllerUpdate_ParseTokens);
@@ -2252,10 +3325,10 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd181_VideoControllerUpdate_Execute);
     u32 Size() RETAIL(Cmd181_VideoControllerUpdate_GetSize);
 };
-CHECK_SIZE(VideoControllerUpdateCommand, 0xC);
+CHECK_SIZE(StartObjectVideoCommand, 0xC);
 
-// 182
-class VideoControllerOp182Command : public ScriptCommand
+// 182: the cutscene stopped: what was read let go of while it waits to start (and what's read later), its music stopped
+class CancelVideoCommand : public ScriptCommand
 {
 public:
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd182_VideoControllerOp182_ParseTokens);
@@ -2263,13 +3336,13 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd182_VideoControllerOp182_Execute);
     u32 Size() RETAIL(Cmd182_VideoControllerOp182_GetSize);
 };
-CHECK_SIZE(VideoControllerOp182Command, 0xC);
+CHECK_SIZE(CancelVideoCommand, 0xC);
 
-// 183
+// 183: the designator's instance's object node takes its object from this node
 class SetTargetOwnerToSelfCommand : public ScriptCommand
 {
 public:
-    TaggedValue target;
+    DesignatorArgument target;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd183_SetTargetOwnerToSelf_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd183_SetTargetOwnerToSelf_Dtor);
@@ -2278,25 +3351,50 @@ public:
 };
 CHECK_SIZE(SetTargetOwnerToSelfCommand, 0x10);
 
-// 184
-class ResetTimerCommand : public ScriptCommand
+// Whose object node RestoreOwnObject gives back its own object: the designator's instance's (0xFF none, whether it has one isn't
+// checked), else the agent's own when asked
+union OwnObjectRequest
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 8;
+        u32 own : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(OwnObjectRequest, 4);
+
+// 184: an object node made to take its object from itself again: the designator's instance's, or the agent's own
+class RestoreOwnObjectCommand : public ScriptCommand
 {
 public:
-    u32 target;
+    OwnObjectRequest request;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd184_ResetTimer_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd184_ResetTimer_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd184_ResetTimer_Execute);
     u32 Size() RETAIL(Cmd184_ResetTimer_GetSize);
 };
-CHECK_SIZE(ResetTimerCommand, 0x10);
+CHECK_SIZE(RestoreOwnObjectCommand, 0x10);
 
-// 185
+union QueueVideoFlags
+{
+    u32 value;
+    struct
+    {
+        u32 loops : 1;
+        u32 unused1 : 31;
+    };
+};
+CHECK_SIZE(QueueVideoFlags, 4);
+
+// 185: a music-only cutscene queued (a track of the cutscenes' music slot)
 class QueueVideoCommand : public ScriptCommand
 {
 public:
-    TaggedValue movieId;
-    u32 flags;
+    TaggedValue track;
+    QueueVideoFlags flags;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd185_QueueVideo_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd185_QueueVideo_ParseTokens);
@@ -2316,15 +3414,42 @@ public:
 };
 CHECK_SIZE(StartQueuedVideoCommand, 0xC);
 
-// 187: a shadow slot (byte 0) of the node's instance given shapes with a distance and a strength (size and size2), cast as
-// strongly as height
+// A shadow command's slot of the node's instance's shadow node (ShadowNode::Slots)
+union ShadowSlotArgument
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(ShadowSlotArgument, 4);
+
+// A shadow shape command's word: the slot whose shapes get it, the shape's kind (ShadowShapeOfToken's), its joint and a
+// capsule's second joint (a circle reads no second joint, a plain shape neither joint)
+union ShadowShapeArgument
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 8;
+        u32 kind : 8;
+        u32 joint : 8;
+        u32 secondJoint : 8;
+    };
+};
+CHECK_SIZE(ShadowShapeArgument, 4);
+
+// 187: a shadow slot of the node's instance given new shapes, cast while the instance is within a distance of the camera, as
+// strongly as nearStrength up close and farStrength at that distance
 class SetShadowCommand : public ScriptCommand
 {
 public:
-    u32 shadowSlot;
-    TaggedValue size;
-    TaggedValue height;
-    TaggedValue size2;
+    ShadowSlotArgument slot;
+    TaggedValue distance;
+    TaggedValue nearStrength;
+    TaggedValue farStrength;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd187_SetShadow_Execute);
     void ExecuteOn(GameNode* node) RETAIL(Cmd187_SetShadow_ExecuteOn);
@@ -2334,13 +3459,13 @@ public:
 };
 CHECK_SIZE(SetShadowCommand, 0x1C);
 
-// 188
+// 188: a circle added to the shapes of a shadow slot
 class SetShadowCircleCommand : public ScriptCommand
 {
 public:
-    u32 meshSlotAndMode;
+    ShadowShapeArgument shape;
     TaggedValue radius;
-    TaggedValue radius2;
+    TaggedValue height;
     TaggedValue offsetX;
     TaggedValue offsetY;
     TaggedValue offsetZ;
@@ -2353,12 +3478,12 @@ public:
 };
 CHECK_SIZE(SetShadowCircleCommand, 0x24);
 
-// 189
+// 189: a capsule added to the shapes of a shadow slot
 class SetShadowMeshCommand : public ScriptCommand
 {
 public:
-    u32 meshSlotAndMode;
-    TaggedValue size;
+    ShadowShapeArgument shape;
+    TaggedValue radius;
     TaggedValue offsetX;
     TaggedValue offsetY;
     TaggedValue offsetZ;
@@ -2371,13 +3496,13 @@ public:
 };
 CHECK_SIZE(SetShadowMeshCommand, 0x20);
 
-// 190
+// 190: the plain shape (a rectangle) of a shadow slot's shapes set
 class SetShadowRectangleCommand : public ScriptCommand
 {
 public:
-    u32 slot;
-    TaggedValue size;
-    TaggedValue size3;
+    ShadowShapeArgument shape;
+    TaggedValue width;
+    TaggedValue depth;
     TaggedValue offsetX;
     TaggedValue offsetY;
     TaggedValue offsetZ;
@@ -2390,11 +3515,11 @@ public:
 };
 CHECK_SIZE(SetShadowRectangleCommand, 0x24);
 
-// 191
-class ShadowToggleCommand : public ScriptCommand
+// 191: the slot the instance's shadow node casts
+class SetShadowSlotCommand : public ScriptCommand
 {
 public:
-    u32 slot;
+    ShadowSlotArgument slot;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd191_ShadowToggle_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd191_ShadowToggle_Dtor);
@@ -2402,13 +3527,13 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd191_ShadowToggle_ExecuteOn);
     u32 Size() RETAIL(Cmd191_ShadowToggle_GetSize);
 };
-CHECK_SIZE(ShadowToggleCommand, 0x10);
+CHECK_SIZE(SetShadowSlotCommand, 0x10);
 
-// 192
-class SetNode10SlotCommand : public ScriptCommand
+// 192: a slot of the instance's shadow node made empty
+class ClearShadowSlotCommand : public ScriptCommand
 {
 public:
-    u32 slot;
+    ShadowSlotArgument slot;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd192_SetNode10Slot_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd192_SetNode10Slot_Dtor);
@@ -2416,21 +3541,41 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd192_SetNode10Slot_ExecuteOn);
     u32 Size() RETAIL(Cmd192_SetNode10Slot_GetSize);
 };
-CHECK_SIZE(SetNode10SlotCommand, 0x10);
+CHECK_SIZE(ClearShadowSlotCommand, 0x10);
 
-// 193
+// LaunchAtTarget's bits: the target (the space it's in, a receiver's instance or a designator's), the velocity given (else the
+// throw to the target, in a time or over a height, the target's height above the node added when asked), the offset given
+union LaunchAtTargetBits
+{
+    u32 value;
+    struct
+    {
+        u32 space : 4;
+        u32 receiver : 8;
+        u32 designator : 8;
+        u32 velocityGiven : 1;
+        u32 offsetGiven : 1;
+        u32 thrownInTime : 1;
+        u32 thrownOverHeight : 1;
+        u32 addsRise : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(LaunchAtTargetBits, 4);
+
+// 193: the node's velocity (given or a throw to a target) given to its physics body too, spinning
 class LaunchAtTargetCommand : public ScriptCommand
 {
 public:
-    u32 unused;
+    u32 unused1;
     f32 offsetX;
     f32 offsetY;
     f32 offsetZ;
     f32 offsetW;
-    TaggedValue target;
-    f32 speedOrAngle;
-    f32 value7;
-    f32 value8;
+    LaunchAtTargetBits launch;
+    f32 heightOrTime;
+    f32 spinX;
+    f32 spinY;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd193_LaunchAtTarget_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd193_LaunchAtTarget_Dtor);
@@ -2439,11 +3584,25 @@ public:
 };
 CHECK_SIZE(LaunchAtTargetCommand, 0x30);
 
-// 194
-class SetNodeBytes168Command : public ScriptCommand
+// SetContactSounds' slots of the node's contact sound (first and last, 0xFF none), and the node's contact sounds turned off
+union ContactSoundSlots
+{
+    u32 value;
+    struct
+    {
+        u32 first : 8;
+        u32 last : 8;
+        u32 off : 1;
+        u32 unused17 : 15;
+    };
+};
+CHECK_SIZE(ContactSoundSlots, 4);
+
+// 194: the node's contact sound: its slots and the value it plays while it's negative
+class SetContactSoundsCommand : public ScriptCommand
 {
 public:
-    u32 bytes;
+    ContactSoundSlots slots;
     f32 value;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd194_SetNodeBytes168_ParseTokens);
@@ -2451,7 +3610,7 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd194_SetNodeBytes168_Execute);
     u32 Size() RETAIL(Cmd194_SetNodeBytes168_GetSize);
 };
-CHECK_SIZE(SetNodeBytes168Command, 0x14);
+CHECK_SIZE(SetContactSoundsCommand, 0x14);
 
 // 195
 class StopVideoCommand : public ScriptCommand
@@ -2475,19 +3634,36 @@ public:
 };
 CHECK_SIZE(StopSoundCommand, 0xC);
 
-// 197
-class DUMMY_197Command : public ScriptCommand
+// What the development tools' parser packs into NoOp197's first argument: an object, an exit point (bit 20 set with it) and
+// whether an offset (the floats from unused6) was given
+union NoOp197Bits
+{
+    u32 value;
+    struct
+    {
+        u32 object : 16;
+        u32 unused16 : 4;
+        u32 hasExitPoint : 1;
+        u32 exitPoint : 6;
+        u32 hasOffset : 1;
+        u32 unused28 : 4;
+    };
+};
+CHECK_SIZE(NoOp197Bits, 4);
+
+// 197: does nothing
+class NoOp197Command : public ScriptCommand
 {
 public:
-    u32 objectId;
-    s32 value2;
+    NoOp197Bits unused1;
+    f32 unused2;
     u32 unused3;
     u32 unused4;
     u32 unused5;
-    s32 offsetX;
-    s32 offsetY;
-    s32 offsetZ;
-    u32 value9;
+    f32 unused6;
+    f32 unused7;
+    f32 unused8;
+    f32 unused9;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd197_DUMMY_197_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd197_DUMMY_197_Dtor);
@@ -2495,9 +3671,9 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd197_DUMMY_197_ExecuteOn);
     u32 Size() RETAIL(Cmd197_DUMMY_197_GetSize);
 };
-CHECK_SIZE(DUMMY_197Command, 0x30);
+CHECK_SIZE(NoOp197Command, 0x30);
 
-// 198
+// 198: the instance's collision a box of the sizes centred on it
 class SetCollisionBoxSizeCommand : public ScriptCommand
 {
 public:
@@ -2512,15 +3688,24 @@ public:
 };
 CHECK_SIZE(SetCollisionBoxSizeCommand, 0x18);
 
-// 199
+// 199: the linked object the linked object commands are at made the next one of a list
 class NextLinkedObjectInListCommand : public ScriptCommand
 {
 public:
-    TaggedValue links1;
-    u32 links2;
-    u32 links3;
-    u32 links4;
-    u32 count;
+    // How many linked objects' numbers it has
+    union Count
+    {
+        u32 value;
+        struct
+        {
+            u32 numbers : 8;
+            u32 unused8 : 24;
+        };
+    };
+
+    // The linked objects' numbers (counting from 1)
+    u8 numbers[16];
+    Count count;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd199_NextLinkedObjectInList_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd199_NextLinkedObjectInList_Dtor);
@@ -2529,22 +3714,42 @@ public:
 };
 CHECK_SIZE(NextLinkedObjectInListCommand, 0x20);
 
-// 200, 201
-class ArrangeLinkedObjectsCommand : public ScriptCommand
+// PickLinkedObjectNearPlayer's bits: what the object's node's slot 39 is told to give the linked object to (nothing sets it),
+// the player's position turned about the agent's instance and led by the agent's velocity, the busy linked objects passed over
+// and the one picked marked busy. The development tools' parser writes bytes at bits 4 and 12, which nothing reads
+union LinkedPick
+{
+    u32 value;
+    struct
+    {
+        u32 designator : 4;
+        u32 unused4 : 8;
+        u32 unused12 : 8;
+        u32 turned : 1;
+        u32 leads : 1;
+        u32 passesBusy : 1;
+        u32 marksBusy : 1;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(LinkedPick, 4);
+
+// 200, 201: the linked object nearest a point by the player picked
+class PickLinkedObjectNearPlayerCommand : public ScriptCommand
 {
 public:
-    f32 angleValue;
-    f32 value;
-    u32 flags;
+    f32 degrees;
+    f32 leadSeconds;
+    LinkedPick pick;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd200_ArrangeLinkedObjects_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd200_ArrangeLinkedObjects_Execute);
     void Destroy(u32 destroyFlags) RETAIL(Cmd200_ArrangeLinkedObjects_Dtor);
     u32 Size() RETAIL(Cmd200_ArrangeLinkedObjects_GetSize);
 };
-CHECK_SIZE(ArrangeLinkedObjectsCommand, 0x18);
+CHECK_SIZE(PickLinkedObjectNearPlayerCommand, 0x18);
 
-// 202
+// 202: the first camera trigger overlapping the instance's box put to sleep
 class TriggerInstanceAtOwnBoxCommand : public ScriptCommand
 {
 public:
@@ -2554,23 +3759,39 @@ public:
 };
 CHECK_SIZE(TriggerInstanceAtOwnBoxCommand, 0xC);
 
-// 203
-class ScaleModelNodeCommand : public ScriptCommand
+// 203: the mass of the instance's physics body (its size 1)
+class SetBodyMassCommand : public ScriptCommand
 {
 public:
-    f32 value;
+    f32 mass;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd203_ScaleModelNode_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd203_ScaleModelNode_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd203_ScaleModelNode_Execute);
     u32 Size() RETAIL(Cmd203_ScaleModelNode_GetSize);
 };
-CHECK_SIZE(ScaleModelNodeCommand, 0x10);
+CHECK_SIZE(SetBodyMassCommand, 0x10);
 
 // 204
 class SetFocusPositionOffsetCommand : public ScriptCommand
 {
 public:
+    // The coordinates and the offsets used (a plain word, not a tagged value)
+    union Uses
+    {
+        u32 value;
+        struct
+        {
+            u32 x : 1;
+            u32 y : 1;
+            u32 z : 1;
+            u32 offsetX : 1;
+            u32 offsetY : 1;
+            u32 offsetZ : 1;
+            u32 unused6 : 26;
+        };
+    };
+
     f32 x;
     f32 y;
     f32 z;
@@ -2578,7 +3799,7 @@ public:
     f32 offsetY;
     f32 offsetZ;
     f32 distance;
-    TaggedValue use;
+    Uses uses;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd204_SetFocusPositionOffset_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd204_SetFocusPositionOffset_Dtor);
@@ -2588,18 +3809,19 @@ public:
 CHECK_SIZE(SetFocusPositionOffsetCommand, 0x2C);
 
 // 205
-class SetFocusPositionAtAngleCommand : public ScriptCommand
+class SetStoredPositionAtAngleCommand : public ScriptCommand
 {
 public:
     f32 distance;
-    f32 angleValue;
+    // Degrees
+    f32 angle;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd205_SetFocusPositionAtAngle_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd205_SetFocusPositionAtAngle_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd205_SetFocusPositionAtAngle_Execute);
     u32 Size() RETAIL(Cmd205_SetFocusPositionAtAngle_GetSize);
 };
-CHECK_SIZE(SetFocusPositionAtAngleCommand, 0x14);
+CHECK_SIZE(SetStoredPositionAtAngleCommand, 0x14);
 
 // 206
 class SaveScriptStateCommand : public ScriptCommand
@@ -2623,44 +3845,67 @@ public:
 };
 CHECK_SIZE(ClearSavedScriptStateCommand, 0xC);
 
-// 208
-class SetNodeByte8cCommand : public ScriptCommand
+// 208: the node's rank (what TriggerInstancesByRank compares)
+class SetRankCommand : public ScriptCommand
 {
 public:
-    TaggedValue value;
+    TaggedValue rank;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd208_SetNodeByte8c_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd208_SetNodeByte8c_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd208_SetNodeByte8c_Dtor);
     u32 Size() RETAIL(Cmd208_SetNodeByte8c_GetSize);
 };
-CHECK_SIZE(SetNodeByte8cCommand, 0x10);
+CHECK_SIZE(SetRankCommand, 0x10);
 
-// 209
-class SetGlobalByte30a0e9Command : public ScriptCommand
+// 209: the rank TriggerInstancesByRank compares with
+class SetTriggerRankCommand : public ScriptCommand
 {
 public:
-    TaggedValue value;
+    TaggedValue rank;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd209_SetGlobalByte30a0e9_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd209_SetGlobalByte30a0e9_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd209_SetGlobalByte30a0e9_Dtor);
     u32 Size() RETAIL(Cmd209_SetGlobalByte30a0e9_GetSize);
 };
-CHECK_SIZE(SetGlobalByte30a0e9Command, 0x10);
+CHECK_SIZE(SetTriggerRankCommand, 0x10);
 
-// 210
-class TriggerInstancesInRangeCommand : public ScriptCommand
+// What TriggerInstancesByRank sends to whom: the message, and the instances' ranks it takes: the same as the node's (0), the
+// trigger rank (1), below it (2) or not above it (3), none past 3
+union RankMessage
+{
+    enum Mode : u32
+    {
+        SameRank = 0,
+        TriggerRank = 1,
+        BelowTriggerRank = 2,
+        UpToTriggerRank = 3,
+        Modes = 4,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 message : 16;
+        u32 mode : 8;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(RankMessage, 4);
+
+// 210: a message sent to the chunk's instances of a rank
+class TriggerInstancesByRankCommand : public ScriptCommand
 {
 public:
-    u32 event;
+    RankMessage message;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd210_TriggerInstancesInRange_ParseTokens);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd210_TriggerInstancesInRange_Execute);
     void Destroy(u32 destroyFlags) RETAIL(Cmd210_TriggerInstancesInRange_Dtor);
     u32 Size() RETAIL(Cmd210_TriggerInstancesInRange_GetSize);
 };
-CHECK_SIZE(TriggerInstancesInRangeCommand, 0x10);
+CHECK_SIZE(TriggerInstancesByRankCommand, 0x10);
 
 // 211
 class MarkTimeCommand : public ScriptCommand
@@ -2684,21 +3929,21 @@ public:
 };
 CHECK_SIZE(ClearMarkedTimeCommand, 0xC);
 
-// 213
-class KeyOfPath34Op213Command : public ScriptCommand
+// 213: the waypoints' route started again
+class RestartRouteCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd213_KeyOfPath34Op213_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd213_KeyOfPath34Op213_Execute);
     u32 Size() RETAIL(Cmd213_KeyOfPath34Op213_GetSize);
 };
-CHECK_SIZE(KeyOfPath34Op213Command, 0xC);
+CHECK_SIZE(RestartRouteCommand, 0xC);
 
 // 214
 class ControllerRumbleCommand : public ScriptCommand
 {
 public:
-    f32 value1;
+    f32 strength;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd214_ControllerRumble_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd214_ControllerRumble_Dtor);
@@ -2707,13 +3952,26 @@ public:
 };
 CHECK_SIZE(ControllerRumbleCommand, 0x10);
 
-// 215
+// Which of SetSoundParams' values it sets
+union SoundParamsSet
+{
+    u32 value;
+    struct
+    {
+        u32 pitch : 1;
+        u32 volume : 1;
+        u32 unused2 : 30;
+    };
+};
+CHECK_SIZE(SoundParamsSet, 4);
+
+// 215: the node's tracked sound's pitch scale and volume
 class SetSoundParamsCommand : public ScriptCommand
 {
 public:
-    TaggedValue set;
+    SoundParamsSet sets;
     f32 pitch;
-    s32 volume;
+    f32 volume;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd215_SetSoundParams_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd215_SetSoundParams_Dtor);
@@ -2722,12 +3980,37 @@ public:
 };
 CHECK_SIZE(SetSoundParamsCommand, 0x18);
 
-// 512
+// A crate's contents: the objects of its first and second contents (0xFFFF none)
+union CrateContents
+{
+    u32 value;
+    struct
+    {
+        u32 first : 16;
+        u32 second : 16;
+    };
+};
+CHECK_SIZE(CrateContents, 4);
+
+// How many of a crate's first contents come out: from the least to the most
+union CrateContentsRange
+{
+    u32 value;
+    struct
+    {
+        u32 least : 4;
+        u32 most : 4;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(CrateContentsRange, 4);
+
+// 512: the crate's contents made
 class CreateCrateContentsCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    u32 value2;
+    CrateContents contents;
+    CrateContentsRange count;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd512_CreateCrateContents_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd512_CreateCrateContents_Dtor);
@@ -2737,10 +4020,10 @@ public:
 CHECK_SIZE(CreateCrateContentsCommand, 0x14);
 
 // 513
-class CA_PickUpWumpaCommand : public ScriptCommand
+class PickUpWumpaCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    s32 wumpaFruit;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd513_CA_PickUpWumpa_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd513_CA_PickUpWumpa_Dtor);
@@ -2748,40 +4031,65 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd513_CA_PickUpWumpa_ExecuteOn);
     u32 Size() RETAIL(Cmd513_CA_PickUpWumpa_GetSize);
 };
-CHECK_SIZE(CA_PickUpWumpaCommand, 0x10);
+CHECK_SIZE(PickUpWumpaCommand, 0x10);
 
 // 514, 546
 class CreateDamageCommand : public ScriptCommand
 {
 public:
-    // Its flags: the contact message's w given (bit 0), its kinds with 0x400 (1), the offset turned with the instance (2), the
-    // instances searched for (3: 0x5E000, 4: 0x1000, else 0x5F000), the joint the damage is at (5-12, 0xFF the place), only the
-    // nearest instance hit (13); its shape's: 1 a sphere of the reach on every one (2 not), 3 a cylinder, a damage hull (bits 4-7,
-    // 0xF none)
-    enum Flags : u32
+    // The contact message's point's w given, its kinds with 0x400 (instant death), the offset (turned with the instance), the
+    // instances searched for (but the playable characters, only them, else both), the joint the damage is at (0xFF the place),
+    // only the nearest instance hit
+    union Flags
     {
-        GivesW = 0x1,
-        Bit10Kind = 0x2,
-        Offset = 0x4,
-        SearchKinds5E = 0x8,
-        SearchKinds1000 = 0x10,
-        JointShift = 5,
-        NearestOnly = 0x2000,
+        u32 value;
+        struct
+        {
+            u32 givesMessageW : 1;
+            u32 instantDeath : 1;
+            u32 offsetGiven : 1;
+            u32 skipsCharacters : 1;
+            u32 onlyCharacters : 1;
+            u32 joint : 8;
+            u32 nearestOnly : 1;
+            u32 unused14 : 18;
+        };
     };
 
-    u32 unused1;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
-    u32 flags;
+    // The shape searched: a sphere of the reach (its instances on every one or not), a cylinder, else a damage hull (0xF none)
+    union Shape
+    {
+        static constexpr u32 NoHull = 0xF;
+
+        u32 value;
+        struct
+        {
+            u32 kind : 4;
+            u32 hull : 4;
+            u32 unused8 : 24;
+        };
+    };
+
+    enum ShapeKind : u32
+    {
+        ShapeSphereOnEvery = 1,
+        ShapeSphere = 2,
+        ShapeCylinder = 3,
+    };
+
+    u32 unused0C;
+    f32 offsetX;
+    f32 offsetY;
+    f32 offsetZ;
+    u32 unused1C;
+    Flags flags;
     u32 hitKinds;
     TaggedValue damage;
     TaggedValue messageW;
-    u32 shape;
+    Shape shape;
     TaggedValue reach;
     TaggedValue height;
-    u32 unknown13;
+    u32 unused3C;
 
     // A contact message of damage sent to the instances in a shape at the instance (or one of its joints)
     void ExecuteOn(GameNode* node) RETAIL(Cmd514_CreateDamage_ExecuteOn);
@@ -2789,22 +4097,53 @@ public:
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd514_CreateDamage_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd514_CreateDamage_Dtor);
     u32 Size() RETAIL(Cmd514_CreateDamage_GetSize);
-    // Its vtable's slot 7, a token: 0xCD the reach, 0xA9 the height (a cylinder), the keyword 0x216 after 0x236 (no damage hull), else
-    // the base's (DamageOriginator's too): 0x82 to 0x84 the offset (bit 2), 0x12 the joint, 0x204 the damage, 0x94 the w (bit 0),
-    // 0x217 bit 1 (its value 0), the keywords of the instances searched for, of only the nearest and of the kinds of hit
+    // Its vtable's slot 7, a token: 0xCD the reach, 0xA9 the height (a cylinder), the keyword 0x216 after 0x236 (damage hull 0), else
+    // the base's (DamageOriginator's too): 0x82 to 0x84 the offset, 0x12 the joint, 0x204 the damage, 0x94 the w, 0x217 the
+    // instant death (its value 0), the keywords of the instances searched for, of only the nearest and of the kinds of hit
     void ParseToken(const ScriptToken* token) RETAIL(FUN_0011fa18);
     void ParseBaseToken(const ScriptToken* token) RETAIL(FUN_0010e088);
     // Its base's destructor and size (vtable D_002F0098, which nothing makes alone)
     void BaseDestroy(u32 destroyFlags) RETAIL(FUN_0011c450);
     u32 BaseSize() RETAIL(FUN_0011c4a8);
 };
+CHECK_OFFSET(CreateDamageCommand, shape, 0x30);
 CHECK_SIZE(CreateDamageCommand, 0x40);
+
+// A command's word of settings: which are given (a bit each) and their values (the same bits)
+union GivenSettings
+{
+    u32 value;
+    struct
+    {
+        u32 given : 16;
+        u32 values : 16;
+    };
+};
+CHECK_SIZE(GivenSettings, 4);
 
 // 515
 class SetAgentCommand : public ScriptCommand
 {
 public:
-    u32 agentFlags;
+    // The settings' bits: its instance awake, the instance's flags (visible, its collision active, triggers' signals, the shadow),
+    // its creature part's snapping to the ground, its part's bits (it may damage the character, it may be hurt, bullets bounce
+    // back, it's targettable)
+    enum Setting : u32
+    {
+        SettingAwake = 0,
+        SettingVisible = 1,
+        SettingCollision = 2,
+        SettingTriggerSignals = 3,
+        SettingShadow = 4,
+        SettingSnapsToGround = 5,
+        SettingCanDamageCharacter = 6,
+        SettingVulnerable = 7,
+        SettingBulletsBounceBack = 8,
+        SettingTargettable = 9,
+        SettingCount = 10,
+    };
+
+    GivenSettings settings;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd515_SetAgent_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd515_SetAgent_Dtor);
@@ -2817,7 +4156,19 @@ CHECK_SIZE(SetAgentCommand, 0x10);
 class SetPlayerRespawnPositionCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    // The last checkpoint (one that saves the game) rather than the start's
+    union Respawn
+    {
+        u32 value;
+        struct
+        {
+            u32 unused0 : 8;
+            u32 saves : 8;
+            u32 unused16 : 16;
+        };
+    };
+
+    Respawn respawn;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd516_SetPlayerRespawnPosition_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd516_SetPlayerRespawnPosition_Dtor);
@@ -2826,22 +4177,22 @@ public:
 };
 CHECK_SIZE(SetPlayerRespawnPositionCommand, 0x10);
 
-// 517
-class ResetGameCommand : public ScriptCommand
+// 517: play again from the last checkpoint (the game over without lives)
+class RestartFromCheckpointCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd517_ResetGame_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd517_ResetGame_Execute);
     u32 Size() RETAIL(Cmd517_ResetGame_GetSize);
 };
-CHECK_SIZE(ResetGameCommand, 0xC);
+CHECK_SIZE(RestartFromCheckpointCommand, 0xC);
 
-// 518
+// 518: the wumpa fruit in a crate (none below 0: they're left as they are)
 class SetCrateCommand : public ScriptCommand
 {
 public:
     u32 unused1;
-    u32 value2;
+    u32 wumpaFruit;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd518_SetCrate_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd518_SetCrate_Dtor);
@@ -2861,7 +4212,7 @@ public:
 CHECK_SIZE(TriggerBalancedCrateFallingCommand, 0xC);
 
 // 520
-class CA_PickUpHealthCommand : public ScriptCommand
+class PickUpHealthCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd520_CA_PickUpHealth_Dtor);
@@ -2869,14 +4220,43 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd520_CA_PickUpHealth_ExecuteOn);
     u32 Size() RETAIL(Cmd520_CA_PickUpHealth_GetSize);
 };
-CHECK_SIZE(CA_PickUpHealthCommand, 0xC);
+CHECK_SIZE(PickUpHealthCommand, 0xC);
 
 // 521
 class SetPlayerInputCommand : public ScriptCommand
 {
 public:
-    u32 inputFlags;
-    u32 unknown2;
+    // The settings' bits: the inputs the character may use (agents.h's CharacterLocks, locked when not), all of them, its part's
+    // resting flag, its being vulnerable
+    enum Setting : u32
+    {
+        SettingTurn = 0,
+        SettingMoveZ = 1,
+        SettingMoveX = 2,
+        SettingCross = 3,
+        SettingSquare = 4,
+        SettingCircle = 5,
+        SettingAllInputs = 6,
+        SettingResting = 7,
+        SettingVulnerable = 8,
+        SettingCount = 9,
+    };
+
+    // The character's controls' node driven by its motion (its buttons left as they were when they aren't all given back), its
+    // state's boxOnly
+    union Controls
+    {
+        u32 value;
+        struct
+        {
+            u32 motionDriven : 1;
+            u32 boxOnly : 1;
+            u32 unused2 : 30;
+        };
+    };
+
+    GivenSettings settings;
+    Controls controls;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd521_SetPlayerInput_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd521_SetPlayerInput_Dtor);
@@ -2895,39 +4275,72 @@ public:
 };
 CHECK_SIZE(TriggerAllNitroCratesCommand, 0xC);
 
-// 523
+// What the velocity commands were given (a plain word, not a tagged value): the velocity, the point (nothing reads either), and
+// what makes ApplyVelocity cast its ray: its unused values or the keyword asking for it
+union ThrowGiven
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 unused1 : 1;
+        u32 rayValues : 1;
+        u32 castsRay : 1;
+        u32 unused4 : 28;
+    };
+};
+CHECK_SIZE(ThrowGiven, 4);
+
+// 523: ApplyVelocityToSelf's values first (retail's derived class), the point also the ray's reach
 class ApplyVelocityCommand : public ScriptCommand
 {
 public:
-    TaggedValue radius;
-    TaggedValue velX;
-    TaggedValue velY;
-    TaggedValue velZ;
-    TaggedValue velX2;
-    TaggedValue velY2;
-    TaggedValue velZ2;
-    TaggedValue value8;
-    TaggedValue value9;
-    TaggedValue value10;
-    TaggedValue value11;
-    s32 target;
+    TaggedValue gravity;
+    TaggedValue velocityX;
+    TaggedValue velocityY;
+    TaggedValue velocityZ;
+    TaggedValue pointX;
+    TaggedValue pointY;
+    TaggedValue pointZ;
+    ThrowGiven given;
+    TaggedValue unused2C;
+    TaggedValue unused30;
+    TaggedValue unused34;
+    // Whose instance it goes to without the ray
+    s32 receiver;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd523_ApplyVelocity_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd523_ApplyVelocity_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd523_ApplyVelocity_Execute);
-    // Its vtable's slot 7: a token of its own (6 the target, 0x46 to 0x48 value9 to value11, bit 2), else ApplyVelocityToSelf's
+    // Its vtable's slot 7: a token of its own (6 the receiver, 0x46 to 0x48 the unused values, rayValues), else
+    // ApplyVelocityToSelf's
     u32 ParseToken(const ScriptToken* token) RETAIL(FUN_0011efb8);
     u32 Size() RETAIL(Cmd523_ApplyVelocity_GetSize);
 };
 CHECK_SIZE(ApplyVelocityCommand, 0x3C);
 
-// 524
+// SetKeyNearestPlayer's keys: the range of keys it picks from (inclusive) and whether it may pick the current one (any of the
+// low byte)
+union KeyRangeArgument
+{
+    u32 value;
+    struct
+    {
+        u32 takesCurrent : 8;
+        u32 first : 8;
+        u32 last : 8;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(KeyRangeArgument, 4);
+
+// 524: the agent's key the one nearest where the played character goes (of those near it, the one nearest the agent)
 class SetKeyNearestPlayerCommand : public ScriptCommand
 {
 public:
-    f32 value1;
-    f32 value2;
-    u32 value3;
+    f32 nearDistanceSquared;
+    f32 leadSeconds;
+    KeyRangeArgument keys;
 
     static SetKeyNearestPlayerCommand* Construct(SetKeyNearestPlayerCommand* command) RETAIL(FUN_001216d8);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd524_SetKeyNearestPlayer_Execute);
@@ -2937,7 +4350,8 @@ public:
 };
 CHECK_SIZE(SetKeyNearestPlayerCommand, 0x18);
 
-// 525
+// 525: the focus position a ray from a designator's instance or position reaches (turned by the instance's place in the current
+// and the target space: ControlPacket::Space), pulled back by a distance
 class RaycastFocusPositionCommand : public ScriptCommand
 {
 public:
@@ -2945,12 +4359,12 @@ public:
     f32 x;
     f32 y;
     f32 z;
-    f32 value5;
+    f32 w;
     f32 distance;
-    s32 size;
-    TaggedValue mode;
+    s32 unused7;
+    u32 space;
     u32 unused9;
-    u32 target;
+    DesignatorArgument target;
     u32 unused11;
     u32 unused12;
     u32 unused13;
@@ -2963,33 +4377,48 @@ public:
 };
 CHECK_SIZE(RaycastFocusPositionCommand, 0x40);
 
-// 526
+// 526: the agent's instance launched at a velocity, or thrown to a point that far away, under a gravity
 class ApplyVelocityToSelfCommand : public ScriptCommand
 {
 public:
-    TaggedValue radius;
-    TaggedValue velX;
-    TaggedValue velY;
-    TaggedValue velZ;
-    TaggedValue value5;
-    TaggedValue value6;
-    TaggedValue value7;
-    TaggedValue value8;
+    // The velocity the agent's instance is launched with, or (not 0) the point it's thrown to under the gravity
+    TaggedValue gravity;
+    TaggedValue velocityX;
+    TaggedValue velocityY;
+    TaggedValue velocityZ;
+    TaggedValue pointX;
+    TaggedValue pointY;
+    TaggedValue pointZ;
+    ThrowGiven given;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd526_ApplyVelocityToSelf_Execute);
     void Destroy(u32 destroyFlags) RETAIL(Cmd526_ApplyVelocityToSelf_Dtor);
     u32 Size() RETAIL(Cmd526_ApplyVelocityToSelf_GetSize);
-    // Its vtable's slot 7 (ApplyVelocity's falls back on it), a token: 0x6A the radius, 0x49 to 0x4B the velocity (value8 bit 0),
-    // 0x4C to 0x4E value5 to value7 (bit 1), the keyword 0xAC (bit 3). Whether it took it
+    // Its vtable's slot 7 (ApplyVelocity's falls back on it), a token: 0x6A the gravity, 0x49 to 0x4B the velocity, 0x4C to 0x4E the
+    // point, the keyword 0xAC (castsRay). Whether it took it
     u32 ParseToken(const ScriptToken* token) RETAIL(FUN_0010c758);
 };
 CHECK_SIZE(ApplyVelocityToSelfCommand, 0x2C);
 
-// 527
+// SetChiChiGrass's setting: given, and its value
+union GrabbableSetting
+{
+    u32 value;
+    struct
+    {
+        u32 given : 1;
+        u32 unused1 : 15;
+        u32 on : 1;
+        u32 unused17 : 15;
+    };
+};
+CHECK_SIZE(GrabbableSetting, 4);
+
+// 527: a bit of the grabbable part that nothing reads
 class SetChiChiGrassCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    GrabbableSetting setting;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd527_SetChiChiGrass_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd527_SetChiChiGrass_Dtor);
@@ -3026,42 +4455,42 @@ public:
 };
 CHECK_SIZE(SetHitPointsCommand, 0x10);
 
-// 530
-class DUMMY_SetRayTestsCommand : public ScriptCommand
+// 530: does nothing
+class NoOpSetRayTestsCommand : public ScriptCommand
 {
 public:
-    s32 value1;
-    s32 value2;
-    s32 value3;
-    s32 value4;
-    s32 value5;
+    s32 unused1;
+    s32 unused2;
+    s32 unused3;
+    s32 unused4;
+    s32 unused5;
 
-    static DUMMY_SetRayTestsCommand* Construct(DUMMY_SetRayTestsCommand* command) RETAIL(FUN_0011f370);
+    static NoOpSetRayTestsCommand* Construct(NoOpSetRayTestsCommand* command) RETAIL(FUN_0011f370);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd530_DUMMY_SetRayTests_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd530_DUMMY_SetRayTests_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd530_DUMMY_SetRayTests_Execute);
     u32 Size() RETAIL(Cmd530_DUMMY_SetRayTests_GetSize);
 };
-CHECK_SIZE(DUMMY_SetRayTestsCommand, 0x20);
+CHECK_SIZE(NoOpSetRayTestsCommand, 0x20);
 
-// 532
-class DUMMY_NowGoForwardCollidableCommand : public ScriptCommand
+// 532: does nothing
+class NoOpNowGoForwardCollidableCommand : public ScriptCommand
 {
 public:
-    TaggedValue angleValue;
+    TaggedValue unused1;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd532_DUMMY_NowGoForwardCollidable_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd532_DUMMY_NowGoForwardCollidable_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd532_DUMMY_NowGoForwardCollidable_Dtor);
     u32 Size() RETAIL(Cmd532_DUMMY_NowGoForwardCollidable_GetSize);
 };
-CHECK_SIZE(DUMMY_NowGoForwardCollidableCommand, 0x10);
+CHECK_SIZE(NoOpNowGoForwardCollidableCommand, 0x10);
 
-// 533
+// 533: the character pushed back by its node's velocity times a scale
 class NowGoBackCollidableCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
+    TaggedValue scale;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd533_NowGoBackCollidable_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd533_NowGoBackCollidable_ParseTokens);
@@ -3071,18 +4500,21 @@ public:
 CHECK_SIZE(NowGoBackCollidableCommand, 0x10);
 
 // 534
-class SetGlobalProgressionCommand : public ScriptCommand
+class SetPlayAreaCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    TaggedValue value;
+    // The area's own value: the tagged value's instead
+    static constexpr s32 FromValue = -1;
+
+    s32 area;
+    TaggedValue areaValue;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd534_SetGlobalProgression_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd534_SetGlobalProgression_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd534_SetGlobalProgression_Execute);
     u32 Size() RETAIL(Cmd534_SetGlobalProgression_GetSize);
 };
-CHECK_SIZE(SetGlobalProgressionCommand, 0x14);
+CHECK_SIZE(SetPlayAreaCommand, 0x14);
 
 // 535
 class AddCrystalCommand : public ScriptCommand
@@ -3095,8 +4527,8 @@ public:
 };
 CHECK_SIZE(AddCrystalCommand, 0xC);
 
-// 536
-class DUMMY_536Command : public ScriptCommand
+// 536: does nothing
+class NoOp536Command : public ScriptCommand
 {
 public:
     u32 unused1;
@@ -3106,13 +4538,13 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd536_DUMMY_536_Execute);
     u32 Size() RETAIL(Cmd536_DUMMY_536_GetSize);
 };
-CHECK_SIZE(DUMMY_536Command, 0x10);
+CHECK_SIZE(NoOp536Command, 0x10);
 
 // 537
 class AddGemCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    s32 gem;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd537_AddGem_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd537_AddGem_Dtor);
@@ -3122,8 +4554,8 @@ public:
 };
 CHECK_SIZE(AddGemCommand, 0x10);
 
-// 538
-class DUMMY_538Command : public ScriptCommand
+// 538: does nothing
+class NoOp538Command : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd538_DUMMY_538_Dtor);
@@ -3131,36 +4563,54 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd538_DUMMY_538_ExecuteOn);
     u32 Size() RETAIL(Cmd538_DUMMY_538_GetSize);
 };
-CHECK_SIZE(DUMMY_538Command, 0xC);
+CHECK_SIZE(NoOp538Command, 0xC);
 
-// 539
-class CA_SetPickupCommand : public ScriptCommand
+// 539: the custom pickup of the node's slot (game/pickups.cpp)
+class SetCustomPickupCommand : public ScriptCommand
 {
 public:
-    f32 value1;
-    f32 value2;
-    f32 value3;
-    u32 hitPoints;
+    f32 radius;
+    f32 pull;
+    f32 fleeSpeed;
+    CustomPickupFlags flags;
 
-    static CA_SetPickupCommand* Construct(CA_SetPickupCommand* command) RETAIL(FUN_001292c0);
+    static SetCustomPickupCommand* Construct(SetCustomPickupCommand* command) RETAIL(FUN_001292c0);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd539_CA_SetPickup_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd539_CA_SetPickup_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd539_CA_SetPickup_Execute);
     void ExecuteOn(GameNode* node) RETAIL(Cmd539_CA_SetPickup_ExecuteOn);
     u32 Size() RETAIL(Cmd539_CA_SetPickup_GetSize);
 };
-CHECK_SIZE(CA_SetPickupCommand, 0x1C);
+CHECK_SIZE(SetCustomPickupCommand, 0x1C);
 
-// 540
-class CA_SetProjectileCommand : public ScriptCommand
+// What SetCustomProjectile sets besides the speed: the projectile homes in (turning by turn, across times sideTurnScale), falls (by
+// gravity), stops homing in after homingTime, is the player's shot. The development tools' parser puts hit points in bits 0-3,
+// which nothing reads
+union CustomProjectileSettings
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 4;
+        u32 homes : 1;
+        u32 falls : 1;
+        u32 homesForATime : 1;
+        u32 playersShot : 1;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(CustomProjectileSettings, 4);
+
+// 540: the custom projectile of the node's slot (game/projectiles.cpp)
+class SetCustomProjectileCommand : public ScriptCommand
 {
 public:
-    u32 hitPoints;
+    CustomProjectileSettings settings;
     f32 speed;
-    s32 value3;
-    f32 value4;
-    s32 value5;
-    TaggedValue radius;
+    f32 turn;
+    f32 sideTurnScale;
+    f32 homingTime;
+    TaggedValue gravity;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd540_CA_SetProjectile_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd540_CA_SetProjectile_ParseTokens);
@@ -3168,31 +4618,48 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd540_CA_SetProjectile_ExecuteOn);
     u32 Size() RETAIL(Cmd540_CA_SetProjectile_GetSize);
 };
-CHECK_SIZE(CA_SetProjectileCommand, 0x24);
+CHECK_SIZE(SetCustomProjectileCommand, 0x24);
+
+// What Shoot makes: the object (bits 0-14 its ID) and the trigger message sent to it (0xFFFF none)
+union ShotObject
+{
+    u32 value;
+    struct
+    {
+        u32 id : 16;
+        u32 message : 16;
+    };
+};
+CHECK_SIZE(ShotObject, 4);
+
+// How Shoot shoots: the exit point it's shot from (0xFF the instance's place), the offset taken along the frame's axes, shot
+// along the frame's z axis at the speed, at AgentRef1, not bouncing off what's bullets bounce back. The development tools' parser
+// puts an axes mode in bits 8-10 and sets bit 12, which nothing reads
+union ShotSettings
+{
+    u32 value;
+    struct
+    {
+        u32 exitPoint : 8;
+        u32 unused8 : 3;
+        u32 offsetGiven : 1;
+        u32 unused12 : 1;
+        u32 speedGiven : 1;
+        u32 atAgentRef1 : 1;
+        u32 noBounce : 1;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(ShotSettings, 4);
 
 // 548
 class ShootCommand : public ScriptCommand
 {
 public:
-    // Bits 0-7 of shot: the exit point it's shot from (0xFF the instance's place); bit 11 the offset taken along the frame's
-    // axes, 13 shot along the frame's z axis at the speed, 14 at AgentRef1, 15 a projectile bit
-    enum Shot : u32
-    {
-        ExitPointMask = 0xFF,
-        Offset = 0x800,
-        HasSpeed = 0x2000,
-        AtTarget = 0x4000,
-        Bit15 = 0x8000,
-    };
-
     u32 unused1;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 unused5;
-    // The object shot (bits 0-14) and the trigger message sent to it (bits 16-31, 0xFFFF none)
-    u32 objectAndMessage;
-    u32 shot;
+    Vector4 offset;
+    ShotObject object;
+    ShotSettings shot;
     f32 speed;
     u32 unused9;
 
@@ -3206,27 +4673,108 @@ public:
 };
 CHECK_SIZE(ShootCommand, 0x30);
 
-// 549
+// GetShortRoute's target and route: the end's receiver and designator (else the space's position), the paths a route takes (those
+// needing jumps, long jumps (with jumps), high jumps (with jumps) and flights: AI path flags 2-5), the request's roll radius and
+// weight (which nothing reads), the route kept near the path finder's focus or away from it, the offset given, the steps costing
+// their distance alone or the positions' own costs too, and the space
+union ShortRouteTarget
+{
+    u32 value;
+    struct
+    {
+        u32 receiver : 8;
+        u32 designator : 8;
+        u32 unused16 : 1;
+        u32 takesJumps : 1;
+        u32 takesLongJumps : 1;
+        u32 takesHighJumps : 1;
+        u32 takesFlights : 1;
+        u32 givesRollRadius : 1;
+        u32 givesWeight : 1;
+        u32 nearFocus : 1;
+        u32 avoidsFocus : 1;
+        u32 offsetGiven : 1;
+        u32 distanceOnly : 1;
+        u32 positionCosts : 1;
+        u32 space : 4;
+    };
+};
+CHECK_SIZE(ShortRouteTarget, 4);
+
+// GetShortRoute's options: the start ahead along the agent's z axis, and the paths a route takes (those with AI path flags 6, 7
+// and 8, and those with none of 5-8)
+union ShortRouteOptions
+{
+    u32 value;
+    struct
+    {
+        u32 startsAhead : 1;
+        u32 takesPathFlag6 : 1;
+        u32 takesPathFlag7 : 1;
+        u32 takesPathFlag8 : 1;
+        u32 takesPlainPaths : 1;
+        u32 unused5 : 27;
+    };
+};
+CHECK_SIZE(ShortRouteOptions, 4);
+
+// GetShortRoute's AI position flags its start and end must have and mustn't have (game/navigation.h's AiPosition, none: any)
+// over three words, and the request's kind byte (which nothing reads)
+union RouteEndRequired
+{
+    u32 value;
+    struct
+    {
+        u32 kind : 8;
+        u32 unused8 : 8;
+        u32 endRequired : 16;
+    };
+};
+CHECK_SIZE(RouteEndRequired, 4);
+
+union RoutePositionFlags
+{
+    u32 value;
+    struct
+    {
+        u32 endRuledOut : 16;
+        u32 startRequired : 16;
+    };
+};
+CHECK_SIZE(RoutePositionFlags, 4);
+
+union RouteStartRuledOut
+{
+    u32 value;
+    struct
+    {
+        u32 startRuledOut : 16;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(RouteStartRuledOut, 4);
+
+// 549: a route from the AI position nearest the agent to the one nearest a target
 class GetShortRouteCommand : public ScriptCommand
 {
 public:
-    f32 unknown1;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
-    u32 targetFlags;
-    u32 flags7;
-    TaggedValue value8;
-    TaggedValue value9;
-    TaggedValue value10;
-    TaggedValue value11;
-    TaggedValue value12;
-    u32 keyAndObject;
-    u32 unknown14;
-    u32 unknown15;
-    f32 value16;
-    f32 value17;
+    f32 unused1;
+    f32 offsetX;
+    f32 offsetY;
+    f32 offsetZ;
+    f32 offsetW;
+    ShortRouteTarget target;
+    ShortRouteOptions options;
+    TaggedValue avoidFocusWeight;
+    TaggedValue nearFocusWeight;
+    TaggedValue weight;
+    TaggedValue positionCostWeight;
+    TaggedValue ahead;
+    RouteEndRequired endFlags;
+    RoutePositionFlags positionFlags;
+    RouteStartRuledOut startFlags;
+    f32 startRange;
+    f32 endRange;
 
     static GetShortRouteCommand* Construct(GetShortRouteCommand* command) RETAIL(FUN_0011ccd0);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd549_GetShortRoute_Execute);
@@ -3236,8 +4784,8 @@ public:
 };
 CHECK_SIZE(GetShortRouteCommand, 0x50);
 
-// 550
-class DUMMY_FuelPayGateCommand : public ScriptCommand
+// 550: does nothing
+class NoOpFuelPayGateCommand : public ScriptCommand
 {
 public:
     u32 unused1;
@@ -3247,7 +4795,7 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd550_DUMMY_FuelPayGate_Execute);
     u32 Size() RETAIL(Cmd550_DUMMY_FuelPayGate_GetSize);
 };
-CHECK_SIZE(DUMMY_FuelPayGateCommand, 0x10);
+CHECK_SIZE(NoOpFuelPayGateCommand, 0x10);
 
 // 551
 class OpenAllLinkedFurnitureCommand : public ScriptCommand
@@ -3269,11 +4817,24 @@ public:
 };
 CHECK_SIZE(CloseAllLinkedFurnitureCommand, 0xC);
 
-// 553
+// Where AttachAllLinkedAgents attaches: an exit point given, and the exit point
+union AttachAllSettings
+{
+    u32 value;
+    struct
+    {
+        u32 exitPointGiven : 1;
+        u32 exitPoint : 6;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(AttachAllSettings, 4);
+
+// 553: every linked object attached to the instance, on an exit point when given
 class AttachAllLinkedAgentsCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    AttachAllSettings settings;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd553_AttachAllLinkedAgents_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd553_AttachAllLinkedAgents_Dtor);
@@ -3292,13 +4853,27 @@ public:
 };
 CHECK_SIZE(DetachAllLinkedAgentsCommand, 0xC);
 
+// A command's two of the progress's characters (PlayableCharacter)
+union CharacterPairArgument
+{
+    u32 value;
+    struct
+    {
+        u32 first : 8;
+        u32 second : 8;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(CharacterPairArgument, 4);
+
 // 555
 class SetVehicleHumiliskateCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    TaggedValue value2;
-    TaggedValue value3;
+    // The skater, then the character skated on
+    CharacterPairArgument characters;
+    TaggedValue topSpeed;
+    TaggedValue crouchedSpeed;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd555_SetVehicleHumiliskate_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd555_SetVehicleHumiliskate_Dtor);
@@ -3317,23 +4892,100 @@ public:
 };
 CHECK_SIZE(SetFocusToPlayerCommand, 0xC);
 
-// 557, 564, 565
+// RequestFocus's target word: where the sphere it looks in is (the space, a receiver's instance (NoReceiver none), a designator's
+// position), how many of the objects it asks for, the nearest one taken or a random one (else the first), the offset given, which
+// instances (RequestFocusCommand::Attachment) and whether busy ones are wanted (RequestFocusCommand::Busy), the one found marked
+// busy and made AgentRef2 too. Bit 21 is handed to DesignatedPosition, which ignores it
+union RequestTarget
+{
+    static constexpr u32 NoReceiver = 0xF;
+
+    u32 value;
+    struct
+    {
+        u32 space : 4;
+        u32 receiver : 4;
+        u32 designator : 8;
+        u32 objectCount : 3;
+        u32 nearest : 1;
+        u32 offsetGiven : 1;
+        u32 unused21 : 1;
+        u32 random : 1;
+        u32 attachment : 4;
+        u32 busy : 2;
+        u32 marksBusy : 1;
+        u32 alsoAgentRef2 : 1;
+        u32 unused31 : 1;
+    };
+};
+CHECK_SIZE(RequestTarget, 4);
+
+// RequestFocus's choice: what the instance found is given to (0 the focus, 1 AgentRef1, 2 AgentRef2), instances without the
+// trigger signals flag taken too, how many objects of the hanging instances it asks for, the current one taken again, only
+// visible ones
+union RequestChoice
+{
+    u32 value;
+    struct
+    {
+        u32 slot : 2;
+        u32 ignoresSignals : 1;
+        u32 hangingCount : 2;
+        u32 keepsCurrent : 1;
+        u32 visibleOnly : 1;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(RequestChoice, 4);
+
+// 557, 564, 565: an instance of a sphere given to the focus or an agent reference
 class RequestFocusCommand : public ScriptCommand
 {
 public:
+    // Which of the instances found it takes: any, those holding something (1, 7) or holding nothing (2, 6, 8), those hanging from
+    // something (3, and 5 with the hanging ones' objects) or from nothing (4)
+    enum Attachment : u32
+    {
+        AnyAttachment = 0,
+        Holding = 1,
+        HoldingNothing = 2,
+        Hanging = 3,
+        HangingFromNothing = 4,
+        HangingFromObjects = 5,
+    };
+
+    // Whether the busy instances are wanted or ruled out
+    enum Busy : u32
+    {
+        AnyBusy = 0,
+        OnlyBusy = 1,
+        NoneBusy = 2,
+    };
+
+    // The hanging instances' objects' place among the objects
+    static constexpr u32 HangingObjects = 4;
+
     u32 unused1;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
-    u32 ids6;
-    u32 ids7;
-    u32 ids8;
-    u32 targetFlags;
-    u32 flags10;
-    s32 flags11;
+    f32 offsetX;
+    f32 offsetY;
+    f32 offsetZ;
+    f32 offsetW;
+    // The IDs of the objects asked for (up to seven) and of the hanging ones' (up to three, from the fifth): a seventh, or a
+    // third hanging one, is the target word's low half
+    union
+    {
+        u16 objects[8];
+        struct
+        {
+            u16 listedObjects[6];
+            RequestTarget target;
+        };
+    };
+    RequestChoice choice;
+    // The kinds of nodes the instances have (a bit each)
+    u32 kinds;
     f32 radius;
-    u32 unknown13;
+    u32 unused13;
 
     static RequestFocusCommand* Construct(RequestFocusCommand* command, u32 mode) RETAIL(FUN_0011d4a0);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd557_RequestFocus_Execute);
@@ -3343,11 +4995,28 @@ public:
 };
 CHECK_SIZE(RequestFocusCommand, 0x40);
 
-// 558
+// SetFocusProperties' switches of the focus instance (1 on, 2 off, 0 left): awake (on wakes it, off puts it to sleep), its flags
+// and its part's damaging the character
+union FocusProperties
+{
+    u32 value;
+    struct
+    {
+        u32 awake : 2;
+        u32 visible : 2;
+        u32 collisionActive : 2;
+        u32 receivesTriggerSignals : 2;
+        u32 canDamageCharacter : 2;
+        u32 unused10 : 22;
+    };
+};
+CHECK_SIZE(FocusProperties, 4);
+
+// 558: the focus instance's flags switched
 class SetFocusPropertiesCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
+    FocusProperties properties;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd558_SetFocusProperties_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd558_SetFocusProperties_ParseTokens);
@@ -3360,9 +5029,22 @@ CHECK_SIZE(SetFocusPropertiesCommand, 0x10);
 class SetCameraCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
-    TaggedValue value2;
-    s32 value3;
+    // The values given (a plain word, not a tagged value)
+    union Given
+    {
+        u32 value;
+        struct
+        {
+            u32 pitch : 1;
+            u32 distance : 1;
+            u32 unused2 : 30;
+        };
+    };
+
+    // The follow camera's pitch (an angle) and distance
+    Given given;
+    TaggedValue pitch;
+    f32 distance;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd559_SetCamera_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd559_SetCamera_ParseTokens);
@@ -3385,7 +5067,17 @@ CHECK_SIZE(RestoreCameraDefaultsCommand, 0xC);
 class LinkToFocusCharacterCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    union Link
+    {
+        u32 value;
+        struct
+        {
+            u32 focusLeads : 1;
+            u32 unused1 : 31;
+        };
+    };
+
+    Link link;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd561_LinkToFocusCharacter_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd561_LinkToFocusCharacter_Dtor);
@@ -3404,7 +5096,7 @@ public:
 };
 CHECK_SIZE(UnlinkCharactersCommand, 0xC);
 
-// 563
+// 563: a contact message of damage sent to the runner's originator
 class DamageOriginatorCommand : public ScriptCommand
 {
 public:
@@ -3417,8 +5109,9 @@ public:
     u32 unused7;
     u32 unused8;
     u32 unused9;
-    u32 contactWord;
-    TaggedValue hitPoints;
+    // The contact message's kinds of hit and its damage
+    u32 hitKinds;
+    TaggedValue damage;
     u32 unused12;
     u32 unused13;
 
@@ -3439,7 +5132,7 @@ public:
 };
 CHECK_SIZE(SetAgentRef1ToPlayerCommand, 0xC);
 
-// 567
+// 567: the node's stored position the player's
 class SetFocusPositionToPlayerCommand : public ScriptCommand
 {
 public:
@@ -3449,31 +5142,44 @@ public:
 };
 CHECK_SIZE(SetFocusPositionToPlayerCommand, 0xC);
 
-// 568
-class DUMMY_568Command : public ScriptCommand
+// An argument of two halfwords, which the development tools' parser fills one at a time
+union HalfwordPair
+{
+    u32 value;
+    struct
+    {
+        u32 low : 16;
+        u32 high : 16;
+    };
+};
+CHECK_SIZE(HalfwordPair, 4);
+
+// 568: does nothing
+class NoOp568Command : public ScriptCommand
 {
 public:
-    s32 distance;
-    s32 value1;
-    s32 value2;
-    s32 value3;
-    s32 value4;
-    u32 shorts1;
-    u32 shorts2;
-    u32 shorts3;
+    f32 unused1;
+    f32 unused2;
+    f32 unused3;
+    f32 unused4;
+    f32 unused5;
+    HalfwordPair unused6;
+    HalfwordPair unused7;
+    HalfwordPair unused8;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd568_DUMMY_568_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd568_DUMMY_568_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd568_DUMMY_568_Execute);
     u32 Size() RETAIL(Cmd568_DUMMY_568_GetSize);
 };
-CHECK_SIZE(DUMMY_568Command, 0x2C);
+CHECK_SIZE(NoOp568Command, 0x2C);
 
-// 569
+// 569: a character's vehicle left
 class ExitVehicleModeCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    // The game's character number
+    s32 character;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd569_ExitVehicleMode_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd569_ExitVehicleMode_Dtor);
@@ -3486,7 +5192,8 @@ CHECK_SIZE(ExitVehicleModeCommand, 0x10);
 class SetVehicleRollerbrawlCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    // The driver, then the passenger
+    CharacterPairArgument characters;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd570_SetVehicleRollerbrawl_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd570_SetVehicleRollerbrawl_Dtor);
@@ -3499,7 +5206,19 @@ CHECK_SIZE(SetVehicleRollerbrawlCommand, 0x10);
 class SetVehicleHoverboardCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    // The receiver whose character rides, the hoverboard's own controls
+    union Rider
+    {
+        u32 value;
+        struct
+        {
+            u32 receiver : 8;
+            u32 boardControls : 1;
+            u32 unused9 : 23;
+        };
+    };
+
+    Rider rider;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd571_SetVehicleHoverboard_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd571_SetVehicleHoverboard_Dtor);
@@ -3508,44 +5227,11 @@ public:
 };
 CHECK_SIZE(SetVehicleHoverboardCommand, 0x10);
 
-// 572
+// 572: the node follows the motion block of its arguments (its cover search started again)
 class SetMotionCommand : public ScriptCommand
 {
 public:
-    u32 flags;
-    s32 range;
-    s32 value2;
-    s32 value3;
-    s32 value4;
-    u32 value5;
-    u32 angleX;
-    u32 angleY;
-    u32 angleZ;
-    u32 unused9;
-    u32 unused10;
-    u32 unused11;
-    u32 startDesignator;
-    u32 unused13;
-    u32 unused14;
-    u32 unused15;
-    u32 unused16;
-    u32 unused17;
-    u32 unused18;
-    u32 unused19;
-    u32 unused20;
-    u32 unused21;
-    u32 unused22;
-    u32 unused23;
-    u32 unused24;
-    u32 unused25;
-    s32 motionType;
-    s32 motionFlags2;
-    s32 value28;
-    u32 unused29;
-    u32 unused30;
-    u32 unused31;
-    u32 unused32;
-    u32 unused33;
+    MotionBlock block;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd572_SetMotion_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd572_SetMotion_ParseTokens);
@@ -3554,13 +5240,29 @@ public:
 };
 CHECK_SIZE(SetMotionCommand, 0x94);
 
-// 573
+// SetNearestPointFlags' switches of the AI position's flags: blocked (1 clears it, 2 sets it), airborne and always taken (1 on,
+// 2 off). The development tools' parser sets bit 6 with the second and third arguments, which nothing reads
+union NearestPointSwitches
+{
+    u32 value;
+    struct
+    {
+        u32 blocked : 2;
+        u32 airborne : 2;
+        u32 alwaysTaken : 2;
+        u32 unused6 : 1;
+        u32 unused7 : 25;
+    };
+};
+CHECK_SIZE(NearestPointSwitches, 4);
+
+// 573: the flags of the AI position nearest the agent switched
 class SetNearestPointFlagsCommand : public ScriptCommand
 {
 public:
-    TaggedValue flags;
-    s32 range;
-    s32 value;
+    NearestPointSwitches switches;
+    s32 unused2;
+    s32 unused3;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd573_SetNearestPointFlags_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd573_SetNearestPointFlags_ParseTokens);
@@ -3569,28 +5271,11 @@ public:
 };
 CHECK_SIZE(SetNearestPointFlagsCommand, 0x18);
 
-// 574
+// 574: the node's head tracking made (it keeps the command's settings)
 class CreateHeadTrackingCommand : public ScriptCommand
 {
 public:
-    s32 value0;
-    f32 range;
-    f32 value2;
-    s32 angle1;
-    s32 angle2;
-    s32 angle3;
-    f32 dirX;
-    f32 dirY;
-    f32 dirZ;
-    s32 value9;
-    s32 value10;
-    s32 value11;
-    s32 value12;
-    s32 value13;
-    s32 value14;
-    u32 animations;
-    f32 speed;
-    u32 flags;
+    HeadTrackingSettings settings;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd574_CreateHeadTracking_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd574_CreateHeadTracking_ParseTokens);
@@ -3599,12 +5284,26 @@ public:
 };
 CHECK_SIZE(CreateHeadTrackingCommand, 0x54);
 
-// 575
+// SetFocusPositionToNearestPoint's receiver (DesignatesNone the player). The development tools' parser sets bit 8 with the
+// second argument, which nothing reads
+union NearestPointReceiver
+{
+    u32 value;
+    struct
+    {
+        u32 receiver : 8;
+        u32 unused8 : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(NearestPointReceiver, 4);
+
+// 575: the focus position the AI position nearest a receiver's instance or the player
 class SetFocusPositionToNearestPointCommand : public ScriptCommand
 {
 public:
-    u32 target;
-    f32 unused;
+    NearestPointReceiver target;
+    f32 unused2;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd575_SetFocusPositionToNearestPoint_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd575_SetFocusPositionToNearestPoint_ParseTokens);
@@ -3613,11 +5312,23 @@ public:
 };
 CHECK_SIZE(SetFocusPositionToNearestPointCommand, 0x14);
 
-// 576
+// SetFocusToGameActor's character: the game's character number
+union GameActorArgument
+{
+    u32 value;
+    struct
+    {
+        u32 character : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(GameActorArgument, 4);
+
+// 576: a character's instance the focus
 class SetFocusToGameActorCommand : public ScriptCommand
 {
 public:
-    u32 actorIndex;
+    GameActorArgument character;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd576_SetFocusToGameActor_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd576_SetFocusToGameActor_Dtor);
@@ -3626,13 +5337,27 @@ public:
 };
 CHECK_SIZE(SetFocusToGameActorCommand, 0x10);
 
-// 577
+// BecomeSticky's object: the object (0 any) the motion block asks for
+union StickyObjectArgument
+{
+    u32 value;
+    struct
+    {
+        u32 object : 16;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(StickyObjectArgument, 4);
+
+// 577: the node's motion block made sticky
 class BecomeStickyCommand : public ScriptCommand
 {
 public:
-    s32 value1;
-    f32 value2;
-    u32 objectId;
+    // The kinds of nodes it asks of an instance (added to the block's), how strongly it holds them, the object it asks for and
+    // the message what sticks is sent
+    s32 kinds;
+    f32 strength;
+    StickyObjectArgument object;
     s32 message;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd577_BecomeSticky_ParseTokens);
@@ -3643,40 +5368,65 @@ public:
 CHECK_SIZE(BecomeStickyCommand, 0x1C);
 
 // 578
-class CharacterOp578Command : public ScriptCommand
+class CountPlayerCirclingCommand : public ScriptCommand
 {
 public:
-    u32 value;
+    // The counter (the game's, else the agent's), the player going to the right of the way to the agent's instance (else to the
+    // left)
+    union Counter
+    {
+        u32 value;
+        struct
+        {
+            u32 counter : 16;
+            u32 agentCounter : 1;
+            u32 toTheRight : 1;
+            u32 unused18 : 14;
+        };
+    };
+
+    Counter counter;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd578_CharacterOp578_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd578_CharacterOp578_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd578_CharacterOp578_Execute);
     u32 Size() RETAIL(Cmd578_CharacterOp578_GetSize);
 };
-CHECK_SIZE(CharacterOp578Command, 0x10);
+CHECK_SIZE(CountPlayerCirclingCommand, 0x10);
 
 // 579
-class CounterPositionOp579Command : public ScriptCommand
+class CountPlayerApproachCommand : public ScriptCommand
 {
 public:
-    u32 counter;
+    // The counter (the game's, else the agent's)
+    union Counter
+    {
+        u32 value;
+        struct
+        {
+            u32 counter : 16;
+            u32 agentCounter : 1;
+            u32 unused17 : 1;
+            u32 unused18 : 14;
+        };
+    };
+
+    Counter counter;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd579_CounterPositionOp579_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd579_CounterPositionOp579_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd579_CounterPositionOp579_Execute);
     u32 Size() RETAIL(Cmd579_CounterPositionOp579_GetSize);
 };
-CHECK_SIZE(CounterPositionOp579Command, 0x10);
+CHECK_SIZE(CountPlayerApproachCommand, 0x10);
 
-// 580
+// 580: the body the character holds pushed
 class ApplyVelocityToHeldBodyCommand : public ScriptCommand
 {
 public:
-    u32 unused;
-    f32 x;
-    f32 y;
-    f32 z;
-    f32 w;
+    u32 unused1;
+    // Turned by the instance's place
+    Vector4 impulse;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd580_ApplyVelocityToHeldBody_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd580_ApplyVelocityToHeldBody_Dtor);
@@ -3685,11 +5435,11 @@ public:
 };
 CHECK_SIZE(ApplyVelocityToHeldBodyCommand, 0x20);
 
-// 581
+// 581: the node's motion block made normal, or kept sticky
 class BecomeNormalCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    SwitchArgument staysSticky;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd581_BecomeNormal_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd581_BecomeNormal_Dtor);
@@ -3698,26 +5448,11 @@ public:
 };
 CHECK_SIZE(BecomeNormalCommand, 0x10);
 
-// 582
+// 582: a sense added to the node's perception (the perception keeps the command's sense)
 class AddPerceptionCommand : public ScriptCommand
 {
 public:
-    TaggedValue type;
-    f32 value1;
-    u32 unused2;
-    u32 objectId;
-    u32 unused4;
-    u32 unused5;
-    u32 unused6;
-    u32 bytes;
-    s32 range;
-    u32 range2;
-    s32 value10;
-    f32 value11;
-    s32 value12;
-    f32 value13;
-    s32 value14;
-    f32 value15;
+    PerceptionSense sense;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd582_AddPerception_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd582_AddPerception_Dtor);
@@ -3727,70 +5462,100 @@ public:
 CHECK_SIZE(AddPerceptionCommand, 0x4C);
 
 // 583
-class CutsceneCameraOp583Command : public ScriptCommand
+class SwingAroundCameraCommand : public ScriptCommand
 {
 public:
-    f32 x;
-    s32 y;
-    TaggedValue value2;
-    TaggedValue value3;
-    f32 value4;
-    f32 value5;
-    f32 value6;
-    TaggedValue value7;
-    s32 value8;
-    TaggedValue value9;
-    s32 value10;
-    TaggedValue value11;
-    u32 unused12;
-    TaggedValue value13;
-    f32 value14;
-    f32 value15;
-    u32 unused16;
-    u32 unused17;
+    // Where its last run put the instance on the circle (nothing reads them)
+    f32 circleX;
+    f32 circleY;
+    // How far along the camera's z axis, the rate the player's distance moves the height at and the height's limit, the squared
+    // distances from the camera nearer and further than which the player moves it
+    f32 depth;
+    f32 heightRate;
+    f32 heightLimit;
+    f32 nearDistanceSquared;
+    f32 farDistanceSquared;
+    // The swing's phase offset (radians) and how fast the phase turns it
+    f32 phaseOffset;
+    u32 unused2C;
+    f32 unused30;
+    u32 unused34;
+    f32 phaseScale;
+    u32 unused3C;
+    f32 radius;
+    // The phase (moved on each run) and the height (the first command run sets everyone's, every run keeps it)
+    f32 phase;
+    f32 height;
+    u32 unused4C;
+    u32 unused50;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd583_CutsceneCameraOp583_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd583_CutsceneCameraOp583_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd583_CutsceneCameraOp583_Dtor);
     u32 Size() RETAIL(Cmd583_CutsceneCameraOp583_GetSize);
 };
-CHECK_SIZE(CutsceneCameraOp583Command, 0x54);
+CHECK_OFFSET(SwingAroundCameraCommand, radius, 0x40);
+CHECK_SIZE(SwingAroundCameraCommand, 0x54);
 
-// 584
-class DUMMY_584Command : public ScriptCommand
+// 584: does nothing
+class NoOp584Command : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd584_DUMMY_584_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd584_DUMMY_584_Execute);
     u32 Size() RETAIL(Cmd584_DUMMY_584_GetSize);
 };
-CHECK_SIZE(DUMMY_584Command, 0xC);
+CHECK_SIZE(NoOp584Command, 0xC);
 
-// 586
-class DUMMY_586Command : public ScriptCommand
+// 586: does nothing
+class NoOp586Command : public ScriptCommand
 {
 public:
-    u32 value1;
+    HalfwordPair unused1;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd586_DUMMY_586_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd586_DUMMY_586_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd586_DUMMY_586_Execute);
     u32 Size() RETAIL(Cmd586_DUMMY_586_GetSize);
 };
-CHECK_SIZE(DUMMY_586Command, 0x10);
+CHECK_SIZE(NoOp586Command, 0x10);
 
 // 587
-class SetObjectFlags587Command : public ScriptCommand
+class SetAttacksTakenCommand : public ScriptCommand
 {
 public:
-    TaggedValue flags;
+    // A setting: on, off (0 and 3 leave it)
+    enum Setting : u32
+    {
+        SettingOn = 1,
+        SettingOff = 2,
+    };
+
+    // Whether the agent's part is hit by the spin, by the body slam (and the tied characters), by walking into it and from below (a
+    // plain word, not a tagged value)
+    union Settings
+    {
+        u32 value;
+        struct
+        {
+            u32 spin : 2;
+            u32 unused2 : 2;
+            u32 slam : 2;
+            u32 unused6 : 2;
+            u32 unused8 : 2;
+            u32 walkInto : 2;
+            u32 unused12 : 20;
+        };
+    };
+
+    Settings settings;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd587_SetObjectFlags587_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd587_SetObjectFlags587_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd587_SetObjectFlags587_Execute);
     u32 Size() RETAIL(Cmd587_SetObjectFlags587_GetSize);
 };
-CHECK_SIZE(SetObjectFlags587Command, 0x10);
+CHECK_SIZE(SetAttacksTakenCommand, 0x10);
 
 // 588
 class PlayerFaceTowardsCameraCommand : public ScriptCommand
@@ -3806,7 +5571,7 @@ CHECK_SIZE(PlayerFaceTowardsCameraCommand, 0xC);
 class CutsceneStartCommand : public ScriptCommand
 {
 public:
-    f32 value1;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd589_CutsceneStart_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd589_CutsceneStart_Dtor);
@@ -3819,7 +5584,7 @@ CHECK_SIZE(CutsceneStartCommand, 0x10);
 class CutsceneEndCommand : public ScriptCommand
 {
 public:
-    f32 value1;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd590_CutsceneEnd_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd590_CutsceneEnd_Dtor);
@@ -3832,18 +5597,64 @@ CHECK_SIZE(CutsceneEndCommand, 0x10);
 class CutsceneCameraMoveCommand : public ScriptCommand
 {
 public:
-    TaggedValue flagsAndAngle;
-    f32 offset1;
-    f32 offset2;
-    f32 offset3;
-    f32 offset4;
-    f32 offset5;
-    f32 offset6;
-    u32 unused8;
-    u32 unused9;
-    s32 value10;
-    s32 value11;
-    u32 value12;
+    // What the framing aims at and measures the distance from: the first place, the second, half the way from the first to the
+    // second, and (the distance's) the shot's fixed yaw instead
+    enum Aim : u32
+    {
+        AimFirst = 0,
+        AimSecond = 1,
+        AimBetween = 2,
+        AimFixedYaw = 3,
+    };
+
+    // The moves' curve (others leave them as they were)
+    enum Curve : u32
+    {
+        MoveEven = 0,
+        MoveSmooth = 1,
+    };
+
+    // How it frames (a plain word, not a tagged value): the shot's fixed yaw, the shot (the shares of the object's height and of
+    // the view), the angles of the field of view, what it aims at and measures the distance from, the positioner's arc, its ease in
+    // and out and the moves' curve, the command's own field of view
+    union Framing
+    {
+        u32 value;
+        struct
+        {
+            u32 fixedYaw : 3;
+            u32 shot : 3;
+            u32 angles : 3;
+            u32 aim : 3;
+            u32 distanceFrom : 3;
+            u32 arcs : 1;
+            u32 easesIn : 1;
+            u32 easesOut : 1;
+            u32 curve : 3;
+            u32 fovGiven : 1;
+            u32 unused22 : 1;
+            u32 unused23 : 1;
+            u32 unused24 : 8;
+        };
+    };
+
+    Framing framing;
+    // Degrees
+    f32 pitch;
+    f32 extraDistance;
+    f32 targetSeconds;
+    f32 cameraSeconds;
+    f32 extraHeightShare;
+    // Degrees
+    f32 yaw;
+    u32 unused28;
+    // Handed to the scripted positioner's unused44
+    u32 unused2C;
+    // Where along the paths the target and the camera go
+    f32 targetAlong;
+    f32 cameraAlong;
+    // 65536ths of a turn
+    s32 fov;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd591_CutsceneCameraMove_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd591_CutsceneCameraMove_ParseTokens);
@@ -3856,7 +5667,24 @@ CHECK_SIZE(CutsceneCameraMoveCommand, 0x3C);
 class CameraSaveParamsCommand : public ScriptCommand
 {
 public:
-    TaggedValue value1;
+    enum Action : u32
+    {
+        ActionSave = 0,
+        ActionRestore = 1,
+    };
+
+    // A plain word, not a tagged value
+    union Mode
+    {
+        u32 value;
+        struct
+        {
+            u32 action : 3;
+            u32 unused3 : 29;
+        };
+    };
+
+    Mode mode;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd592_CameraSaveParams_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd592_CameraSaveParams_ParseTokens);
@@ -3869,7 +5697,29 @@ CHECK_SIZE(CameraSaveParamsCommand, 0x10);
 class ToggleCutsceneCameraCommand : public ScriptCommand
 {
 public:
-    u32 modeFlags;
+    enum Shown : u32
+    {
+        ShowsFollowCamera = 0,
+        ShowsGameRig = 1,
+        ShowsCutsceneRig = 2,
+    };
+
+    // The camera shown, the follow camera put where the game's rig is, set back to its start, the blend's curve (camerarig.h's
+    // CameraCurve)
+    union Mode
+    {
+        u32 value;
+        struct
+        {
+            u32 shown : 3;
+            u32 placesFollowCamera : 1;
+            u32 resets : 1;
+            u32 curve : 3;
+            u32 unused8 : 24;
+        };
+    };
+
+    Mode mode;
     f32 blendTime;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd594_ToggleCutsceneCamera_Execute);
@@ -3883,9 +5733,46 @@ CHECK_SIZE(ToggleCutsceneCameraCommand, 0x14);
 class CutsceneCameraTargetsCommand : public ScriptCommand
 {
 public:
-    u32 targets;
-    u32 flags;
-    u32 keys;
+    // The designators whose instances are the first and the second place, else whose positions are
+    union Designators
+    {
+        u32 value;
+        struct
+        {
+            u32 first : 8;
+            u32 second : 8;
+            u32 firstPosition : 8;
+            u32 secondPosition : 8;
+        };
+    };
+
+    // The framing mirrored, the frame wanted (game/camerarig.h's GameCameraRig::scriptBits)
+    union Flags
+    {
+        u32 value;
+        struct
+        {
+            u32 mirrored : 1;
+            u32 frameWanted : 1;
+            u32 unused2 : 30;
+        };
+    };
+
+    // The agent's waypoints' paths the scripted target and positioner go along (0xFF none)
+    union Paths
+    {
+        u32 value;
+        struct
+        {
+            u32 target : 8;
+            u32 camera : 8;
+            u32 unused16 : 16;
+        };
+    };
+
+    Designators designators;
+    Flags flags;
+    Paths paths;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd595_CutsceneCameraTargets_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd595_CutsceneCameraTargets_ParseTokens);
@@ -3898,9 +5785,9 @@ CHECK_SIZE(CutsceneCameraTargetsCommand, 0x18);
 class StartWhackawormCommand : public ScriptCommand
 {
 public:
-    s32 animSlots;
-    TaggedValue value2;
-    TaggedValue hitPoints;
+    s32 iconSlot;
+    TaggedValue seconds;
+    TaggedValue total;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd596_StartWhackaworm_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd596_StartWhackaworm_ParseTokens);
@@ -3913,7 +5800,7 @@ CHECK_SIZE(StartWhackawormCommand, 0x18);
 class ProgressWhackawormCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    s32 countChange;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd597_ProgressWhackaworm_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd597_ProgressWhackaworm_Dtor);
@@ -3969,9 +5856,27 @@ CHECK_SIZE(SetVehicleWrestleCreatureCommand, 0xC);
 class FadeoutScreenCommand : public ScriptCommand
 {
 public:
-    u32 flags;
+    enum Mode : u32
+    {
+        ModeHide = 0,
+        ModeShow = 1,
+    };
+
+    // The fade hidden or shown, its colour given
+    union Flags
+    {
+        u32 value;
+        struct
+        {
+            u32 mode : 3;
+            u32 setsColour : 1;
+            u32 unused4 : 28;
+        };
+    };
+
+    Flags flags;
     f32 duration;
-    s32 unused3;
+    s32 unused14;
     f32 red;
     f32 green;
     f32 blue;
@@ -3987,13 +5892,13 @@ CHECK_SIZE(FadeoutScreenCommand, 0x24);
 class DisplayBottomTextCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    s32 text;
     f32 x;
     f32 y;
-    f32 value4;
-    f32 value5;
-    f32 value6;
-    f32 value7;
+    f32 red;
+    f32 green;
+    f32 blue;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd603_DisplayBottomText_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd603_DisplayBottomText_Dtor);
@@ -4013,11 +5918,12 @@ public:
 };
 CHECK_SIZE(ResetCharacterFallCommand, 0xC);
 
-// 605
+// 605: a character's places dismissed
 class DismissCharacterCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    // The game's character number
+    s32 character;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd605_DismissCharacter_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd605_DismissCharacter_Dtor);
@@ -4059,25 +5965,25 @@ public:
 };
 CHECK_SIZE(ClearBottomTextCommand, 0xC);
 
-// 609
-class DUMMY_609Command : public ScriptCommand
+// 609: does nothing
+class NoOp609Command : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd609_DUMMY_609_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd609_DUMMY_609_Execute);
     u32 Size() RETAIL(Cmd609_DUMMY_609_GetSize);
 };
-CHECK_SIZE(DUMMY_609Command, 0xC);
+CHECK_SIZE(NoOp609Command, 0xC);
 
-// 610
-class DUMMY_610Command : public ScriptCommand
+// 610: does nothing
+class NoOp610Command : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd610_DUMMY_610_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd610_DUMMY_610_Execute);
     u32 Size() RETAIL(Cmd610_DUMMY_610_GetSize);
 };
-CHECK_SIZE(DUMMY_610Command, 0xC);
+CHECK_SIZE(NoOp610Command, 0xC);
 
 // 611
 class SetCharacterHomeChunkCommand : public ScriptCommand
@@ -4090,8 +5996,8 @@ public:
 };
 CHECK_SIZE(SetCharacterHomeChunkCommand, 0xC);
 
-// 612
-class GameControllerOp612Command : public ScriptCommand
+// 612: the characters given their roles again (DisablePlayerControl undone)
+class EnablePlayerControlCommand : public ScriptCommand
 {
 public:
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd612_GameControllerOp612_ParseTokens);
@@ -4099,7 +6005,7 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd612_GameControllerOp612_Execute);
     u32 Size() RETAIL(Cmd612_GameControllerOp612_GetSize);
 };
-CHECK_SIZE(GameControllerOp612Command, 0xC);
+CHECK_SIZE(EnablePlayerControlCommand, 0xC);
 
 // 613
 class DisablePlayerControlCommand : public ScriptCommand
@@ -4112,31 +6018,31 @@ public:
 };
 CHECK_SIZE(DisablePlayerControlCommand, 0xC);
 
-// 614
-class SetNode120FlagCommand : public ScriptCommand
+// 614: the node's motion block not sticky any more (what stuck to it kept when asked)
+class StopStickingCommand : public ScriptCommand
 {
 public:
-    u32 value;
+    SwitchArgument keepsStuck;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd614_SetNode120Flag_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd614_SetNode120Flag_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd614_SetNode120Flag_Execute);
     u32 Size() RETAIL(Cmd614_SetNode120Flag_GetSize);
 };
-CHECK_SIZE(SetNode120FlagCommand, 0x10);
+CHECK_SIZE(StopStickingCommand, 0x10);
 
-// 615
-class SetPlayerFlag57Command : public ScriptCommand
+// 615: the player character's scripts' flag (the PlayerFlag57Clear condition tests it), cleared or set
+class SetPlayerScriptFlagCommand : public ScriptCommand
 {
 public:
-    u32 value;
+    SwitchArgument clears;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd615_SetPlayerFlag57_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd615_SetPlayerFlag57_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd615_SetPlayerFlag57_Execute);
     u32 Size() RETAIL(Cmd615_SetPlayerFlag57_GetSize);
 };
-CHECK_SIZE(SetPlayerFlag57Command, 0x10);
+CHECK_SIZE(SetPlayerScriptFlagCommand, 0x10);
 
 // 616
 class PlaceCharacterInChunkCommand : public ScriptCommand
@@ -4155,9 +6061,33 @@ CHECK_SIZE(PlaceCharacterInChunkCommand, 0x10);
 class HitInstancesInBoxesCommand : public ScriptCommand
 {
 public:
-    u32 flags;
-    f32 radius;
-    u32 event;
+    // The instances hit (but the playable characters, only them, else both), sent the trigger message instead of a contact message
+    union Flags
+    {
+        u32 value;
+        struct
+        {
+            u32 skipsCharacters : 1;
+            u32 onlyCharacters : 1;
+            u32 sendsMessage : 1;
+            u32 unused3 : 29;
+        };
+    };
+
+    union Message
+    {
+        u32 value;
+        struct
+        {
+            u32 id : 16;
+            u32 unused16 : 16;
+        };
+    };
+
+    Flags flags;
+    // The contact message's kinds of hit
+    u32 hitKinds;
+    Message message;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd617_HitInstancesInBoxes_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd617_HitInstancesInBoxes_Dtor);
@@ -4180,7 +6110,7 @@ CHECK_SIZE(ForceGameOverCommand, 0xC);
 class ShowBottomTextCommand : public ScriptCommand
 {
 public:
-    f32 value1;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd619_ShowBottomText_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd619_ShowBottomText_Dtor);
@@ -4193,7 +6123,7 @@ CHECK_SIZE(ShowBottomTextCommand, 0x10);
 class HideBottomTextCommand : public ScriptCommand
 {
 public:
-    f32 value1;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd620_HideBottomText_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd620_HideBottomText_Dtor);
@@ -4212,11 +6142,24 @@ public:
 };
 CHECK_SIZE(SetFocusToCameraTargetCommand, 0xC);
 
-// 622
+// A character a command picks: the game's character number, or the played one
+union CharacterChoice
+{
+    u32 value;
+    struct
+    {
+        u32 character : 8;
+        u32 played : 1;
+        u32 unused9 : 23;
+    };
+};
+CHECK_SIZE(CharacterChoice, 4);
+
+// 622: a character's object node given the agent's object as its sound's
 class CharacterSoundProxyCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    CharacterChoice choice;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd622_CharacterSoundProxy_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd622_CharacterSoundProxy_Dtor);
@@ -4225,32 +6168,46 @@ public:
 };
 CHECK_SIZE(CharacterSoundProxyCommand, 0x10);
 
-// 623
-class CameraNodeSetTargetCommand : public ScriptCommand
+// 623: the follow camera's target the instance
+class SetFollowCameraTargetCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd623_CameraNodeSetTarget_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd623_CameraNodeSetTarget_Execute);
     u32 Size() RETAIL(Cmd623_CameraNodeSetTarget_GetSize);
 };
-CHECK_SIZE(CameraNodeSetTargetCommand, 0xC);
+CHECK_SIZE(SetFollowCameraTargetCommand, 0xC);
 
-// 624
-class EnableVarPercept629Command : public ScriptCommand
+// 624: the flag condition 629 reads set (nothing clears it)
+class SetScriptGlobalFlagCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd624_EnableVarPercept629_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd624_EnableVarPercept629_Execute);
     u32 Size() RETAIL(Cmd624_EnableVarPercept629_GetSize);
 };
-CHECK_SIZE(EnableVarPercept629Command, 0xC);
+CHECK_SIZE(SetScriptGlobalFlagCommand, 0xC);
 
 // 625
 class SwitchCharacterCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    s32 value2;
+    // The instance whose character is switched to: a designator's (0xFF none), else one the agent's attachments link
+    union Target
+    {
+        u32 value;
+        struct
+        {
+            u32 linked : 4;
+            u32 byLinked : 1;
+            u32 designator : 8;
+            u32 unused13 : 19;
+        };
+    };
+
+    Target target;
+    // The character switched to (GameProgress::NoCharacter: the target's)
+    s32 character;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd625_SwitchCharacter_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd625_SwitchCharacter_Dtor);
@@ -4259,47 +6216,85 @@ public:
 };
 CHECK_SIZE(SwitchCharacterCommand, 0x14);
 
-// 626
-class CameraNodeEnableFlagsCommand : public ScriptCommand
+// 626: the follow camera's positioner and target take their own cameras
+class UseOwnFollowCamerasCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd626_CameraNodeEnableFlags_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd626_CameraNodeEnableFlags_Execute);
     u32 Size() RETAIL(Cmd626_CameraNodeEnableFlags_GetSize);
 };
-CHECK_SIZE(CameraNodeEnableFlagsCommand, 0xC);
+CHECK_SIZE(UseOwnFollowCamerasCommand, 0xC);
 
-// 627
-class CameraNodeClearFlagsCommand : public ScriptCommand
+// 627: the follow camera back to the triggers' cameras
+class UseTriggerCamerasCommand : public ScriptCommand
 {
 public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd627_CameraNodeClearFlags_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd627_CameraNodeClearFlags_Execute);
     u32 Size() RETAIL(Cmd627_CameraNodeClearFlags_GetSize);
 };
-CHECK_SIZE(CameraNodeClearFlagsCommand, 0xC);
+CHECK_SIZE(UseTriggerCamerasCommand, 0xC);
 
-// 628
-class SetCameraNodeValueCommand : public ScriptCommand
+// Which rate SetFollowCameraRate sets: the one its place is followed at, the yaw blender's speed (from radians a second)
+union FollowCameraRate
+{
+    enum Kind : u32
+    {
+        PositionRate = 0,
+        YawSpeed = 1,
+    };
+
+    u32 value;
+    struct
+    {
+        u32 kind : 3;
+        u32 unused3 : 29;
+    };
+};
+CHECK_SIZE(FollowCameraRate, 4);
+
+// 628: a rate of the follow camera's positioner's own camera
+class SetFollowCameraRateCommand : public ScriptCommand
 {
 public:
-    TaggedValue mode;
-    f32 value;
+    FollowCameraRate which;
+    f32 rate;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd628_SetCameraNodeValue_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd628_SetCameraNodeValue_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd628_SetCameraNodeValue_Execute);
     u32 Size() RETAIL(Cmd628_SetCameraNodeValue_GetSize);
 };
-CHECK_SIZE(SetCameraNodeValueCommand, 0x14);
+CHECK_SIZE(SetFollowCameraRateCommand, 0x14);
 
 // 629
 class SetCameraNodeValuesCommand : public ScriptCommand
 {
 public:
-    TaggedValue mode;
-    f32 value1;
-    f32 value2;
+    enum Value : u32
+    {
+        ValuePitch = 0,
+        ValueDistance = 1,
+        ValueYaw = 2,
+        ValueFov = 3,
+    };
+
+    // Which value it sets (a plain word, not a tagged value)
+    union Mode
+    {
+        u32 value;
+        struct
+        {
+            u32 which : 3;
+            u32 unused3 : 29;
+        };
+    };
+
+    // The value's two ends: the angles in degrees, the field of view in radians
+    Mode mode;
+    f32 start;
+    f32 end;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd629_SetCameraNodeValues_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd629_SetCameraNodeValues_ParseTokens);
@@ -4308,11 +6303,27 @@ public:
 };
 CHECK_SIZE(SetCameraNodeValuesCommand, 0x18);
 
-// 630
-class SetNode5FlagsCommand : public ScriptCommand
+// SwitchBodyFlags' switches (two bits each: 1 on, 2 off, else left) of the physics body's bits 13, 15, 16 and 12 (the tool's
+// HitCrates, HitCreatures, HitFurniture and HitPlayer), which nothing reads
+union BodyFlagSwitches
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 2;
+        u32 unused2 : 2;
+        u32 unused4 : 2;
+        u32 unused6 : 2;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(BodyFlagSwitches, 4);
+
+// 630: switches of the instance's physics body's flags
+class SwitchBodyFlagsCommand : public ScriptCommand
 {
 public:
-    TaggedValue flags;
+    BodyFlagSwitches switches;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd630_SetNode5Flags_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd630_SetNode5Flags_Dtor);
@@ -4320,26 +6331,43 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(Cmd630_SetNode5Flags_ExecuteOn);
     u32 Size() RETAIL(Cmd630_SetNode5Flags_GetSize);
 };
-CHECK_SIZE(SetNode5FlagsCommand, 0x10);
+CHECK_SIZE(SwitchBodyFlagsCommand, 0x10);
 
-// 631
-class SetPlayerVehicleValueCommand : public ScriptCommand
+// 631: the played character's Humiliskate pushed
+class PushPlayerVehicleCommand : public ScriptCommand
 {
 public:
-    f32 value;
+    // Along z
+    f32 push;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd631_SetPlayerVehicleValue_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd631_SetPlayerVehicleValue_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd631_SetPlayerVehicleValue_Execute);
     u32 Size() RETAIL(Cmd631_SetPlayerVehicleValue_GetSize);
 };
-CHECK_SIZE(SetPlayerVehicleValueCommand, 0x10);
+CHECK_SIZE(PushPlayerVehicleCommand, 0x10);
 
-// 632
+// The range of linked objects SetLinkedObjectNearestPlayer looks at: one past the first's index and the end's (Whole: from the
+// first, to the last)
+union LinkedRange
+{
+    static constexpr u8 Whole = 0xFF;
+
+    u32 value;
+    struct
+    {
+        u32 first : 8;
+        u32 end : 8;
+        u32 unused16 : 16;
+    };
+};
+CHECK_SIZE(LinkedRange, 4);
+
+// 632: AgentRef1 the linked object nearest the player that no other agent took
 class SetLinkedObjectNearestPlayerCommand : public ScriptCommand
 {
 public:
-    u32 range;
+    LinkedRange range;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd632_SetLinkedObjectNearestPlayer_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd632_SetLinkedObjectNearestPlayer_ParseTokens);
@@ -4348,13 +6376,13 @@ public:
 };
 CHECK_SIZE(SetLinkedObjectNearestPlayerCommand, 0x10);
 
-// 633
+// 633: the game's pairing, its played character and its second one
 class SetPlayerModeCommand : public ScriptCommand
 {
 public:
-    u32 value1;
-    u32 value2;
-    u32 value3;
+    u32 pairing;
+    u32 character;
+    u32 second;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd633_SetPlayerMode_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd633_SetPlayerMode_Dtor);
@@ -4363,12 +6391,13 @@ public:
 };
 CHECK_SIZE(SetPlayerModeCommand, 0x18);
 
-// 634
+// 634: a movie played after a delay
 class PlayMovieCommand : public ScriptCommand
 {
 public:
-    TaggedValue value;
-    f32 value2;
+    TaggedValue movie;
+    // Seconds
+    f32 delay;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd634_PlayMovie_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd634_PlayMovie_ParseTokens);
@@ -4381,7 +6410,7 @@ CHECK_SIZE(PlayMovieCommand, 0x14);
 class AddAmmoCommand : public ScriptCommand
 {
 public:
-    s32 value1;
+    s32 ammo;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd636_AddAmmo_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd636_AddAmmo_Dtor);
@@ -4391,8 +6420,8 @@ public:
 };
 CHECK_SIZE(AddAmmoCommand, 0x10);
 
-// 637
-class LinkedObjectNearestPlayerOp637Command : public ScriptCommand
+// 637: the focus the linked object in the camera's view nearest the player
+class SetFocusToLinkedObjectInViewCommand : public ScriptCommand
 {
 public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd637_LinkedObjectNearestPlayerOp637_Execute);
@@ -4400,15 +6429,15 @@ public:
     void Destroy(u32 destroyFlags) RETAIL(Cmd637_LinkedObjectNearestPlayerOp637_Dtor);
     u32 Size() RETAIL(Cmd637_LinkedObjectNearestPlayerOp637_GetSize);
 };
-CHECK_SIZE(LinkedObjectNearestPlayerOp637Command, 0xC);
+CHECK_SIZE(SetFocusToLinkedObjectInViewCommand, 0xC);
 
 // 638
 class EnableBossModeCommand : public ScriptCommand
 {
 public:
-    s32 animSlots;
-    TaggedValue hitPoints;
-    f32 value3;
+    s32 iconSlot;
+    TaggedValue health;
+    f32 barLength;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd638_EnableBossMode_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd638_EnableBossMode_ParseTokens);
@@ -4417,11 +6446,11 @@ public:
 };
 CHECK_SIZE(EnableBossModeCommand, 0x18);
 
-// 639
+// 639: the boss bar's health changed by an amount (below 0 a damage)
 class DamageBossCommand : public ScriptCommand
 {
 public:
-    u32 value1;
+    s32 healthChange;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd639_DamageBoss_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd639_DamageBoss_Dtor);
@@ -4440,29 +6469,70 @@ public:
 };
 CHECK_SIZE(ExitBossModeCommand, 0xC);
 
-// 641, 642, 643, 644, 653
-class FinalBossInitWeaponsCommand : public ScriptCommand
+// 641, 642, 643, 644, 653: the final boss's three weapons (its node's JointAimController), by the mode the script gives: their
+// joints hooked on the node's model, the weapons picked turned back to their animation's pose, raised to aim, the target, the
+// weapons' scale and turn rate
+class FinalBossWeaponsCommand : public ScriptCommand
 {
 public:
-    u32 target;
+    static constexpr u32 WeaponCount = 3;
+
+    enum Mode : s32
+    {
+        ModeHookJoints = 0,
+        ModeReturn = 1,
+        ModeRaise = 2,
+        ModeTarget = 3,
+        ModeScaleAndRate = 4,
+    };
+
+    // The weapons it works on, a bit each
+    union Weapons
+    {
+        u32 value;
+        struct
+        {
+            u32 first : 1;
+            u32 second : 1;
+            u32 third : 1;
+            u32 unused3 : 29;
+        };
+    };
+
+    DesignatorArgument target;
     s32 mode;
-    u32 weapons;
-    s32 value1;
-    s32 value2;
-    u32 slots;
+    Weapons weapons;
+    f32 scale;
+    f32 turnRate;
+    // The weapons' joints' IDs
+    u8 joints[WeaponCount];
+    u8 unused23;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd641_FinalBossInitWeapons_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd641_FinalBossInitWeapons_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd641_FinalBossInitWeapons_Execute);
     u32 Size() RETAIL(Cmd641_FinalBossInitWeapons_GetSize);
 };
-CHECK_SIZE(FinalBossInitWeaponsCommand, 0x24);
+CHECK_OFFSET(FinalBossWeaponsCommand, joints, 0x20);
+CHECK_SIZE(FinalBossWeaponsCommand, 0x24);
 
 // 645
 class CreateNodeControllerCommand : public ScriptCommand
 {
 public:
-    u32 controller;
+    // The controller's kind (NodeController's), made only when the node has none with keepsExisting
+    union Controller
+    {
+        u32 value;
+        struct
+        {
+            u32 kind : 8;
+            u32 keepsExisting : 1;
+            u32 unused9 : 23;
+        };
+    };
+
+    Controller controller;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd645_CreateNodeController_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd645_CreateNodeController_Dtor);
@@ -4471,35 +6541,47 @@ public:
 };
 CHECK_SIZE(CreateNodeControllerCommand, 0x10);
 
-// 646
-class RequestOgiSlotCommand : public ScriptCommand
+// An object's model slot in an argument's low byte
+union ModelSlotArgument
+{
+    u32 value;
+    struct
+    {
+        u32 index : 8;
+        u32 unused8 : 24;
+    };
+};
+CHECK_SIZE(ModelSlotArgument, 4);
+
+// 646: the vehicle gauge's left icon the model of an object's slot
+class SetGaugeIconCommand : public ScriptCommand
 {
 public:
-    u32 slot;
+    ModelSlotArgument slot;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd646_RequestOgiSlot_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd646_RequestOgiSlot_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd646_RequestOgiSlot_Execute);
     u32 Size() RETAIL(Cmd646_RequestOgiSlot_GetSize);
 };
-CHECK_SIZE(RequestOgiSlotCommand, 0x10);
+CHECK_SIZE(SetGaugeIconCommand, 0x10);
 
 // 647
-class SetGlobalProgression2Command : public ScriptCommand
+class RaiseStoryAreaCommand : public ScriptCommand
 {
 public:
-    s32 value1;
-    TaggedValue value;
+    s32 area;
+    TaggedValue taggedArea;
 
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd647_SetGlobalProgression2_Execute);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd647_SetGlobalProgression2_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd647_SetGlobalProgression2_Dtor);
     u32 Size() RETAIL(Cmd647_SetGlobalProgression2_GetSize);
 };
-CHECK_SIZE(SetGlobalProgression2Command, 0x14);
+CHECK_SIZE(RaiseStoryAreaCommand, 0x14);
 
-// 648
-class SetNodeValue174Command : public ScriptCommand
+// 648: the node's counted value (at most 1; a value where there was none counts the instance)
+class SetCountedValueCommand : public ScriptCommand
 {
 public:
     f32 value;
@@ -4509,10 +6591,10 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd648_SetNodeValue174_Execute);
     u32 Size() RETAIL(Cmd648_SetNodeValue174_GetSize);
 };
-CHECK_SIZE(SetNodeValue174Command, 0x10);
+CHECK_SIZE(SetCountedValueCommand, 0x10);
 
-// 649
-class ClearNodeValue174Command : public ScriptCommand
+// 649: the node's counted value cleared (the instance no longer counted)
+class ClearCountedValueCommand : public ScriptCommand
 {
 public:
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd649_ClearNodeValue174_ParseTokens);
@@ -4520,31 +6602,33 @@ public:
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd649_ClearNodeValue174_Execute);
     u32 Size() RETAIL(Cmd649_ClearNodeValue174_GetSize);
 };
-CHECK_SIZE(ClearNodeValue174Command, 0xC);
+CHECK_SIZE(ClearCountedValueCommand, 0xC);
 
-// 650
-class SetCharacterFlag2Command : public ScriptCommand
+// 650: the vehicle a character rides held
+class HoldVehicleCommand : public ScriptCommand
 {
 public:
+    // The game's character number
     s32 character;
 
     void Destroy(u32 destroyFlags) RETAIL(Cmd650_SetCharacterFlag2_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd650_SetCharacterFlag2_Execute);
     u32 Size() RETAIL(Cmd650_SetCharacterFlag2_GetSize);
 };
-CHECK_SIZE(SetCharacterFlag2Command, 0x10);
+CHECK_SIZE(HoldVehicleCommand, 0x10);
 
-// 651
-class ClearCharacterFlag2Command : public ScriptCommand
+// 651: the vehicle a character rides no longer held
+class ReleaseVehicleCommand : public ScriptCommand
 {
 public:
+    // The game's character number
     s32 character;
 
     void Destroy(u32 destroyFlags) RETAIL(Cmd651_ClearCharacterFlag2_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd651_ClearCharacterFlag2_Execute);
     u32 Size() RETAIL(Cmd651_ClearCharacterFlag2_GetSize);
 };
-CHECK_SIZE(ClearCharacterFlag2Command, 0x10);
+CHECK_SIZE(ReleaseVehicleCommand, 0x10);
 
 // 652
 class CameraTopdownModeCommand : public ScriptCommand
@@ -4570,19 +6654,28 @@ CHECK_SIZE(PlayCreditsCommand, 0xC);
 class SetMaskControllerIdsCommand : public ScriptCommand
 {
 public:
-    u32 ids1;
-    u32 ids2;
-    u32 unused1;
-    u32 unused2;
-    u32 unused3;
-    u32 unused4;
-    u32 count;
+    static constexpr u32 MostIds = 12;
+
+    union Count
+    {
+        u32 value;
+        struct
+        {
+            u32 ids : 4;
+            u32 unused4 : 28;
+        };
+    };
+
+    // The mask controller's particle systems' IDs (3 used)
+    u16 ids[MostIds];
+    Count count;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd655_SetMaskControllerIds_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd655_SetMaskControllerIds_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd655_SetMaskControllerIds_Execute);
     u32 Size() RETAIL(Cmd655_SetMaskControllerIds_GetSize);
 };
+CHECK_OFFSET(SetMaskControllerIdsCommand, count, 0x24);
 CHECK_SIZE(SetMaskControllerIdsCommand, 0x28);
 
 // 656
@@ -4602,10 +6695,10 @@ class DisplayBottomTextInstanceCommand : public ScriptCommand
 public:
     f32 x;
     f32 y;
-    f32 value3;
-    f32 value4;
-    f32 value5;
-    f32 value6;
+    f32 red;
+    f32 green;
+    f32 blue;
+    f32 seconds;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd657_DisplayBottomTextInstance_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd657_DisplayBottomTextInstance_Dtor);
@@ -4618,13 +6711,14 @@ CHECK_SIZE(DisplayBottomTextInstanceCommand, 0x24);
 class SetSplineControllerValuesCommand : public ScriptCommand
 {
 public:
-    TaggedValue x;
-    TaggedValue y;
-    TaggedValue z;
-    TaggedValue value4;
-    TaggedValue value5;
-    TaggedValue value6;
-    TaggedValue value7;
+    TaggedValue offsetX;
+    TaggedValue offsetY;
+    TaggedValue offsetZ;
+    TaggedValue pull;
+    TaggedValue turnRate;
+    // The controller's unused28 (nothing reads it)
+    TaggedValue unusedValue;
+    TaggedValue drop;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd658_SetSplineControllerValues_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd658_SetSplineControllerValues_Dtor);
@@ -4634,66 +6728,80 @@ public:
 CHECK_SIZE(SetSplineControllerValuesCommand, 0x28);
 
 // 659
-class TriggerCharacterEvent12Command : public ScriptCommand
+class MakeCharactersIdleCommand : public ScriptCommand
 {
 public:
-    s32 characters;
+    // The characters whose idle behaviour starts: every one the progress has, Crash, Cortex, the Mecha-Bandicoot (none: the
+    // agent's own)
+    union Characters
+    {
+        u32 value;
+        struct
+        {
+            u32 every : 1;
+            u32 crash : 1;
+            u32 cortex : 1;
+            u32 mecha : 1;
+            u32 unused4 : 28;
+        };
+    };
+
+    Characters characters;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd659_TriggerCharacterEvent12_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd659_TriggerCharacterEvent12_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd659_TriggerCharacterEvent12_Execute);
-    // Event 12 run on an instance's character (none without its character node)
-    void TriggerOn(struct InstanceContext* instance, BehaviourLevel* level) RETAIL(FUN_00122c28);
+    // The idle behaviour (characters.h's EventIdle) started on an instance's character (none without its character node)
+    void MakeIdle(struct InstanceContext* instance, BehaviourLevel* level) RETAIL(FUN_00122c28);
     u32 Size() RETAIL(Cmd659_TriggerCharacterEvent12_GetSize);
 };
-CHECK_SIZE(TriggerCharacterEvent12Command, 0x10);
+CHECK_SIZE(MakeCharactersIdleCommand, 0x10);
 
-// 660
-class ClearPlayerFlag14Command : public ScriptCommand
+// 660: the character (the instance's, else the player's) no longer dead
+class ClearCharacterDeadCommand : public ScriptCommand
 {
 public:
-    u32 unused;
+    u32 unused1;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd660_ClearPlayerFlag14_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd660_ClearPlayerFlag14_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd660_ClearPlayerFlag14_Execute);
     u32 Size() RETAIL(Cmd660_ClearPlayerFlag14_GetSize);
 };
-CHECK_SIZE(ClearPlayerFlag14Command, 0x10);
+CHECK_SIZE(ClearCharacterDeadCommand, 0x10);
 
 // 661
 class SetSkateControllerIdsCommand : public ScriptCommand
 {
 public:
-    u32 ids1;
-    u32 ids2;
-    u32 ids3;
-    u32 ids4;
-    u32 ids5;
-    u32 ids6;
-    u32 sounds1;
-    u32 sounds2;
-    u32 sounds3;
-    u32 sounds4;
-    u32 sounds5;
-    u32 sounds6;
-    u32 sounds7;
-    u32 unused1;
-    u32 unused2;
-    u32 unused3;
-    u32 unused4;
-    u32 unused5;
-    u32 unused6;
-    u32 unused7;
-    u32 unused8;
-    u32 unused9;
-    u32 counts;
+    static constexpr u32 MostIds = 12;
+    static constexpr u32 MostSounds = 32;
+
+    // How many IDs and sounds it gives, and whether they're added when the controller has some already
+    union Counts
+    {
+        u32 value;
+        struct
+        {
+            u32 ids : 4;
+            u32 sounds : 5;
+            u32 addsAgain : 1;
+            u32 unused10 : 22;
+        };
+    };
+
+    // The trails' particle systems' IDs, and the sounds' slots of the node's object
+    u16 ids[MostIds];
+    u16 soundSlots[MostSounds];
+    Counts counts;
 
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(Cmd661_SetSkateControllerIds_ParseTokens);
     void Destroy(u32 destroyFlags) RETAIL(Cmd661_SetSkateControllerIds_Dtor);
     void Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel* level) RETAIL(Cmd661_SetSkateControllerIds_Execute);
     u32 Size() RETAIL(Cmd661_SetSkateControllerIds_GetSize);
 };
+CHECK_OFFSET(SetSkateControllerIdsCommand, soundSlots, 0x24);
+CHECK_OFFSET(SetSkateControllerIdsCommand, counts, 0x64);
 CHECK_SIZE(SetSkateControllerIdsCommand, 0x68);
 
 // 662
@@ -4721,15 +6829,15 @@ extern "C"
     extern const GccVTableEntry g_SetWobbleCommandVTable[] RETAIL(vt_Cmd12_SetWobble);
     extern const GccVTableEntry g_ClearWobbleCommandVTable[] RETAIL(vt_Cmd13_ClearWobble);
     extern const GccVTableEntry g_NowMoveForwardsCommandVTable[] RETAIL(vt_Cmd14_NowMoveForwards);
-    extern const GccVTableEntry g_NowMoveBackwardsCommandVTable[] RETAIL(vt_Cmd15_NowMoveBackwards);
+    extern const GccVTableEntry g_NoOpNowMoveBackwardsCommandVTable[] RETAIL(vt_Cmd15_NowMoveBackwards);
     extern const GccVTableEntry g_NowStrafeLeftCommandVTable[] RETAIL(vt_Cmd16_NowStrafeLeft);
     extern const GccVTableEntry g_NowStrafeRightCommandVTable[] RETAIL(vt_Cmd17_NowStrafeRight);
     extern const GccVTableEntry g_NowTurnLeftCommandVTable[] RETAIL(vt_Cmd18_NowTurnLeft);
-    extern const GccVTableEntry g_NowRotateJointCommandVTable[] RETAIL(vt_Cmd23_NowRotateJoint);
+    extern const GccVTableEntry g_LinkTargetCommandVTable[] RETAIL(vt_Cmd23_NowRotateJoint);
     extern const GccVTableEntry g_StoreCurrentSpaceCommandVTable[] RETAIL(vt_Cmd27_StoreCurrentSpace);
     extern const GccVTableEntry g_SetFocusToKeyCommandVTable[] RETAIL(vt_Cmd28_SetFocusToKey);
     extern const GccVTableEntry g_RotationWarpCommandVTable[] RETAIL(vt_Cmd29_RotationWarp);
-    extern const GccVTableEntry g_ClearThreatsCommandVTable[] RETAIL(vt_Cmd31_ClearThreats);
+    extern const GccVTableEntry g_SetRestartableCommandVTable[] RETAIL(vt_Cmd31_ClearThreats);
     extern const GccVTableEntry g_TriggerLinkedObjectsCommandVTable[] RETAIL(vt_Cmd33_TriggerLinkedObjects);
     extern const GccVTableEntry g_SetStateCommandVTable[] RETAIL(vt_Cmd34_SetState);
     extern const GccVTableEntry g_ToggleStateCommandVTable[] RETAIL(vt_Cmd35_ToggleState);
@@ -4773,7 +6881,7 @@ extern "C"
     extern const GccVTableEntry g_SetContactSpringyCommandVTable[] RETAIL(vt_Cmd82_SetContactSpringy);
     extern const GccVTableEntry g_ClearContactResponseCommandVTable[] RETAIL(vt_Cmd84_ClearContactResponse);
     extern const GccVTableEntry g_DestroyMeCommandVTable[] RETAIL(vt_Cmd85_DestroyMe);
-    extern const GccVTableEntry g_SetSoundCommandVTable[] RETAIL(vt_Cmd86_SetSound);
+    extern const GccVTableEntry g_SetReverbCommandVTable[] RETAIL(vt_Cmd86_SetSound);
     extern const GccVTableEntry g_AlterWobblePhaseCommandVTable[] RETAIL(vt_Cmd87_AlterWobblePhase);
     extern const GccVTableEntry g_BeginMusicCommandVTable[] RETAIL(vt_Cmd88_BeginMusic);
     extern const GccVTableEntry g_EndContextMusicCommandVTable[] RETAIL(vt_Cmd89_EndContextMusic);
@@ -4784,16 +6892,16 @@ extern "C"
     extern const GccVTableEntry g_ClearAgentRef2CommandVTable[] RETAIL(vt_Cmd98_ClearAgentRef2);
     extern const GccVTableEntry g_ClearFocusPositionCommandVTable[] RETAIL(vt_Cmd110_Unknown);
     extern const GccVTableEntry g_CacheLinkedInstanceCommandVTable[] RETAIL(vt_Cmd111_CacheLinkedInstance);
-    extern const GccVTableEntry g_SetRotationComponentsCommandVTable[] RETAIL(vt_Cmd113_Unknown);
+    extern const GccVTableEntry g_SnapRotationCommandVTable[] RETAIL(vt_Cmd113_Unknown);
     extern const GccVTableEntry g_StopHeadTrackingCommandVTable[] RETAIL(vt_Cmd114_Unknown);
     extern const GccVTableEntry g_StartHeadTrackingCommandVTable[] RETAIL(vt_Cmd115_Unknown);
     extern const GccVTableEntry g_DestroyHeadTrackingCommandVTable[] RETAIL(vt_Cmd116_Unknown);
     extern const GccVTableEntry g_MakeNoiseCommandVTable[] RETAIL(vt_Cmd117_Unknown);
     extern const GccVTableEntry g_SetHeadTrackingTargetCommandVTable[] RETAIL(vt_Cmd118_Unknown);
-    extern const GccVTableEntry g_ClearNodeByte154CommandVTable[] RETAIL(vt_Cmd119_Unknown);
+    extern const GccVTableEntry g_ClearKnockCountdownCommandVTable[] RETAIL(vt_Cmd119_Unknown);
     extern const GccVTableEntry g_PhysicsResetVelocityCommandVTable[] RETAIL(vt_Cmd120_PhysicsResetVelocity);
     extern const GccVTableEntry g_SetFocusPositionBesidePlayerCommandVTable[] RETAIL(vt_Cmd121_Unknown);
-    extern const GccVTableEntry g_SetFocusPositionToAgentCommandVTable[] RETAIL(vt_Cmd122_Unknown);
+    extern const GccVTableEntry g_CopyDesignatorCommandVTable[] RETAIL(vt_Cmd122_Unknown);
     extern const GccVTableEntry g_LinkToNearestPointCommandVTable[] RETAIL(vt_Cmd123_Unknown);
     extern const GccVTableEntry g_RunScriptSlotCommandVTable[] RETAIL(vt_Cmd124_RunScriptSlot);
     extern const GccVTableEntry g_OffsetFocusPositionCommandVTable[] RETAIL(vt_Cmd125_Unknown);
@@ -4801,7 +6909,7 @@ extern "C"
     extern const GccVTableEntry g_PhysicsSetGravityCommandVTable[] RETAIL(vt_Cmd127_Unknown);
     extern const GccVTableEntry g_PhysicsBodyResetCommandVTable[] RETAIL(vt_Cmd128_Unknown);
     extern const GccVTableEntry g_PhysicsBodyActivateCommandVTable[] RETAIL(vt_Cmd129_Unknown);
-    extern const GccVTableEntry g_SetPhysicsSizesCommandVTable[] RETAIL(vt_Cmd130_Unknown);
+    extern const GccVTableEntry g_SetMagnetCommandVTable[] RETAIL(vt_Cmd130_Unknown);
     extern const GccVTableEntry g_MagnetPullToFocusCommandVTable[] RETAIL(vt_Cmd131_Unknown);
     extern const GccVTableEntry g_SetLinkedObjectIndexCommandVTable[] RETAIL(vt_Cmd132_Unknown);
     extern const GccVTableEntry g_ClearObjectContextTargetCommandVTable[] RETAIL(vt_Cmd133_Unknown);
@@ -4810,88 +6918,88 @@ extern "C"
     extern const GccVTableEntry g_SetPerceptionWeightCommandVTable[] RETAIL(vt_Cmd136_Unknown);
     extern const GccVTableEntry g_AddPerceptionWeightCommandVTable[] RETAIL(vt_Cmd137_Unknown);
     extern const GccVTableEntry g_PushFromPerceptionCommandVTable[] RETAIL(vt_Cmd138_Unknown);
-    extern const GccVTableEntry g_SetCharacterAnalogCommandVTable[] RETAIL(vt_Cmd139_Unknown);
-    extern const GccVTableEntry g_AddCharacterAnalogCommandVTable[] RETAIL(vt_Cmd140_Unknown);
-    extern const GccVTableEntry g_PerceptionOp141CommandVTable[] RETAIL(vt_Cmd141_Unknown);
-    extern const GccVTableEntry g_PerceptionOp142CommandVTable[] RETAIL(vt_Cmd142_Unknown);
+    extern const GccVTableEntry g_SetPresenceCommandVTable[] RETAIL(vt_Cmd139_Unknown);
+    extern const GccVTableEntry g_AddPresenceCommandVTable[] RETAIL(vt_Cmd140_Unknown);
+    extern const GccVTableEntry g_TurnSenseOffCommandVTable[] RETAIL(vt_Cmd141_Unknown);
+    extern const GccVTableEntry g_TurnSenseOnCommandVTable[] RETAIL(vt_Cmd142_Unknown);
     extern const GccVTableEntry g_DisableAllPerceptionsCommandVTable[] RETAIL(vt_Cmd143_Unknown);
     extern const GccVTableEntry g_EnableAllPerceptionsCommandVTable[] RETAIL(vt_Cmd144_Unknown);
     extern const GccVTableEntry g_SetParentExecutionValueCommandVTable[] RETAIL(vt_Cmd145_Unknown);
     extern const GccVTableEntry g_SetFocusToLinkedObjectCommandVTable[] RETAIL(vt_Cmd146_Unknown);
     extern const GccVTableEntry g_PreviousKeyCommandVTable[] RETAIL(vt_Cmd147_Unknown);
-    extern const GccVTableEntry g_SetMotionFloatsCommandVTable[] RETAIL(vt_Cmd148_Unknown);
+    extern const GccVTableEntry g_SetCycleAmplitudesCommandVTable[] RETAIL(vt_Cmd148_Unknown);
     extern const GccVTableEntry g_RotateWithLinkedCommandVTable[] RETAIL(vt_Cmd149_Unknown);
     extern const GccVTableEntry g_StrafeTowardsTargetCommandVTable[] RETAIL(vt_Cmd150_Unknown);
-    extern const GccVTableEntry g_NextKeyOfPath34CommandVTable[] RETAIL(vt_Cmd151_Unknown);
-    extern const GccVTableEntry g_AddMotionAnglesCommandVTable[] RETAIL(vt_Cmd152_Unknown);
+    extern const GccVTableEntry g_PreviousRouteNodeCommandVTable[] RETAIL(vt_Cmd151_Unknown);
+    extern const GccVTableEntry g_AddWobblePhaseCommandVTable[] RETAIL(vt_Cmd152_Unknown);
     extern const GccVTableEntry g_MoveTowardsDesignatorCommandVTable[] RETAIL(vt_Cmd153_Unknown);
-    extern const GccVTableEntry g_SetNode150FieldsCommandVTable[] RETAIL(vt_Cmd156_Unknown);
+    extern const GccVTableEntry g_SetNoiseMessageCommandVTable[] RETAIL(vt_Cmd156_Unknown);
     extern const GccVTableEntry g_UnlinkTargetCommandVTable[] RETAIL(vt_Cmd157_Unknown);
     extern const GccVTableEntry g_AttachMotionBlockCommandVTable[] RETAIL(vt_Cmd158_Unknown);
-    extern const GccVTableEntry g_ResetNode120CommandVTable[] RETAIL(vt_Cmd159_Unknown);
-    extern const GccVTableEntry g_ClearMotionBlockFlag16CommandVTable[] RETAIL(vt_Cmd160_Unknown);
-    extern const GccVTableEntry g_SetMotionBlockFlag16CommandVTable[] RETAIL(vt_Cmd161_Unknown);
-    extern const GccVTableEntry g_AddToFocusObjectByteCommandVTable[] RETAIL(vt_Cmd162_Unknown);
+    extern const GccVTableEntry g_ClearTouchMessageCommandVTable[] RETAIL(vt_Cmd159_Unknown);
+    extern const GccVTableEntry g_StopTouchMessagesCommandVTable[] RETAIL(vt_Cmd160_Unknown);
+    extern const GccVTableEntry g_SendTouchMessagesCommandVTable[] RETAIL(vt_Cmd161_Unknown);
+    extern const GccVTableEntry g_AddToFocusCounterCommandVTable[] RETAIL(vt_Cmd162_Unknown);
     extern const GccVTableEntry g_UnlinkFromTargetCommandVTable[] RETAIL(vt_Cmd163_Unknown);
-    extern const GccVTableEntry g_AddToLinkedObjectsByteCommandVTable[] RETAIL(vt_Cmd164_Unknown);
+    extern const GccVTableEntry g_AddToLinkedCounterCommandVTable[] RETAIL(vt_Cmd164_Unknown);
     extern const GccVTableEntry g_ForceVolumeControllerCommandVTable[] RETAIL(vt_Cmd165_ForceVolumeController);
     extern const GccVTableEntry g_NotifyInstancesWithinCommandVTable[] RETAIL(vt_Cmd166_Unknown);
     extern const GccVTableEntry g_SetSurfaceCommandVTable[] RETAIL(vt_Cmd167_SetSurface);
-    extern const GccVTableEntry g_MoveInstancesInBoxCommandVTable[] RETAIL(vt_Cmd168_Unknown);
+    extern const GccVTableEntry g_PushInstancesAwayCommandVTable[] RETAIL(vt_Cmd168_Unknown);
     extern const GccVTableEntry g_SetFocusPositionAlongCommandVTable[] RETAIL(vt_Cmd169_Unknown);
-    extern const GccVTableEntry g_SetFocusObjectByteCommandVTable[] RETAIL(vt_Cmd170_Unknown);
+    extern const GccVTableEntry g_SetFocusCounterCommandVTable[] RETAIL(vt_Cmd170_Unknown);
     extern const GccVTableEntry g_RunSlotBehaviourOnLinkedCommandVTable[] RETAIL(vt_Cmd171_Unknown);
     extern const GccVTableEntry g_StopTargetBehaviourCommandVTable[] RETAIL(vt_Cmd172_Unknown);
-    extern const GccVTableEntry g_SetKeyPathByte43CommandVTable[] RETAIL(vt_Cmd173_Unknown);
+    extern const GccVTableEntry g_SetPathIndexCommandVTable[] RETAIL(vt_Cmd173_Unknown);
     extern const GccVTableEntry g_SetFocusToOwnerCommandVTable[] RETAIL(vt_Cmd174_Unknown);
     extern const GccVTableEntry g_SetAgentRef1ToOwnerCommandVTable[] RETAIL(vt_Cmd175_Unknown);
-    extern const GccVTableEntry g_FadeSoundGroupCommandVTable[] RETAIL(vt_Cmd176_Unknown);
+    extern const GccVTableEntry g_FadeOutMusicSlotCommandVTable[] RETAIL(vt_Cmd176_Unknown);
     extern const GccVTableEntry g_WarpAgentCommandVTable[] RETAIL(vt_Cmd177_Unknown);
     extern const GccVTableEntry g_RotateAgentCommandVTable[] RETAIL(vt_Cmd178_Unknown);
     extern const GccVTableEntry g_QueueObjectVideoCommandVTable[] RETAIL(vt_Cmd180_Unknown);
-    extern const GccVTableEntry g_VideoControllerUpdateCommandVTable[] RETAIL(vt_Cmd181_Unknown);
-    extern const GccVTableEntry g_VideoControllerOp182CommandVTable[] RETAIL(vt_Cmd182_Unknown);
+    extern const GccVTableEntry g_StartObjectVideoCommandVTable[] RETAIL(vt_Cmd181_Unknown);
+    extern const GccVTableEntry g_CancelVideoCommandVTable[] RETAIL(vt_Cmd182_Unknown);
     extern const GccVTableEntry g_SetTargetOwnerToSelfCommandVTable[] RETAIL(vt_Cmd183_Unknown);
-    extern const GccVTableEntry g_ResetTimerCommandVTable[] RETAIL(vt_Cmd184_Unknown);
+    extern const GccVTableEntry g_RestoreOwnObjectCommandVTable[] RETAIL(vt_Cmd184_Unknown);
     extern const GccVTableEntry g_QueueVideoCommandVTable[] RETAIL(vt_Cmd185_Unknown);
     extern const GccVTableEntry g_StartQueuedVideoCommandVTable[] RETAIL(vt_Cmd186_Unknown);
     extern const GccVTableEntry g_SetShadowCommandVTable[] RETAIL(vt_Cmd187_SetShadow);
     extern const GccVTableEntry g_SetShadowCircleCommandVTable[] RETAIL(vt_Cmd188_SetShadowCircle);
     extern const GccVTableEntry g_SetShadowMeshCommandVTable[] RETAIL(vt_Cmd189_SetShadowMesh);
     extern const GccVTableEntry g_SetShadowRectangleCommandVTable[] RETAIL(vt_Cmd190_SetShadowRectangle);
-    extern const GccVTableEntry g_ShadowToggleCommandVTable[] RETAIL(vt_Cmd191_ShadowToggle);
-    extern const GccVTableEntry g_SetNode10SlotCommandVTable[] RETAIL(vt_Cmd192_Unknown);
+    extern const GccVTableEntry g_SetShadowSlotCommandVTable[] RETAIL(vt_Cmd191_ShadowToggle);
+    extern const GccVTableEntry g_ClearShadowSlotCommandVTable[] RETAIL(vt_Cmd192_Unknown);
     extern const GccVTableEntry g_LaunchAtTargetCommandVTable[] RETAIL(vt_Cmd193_Unknown);
-    extern const GccVTableEntry g_SetNodeBytes168CommandVTable[] RETAIL(vt_Cmd194_Unknown);
+    extern const GccVTableEntry g_SetContactSoundsCommandVTable[] RETAIL(vt_Cmd194_Unknown);
     extern const GccVTableEntry g_StopVideoCommandVTable[] RETAIL(vt_Cmd195_Unknown);
     extern const GccVTableEntry g_StopSoundCommandVTable[] RETAIL(vt_Cmd196_Unknown);
-    extern const GccVTableEntry g_DUMMY_197CommandVTable[] RETAIL(vt_Cmd197_DUMMY_197);
+    extern const GccVTableEntry g_NoOp197CommandVTable[] RETAIL(vt_Cmd197_DUMMY_197);
     extern const GccVTableEntry g_SetCollisionBoxSizeCommandVTable[] RETAIL(vt_Cmd198_Unknown);
     extern const GccVTableEntry g_NextLinkedObjectInListCommandVTable[] RETAIL(vt_Cmd199_Unknown);
-    extern const GccVTableEntry g_ArrangeLinkedObjectsCommandVTable[] RETAIL(vt_Cmd200_Unknown);
+    extern const GccVTableEntry g_PickLinkedObjectNearPlayerCommandVTable[] RETAIL(vt_Cmd200_Unknown);
     extern const GccVTableEntry g_TriggerInstanceAtOwnBoxCommandVTable[] RETAIL(vt_Cmd202_Unknown);
-    extern const GccVTableEntry g_ScaleModelNodeCommandVTable[] RETAIL(vt_Cmd203_Unknown);
+    extern const GccVTableEntry g_SetBodyMassCommandVTable[] RETAIL(vt_Cmd203_Unknown);
     extern const GccVTableEntry g_SetFocusPositionOffsetCommandVTable[] RETAIL(vt_Cmd204_Unknown);
-    extern const GccVTableEntry g_SetFocusPositionAtAngleCommandVTable[] RETAIL(vt_Cmd205_Unknown);
+    extern const GccVTableEntry g_SetStoredPositionAtAngleCommandVTable[] RETAIL(vt_Cmd205_Unknown);
     extern const GccVTableEntry g_SaveScriptStateCommandVTable[] RETAIL(vt_Cmd206_Unknown);
     extern const GccVTableEntry g_ClearSavedScriptStateCommandVTable[] RETAIL(vt_Cmd207_Unknown);
-    extern const GccVTableEntry g_SetNodeByte8cCommandVTable[] RETAIL(vt_Cmd208_Unknown);
-    extern const GccVTableEntry g_SetGlobalByte30a0e9CommandVTable[] RETAIL(vt_Cmd209_Unknown);
-    extern const GccVTableEntry g_TriggerInstancesInRangeCommandVTable[] RETAIL(vt_Cmd210_Unknown);
+    extern const GccVTableEntry g_SetRankCommandVTable[] RETAIL(vt_Cmd208_Unknown);
+    extern const GccVTableEntry g_SetTriggerRankCommandVTable[] RETAIL(vt_Cmd209_Unknown);
+    extern const GccVTableEntry g_TriggerInstancesByRankCommandVTable[] RETAIL(vt_Cmd210_Unknown);
     extern const GccVTableEntry g_MarkTimeCommandVTable[] RETAIL(vt_Cmd211_Unknown);
     extern const GccVTableEntry g_ClearMarkedTimeCommandVTable[] RETAIL(vt_Cmd212_Unknown);
-    extern const GccVTableEntry g_KeyOfPath34Op213CommandVTable[] RETAIL(vt_Cmd213_Unknown);
+    extern const GccVTableEntry g_RestartRouteCommandVTable[] RETAIL(vt_Cmd213_Unknown);
     extern const GccVTableEntry g_ControllerRumbleCommandVTable[] RETAIL(vt_Cmd214_ControllerRumble);
     extern const GccVTableEntry g_SetSoundParamsCommandVTable[] RETAIL(vt_Cmd215_Unknown);
     extern const GccVTableEntry g_CreateCrateContentsCommandVTable[] RETAIL(CreateCrateContents_VTable);
-    extern const GccVTableEntry g_CA_PickUpWumpaCommandVTable[] RETAIL(vt_Cmd513_CA_PickUpWumpa);
+    extern const GccVTableEntry g_PickUpWumpaCommandVTable[] RETAIL(vt_Cmd513_CA_PickUpWumpa);
     extern const GccVTableEntry g_CreateDamageCommandVTable[] RETAIL(vt_Cmd514_CreateDamage);
     extern const GccVTableEntry g_SetAgentCommandVTable[] RETAIL(vt_Cmd515_SetAgent);
     extern const GccVTableEntry g_SetPlayerRespawnPositionCommandVTable[] RETAIL(VT_SetPlayerRespawnPosition);
-    extern const GccVTableEntry g_ResetGameCommandVTable[] RETAIL(VT_ResetGame);
+    extern const GccVTableEntry g_RestartFromCheckpointCommandVTable[] RETAIL(VT_ResetGame);
     extern const GccVTableEntry g_SetCrateCommandVTable[] RETAIL(vt_Cmd518_SetCrate);
     extern const GccVTableEntry g_TriggerBalancedCrateFallingCommandVTable[] RETAIL(vt_Cmd519_TriggerBalancedCrateFalling);
-    extern const GccVTableEntry g_CA_PickUpHealthCommandVTable[] RETAIL(vt_Cmd520_CA_PickUpHealth);
+    extern const GccVTableEntry g_PickUpHealthCommandVTable[] RETAIL(vt_Cmd520_CA_PickUpHealth);
     extern const GccVTableEntry g_SetPlayerInputCommandVTable[] RETAIL(vt_Cmd521_SetPlayerInput);
     extern const GccVTableEntry g_TriggerAllNitroCratesCommandVTable[] RETAIL(vt_Cmd522_TriggerAllNitroCrates);
     extern const GccVTableEntry g_ApplyVelocityCommandVTable[] RETAIL(vt_Cmd523_ApplyVelocity);
@@ -4901,19 +7009,19 @@ extern "C"
     extern const GccVTableEntry g_SetChiChiGrassCommandVTable[] RETAIL(vt_Cmd527_SetChiChiGrass);
     extern const GccVTableEntry g_ReduceHitPointsCommandVTable[] RETAIL(vt_Cmd528_ReduceHitPoints);
     extern const GccVTableEntry g_SetHitPointsCommandVTable[] RETAIL(vt_Cmd529_SetHitPoints);
-    extern const GccVTableEntry g_DUMMY_SetRayTestsCommandVTable[] RETAIL(vt_Cmd530_DUMMY_SetRayTests);
-    extern const GccVTableEntry g_DUMMY_NowGoForwardCollidableCommandVTable[] RETAIL(vt_Cmd532_DUMMY_NowGoForwardCollidable);
+    extern const GccVTableEntry g_NoOpSetRayTestsCommandVTable[] RETAIL(vt_Cmd530_DUMMY_SetRayTests);
+    extern const GccVTableEntry g_NoOpNowGoForwardCollidableCommandVTable[] RETAIL(vt_Cmd532_DUMMY_NowGoForwardCollidable);
     extern const GccVTableEntry g_NowGoBackCollidableCommandVTable[] RETAIL(vt_Cmd533_NowGoBackCollidable);
-    extern const GccVTableEntry g_SetGlobalProgressionCommandVTable[] RETAIL(vt_Cmd534_SetGlobalProgression);
+    extern const GccVTableEntry g_SetPlayAreaCommandVTable[] RETAIL(vt_Cmd534_SetGlobalProgression);
     extern const GccVTableEntry g_AddCrystalCommandVTable[] RETAIL(vt_Cmd535_AddCrystal);
-    extern const GccVTableEntry g_DUMMY_536CommandVTable[] RETAIL(vt_Cmd536_DUMMY_536);
+    extern const GccVTableEntry g_NoOp536CommandVTable[] RETAIL(vt_Cmd536_DUMMY_536);
     extern const GccVTableEntry g_AddGemCommandVTable[] RETAIL(vt_Cmd537_AddGem);
-    extern const GccVTableEntry g_DUMMY_538CommandVTable[] RETAIL(vt_Cmd538_DUMMY_538);
-    extern const GccVTableEntry g_CA_SetPickupCommandVTable[] RETAIL(vt_Cmd539_CA_SetPickup);
-    extern const GccVTableEntry g_CA_SetProjectileCommandVTable[] RETAIL(vt_Cmd540_CA_SetProjectile);
+    extern const GccVTableEntry g_NoOp538CommandVTable[] RETAIL(vt_Cmd538_DUMMY_538);
+    extern const GccVTableEntry g_SetCustomPickupCommandVTable[] RETAIL(vt_Cmd539_CA_SetPickup);
+    extern const GccVTableEntry g_SetCustomProjectileCommandVTable[] RETAIL(vt_Cmd540_CA_SetProjectile);
     extern const GccVTableEntry g_ShootCommandVTable[] RETAIL(vt_Cmd548_Shoot);
     extern const GccVTableEntry g_GetShortRouteCommandVTable[] RETAIL(vt_Cmd549_GetShortRoute);
-    extern const GccVTableEntry g_DUMMY_FuelPayGateCommandVTable[] RETAIL(vt_Cmd550_DUMMY_FuelPayGate);
+    extern const GccVTableEntry g_NoOpFuelPayGateCommandVTable[] RETAIL(vt_Cmd550_DUMMY_FuelPayGate);
     extern const GccVTableEntry g_OpenAllLinkedFurnitureCommandVTable[] RETAIL(vt_Cmd551_OpenAllLinkedFurniture);
     extern const GccVTableEntry g_CloseAllLinkedFurnitureCommandVTable[] RETAIL(vt_Cmd552_CloseAllLinkedFurniture);
     extern const GccVTableEntry g_AttachAllLinkedAgentsCommandVTable[] RETAIL(vt_Cmd553_AttachAllLinkedAgents);
@@ -4929,7 +7037,7 @@ extern "C"
     extern const GccVTableEntry g_DamageOriginatorCommandVTable[] RETAIL(vt_Cmd563_DamageOriginator);
     extern const GccVTableEntry g_SetAgentRef1ToPlayerCommandVTable[] RETAIL(vt_Cmd566_Unknown);
     extern const GccVTableEntry g_SetFocusPositionToPlayerCommandVTable[] RETAIL(vt_Cmd567_Unknown);
-    extern const GccVTableEntry g_DUMMY_568CommandVTable[] RETAIL(vt_Cmd568_Unknown);
+    extern const GccVTableEntry g_NoOp568CommandVTable[] RETAIL(vt_Cmd568_Unknown);
     extern const GccVTableEntry g_ExitVehicleModeCommandVTable[] RETAIL(vt_Cmd569_ExitVehicleMode);
     extern const GccVTableEntry g_SetVehicleRollerbrawlCommandVTable[] RETAIL(vt_Cmd570_SetVehicleRollerbrawl);
     extern const GccVTableEntry g_SetVehicleHoverboardCommandVTable[] RETAIL(vt_Cmd571_SetVehicleHoverboard);
@@ -4939,15 +7047,15 @@ extern "C"
     extern const GccVTableEntry g_SetFocusPositionToNearestPointCommandVTable[] RETAIL(vt_Cmd575_Unknown);
     extern const GccVTableEntry g_SetFocusToGameActorCommandVTable[] RETAIL(vt_Cmd576_Unknown);
     extern const GccVTableEntry g_BecomeStickyCommandVTable[] RETAIL(vt_Cmd577_BecomeSticky);
-    extern const GccVTableEntry g_CharacterOp578CommandVTable[] RETAIL(vt_Cmd578_Unknown);
-    extern const GccVTableEntry g_CounterPositionOp579CommandVTable[] RETAIL(vt_Cmd579_Unknown);
+    extern const GccVTableEntry g_CountPlayerCirclingCommandVTable[] RETAIL(vt_Cmd578_Unknown);
+    extern const GccVTableEntry g_CountPlayerApproachCommandVTable[] RETAIL(vt_Cmd579_Unknown);
     extern const GccVTableEntry g_ApplyVelocityToHeldBodyCommandVTable[] RETAIL(vt_Cmd580_Unknown);
     extern const GccVTableEntry g_BecomeNormalCommandVTable[] RETAIL(vt_Cmd581_BecomeNormal);
     extern const GccVTableEntry g_AddPerceptionCommandVTable[] RETAIL(vt_Cmd582_Unknown);
-    extern const GccVTableEntry g_CutsceneCameraOp583CommandVTable[] RETAIL(vt_Cmd583_Unknown);
-    extern const GccVTableEntry g_DUMMY_584CommandVTable[] RETAIL(vt_Cmd584_DUMMY_584);
-    extern const GccVTableEntry g_DUMMY_586CommandVTable[] RETAIL(vt_Cmd586_DUMMY_586);
-    extern const GccVTableEntry g_SetObjectFlags587CommandVTable[] RETAIL(vt_Cmd587_Unknown);
+    extern const GccVTableEntry g_SwingAroundCameraCommandVTable[] RETAIL(vt_Cmd583_Unknown);
+    extern const GccVTableEntry g_NoOp584CommandVTable[] RETAIL(vt_Cmd584_DUMMY_584);
+    extern const GccVTableEntry g_NoOp586CommandVTable[] RETAIL(vt_Cmd586_DUMMY_586);
+    extern const GccVTableEntry g_SetAttacksTakenCommandVTable[] RETAIL(vt_Cmd587_Unknown);
     extern const GccVTableEntry g_PlayerFaceTowardsCameraCommandVTable[] RETAIL(vt_Cmd588_PlayerFaceTowardsCamera);
     extern const GccVTableEntry g_CutsceneStartCommandVTable[] RETAIL(vt_Cmd589_CutsceneStart);
     extern const GccVTableEntry g_CutsceneEndCommandVTable[] RETAIL(vt_Cmd590_CutsceneEnd);
@@ -4968,13 +7076,13 @@ extern "C"
     extern const GccVTableEntry g_CameraFocusObjectCommandVTable[] RETAIL(vt_Cmd606_CameraFocusObject);
     extern const GccVTableEntry g_CameraStopFocusObjectCommandVTable[] RETAIL(vt_Cmd607_CameraStopFocusObject);
     extern const GccVTableEntry g_ClearBottomTextCommandVTable[] RETAIL(vt_Cmd608_ClearBottomText);
-    extern const GccVTableEntry g_DUMMY_609CommandVTable[] RETAIL(vt_Cmd609_DUMMY_609);
-    extern const GccVTableEntry g_DUMMY_610CommandVTable[] RETAIL(vt_Cmd610_DUMMY_610);
+    extern const GccVTableEntry g_NoOp609CommandVTable[] RETAIL(vt_Cmd609_DUMMY_609);
+    extern const GccVTableEntry g_NoOp610CommandVTable[] RETAIL(vt_Cmd610_DUMMY_610);
     extern const GccVTableEntry g_SetCharacterHomeChunkCommandVTable[] RETAIL(vt_Cmd611_Unknown);
-    extern const GccVTableEntry g_GameControllerOp612CommandVTable[] RETAIL(vt_Cmd612_Unknown);
+    extern const GccVTableEntry g_EnablePlayerControlCommandVTable[] RETAIL(vt_Cmd612_Unknown);
     extern const GccVTableEntry g_DisablePlayerControlCommandVTable[] RETAIL(vt_Cmd613_DisablePlayerControl);
-    extern const GccVTableEntry g_SetNode120FlagCommandVTable[] RETAIL(vt_Cmd614_Unknown);
-    extern const GccVTableEntry g_SetPlayerFlag57CommandVTable[] RETAIL(vt_Cmd615_Unknown);
+    extern const GccVTableEntry g_StopStickingCommandVTable[] RETAIL(vt_Cmd614_Unknown);
+    extern const GccVTableEntry g_SetPlayerScriptFlagCommandVTable[] RETAIL(vt_Cmd615_Unknown);
     extern const GccVTableEntry g_PlaceCharacterInChunkCommandVTable[] RETAIL(vt_Cmd616_Unknown);
     extern const GccVTableEntry g_HitInstancesInBoxesCommandVTable[] RETAIL(vt_Cmd617_Unknown);
     extern const GccVTableEntry g_ForceGameOverCommandVTable[] RETAIL(vt_Cmd618_ForceGameOver);
@@ -4982,39 +7090,39 @@ extern "C"
     extern const GccVTableEntry g_HideBottomTextCommandVTable[] RETAIL(vt_Cmd620_HideBottomText);
     extern const GccVTableEntry g_SetFocusToCameraTargetCommandVTable[] RETAIL(vt_Cmd621_Unknown);
     extern const GccVTableEntry g_CharacterSoundProxyCommandVTable[] RETAIL(D_002EEE88);
-    extern const GccVTableEntry g_CameraNodeSetTargetCommandVTable[] RETAIL(vt_Cmd623_Unknown);
-    extern const GccVTableEntry g_EnableVarPercept629CommandVTable[] RETAIL(vt_Cmd624_EnableVarPercept629);
+    extern const GccVTableEntry g_SetFollowCameraTargetCommandVTable[] RETAIL(vt_Cmd623_Unknown);
+    extern const GccVTableEntry g_SetScriptGlobalFlagCommandVTable[] RETAIL(vt_Cmd624_EnableVarPercept629);
     extern const GccVTableEntry g_SwitchCharacterCommandVTable[] RETAIL(vt_Cmd625_SwitchCharacter);
-    extern const GccVTableEntry g_CameraNodeEnableFlagsCommandVTable[] RETAIL(vt_Cmd626_Unknown);
-    extern const GccVTableEntry g_CameraNodeClearFlagsCommandVTable[] RETAIL(vt_Cmd627_Unknown);
-    extern const GccVTableEntry g_SetCameraNodeValueCommandVTable[] RETAIL(vt_Cmd628_Unknown);
+    extern const GccVTableEntry g_UseOwnFollowCamerasCommandVTable[] RETAIL(vt_Cmd626_Unknown);
+    extern const GccVTableEntry g_UseTriggerCamerasCommandVTable[] RETAIL(vt_Cmd627_Unknown);
+    extern const GccVTableEntry g_SetFollowCameraRateCommandVTable[] RETAIL(vt_Cmd628_Unknown);
     extern const GccVTableEntry g_SetCameraNodeValuesCommandVTable[] RETAIL(vt_Cmd629_Unknown);
-    extern const GccVTableEntry g_SetNode5FlagsCommandVTable[] RETAIL(vt_Cmd630_Unknown);
-    extern const GccVTableEntry g_SetPlayerVehicleValueCommandVTable[] RETAIL(vt_Cmd631_Unknown);
+    extern const GccVTableEntry g_SwitchBodyFlagsCommandVTable[] RETAIL(vt_Cmd630_Unknown);
+    extern const GccVTableEntry g_PushPlayerVehicleCommandVTable[] RETAIL(vt_Cmd631_Unknown);
     extern const GccVTableEntry g_SetLinkedObjectNearestPlayerCommandVTable[] RETAIL(vt_Cmd632_Unknown);
     extern const GccVTableEntry g_SetPlayerModeCommandVTable[] RETAIL(vt_Cmd633_SetPlayerMode);
     extern const GccVTableEntry g_PlayMovieCommandVTable[] RETAIL(vt_Cmd634_PlayMovie);
     extern const GccVTableEntry g_AddAmmoCommandVTable[] RETAIL(vt_Cmd636_AddAmmo);
-    extern const GccVTableEntry g_LinkedObjectNearestPlayerOp637CommandVTable[] RETAIL(vt_Cmd637_Unknown);
+    extern const GccVTableEntry g_SetFocusToLinkedObjectInViewCommandVTable[] RETAIL(vt_Cmd637_Unknown);
     extern const GccVTableEntry g_EnableBossModeCommandVTable[] RETAIL(vt_Cmd638_EnableBossMode);
     extern const GccVTableEntry g_DamageBossCommandVTable[] RETAIL(vt_Cmd639_DamageBoss);
     extern const GccVTableEntry g_ExitBossModeCommandVTable[] RETAIL(vt_Cmd640_ExitBossMode);
-    extern const GccVTableEntry g_FinalBossInitWeaponsCommandVTable[] RETAIL(vt_Cmd641_Unknown);
+    extern const GccVTableEntry g_FinalBossWeaponsCommandVTable[] RETAIL(vt_Cmd641_Unknown);
     extern const GccVTableEntry g_CreateNodeControllerCommandVTable[] RETAIL(vt_Cmd645_Unknown);
-    extern const GccVTableEntry g_RequestOgiSlotCommandVTable[] RETAIL(vt_Cmd646_Unknown);
-    extern const GccVTableEntry g_SetGlobalProgression2CommandVTable[] RETAIL(vt_Cmd647_SetGlobalProgression2);
-    extern const GccVTableEntry g_SetNodeValue174CommandVTable[] RETAIL(vt_Cmd648_Unknown);
-    extern const GccVTableEntry g_ClearNodeValue174CommandVTable[] RETAIL(vt_Cmd649_Unknown);
-    extern const GccVTableEntry g_SetCharacterFlag2CommandVTable[] RETAIL(vt_Cmd650_Unknown);
-    extern const GccVTableEntry g_ClearCharacterFlag2CommandVTable[] RETAIL(vt_Cmd651_Unknown);
+    extern const GccVTableEntry g_SetGaugeIconCommandVTable[] RETAIL(vt_Cmd646_Unknown);
+    extern const GccVTableEntry g_RaiseStoryAreaCommandVTable[] RETAIL(vt_Cmd647_SetGlobalProgression2);
+    extern const GccVTableEntry g_SetCountedValueCommandVTable[] RETAIL(vt_Cmd648_Unknown);
+    extern const GccVTableEntry g_ClearCountedValueCommandVTable[] RETAIL(vt_Cmd649_Unknown);
+    extern const GccVTableEntry g_HoldVehicleCommandVTable[] RETAIL(vt_Cmd650_Unknown);
+    extern const GccVTableEntry g_ReleaseVehicleCommandVTable[] RETAIL(vt_Cmd651_Unknown);
     extern const GccVTableEntry g_CameraTopdownModeCommandVTable[] RETAIL(vt_Cmd652_CameraTopdownMode);
     extern const GccVTableEntry g_PlayCreditsCommandVTable[] RETAIL(vt_Cmd654_PlayCredits);
     extern const GccVTableEntry g_SetMaskControllerIdsCommandVTable[] RETAIL(vt_Cmd655_Unknown);
     extern const GccVTableEntry g_ResetMaskControllerCommandVTable[] RETAIL(vt_Cmd656_Unknown);
     extern const GccVTableEntry g_DisplayBottomTextInstanceCommandVTable[] RETAIL(vt_Cmd657_DisplayBottomTextInstance);
     extern const GccVTableEntry g_SetSplineControllerValuesCommandVTable[] RETAIL(vt_Cmd658_Unknown);
-    extern const GccVTableEntry g_TriggerCharacterEvent12CommandVTable[] RETAIL(vt_Cmd659_Unknown);
-    extern const GccVTableEntry g_ClearPlayerFlag14CommandVTable[] RETAIL(vt_Cmd660_Unknown);
+    extern const GccVTableEntry g_MakeCharactersIdleCommandVTable[] RETAIL(vt_Cmd659_Unknown);
+    extern const GccVTableEntry g_ClearCharacterDeadCommandVTable[] RETAIL(vt_Cmd660_Unknown);
     extern const GccVTableEntry g_SetSkateControllerIdsCommandVTable[] RETAIL(vt_Cmd661_Unknown);
     extern const GccVTableEntry g_ResetCameraCommandVTable[] RETAIL(vt_Cmd662_ResetCamera);
 }

@@ -3,6 +3,7 @@
 #include "game/agentlab.h"
 #include "game/animation.h"
 #include "game/language.h"
+#include "game/layout.h"
 #include "game/memory.h"
 #include "game/resources.h"
 #include "game/sound.h"
@@ -17,8 +18,6 @@ extern "C"
 
 namespace
 {
-constexpr u16 NoId = 0xFFFF;
-constexpr u16 IndexMask = 0x7FFF;
 
 // A list made empty with new: every ID undefined, no count
 ResourceIdList* NewIdList()
@@ -26,7 +25,7 @@ ResourceIdList* NewIdList()
     auto* list = static_cast<ResourceIdList*>(MemoryAllocate(sizeof(ResourceIdList)));
     for (u16& id : list->ids)
     {
-        id = NoId;
+        id = UndefinedId;
     }
 
     list->countOrMore = 0;
@@ -58,12 +57,12 @@ void ForEachId(ResourceIdList* list, Visit visit)
 template <typename Make>
 void TakeResource(ResourceTable* table, u16 id, Make make)
 {
-    if (id == NoId)
+    if (id == UndefinedId)
     {
         return;
     }
 
-    u32 index = id & IndexMask;
+    u32 index = id & ResourceIndexMask;
     void* resource = table->items[index];
     if (resource == nullptr)
     {
@@ -80,19 +79,19 @@ void TakeResource(ResourceTable* table, u16 id, Make make)
 template <typename Delete>
 void ReleaseResource(ResourceTable* table, u16 id, Delete deleteResource)
 {
-    if (id == NoId)
+    if (id == UndefinedId)
     {
         return;
     }
 
-    u32 index = id & IndexMask;
+    u32 index = id & ResourceIndexMask;
     void* resource = table->items[index];
     if (resource == nullptr)
     {
         return;
     }
 
-    if (--ReferencesOf(resource) != 0 || (HeaderOf(resource)->bits & ResourceHeader::Kept) != 0)
+    if (--HeaderOf(resource)->bits.references != 0 || HeaderOf(resource)->bits.kept != 0)
     {
         return;
     }
@@ -124,7 +123,7 @@ ResourceTable* VoicesOf(GameResources* resources)
 ResourceTable* SoundTableOf(GameResources* resources, ResourceTable* voices, u16 id)
 {
     ResourceTable* sounds = resources->sounds;
-    return id != NoId && sounds->items[id & IndexMask] != nullptr ? sounds : voices;
+    return id != NoSoundId && sounds->items[id & ResourceIndexMask] != nullptr ? sounds : voices;
 }
 
 void* EmptyObject(u32)
@@ -190,7 +189,7 @@ void FreeCodeModel(void* model)
 void FreeScript(void* script)
 {
     auto* resource = static_cast<ScriptResource*>(script);
-    CallVirtual<void>(resource, resource->vtable, 1, u32{DestroyAndFree});
+    CallVirtual<void>(resource, resource->vtable, ScriptResource::DestroySlot, u32{DestroyAndFree});
 }
 
 void FreeSound(void* sound)
@@ -351,13 +350,13 @@ void ResourceReferences::Destroy(u32 destroyFlags)
 CodeModel* CodeModel::Construct(CodeModel* model)
 {
     ConstructResourceHeader(model);
-    model->unknown09 = 0xFF;
+    model->slot = NoSlot;
     model->packCount = 0;
-    model->unknown0B = 0;
+    model->unused0B = 0;
     model->packs = nullptr;
     model->command = nullptr;
     model->packIds = nullptr;
-    model->unknown08 = 0xFF;
+    model->kind = KindNone;
     return model;
 }
 
@@ -383,7 +382,7 @@ void CodeModel::Destroy(u32 destroyFlags)
 
     if (command != nullptr)
     {
-        CallVirtual<void>(command, command->vtable, 1, u32{DestroyAndFree});
+        CallVirtual<void>(command, command->vtable, ScriptCommand::DestroySlot, u32{DestroyAndFree});
     }
 
     if ((destroyFlags & 1) != 0)
@@ -394,7 +393,7 @@ void CodeModel::Destroy(u32 destroyFlags)
 
 void CodeModel::Read(Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&unknown08));
+    stream->ReadS32(reinterpret_cast<s32*>(&kind));
     u8 count = packCount;
     ScriptPack* made = NewArray<ScriptPack>(count);
     for (u32 index = 0; index < count; index++)

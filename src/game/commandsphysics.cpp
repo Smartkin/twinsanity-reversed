@@ -47,83 +47,18 @@ EABI_EXPORT(FUN_002549b8, SetRigidBodyTurn);
 
 namespace
 {
-// The rigid body's 64 bits at 0x88: the kind of its motion (bits 32-35) and of its collisions (36-39), 0 none. Below 9 its node's
-// motion moves it (it's in its chunk's first list) and its collision cache's triangles stop it; from 9 on its physics body does
-// (9 a sphere of the node's roll radius, 10 and 11 hulls sized by its instance's own box, more hulls). Then how it's launched
-// (40-41), its being in the first list (44), a size given (48), bit 55 of the collisions command, its moving (56: its frame
-// steps it), its stopping (57: 15 steps after its launch, once it touches something or nearly rests, it stops moving), its
-// steering itself (59), a size and a restitution given without its physics body told (60, 61)
-constexpr u32 MotionKindShift = 32;
-constexpr u32 CollisionKindShift = 36;
-constexpr u64 KindMask = 0xF;
-constexpr u32 PlainKind = 1;
-constexpr u32 PhysicsKinds = 9;
-constexpr u32 SphereKind = 9;
-constexpr u32 BoxKindsEnd = 12;
-constexpr u32 LaunchShift = 40;
-constexpr u64 LaunchMask = u64{3} << LaunchShift;
-constexpr u64 InFirstList = u64{1} << 44;
-constexpr u64 SizeGiven = u64{1} << 48;
-constexpr u64 Bit55 = u64{1} << 55;
-constexpr u64 Moving = u64{1} << 56;
-constexpr u64 StopsAtRest = u64{1} << 57;
-constexpr u64 SteersItself = u64{1} << 59;
-constexpr u64 SizeGivenAlone = u64{1} << 60;
-constexpr u64 RestitutionGivenAlone = u64{1} << 61;
-// What the values given set: its velocity dragged (45), gripped by what it touches (46), its own restitution (47), it falls (49),
-// it turns (58), its own length drag (62); and what it touched (51 an instance, 52 the world, 53 anything)
-constexpr u64 Dragged = u64{1} << 45;
-constexpr u64 Gripped = u64{1} << 46;
-constexpr u64 OwnRestitution = u64{1} << 47;
-constexpr u64 Falls = u64{1} << 49;
-constexpr u64 TouchingInstance = u64{1} << 51;
-constexpr u64 TouchingWorld = u64{1} << 52;
-constexpr u64 Touching = u64{1} << 53;
-constexpr u64 Turning = u64{1} << 58;
-constexpr u64 OwnLengthDrag = u64{1} << 62;
-// Made, its four bytes are set, bits 48, 49, 53 and 63 left as the memory had them and the others cleared
-constexpr u64 MadeBytes = 0xFFFFFFFF;
-constexpr u64 MadeKept = 0x8023000000000000 | MadeBytes;
-// Its word at 0x90: bits 0, 11-14 and 19 set when it's made (1, 2 and 26-31 left, the others cleared), 2 and 3 what the commands
-// set, 6-7 and 8-9 the physics sizes' modes (the magnet's strength and its way: 0 from the body, 1 its z axis), 10 it's out of
-// action, 11-14 its steps since it was launched (counting up to 15), 21-23 and 25 what the collisions command sets
-constexpr u64 MadeCleared90 = 0x3F787F8;
-constexpr u64 MadeSet90 = 0x87801;
-constexpr u64 Bit2 = 0x4;
-constexpr u64 Bit3 = 0x8;
-constexpr u32 StrengthShift = 6;
-constexpr u32 WayShift = 8;
-constexpr u64 OutOfAction = 0x400;
-constexpr u64 LaunchSteps = 0x7800;
-constexpr u64 Bit21 = 0x200000;
-constexpr u64 Bit22 = 0x400000;
-constexpr u64 Bit23 = 0x800000;
-constexpr u64 Bit25 = 0x2000000;
-// On the ground and against a wall this frame (bits 1 and 5), whether it touched anything when its contacts were forgotten (24)
-constexpr u64 OnGround = 0x2;
-constexpr u64 AgainstWall = 0x20;
-constexpr u64 TouchedBefore = 0x1000000;
-// The lists' room and the indexes of a body in neither
-constexpr u16 MostListed = 0xFF;
-constexpr u16 NoFirstIndex = 0xFFFF;
-constexpr u8 NoSecondIndex = 0xFF;
+// The kinds of a rigid body past the hulls sized by its instance's own box (RigidBodyKind)
+constexpr u32 BoxKindsEnd = BodyKindSimplex + 1;
+// Made, its bits' low word is set (the bits nothing reads), bits 48 (a size given), 49 (it falls), 53 (touching anything) and 63
+// left as the memory had them and the others cleared
+constexpr u64 BitsSetWhenMade = 0xFFFFFFFF;
+constexpr u64 BitsKeptWhenMade = 0x8023000000000000 | BitsSetWhenMade;
+// Its state made: bits 0, 11-14 (the launch steps) and 19 set, 1, 2 and 26-31 left, the others cleared
+constexpr u32 StateClearedWhenMade = 0x3F787F8;
+constexpr u32 StateSetWhenMade = 0x87801;
 
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 PhysicsBodyKind = 5;
-// The object node's vtable functions 15 (whether it takes packets) and 36 (a designator's instance), the physics body's 15
-// (whether it's a sphere)
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 GetDesignatorSlot = 36;
-constexpr u32 IsSphereSlot = 15;
-// The physics body's vtable function telling it its centre of mass moved
-constexpr u32 CenterOfMassSlot = 17;
-constexpr u8 NoDesignator = 0xFF;
-// The instance's flag 6: it's attached to its parent
-constexpr u32 AttachedFlag = 0x40;
-// The surfaces whose triangles a rigid body's collision cache gathers
-constexpr u32 CacheMask = 0x50;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 Epsilon = 0x1.a36e2ep-15f;
+// The surfaces whose triangles a rigid body's collision cache gathers (SurfaceFlags: solid to the player's probes and to objects)
+constexpr u32 CacheSurfaces = SurfaceFlags::SolidToPlayerProbes | SurfaceFlags::SolidToObjects;
 
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
@@ -132,33 +67,27 @@ ObjectNode* NodeOf(BehaviourRunner* runner)
 
 bool TakesPackets(GameNode* node)
 {
-    return CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0;
-}
-
-// The commands' floats that commands.h has as integers
-f32 FloatOf(const s32& value)
-{
-    return __builtin_bit_cast(f32, value);
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0;
 }
 
 u32 MotionKind(const ObjectRigidBody* body)
 {
-    return body->bits88 >> MotionKindShift & KindMask;
+    return body->bits.motionKind;
 }
 
 u32 CollisionKind(const ObjectRigidBody* body)
 {
-    return body->bits88 >> CollisionKindShift & KindMask;
+    return body->bits.collisionKind;
 }
 
 void SetMotionKind(ObjectRigidBody* body, u32 kind)
 {
-    body->bits88 = (body->bits88 & ~(KindMask << MotionKindShift)) | (kind & KindMask) << MotionKindShift;
+    body->bits.motionKind = kind;
 }
 
 void SetCollisionKind(ObjectRigidBody* body, u32 kind)
 {
-    body->bits88 = (body->bits88 & ~(KindMask << CollisionKindShift)) | (kind & KindMask) << CollisionKindShift;
+    body->bits.collisionKind = kind;
 }
 
 // A body taken out of its chunk's first or second list (the last one moved into its place) and put in (no room past 255), the
@@ -166,7 +95,7 @@ void SetCollisionKind(ObjectRigidBody* body, u32 kind)
 void TakeFromFirstList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
     u16 index = body->firstIndex;
-    if (index == NoFirstIndex)
+    if (index == ObjectRigidBody::NoFirstIndex)
     {
         return;
     }
@@ -181,7 +110,7 @@ void TakeFromFirstList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 void TakeFromSecondList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
     u8 index = body->secondIndex;
-    if (index == NoSecondIndex)
+    if (index == ObjectRigidBody::NoSecondIndex)
     {
         return;
     }
@@ -195,7 +124,7 @@ void TakeFromSecondList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 
 void PutInFirstList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
-    if (bodies->firstCount >= MostListed)
+    if (bodies->firstCount >= ChunkRigidBodies::MostBodies)
     {
         return;
     }
@@ -211,7 +140,7 @@ void PutInFirstList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 
 void PutInSecondList(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
-    if (bodies->secondCount >= MostListed)
+    if (bodies->secondCount >= ChunkRigidBodies::MostBodies)
     {
         return;
     }
@@ -288,38 +217,32 @@ f32 SecondsSinceUpdate(const GameNode* node, const TimeClock* clock)
     return static_cast<f32>(static_cast<s32>(clock->time - node->time)) * g_SecondsPerClockUnit;
 }
 
-// Where a launch goes, by its bits (0-3 the space, 4-11 a receiver, 12-19 the designator, 21 the offset given): the current
-// route step's position (or 0xEF's), else the designated one
-void LaunchTarget(u32 bits, const Vector4* offset, f32 first, f32 second, f32 third, BehaviourRunner* runner, Vector4* target)
+// Where a launch goes: the current route step's position (for its designator or DesignatesNextStep), moved by the step values,
+// else the designated one
+void LaunchTarget(ColliderLaunchBits launch, const Vector4* offset, f32 corner, f32 toward, f32 scatter, BehaviourRunner* runner,
+                  Vector4* target)
 {
-    constexpr u32 SpaceMask = 0xF;
-    constexpr u32 ReceiverShift = 4;
-    constexpr u32 DesignatorShift = 12;
-    constexpr u32 DesignatorMask = 0xFF;
-    constexpr u32 OffsetGiven = 0x200000;
-    constexpr u32 RouteStep = 0xEF;
     ObjectNode* node = NodeOf(runner);
-    u32 designator = bits >> DesignatorShift & DesignatorMask;
-    if (designator == DesignatesCurrentStep || designator == RouteStep)
+    u32 designator = launch.designator;
+    // The next step's designator takes the current step too
+    if (designator == DesignatesCurrentStep || designator == DesignatesNextStep)
     {
-        RouteStepPosition(node->waypoints, target, node, 1, first, second, third, 0.0f, 0.0f);
+        RouteStepPosition(node->waypoints, target, node, 1, corner, toward, scatter, 0.0f, 0.0f);
         return;
     }
 
-    DesignatedPosition(target, bits & SpaceMask, runner, (bits & OffsetGiven) != 0 ? offset : nullptr, designator,
-                       bits >> ReceiverShift & DesignatorMask, 0);
+    DesignatedPosition(target, launch.space, runner, launch.offsetGiven ? offset : nullptr, designator, launch.receiver, 0);
 }
 }
 
-// Half the largest side of the instance's box as value2 (when asked), then value2 as the node's roll radius and its physics
-// sphere's radius (an ellipsoid made a sphere)
+// Half the largest side of the instance's box as the radius (when asked), then the radius as the node's roll radius and its
+// physics sphere's radius (an ellipsoid made a sphere)
 void SetLogicalRadiusCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 FromBox = 0x1;
     ObjectNode* node = NodeOf(runner);
-    if ((value1 & FromBox) != 0)
+    if (flags.fromBox)
     {
-        value2 = LargestSide(node->owner->CollisionBox()) * 0.5f;
+        radius = LargestSide(node->owner->CollisionBox()) * 0.5f;
     }
 
     if (!TakesPackets(node))
@@ -327,71 +250,47 @@ void SetLogicalRadiusCommand::Execute(TimeClock*, BehaviourRunner* runner, Behav
         return;
     }
 
-    node->rollRadius = value2;
-    auto* body = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, PhysicsBodyKind));
-    if (body == nullptr || CallVirtual<u32>(body, body->vtable, IsSphereSlot) == 0)
+    node->rollRadius = radius;
+    auto* body = static_cast<GameNode*>(GetGameNode(&node->owner->nodes, NodeRigidBody));
+    if (body == nullptr || CallVirtual<u32>(body, body->vtable, DynamicBody::IsSphereSlot) == 0)
     {
         return;
     }
 
     auto* sphere = static_cast<SphereBody*>(body);
     sphere->ellipsoid = 0;
-    sphere->radius = value2;
+    sphere->radius = radius;
 }
 
-// The node's roll radius; its rigid body (made the first time) given kinds of motion and of collisions (bits 0-3 and 4-7), let go
-// of when it's left with neither, and given the values of the flags. value2 to value4 and value13 are floats (commands.h has
-// integers)
+// The node's roll radius; its rigid body (made the first time) given kinds of motion and of collisions, let go of when it's left
+// with neither, and given the values of the settings
 void SetCollisionsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 MotionKindGiven = 0x100;
-    constexpr u32 CollisionKindGiven = 0x200;
-    constexpr u32 RadiusGiven = 0x400;
-    constexpr u32 GravityGiven = 0x800;
-    constexpr u32 Flag12 = 0x1000;
-    constexpr u32 DragGiven = 0x2000;
-    constexpr u32 FrictionGiven = 0x4000;
-    constexpr u32 RestitutionGiven = 0x8000;
-    constexpr u32 SizeGivenFlag = 0x10000;
-    constexpr u32 LaunchFlagsShift = 17;
-    constexpr u32 CenterOfMassGiven = 0x80000;
-    constexpr u32 Steers = 0x100000;
-    constexpr u32 SizeAlone = 0x200000;
-    constexpr u32 RestitutionAlone = 0x400000;
-    constexpr u32 SpinFrictionGiven = 0x800000;
-    constexpr u32 LengthDragGiven = 0x1000000;
-    constexpr u32 Flag25 = 0x2000000;
-    constexpr u32 Flag26 = 0x4000000;
-    constexpr u32 RadiusFromBox = 0x8000000;
-    constexpr u32 RadiusFromHeight = 0x10000000;
-    constexpr u32 Flag29 = 0x20000000;
-    constexpr u32 Flag30 = 0x40000000;
-    constexpr u32 Flag31 = 0x80000000;
     ObjectNode* node = NodeOf(runner);
     ObjectRigidBody* body = node->rigidBody;
-    if ((flags & RadiusGiven) != 0)
+    if (settings.rollRadiusGiven)
     {
-        node->rollRadius = height;
+        node->rollRadius = rollRadius;
     }
 
-    if ((flags & RadiusFromBox) != 0)
+    if (settings.rollRadiusFromBox)
     {
         node->rollRadius = LargestSide(node->owner->CollisionBox()) * 0.5f;
     }
-    else if ((flags & RadiusFromHeight) != 0)
+    else if (settings.rollRadiusFromHeight)
     {
-        // Half the box's height, and value14 the larger of its half width and half depth over it
+        // Half the box's height, and the width scale the larger of its half width and half depth over it
         Vector4 sides = SidesOf(node->owner->CollisionBox());
         f32 half = sides.y * 0.5f;
         node->rollRadius = half;
         f32 inverse = 1.0f / half;
-        value14 = __builtin_fmaxf(sides.z * 0.5f, sides.x * 0.5f) * inverse;
+        widthScale = __builtin_fmaxf(sides.z * 0.5f, sides.x * 0.5f) * inverse;
     }
 
     // A body that's there keeps its kind of motion
-    if ((flags & MotionKindGiven) != 0)
+    if (settings.motionKindGiven)
     {
-        if ((flags & KindMask) == 0)
+        if (settings.motionKind == 0)
         {
             if (body != nullptr)
             {
@@ -401,15 +300,15 @@ void SetCollisionsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
         else if (body == nullptr)
         {
             body = ConstructRigidBody(MemoryAllocate(sizeof(ObjectRigidBody)), node);
-            ListRigidBodyFirst(body, flags & KindMask);
+            ListRigidBodyFirst(body, settings.motionKind);
             node->ReleaseRigidBody();
             node->rigidBody = body;
         }
     }
 
-    if ((flags & CollisionKindGiven) != 0)
+    if (settings.collisionKindGiven)
     {
-        u32 kind = flags >> 4 & KindMask;
+        u32 kind = settings.collisionKind;
         if (kind == 0)
         {
             if (body == nullptr)
@@ -437,120 +336,115 @@ void SetCollisionsCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
         return;
     }
 
-    if ((flags & Flag31) != 0)
+    if (settings.pushedByVolumes)
     {
-        body->bits90 |= Bit23;
+        body->state.pushedByVolumes = 1;
     }
 
-    if ((flags & GravityGiven) != 0)
+    if (settings.gravityGiven)
     {
-        SetRigidBodyGravity(radius.FloatWith(node->PacketProperties()), body);
+        SetRigidBodyGravity(gravity.FloatWith(node->PacketProperties()), body);
     }
     else
     {
         ClearRigidBodyGravity(body);
     }
 
-    body->bits88 = (flags & Flag12) != 0 ? body->bits88 | Bit55 : body->bits88 & ~Bit55;
-    if ((flags & Steers) != 0)
+    body->bits.immovable = settings.immovable;
+    if (settings.steersItself)
     {
-        body->bits88 |= SteersItself;
+        body->bits.steersItself = 1;
     }
 
-    body->bits90 = (flags & Flag25) != 0 ? body->bits90 | Bit2 : body->bits90 & ~Bit2;
-    body->bits90 = (flags & Flag26) != 0 ? body->bits90 | Bit3 : body->bits90 & ~Bit3;
-    body->unknownA0 = value14;
-    body->unknownBC = value15;
-    if ((flags & Flag29) != 0)
+    body->state.unused2 = settings.unused25;
+    body->state.unused3 = settings.unused26;
+    body->widthScale = widthScale;
+    body->impulseLength = impulseLength;
+    if (settings.impulseCapped)
     {
-        body->bits90 |= Bit21;
+        body->state.impulseCapped = 1;
     }
-    else if ((flags & Flag30) != 0)
+    else if (settings.impulseFixed)
     {
-        body->bits90 |= Bit22;
+        body->state.impulseFixed = 1;
     }
 
-    if ((body->bits88 & (KindMask << MotionKindShift | KindMask << CollisionKindShift)) == 0)
+    if ((body->bits.value & ObjectRigidBodyBits::KindsMask) == 0)
     {
         node->ReleaseRigidBody();
         return;
     }
 
-    if ((flags & DragGiven) != 0)
+    if (settings.dragGiven)
     {
-        SetRigidBodyDrag(value8, body);
+        SetRigidBodyDrag(drag, body);
     }
 
-    if ((flags & LengthDragGiven) != 0)
+    if (settings.lengthDragGiven)
     {
-        SetRigidBodyLengthDrag(value9, body);
+        SetRigidBodyLengthDrag(lengthDrag, body);
     }
-    else if (value9 < 0.0f)
+    else if (lengthDrag < 0.0f)
     {
-        body->bits90 |= Bit25;
-    }
-
-    if ((flags & FrictionGiven) != 0)
-    {
-        SetRigidBodyFriction(value10, body);
+        body->state.tellsWaterTouches = 1;
     }
 
-    if ((flags & RestitutionGiven) != 0)
+    if (settings.frictionGiven)
     {
-        SetRigidBodyRestitution(value11, body);
-    }
-    else if ((flags & RestitutionAlone) != 0)
-    {
-        body->restitution = value11;
-        body->bits88 |= RestitutionGivenAlone;
+        SetRigidBodyFriction(friction, body);
     }
 
-    if ((flags & SizeGivenFlag) != 0)
+    if (settings.restitutionGiven)
     {
-        SetRigidBodySize(value12, body);
+        SetRigidBodyRestitution(restitution, body);
     }
-    else if ((flags & SizeAlone) != 0)
+    else if (settings.ownNormalRate)
     {
-        body->size = value12;
-        body->bits88 |= SizeGivenAlone;
-    }
-
-    if ((flags & SpinFrictionGiven) != 0)
-    {
-        SetRigidBodySpinFriction(FloatOf(value13), body);
+        body->restitution = restitution;
+        body->bits.ownNormalRate = 1;
     }
 
-    if ((flags & CenterOfMassGiven) != 0)
+    if (settings.sizeGiven)
     {
-        SetRigidBodyCenterOfMass(body, reinterpret_cast<const Vector4*>(&value2));
+        SetRigidBodySize(size, body);
+    }
+    else if (settings.slopeLimited)
+    {
+        body->size = size;
+        body->bits.slopeLimited = 1;
+    }
+
+    if (settings.spinFrictionGiven)
+    {
+        SetRigidBodySpinFriction(spinFriction, body);
+    }
+
+    if (settings.centerOfMassGiven)
+    {
+        SetRigidBodyCenterOfMass(body, reinterpret_cast<const Vector4*>(&centerOfMassX));
     }
 
     if (body->physicsBody == nullptr)
     {
-        body->bits88 = (body->bits88 & ~LaunchMask) | u64{flags >> LaunchFlagsShift & 3} << LaunchShift;
+        body->bits.launch = settings.launch;
     }
 
-    body->bits88 &= ~StopsAtRest;
-    body->bits90 |= LaunchSteps;
+    body->bits.stopsAtRest = 0;
+    body->state.launchSteps = ObjectRigidBodyState::MostSteps;
 }
 
-// The rigid body moving, its values of value1's bits (1 the drag, 2 the friction, 3 the restitution, 4 it stops at rest, launched
-// again) and the node's velocity (bit 0). value6 to value8 are floats (commands.h has integers)
+// The rigid body moving, its values (the drag, the friction, the restitution, its stopping once it rests, launched again) and the
+// node's velocity given as the bits say
 void ContinueColliderMotionCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 VelocityGiven = 0x1;
-    constexpr u32 DragGiven = 0x2;
-    constexpr u32 FrictionGiven = 0x4;
-    constexpr u32 RestitutionGiven = 0x8;
-    constexpr u32 StopsFlag = 0x10;
     ObjectNode* node = NodeOf(runner);
     // Retail bug: without a rigid body it writes the bits at 0x88 (and the values' setters read through it)
     ObjectRigidBody* body = node->rigidBody;
-    body->bits88 |= Moving;
-    if ((value1.raw & VelocityGiven) != 0)
+    body->bits.moving = 1;
+    if (flags.velocityGiven)
     {
-        // Retail bug: the vector it turns into the world is its stack's, never the velocity given (velX to velZ), so the node
-        // gets whatever was left there (none here)
+        // Retail bug: the vector it turns into the world is its stack's, never the velocity given (unused2 to unused4), so the
+        // node gets whatever was left there (none here)
         Vector4 velocity = {};
         ObjectPlace* place = node->owner->place;
         RotateAndTranslate(place);
@@ -558,44 +452,33 @@ void ContinueColliderMotionCommand::Execute(TimeClock*, BehaviourRunner* runner,
         SetVelocity(node->motion, &velocity);
     }
 
-    if ((value1.raw & FrictionGiven) != 0)
+    if (flags.frictionGiven)
     {
-        SetRigidBodyFriction(FloatOf(value7), body);
+        SetRigidBodyFriction(friction, body);
     }
 
-    if ((value1.raw & DragGiven) != 0)
+    if (flags.dragGiven)
     {
-        SetRigidBodyDrag(FloatOf(value6), body);
+        SetRigidBodyDrag(drag, body);
     }
 
-    if ((value1.raw & RestitutionGiven) != 0)
+    if (flags.restitutionGiven)
     {
-        SetRigidBodyRestitution(FloatOf(value8), body);
+        SetRigidBodyRestitution(restitution, body);
     }
 
-    if ((value1.raw & StopsFlag) != 0)
+    if (flags.stops)
     {
-        body->bits88 |= StopsAtRest;
-        body->bits90 &= ~LaunchSteps;
+        body->bits.stopsAtRest = 1;
+        body->state.launchSteps = 0;
     }
 }
 
 // The node's velocity: the one given (turned from the instance's space into the world), or the throw to the launch's target under
-// the rigid body's gravity, over a height (the target's height above the node added when it's above, with flags2's bit 3) or at
-// an angle; then the rigid body's values of the flags and its contacts forgotten. value8, value10 and value12 to value14 are
-// floats, value11 a float's bits (commands.h has integers)
+// the rigid body's gravity, over a height (the target's height above the node added when it's above, when asked) or in a time;
+// then the rigid body's values given and its contacts forgotten
 void ColliderLaunchNowCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 VelocityGiven = 0x100000;
-    constexpr u32 DragGiven = 0x400000;
-    constexpr u32 FrictionGiven = 0x800000;
-    constexpr u32 RestitutionGiven = 0x1000000;
-    constexpr u32 TurnGiven = 0x2000000;
-    constexpr u32 StopsFlag = 0x8000000;
-    constexpr u32 ThrownAtAngle = 0x10000000;
-    constexpr u32 ThrownOverHeight = 0x20000000;
-    constexpr u32 AddsRise = 0x8;
-    constexpr u32 Flag2Of90 = 0x10;
     ObjectNode* node = NodeOf(runner);
     ObjectRigidBody* body = node->rigidBody;
     if (body == nullptr)
@@ -603,9 +486,9 @@ void ColliderLaunchNowCommand::Execute(TimeClock*, BehaviourRunner* runner, Beha
         return;
     }
 
-    body->bits88 |= Moving;
+    body->bits.moving = 1;
     MotionState* motion = node->motion;
-    if ((flags & VelocityGiven) != 0)
+    if (launch.velocityGiven)
     {
         Vector4 velocity = {x, y, z, w};
         ObjectPlace* place = node->owner->place;
@@ -620,15 +503,14 @@ void ColliderLaunchNowCommand::Execute(TimeClock*, BehaviourRunner* runner, Beha
         Vector4 position = place->position;
         Vector4 target = g_DefaultBox.min;
         target.w = 1.0f;
-        LaunchTarget(flags, reinterpret_cast<const Vector4*>(&x), FloatOf(value12), FloatOf(value13), FloatOf(value14), runner,
-                     &target);
+        LaunchTarget(launch, reinterpret_cast<const Vector4*>(&x), stepCorner, stepToward, stepScatter, runner, &target);
         // Retail bug: with neither kind of throw the node gets the velocity its stack had (none here)
         Vector4 velocity = {};
         f32 gravity = body->gravity;
-        if ((flags & ThrownOverHeight) != 0)
+        if (launch.thrownOverHeight)
         {
-            f32 height = power;
-            if ((flags2 & AddsRise) != 0)
+            f32 height = heightOrTime;
+            if (extras.addsRise)
             {
                 f32 rise = target.y - position.y;
                 if (0.0f < rise)
@@ -639,65 +521,55 @@ void ColliderLaunchNowCommand::Execute(TimeClock*, BehaviourRunner* runner, Beha
 
             ThrowOverHeight(gravity, height, &position, &target, &velocity);
         }
-        else if ((flags & ThrownAtAngle) != 0)
+        else if (launch.thrownInTime)
         {
-            ThrowInTime(gravity, power, &position, &target, &velocity);
+            ThrowInTime(gravity, heightOrTime, &position, &target, &velocity);
         }
 
         SetVelocity(motion, &velocity);
     }
 
-    if ((flags & RestitutionGiven) != 0)
+    if (launch.restitutionGiven)
     {
-        SetRigidBodyRestitution(FloatOf(value10), body);
+        SetRigidBodyRestitution(restitution, body);
     }
 
-    if ((flags & FrictionGiven) != 0)
+    if (launch.frictionGiven)
     {
-        SetRigidBodyFriction(value9, body);
+        SetRigidBodyFriction(friction, body);
     }
 
-    if ((flags & DragGiven) != 0)
+    if (launch.dragGiven)
     {
-        SetRigidBodyDrag(FloatOf(value8), body);
+        SetRigidBodyDrag(drag, body);
     }
 
-    if ((flags & TurnGiven) != 0)
+    if (launch.turnGiven)
     {
-        SetRigidBodyTurn(__builtin_bit_cast(f32, value11), body);
+        SetRigidBodyTurn(turn, body);
     }
 
-    body->bits90 = (flags2 & Flag2Of90) != 0 ? body->bits90 | Bit2 : body->bits90 & ~Bit2;
-    if ((flags & StopsFlag) != 0)
+    body->state.unused2 = extras.unused4;
+    if (launch.stops)
     {
-        body->bits88 |= StopsAtRest;
-        body->bits90 &= ~LaunchSteps;
+        body->bits.stopsAtRest = 1;
+        body->state.launchSteps = 0;
     }
 
     ForgetRigidBodyContacts(body);
 }
 
-// ColliderLaunchNow's velocity (the designated target alone), then the physics body launched with it, spinning by value7 about
-// the instance's x axis or else by value8 about its y axis. Without a rigid body retail reads its gravity at 0xA4
+// ColliderLaunchNow's velocity (the designated target alone), then the physics body launched with it, spinning by spinX about the
+// instance's x axis or else by spinY about its y axis. Without a rigid body retail reads its gravity at 0xA4
 void LaunchAtTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 SpaceMask = 0xF;
-    constexpr u32 ReceiverShift = 4;
-    constexpr u32 DesignatorShift = 12;
-    constexpr u32 DesignatorMask = 0xFF;
-    constexpr u32 VelocityGiven = 0x100000;
-    constexpr u32 OffsetGiven = 0x200000;
-    constexpr u32 ThrownAtAngle = 0x400000;
-    constexpr u32 ThrownOverHeight = 0x800000;
-    constexpr u32 AddsRise = 0x1000000;
     ObjectNode* node = NodeOf(runner);
     ObjectRigidBody* body = node->rigidBody;
     MotionState* motion = node->motion;
-    u32 bits = static_cast<u32>(target.raw);
     const auto* offset = reinterpret_cast<const Vector4*>(&offsetX);
     // Retail bug: with neither kind of throw the node and its physics body get the velocity the stack had (none here)
     Vector4 velocity = {};
-    if ((bits & VelocityGiven) != 0)
+    if (launch.velocityGiven)
     {
         velocity = *offset;
         ObjectPlace* place = node->owner->place;
@@ -712,13 +584,13 @@ void LaunchAtTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
         Vector4 position = place->position;
         Vector4 goal = g_DefaultBox.min;
         goal.w = 1.0f;
-        DesignatedPosition(&goal, bits & SpaceMask, runner, (bits & OffsetGiven) != 0 ? offset : nullptr,
-                           bits >> DesignatorShift & DesignatorMask, bits >> ReceiverShift & DesignatorMask, 0);
+        DesignatedPosition(&goal, launch.space, runner, launch.offsetGiven ? offset : nullptr, launch.designator, launch.receiver,
+                           0);
         f32 gravity = body->gravity;
-        if ((bits & ThrownOverHeight) != 0)
+        if (launch.thrownOverHeight)
         {
-            f32 height = speedOrAngle;
-            if ((bits & AddsRise) != 0)
+            f32 height = heightOrTime;
+            if (launch.addsRise)
             {
                 f32 rise = goal.y - position.y;
                 if (0.0f < rise)
@@ -729,33 +601,31 @@ void LaunchAtTargetCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
 
             ThrowOverHeight(gravity, height, &position, &goal, &velocity);
         }
-        else if ((bits & ThrownAtAngle) != 0)
+        else if (launch.thrownInTime)
         {
-            ThrowInTime(gravity, speedOrAngle, &position, &goal, &velocity);
+            ThrowInTime(gravity, heightOrTime, &position, &goal, &velocity);
         }
 
         SetVelocity(motion, &velocity);
     }
 
-    LaunchPhysicsBody(value8, value7, node, &velocity);
+    LaunchPhysicsBody(spinY, spinX, node, &velocity);
 }
 
-// The designated instance's (the low byte a designator, else the originator with bit 10, else the node's own) pushed: by an
-// impulse (bit 12: the velocity given, turned from the node's instance's space, on its rigid body at its position or else on its
-// physics body at its middle) or else on its physics body's angular momentum (bit 11: value6 to value8)
+// The designated instance's (else the originator's when asked, else the node's own) pushed: by the impulse given (turned from the
+// node's instance's space, on its rigid body at its position or else on its physics body at its middle) or else by the spin given
+// (added to its physics body's angular momentum)
 void ApplyImpulseCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 FromOriginator = 0x400;
-    constexpr u32 TurnGiven = 0x800;
-    constexpr u32 VelocityGiven = 0x1000;
     InstanceContext* instance;
-    u8 designator = static_cast<u8>(value1);
-    if (designator != NoDesignator)
+    u8 designator = flags.designator;
+    if (designator != DesignatesNone)
     {
         GameNode* agentNode = runner->agentNode;
-        instance = CallVirtual<InstanceContext*>(agentNode, agentNode->vtable, GetDesignatorSlot, static_cast<u32>(designator));
+        instance = CallVirtual<InstanceContext*>(agentNode, agentNode->vtable, ObjectNode::GetDesignatorSlot,
+                                                 static_cast<u32>(designator));
     }
-    else if ((value1 & FromOriginator) != 0)
+    else if (flags.fromOriginator)
     {
         instance = static_cast<InstanceContext*>(runner->originator);
     }
@@ -770,14 +640,14 @@ void ApplyImpulseCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
     }
 
     NodeList* nodes = &instance->nodes;
-    if (GetGameNode(nodes, ObjectNodeKind) == nullptr)
+    if (GetGameNode(nodes, NodeObject) == nullptr)
     {
         return;
     }
 
-    if ((value1 & VelocityGiven) != 0)
+    if (flags.impulseGiven)
     {
-        Vector4 impulse = {velX, velY, velZ, value5};
+        Vector4 impulse = {impulseX, impulseY, impulseZ, impulseW};
         ObjectPlace* place = runner->agentNode->owner->place;
         RotateAndTranslate(place);
         VuRotateVector(&place->matrix, &impulse, &impulse);
@@ -795,10 +665,10 @@ void ApplyImpulseCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
         }
 
         // Retail looks for the physics body a second time when there's none
-        auto* physics = static_cast<RigidBody*>(GetGameNode(nodes, PhysicsBodyKind));
+        auto* physics = static_cast<RigidBody*>(GetGameNode(nodes, NodeRigidBody));
         if (physics == nullptr)
         {
-            physics = static_cast<RigidBody*>(GetGameNode(nodes, PhysicsBodyKind));
+            physics = static_cast<RigidBody*>(GetGameNode(nodes, NodeRigidBody));
             if (physics == nullptr)
             {
                 return;
@@ -810,21 +680,21 @@ void ApplyImpulseCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviour
         return;
     }
 
-    if ((value1 & TurnGiven) == 0)
+    if (!flags.spinGiven)
     {
         return;
     }
 
-    auto* physics = static_cast<RigidBody*>(GetGameNode(nodes, PhysicsBodyKind));
+    auto* physics = static_cast<RigidBody*>(GetGameNode(nodes, NodeRigidBody));
     if (physics == nullptr)
     {
         return;
     }
 
-    physics->angularMomentum.x = physics->angularMomentum.x + value6;
-    physics->angularMomentum.y = physics->angularMomentum.y + value7;
-    physics->angularMomentum.z = physics->angularMomentum.z + value8;
-    physics->bodyFlags |= RigidBody::FlagMoved;
+    physics->angularMomentum.x = physics->angularMomentum.x + spinX;
+    physics->angularMomentum.y = physics->angularMomentum.y + spinY;
+    physics->angularMomentum.z = physics->angularMomentum.z + spinZ;
+    physics->bodyFlags.velocityStale = 1;
 }
 
 // The pull of the awake focus's rigid body's magnet on the node's position, over the time since the node's last update, as a
@@ -867,21 +737,22 @@ void MagnetPullToFocusCommand::Execute(TimeClock* clock, BehaviourRunner* runner
         return;
     }
 
-    body->bits88 |= Moving | StopsAtRest;
-    body->bits90 &= ~LaunchSteps;
-    Vector4 point = node->unknown20;
+    body->bits.moving = 1;
+    body->bits.stopsAtRest = 1;
+    body->state.launchSteps = 0;
+    Vector4 point = node->middle;
     point.w = 1.0f;
     ObjectRigidBody* holderBody = nullptr;
-    if ((focus->flags & AttachedFlag) != 0)
+    if (focus->flags.attached)
     {
         // Retail doesn't check that the parent has an object node
-        auto* holder = static_cast<ObjectNode*>(GetGameNode(&focus->parent->nodes, ObjectNodeKind));
+        auto* holder = static_cast<ObjectNode*>(GetGameNode(&focus->parent->nodes, NodeObject));
         if (TakesPackets(holder))
         {
             holderBody = holder->rigidBody;
             if (holderBody != nullptr)
             {
-                point = holder->unknown20;
+                point = holder->middle;
                 point.w = 1.0f;
             }
         }
@@ -906,30 +777,30 @@ void MagnetPullToFocusCommand::Execute(TimeClock* clock, BehaviourRunner* runner
     ApplyRigidBodyForce(holderBody, &pull, &point);
 }
 
-// The physics bodies of the awake instances (with nodes of kind 5, 64 at most) within the size of a point (the instance's
-// position plus the offset turned from its space) pushed away from it: by value5 at their middle, or with the flag by value5 plus
-// their distance times (value6 - value5) / size, 3 units above their middle
-void MoveInstancesInBoxCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The physics bodies of the awake instances (with physics bodies, 64 at most) within a radius of a point (the instance's position
+// plus the offset turned from its space) pushed away from it: by the push at their middle, or by distance by the push plus their
+// distance times (edgePush - push) / radius, 3 units above their middle
+void PushInstancesAwayCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u16 Most = 0x40;
-    constexpr u32 QueryKinds = 0x20;
+    constexpr u32 QueryKinds = 1 << NodeRigidBody;
     constexpr f32 Above = 3.0f;
     InstanceContext* instance = runner->agentNode->owner;
     ChunkData* chunk = instance->chunk;
     void* results[Most];
-    InstanceRayHit query;
+    InstanceQuery query;
     query.results = results;
     query.count = 0;
     query.most = Most;
-    query.distance = Rounded(1e30);
+    query.distance = Infinite;
     // Retail keeps the stack's other bits (nothing reads them)
-    query.bits = InstanceRayHit::BitAllWanted;
+    query.bits.value = InstanceQueryBits::AllWanted;
     query.wantedFlags = 0;
-    query.unwantedFlags = ReferencedObject::FlagAsleep;
+    query.unwantedFlags = ReferencedObjectFlags::Asleep;
     query.skipped[0] = nullptr;
     query.skipped[1] = nullptr;
     query.instance = nullptr;
-    Vector4 sphere = {offsetX, offsetY, offsetZ, size};
+    Vector4 sphere = {offsetX, offsetY, offsetZ, radius};
     SkipInQuery(&query, instance);
     ObjectPlace* place = instance->place;
     place->SyncPosition();
@@ -953,11 +824,11 @@ void MoveInstancesInBoxCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
     sphere.y = centre.y;
     sphere.z = centre.z;
     u32 found = ChunkInstancesInSphere(chunk, &sphere, QueryKinds, &query, 0);
-    bool byDistance = (flags & 0xFF) != 0;
+    bool byDistance = flags.byDistance != 0;
     for (u16 index = 0; index < found; index++)
     {
         auto* other = static_cast<InstanceContext*>(results[index]);
-        auto* physics = static_cast<RigidBody*>(GetGameNode(&other->nodes, PhysicsBodyKind));
+        auto* physics = static_cast<RigidBody*>(GetGameNode(&other->nodes, NodeRigidBody));
         if (physics == nullptr)
         {
             continue;
@@ -973,20 +844,20 @@ void MoveInstancesInBoxCommand::Execute(TimeClock*, BehaviourRunner* runner, Beh
         Vector4 point;
         if (byDistance)
         {
-            f32 perDistance = (value6 - value5) / size;
+            f32 perDistance = (edgePush - push) / radius;
             Vector4 way = away;
             f32 inverse = InverseLength(&way, LengthEpsilon);
             way.x = way.x * inverse;
             way.y = way.y * inverse;
             way.z = way.z * inverse;
-            impulse = {way.x * value5 + away.x * perDistance, way.y * value5 + away.y * perDistance,
-                       way.z * value5 + away.z * perDistance, 1.0f};
+            impulse = {way.x * push + away.x * perDistance, way.y * push + away.y * perDistance, way.z * push + away.z * perDistance,
+                       1.0f};
             point = {0.0f, Above, 0.0f, 1.0f};
         }
         else
         {
             f32 inverse = InverseLength(&away, LengthEpsilon);
-            impulse = {away.x * inverse * value5, away.y * inverse * value5, away.z * inverse * value5, 1.0f};
+            impulse = {away.x * inverse * push, away.y * inverse * push, away.z * inverse * push, 1.0f};
             point = {0.0f, 0.0f, 0.0f, 1.0f};
         }
 
@@ -998,21 +869,21 @@ ObjectRigidBody* ConstructRigidBody(void* memory, ObjectNode* node)
 {
     auto* body = static_cast<ObjectRigidBody*>(memory);
     body->node = node;
-    body->bits90 = (body->bits90 & ~MadeCleared90) | MadeSet90;
-    body->bits88 = (body->bits88 & MadeKept) | MadeBytes;
+    body->state.value = (body->state.value & ~StateClearedWhenMade) | StateSetWhenMade;
+    body->bits.value = (body->bits.value & BitsKeptWhenMade) | BitsSetWhenMade;
     body->cache = nullptr;
     body->physicsBody = nullptr;
     body->drag = 1.0f;
     body->friction = 1.0f;
     body->restitution = 0.0f;
-    body->unknownBC = 1.0f;
-    body->unknownC4 = 0.0f;
-    body->unknownC8 = 0.0f;
-    body->unknownA0 = 1.0f;
+    body->impulseLength = 1.0f;
+    body->unusedC4 = 0.0f;
+    body->grip = 0.0f;
+    body->widthScale = 1.0f;
     body->contactNormal = {0.0f, 1.0f, 0.0f, 1.0f};
-    body->unknownCC = node->motion->velocity.y;
-    body->secondIndex = NoSecondIndex;
-    body->firstIndex = NoFirstIndex;
+    body->unusedCC = node->motion->velocity.y;
+    body->secondIndex = ObjectRigidBody::NoSecondIndex;
+    body->firstIndex = ObjectRigidBody::NoFirstIndex;
     body->chunkBodies = nullptr;
     body->object = nullptr;
     body->rideMovement = nullptr;
@@ -1025,15 +896,15 @@ ObjectRigidBody* ConstructRigidBody(void* memory, ObjectNode* node)
 // kind, and whether or not it's still in it)
 void ActivateRigidBody(ObjectRigidBody* body)
 {
-    if ((body->bits90 & OutOfAction) == 0)
+    if (!body->state.outOfAction)
     {
         return;
     }
 
     ChunkRigidBodies* bodies = ChunkRigidBodiesOf(body->node->owner->chunk);
-    body->bits90 &= ~OutOfAction;
+    body->state.outOfAction = 0;
     u32 kind = MotionKind(body);
-    if (kind >= PhysicsKinds)
+    if (kind >= FirstPhysicsBodyKind)
     {
         if (body->physicsBody == nullptr)
         {
@@ -1043,12 +914,12 @@ void ActivateRigidBody(ObjectRigidBody* body)
     else
     {
         PutInFirstList(bodies, body);
-        body->bits88 |= InFirstList;
+        body->bits.inFirstList = 1;
     }
 
     // Retail bug: it goes back into the second list only while it's still in it (a second entry then), so one put out of action
-    // (FUN_00254088 takes it out) never does
-    if (body->secondIndex != NoSecondIndex)
+    // (DeactivateRigidBody takes it out) never does
+    if (body->secondIndex != ObjectRigidBody::NoSecondIndex)
     {
         PutInSecondList(bodies, body);
     }
@@ -1059,7 +930,7 @@ void ActivateRigidBody(ObjectRigidBody* body)
 void SetRigidBodySize(f32 size, ObjectRigidBody* body)
 {
     body->size = size;
-    body->bits88 |= SizeGiven;
+    body->bits.sizeGiven = 1;
     if (body->physicsBody == nullptr)
     {
         return;
@@ -1067,11 +938,11 @@ void SetRigidBodySize(f32 size, ObjectRigidBody* body)
 
     f32 mass = BodyMass(body->node);
     u32 kind = CollisionKind(body);
-    if (kind == SphereKind)
+    if (kind == BodyKindSphere)
     {
         body->physicsBody->SetMassAndSize(mass, size, size, size);
     }
-    else if (kind >= PhysicsKinds && kind < BoxKindsEnd)
+    else if (kind >= FirstPhysicsBodyKind && kind < BoxKindsEnd)
     {
         Vector4 sides = SidesOf(&body->node->owner->collision.ownBox);
         body->physicsBody->SetMassAndSize(mass, sides.x * size, sides.y * size, sides.z * size);
@@ -1086,7 +957,7 @@ void ListRigidBodyFirst(ObjectRigidBody* body, u32 kind)
     if (kind == 0)
     {
         StopRigidBodyMotion(body);
-        if (CollisionKind(body) < PhysicsKinds)
+        if (CollisionKind(body) < FirstPhysicsBodyKind)
         {
             ReleasePhysicsBody(body);
         }
@@ -1097,7 +968,7 @@ void ListRigidBodyFirst(ObjectRigidBody* body, u32 kind)
     ChunkRigidBodies* bodies = ChunkRigidBodiesOf(body->node->owner->chunk);
     SetMotionKind(body, kind);
     u32 set = MotionKind(body);
-    if (set >= PhysicsKinds)
+    if (set >= FirstPhysicsBodyKind)
     {
         if (body->physicsBody == nullptr)
         {
@@ -1105,17 +976,17 @@ void ListRigidBodyFirst(ObjectRigidBody* body, u32 kind)
         }
 
         TakeFromFirstList(bodies, body);
-        body->bits88 &= ~InFirstList;
+        body->bits.inFirstList = 0;
         return;
     }
 
-    if ((body->bits88 & InFirstList) == 0)
+    if (!body->bits.inFirstList)
     {
         PutInFirstList(bodies, body);
-        body->bits88 |= InFirstList;
+        body->bits.inFirstList = 1;
     }
 
-    if (CollisionKind(body) < PhysicsKinds && body->physicsBody != nullptr)
+    if (CollisionKind(body) < FirstPhysicsBodyKind && body->physicsBody != nullptr)
     {
         ReleasePhysicsBody(body);
     }
@@ -1129,7 +1000,7 @@ void ListRigidBodySecond(ObjectRigidBody* body, u32 kind)
     if (kind == 0)
     {
         StopRigidBodyCollisions(body);
-        if (MotionKind(body) < PhysicsKinds)
+        if (MotionKind(body) < FirstPhysicsBodyKind)
         {
             ReleasePhysicsBody(body);
         }
@@ -1138,21 +1009,21 @@ void ListRigidBodySecond(ObjectRigidBody* body, u32 kind)
     }
 
     SetCollisionKind(body, kind);
-    if (body->secondIndex == NoSecondIndex)
+    if (body->secondIndex == ObjectRigidBody::NoSecondIndex)
     {
         PutInSecondList(ChunkRigidBodiesOf(body->node->owner->chunk), body);
     }
 
-    if (body->cache == nullptr && CollisionKind(body) < PhysicsKinds)
+    if (body->cache == nullptr && CollisionKind(body) < FirstPhysicsBodyKind)
     {
         CollisionCache* cache = ConstructCollisionCache(static_cast<CollisionCache*>(MemoryAllocate(sizeof(CollisionCache))),
-                                                        body->node->owner, CacheMask);
+                                                        body->node->owner, CacheSurfaces);
         body->cache = cache;
         cache->margin = 1.0f;
     }
 
     u32 set = CollisionKind(body);
-    if (set >= PhysicsKinds)
+    if (set >= FirstPhysicsBodyKind)
     {
         if (body->physicsBody == nullptr)
         {
@@ -1162,7 +1033,7 @@ void ListRigidBodySecond(ObjectRigidBody* body, u32 kind)
         return;
     }
 
-    if (MotionKind(body) < PhysicsKinds && body->physicsBody != nullptr)
+    if (MotionKind(body) < FirstPhysicsBodyKind && body->physicsBody != nullptr)
     {
         ReleasePhysicsBody(body);
     }
@@ -1173,8 +1044,10 @@ void ListRigidBodySecond(ObjectRigidBody* body, u32 kind)
 // g_PhysicsBodyKinds, 4 and 5; it places the instance, which is told of its collisions
 void MakePhysicsBody(ObjectRigidBody* body, u32 kind)
 {
-    constexpr u32 CollisionMaskBits = 0x30;
-    bool sphere = kind == SphereKind;
+    constexpr u32 AlsoCollidesWith = 1 << NodeDynamicScenery | 1 << NodeRigidBody;
+    constexpr f32 MadeRestitution = Rounded(0.3);
+    constexpr f32 MadeFriction = Rounded(0.8);
+    bool sphere = kind == BodyKindSphere;
     DynamicBody* physics = AddPhysicsBody(g_PhysicsWorld, body->node->owner, sphere);
     body->physicsBody = physics;
     physics->MoveTo(body->node->owner, 0);
@@ -1186,10 +1059,10 @@ void MakePhysicsBody(ObjectRigidBody* body, u32 kind)
 
     // Retail works out twice the sides of the instance's own box for hulls 10 and 11 and never uses them: they keep the mass and
     // size they were made with
-    body->physicsBody->SetRestitution(Rounded(0.3));
-    body->physicsBody->SetFriction(Rounded(0.8));
-    body->physicsBody->bits |= DynamicBody::BitPlacesInstance;
-    body->physicsBody->collisionMask = g_PhysicsBodyKinds | CollisionMaskBits;
+    body->physicsBody->SetRestitution(MadeRestitution);
+    body->physicsBody->SetFriction(MadeFriction);
+    body->physicsBody->bits.placesInstance = 1;
+    body->physicsBody->collisionMask = g_PhysicsBodyKinds | AlsoCollidesWith;
     if (sphere)
     {
         auto* ball = static_cast<SphereBody*>(body->physicsBody);
@@ -1197,8 +1070,8 @@ void MakePhysicsBody(ObjectRigidBody* body, u32 kind)
         ball->radius = body->node->rollRadius;
     }
 
-    body->bits88 &= ~LaunchMask;
-    body->node->owner->flags |= ReferencedObject::FlagPhysicsBody;
+    body->bits.launch = 0;
+    body->node->owner->flags.physicsBody = 1;
 }
 
 // By the kind of motion: 1-5 and 8 the node's velocity takes it, 9-11 the physics body (at the point in the instance's space)
@@ -1270,7 +1143,7 @@ void ApplyRigidBodyForce(ObjectRigidBody* body, const Vector4* force, const Vect
     }
 }
 
-// The second physics size along the magnet's way (0 from the body to the position, 1 its z axis, others none) made a unit vector;
+// The second physics size along the magnet's way (from the body to the position, its z axis, others none) made a unit vector;
 // none for its strengths 1 and 2
 void MagnetPull(ObjectRigidBody* body, const Vector4* position, Vector4* pull)
 {
@@ -1279,12 +1152,12 @@ void MagnetPull(ObjectRigidBody* body, const Vector4* position, Vector4* pull)
     ObjectPlace* place = body->node->owner->place;
     place->SyncPosition();
     Vector4 here = place->position;
-    switch (body->bits90 >> WayShift & 3)
+    switch (body->state.magnetWay)
     {
-    case 0:
+    case MagnetFromBody:
         way = {position->x - here.x, position->y - here.y, position->z - here.z, 1.0f};
         break;
-    case 1:
+    case MagnetAlongZAxis:
         place = body->node->owner->place;
         RotateAndTranslate(place);
         way = *RowOf(&place->matrix, 2);
@@ -1297,8 +1170,8 @@ void MagnetPull(ObjectRigidBody* body, const Vector4* position, Vector4* pull)
     way.x = way.x * inverse;
     way.y = way.y * inverse;
     way.z = way.z * inverse;
-    u32 strength = body->bits90 >> StrengthShift & 3;
-    if (strength == 1 || strength == 2)
+    u32 strength = body->state.magnetStrength;
+    if (strength == MagnetEven || strength == MagnetMode2)
     {
         *pull = none;
         return;
@@ -1322,16 +1195,16 @@ void DestroyRigidBody(ObjectRigidBody* body, u32 destroyFlags)
 // Out of action (once: back with ActivateRigidBody), out of its chunk's second list
 void DeactivateRigidBody(ObjectRigidBody* body)
 {
-    if ((body->bits90 & OutOfAction) != 0)
+    if (body->state.outOfAction)
     {
         return;
     }
 
-    body->bits90 |= OutOfAction;
+    body->state.outOfAction = 1;
     // Retail bug: it stays in the first list, only its index forgotten (a destroyed body is left in it, an activated one twice)
-    body->firstIndex = NoFirstIndex;
-    body->bits88 &= ~InFirstList;
-    if (body->secondIndex != NoSecondIndex)
+    body->firstIndex = ObjectRigidBody::NoFirstIndex;
+    body->bits.inFirstList = 0;
+    if (body->secondIndex != ObjectRigidBody::NoSecondIndex)
     {
         TakeFromSecondList(ChunkRigidBodiesOf(body->node->owner->chunk), body);
     }
@@ -1339,9 +1212,9 @@ void DeactivateRigidBody(ObjectRigidBody* body)
 
 void ForgetFirstIndex(ObjectRigidBody* body)
 {
-    body->bits88 &= ~InFirstList;
-    body->firstIndex = NoFirstIndex;
-    if (body->secondIndex == NoSecondIndex)
+    body->bits.inFirstList = 0;
+    body->firstIndex = ObjectRigidBody::NoFirstIndex;
+    if (body->secondIndex == ObjectRigidBody::NoSecondIndex)
     {
         body->chunkBodies = nullptr;
     }
@@ -1349,8 +1222,8 @@ void ForgetFirstIndex(ObjectRigidBody* body)
 
 void ForgetSecondIndex(ObjectRigidBody* body)
 {
-    body->secondIndex = NoSecondIndex;
-    if (body->firstIndex == NoFirstIndex)
+    body->secondIndex = ObjectRigidBody::NoSecondIndex;
+    if (body->firstIndex == ObjectRigidBody::NoFirstIndex)
     {
         body->chunkBodies = nullptr;
     }
@@ -1373,20 +1246,20 @@ void SetRigidBodyGravity(f32 gravity, ObjectRigidBody* body)
         return;
     }
 
-    body->bits88 |= Falls;
-    body->node->flags |= ObjectNode::FlagLevel;
+    body->bits.falls = 1;
+    body->node->flags.falls = 1;
 }
 
 void ClearRigidBodyGravity(ObjectRigidBody* body)
 {
-    body->bits88 &= ~Falls;
-    body->node->flags &= ~ObjectNode::FlagLevel;
+    body->bits.falls = 0;
+    body->node->flags.falls = 0;
 }
 
 void SetRigidBodyRestitution(f32 value, ObjectRigidBody* body)
 {
     body->restitution = value;
-    body->bits88 |= OwnRestitution;
+    body->bits.ownRestitution = 1;
     if (body->physicsBody != nullptr)
     {
         body->physicsBody->SetRestitution(value);
@@ -1396,7 +1269,7 @@ void SetRigidBodyRestitution(f32 value, ObjectRigidBody* body)
 void SetRigidBodyDrag(f32 value, ObjectRigidBody* body)
 {
     body->drag = value;
-    body->bits88 |= Dragged;
+    body->bits.dragged = 1;
     if (body->physicsBody != nullptr)
     {
         body->physicsBody->drag = value;
@@ -1406,7 +1279,7 @@ void SetRigidBodyDrag(f32 value, ObjectRigidBody* body)
 void SetRigidBodyLengthDrag(f32 value, ObjectRigidBody* body)
 {
     body->lengthDrag = value;
-    body->bits88 |= OwnLengthDrag;
+    body->bits.ownLengthDrag = 1;
     if (body->physicsBody != nullptr)
     {
         // Retail bug: the physics body's length drag is made the rigid body's drag, not its length drag
@@ -1417,7 +1290,7 @@ void SetRigidBodyLengthDrag(f32 value, ObjectRigidBody* body)
 void SetRigidBodyFriction(f32 value, ObjectRigidBody* body)
 {
     body->friction = value;
-    body->bits88 |= Gripped;
+    body->bits.gripped = 1;
     if (body->physicsBody != nullptr)
     {
         body->physicsBody->SetFriction(value);
@@ -1441,7 +1314,7 @@ void SetRigidBodyMass(f32 mass, ObjectRigidBody* body)
 
 void StopRigidBodyMotion(ObjectRigidBody* body)
 {
-    if (body->firstIndex != NoFirstIndex)
+    if (body->firstIndex != ObjectRigidBody::NoFirstIndex)
     {
         ChunkData* chunk = body->node->owner->chunk;
         if (chunk != nullptr)
@@ -1454,7 +1327,8 @@ void StopRigidBodyMotion(ObjectRigidBody* body)
         }
     }
 
-    body->bits88 &= ~InFirstList & ~(KindMask << MotionKindShift);
+    body->bits.inFirstList = 0;
+    body->bits.motionKind = 0;
 }
 
 void StopRigidBodyCollisions(ObjectRigidBody* body)
@@ -1465,7 +1339,7 @@ void StopRigidBodyCollisions(ObjectRigidBody* body)
         body->cache = nullptr;
     }
 
-    if (body->secondIndex != NoSecondIndex)
+    if (body->secondIndex != ObjectRigidBody::NoSecondIndex)
     {
         ChunkData* chunk = body->node->owner->chunk;
         if (chunk != nullptr)
@@ -1478,7 +1352,7 @@ void StopRigidBodyCollisions(ObjectRigidBody* body)
         }
     }
 
-    body->bits88 &= ~(KindMask << CollisionKindShift);
+    body->bits.collisionKind = 0;
 }
 
 void ReleasePhysicsBody(ObjectRigidBody* body)
@@ -1489,26 +1363,27 @@ void ReleasePhysicsBody(ObjectRigidBody* body)
         body->physicsBody = nullptr;
     }
 
-    if (CollisionKind(body) >= PhysicsKinds)
+    if (CollisionKind(body) >= FirstPhysicsBodyKind)
     {
-        SetCollisionKind(body, PlainKind);
+        SetCollisionKind(body, BodyKindPlain);
     }
 
-    if (MotionKind(body) >= PhysicsKinds)
+    if (MotionKind(body) >= FirstPhysicsBodyKind)
     {
-        SetMotionKind(body, PlainKind);
+        SetMotionKind(body, BodyKindPlain);
     }
 
     ObjectNode* node = body->node;
     if (node->motionBlock == nullptr)
     {
-        node->owner->flags &= ~ReferencedObject::FlagPhysicsBody;
+        node->owner->flags.physicsBody = 0;
     }
 }
 
 void RevertColliderMotion(ObjectRigidBody* body)
 {
-    body->bits88 &= ~Moving & ~StopsAtRest;
+    body->bits.moving = 0;
+    body->bits.stopsAtRest = 0;
 }
 
 void SetRigidBodyCenterOfMass(ObjectRigidBody* body, const Vector4* center)
@@ -1516,7 +1391,7 @@ void SetRigidBodyCenterOfMass(ObjectRigidBody* body, const Vector4* center)
     DynamicBody* physics = body->physicsBody;
     if (physics != nullptr)
     {
-        CallVirtual<void>(physics, physics->vtable, CenterOfMassSlot, center);
+        CallVirtual<void>(physics, physics->vtable, DynamicBody::SetCenterOfMassSlot, center);
     }
 }
 
@@ -1524,17 +1399,20 @@ void SetRigidBodyTurn(f32 radians, ObjectRigidBody* body)
 {
     ObjectNode* node = body->node;
     SetStoredPlace(node, node->owner->place);
-    body->unknownC4 = radians;
-    body->unknownC0 = 0.0f;
-    body->bits88 |= Turning;
+    body->unusedC4 = radians;
+    body->untouchedTime = 0.0f;
+    body->bits.turning = 1;
 }
 
 void ForgetRigidBodyContacts(ObjectRigidBody* body)
 {
-    u64 touched = (body->bits88 & (TouchingInstance | TouchingWorld)) != 0 ? TouchedBefore : 0;
-    body->bits90 = ((body->bits90 & ~TouchedBefore) | touched) & ~OnGround & ~AgainstWall;
+    body->state.touched = body->bits.touchingInstance || body->bits.touchingWorld;
+    body->state.onGround = 0;
+    body->state.againstWall = 0;
     body->object = nullptr;
-    body->bits88 &= ~TouchingInstance & ~TouchingWorld & ~Touching;
+    body->bits.touchingInstance = 0;
+    body->bits.touchingWorld = 0;
+    body->bits.touching = 0;
     body->rideMovement = nullptr;
-    body->node->flags &= ~ObjectNode::FlagRiding;
+    body->node->flags.riding = 0;
 }

@@ -49,25 +49,6 @@ FUN_001966b0:
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 BodyNodeKind = 5;
-// The object nodes' vtable functions: their links let go (ReleaseLinks), whether it takes packets, launched (a gravity and a
-// velocity)
-constexpr u32 ReleaseLinksSlot = 11;
-constexpr u32 TakesPacketsSlot = 15;
-constexpr u32 LaunchSlot = 26;
-// The instances' vtable function that puts them to sleep
-constexpr u32 SleepSlot = 3;
-// The launches' gravity that means the default one
-constexpr f32 OwnGravity = -1.0f;
-// An instance's flags: it's held by another (bit 6), it holds others (bit 7)
-constexpr u32 InstanceHeld = 0x40;
-constexpr u32 InstanceHolds = 0x80;
-constexpr u8 NoExitPoint = 0xFF;
-// What an attachment is when it's an instance held (attachment.h's kinds are the others)
-constexpr u32 KindInstance = 0;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 TinyLength = 0x1.a36e2ep-15f;
 // How far a joining attachment's instance and holder are from each other (squared) once they have met, and how much of the
 // way to the holder's up its instance's up turns each time when it hangs
 constexpr f32 JoinedDistanceSquared = Rounded(0.1);
@@ -82,21 +63,6 @@ InstanceContext* AttachedInstance(const Attachment* attachment)
 InstanceContext* FocusOf(const Attachment* attachment)
 {
     return attachment->focus != nullptr ? static_cast<InstanceContext*>(attachment->focus->object) : nullptr;
-}
-
-u32 ModeOf(const Attachment* attachment)
-{
-    return attachment->bits & Attachment::FollowMask;
-}
-
-u32 KindOf(const Attachment* attachment)
-{
-    return attachment->bits & Attachment::KindMask;
-}
-
-u8 ExitPointOf(const Attachment* attachment)
-{
-    return static_cast<u8>(attachment->bits >> Attachment::ExitPointShift);
 }
 
 GameNode* NodeOf(InstanceContext* instance, u32 kind)
@@ -152,14 +118,14 @@ Vector4 MiddleOf(const InstanceContext* instance)
 void MakePath(AttachmentsNode* node)
 {
     node->path = ConstructPath(static_cast<AttachmentsPath*>(MemoryAllocate(sizeof(AttachmentsPath))));
-    node->bits &= ~AttachmentsNode::NoPath;
+    node->bits.noPath = 0;
 }
 
 // An attachment put at the end of a path (16 at most: the callers check)
 void Append(AttachmentsPath* path, Attachment* attachment)
 {
     u32 count = path->Count();
-    path->bits = (path->bits & ~AttachmentsPath::CountMask) | ((count + 1) & AttachmentsPath::CountMask);
+    path->bits.count = count + 1;
     path->entries[count] = attachment;
 }
 
@@ -172,29 +138,29 @@ void LaunchTaken(InstanceContext* taken)
     }
 
     taken->parent = nullptr;
-    taken->flags &= ~InstanceHeld;
-    GameNode* node = NodeOf(taken, ObjectNodeKind);
+    taken->flags.attached = 0;
+    GameNode* node = NodeOf(taken, NodeObject);
     if (node != nullptr)
     {
         // Retail bug: the velocity is what the stack held
         Vector4 velocity;
-        CallVirtual<void>(node, node->vtable, LaunchSlot, OwnGravity, &velocity);
+        CallVirtual<void>(node, node->vtable, ObjectNode::LaunchSlot, LaunchWithDefaultGravity, &velocity);
     }
 }
 
 // What a new attachment of an instance hanging on a holder leaves: the last attachment made, the instance held by the holder and
 // left out of its collisions, its link marked when asked
-void Attached(AttachmentsNode* node, Attachment* attachment, InstanceContext* holder, InstanceContext* instance, u32 flags)
+void Attached(AttachmentsNode* node, Attachment* attachment, InstanceContext* holder, InstanceContext* instance, AttachFlags flags)
 {
     AddToPath(node->path, attachment);
-    node->bits &= ~AttachmentsNode::NoPath;
+    node->bits.noPath = 0;
     g_LastAttachment = attachment;
     instance->collision.leftOut = holder;
-    instance->flags |= InstanceHeld;
+    instance->flags.attached = 1;
     instance->parent = holder;
-    if ((flags & AttachMarksLink) != 0)
+    if (flags.marksLink)
     {
-        node->linkFlags[IndexOfLinked(node, instance)] |= AttachmentsNode::LinkMarked;
+        node->linkFlags[IndexOfLinked(node, instance)].marked = 1;
     }
 }
 }
@@ -226,13 +192,13 @@ void HoldAttachmentOnSpring(Attachment* attachment, f32 strength, f32 stiffness)
     attachment->stiffness = stiffness;
     attachment->damping = strength;
     MakeAttachmentMatrix(attachment, 0);
-    attachment->bits = (attachment->bits & ~u64{Attachment::FollowMask}) | Attachment::FollowsJoining;
-    AttachedInstance(attachment)->flags |= InstanceHeld;
+    attachment->bits.follow = Attachment::FollowsJoining;
+    AttachedInstance(attachment)->flags.attached = 1;
     AttachedInstance(attachment)->parent = attachment->holder;
     AttachedInstance(attachment)->collision.leftOut = attachment->holder;
     attachment->holder->collision.leftOut = AttachedInstance(attachment);
-    attachment->bits &= ~u64{Attachment::Bit24};
-    auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, BodyNodeKind));
+    attachment->bits.joined = 0;
+    auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, NodeRigidBody));
     HandOnVelocity(attachment);
     if (body != nullptr)
     {
@@ -242,7 +208,7 @@ void HoldAttachmentOnSpring(Attachment* attachment, f32 strength, f32 stiffness)
 
 void HandOnVelocity(Attachment* attachment)
 {
-    auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, BodyNodeKind));
+    auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, NodeRigidBody));
     Vector4 velocity;
     if (body != nullptr)
     {
@@ -250,10 +216,10 @@ void HandOnVelocity(Attachment* attachment)
     }
     else
     {
-        velocity = static_cast<ObjectNode*>(NodeOf(attachment->holder, ObjectNodeKind))->motion->velocity;
+        velocity = static_cast<ObjectNode*>(NodeOf(attachment->holder, NodeObject))->motion->velocity;
     }
 
-    MotionState* motion = static_cast<ObjectNode*>(NodeOf(AttachedInstance(attachment), ObjectNodeKind))->motion;
+    MotionState* motion = static_cast<ObjectNode*>(NodeOf(AttachedInstance(attachment), NodeObject))->motion;
     motion->startVelocity = motion->velocity;
     motion->velocity = velocity;
 }
@@ -272,15 +238,16 @@ void HoldAttachmentInPlace(Attachment* attachment, f32 strength, f32 stiffness)
     Vector4 rotation = place->rotation;
     MatrixFromRotation(&attachment->offset, &rotation);
     *RowOf(&attachment->offset, 3) = attachment->point;
-    attachment->bits = ((attachment->bits & ~u64{Attachment::FollowMask}) | Attachment::FollowsPinned) & ~u64{Attachment::Bit24};
+    attachment->bits.follow = Attachment::FollowsPinned;
+    attachment->bits.joined = 0;
 }
 
 void MakeAttachmentMatrix(Attachment* attachment, u32 positionOnly)
 {
     // Only instances and AI positions get here: the matrix of anything else would be what the stack held
     Matrix4x4 target;
-    u32 kind = KindOf(attachment);
-    if (kind == KindInstance)
+    u32 kind = attachment->bits.kind;
+    if (kind == Attachment::KindInstance)
     {
         ObjectPlace* place = AttachedInstance(attachment)->place;
         RotateAndTranslate(place);
@@ -315,10 +282,10 @@ void MakeAttachmentMatrix(Attachment* attachment, u32 positionOnly)
 
 u32 UpdateAttachment(Attachment* attachment)
 {
-    u64 bits = attachment->bits;
-    if ((bits & Attachment::KindMask) == KindInstance || (bits & Attachment::BitHangs) != 0)
+    AttachmentBits bits = attachment->bits;
+    if (bits.kind == Attachment::KindInstance || bits.hangs)
     {
-        if (AttachedInstance(attachment) != nullptr && (AttachedInstance(attachment)->flags & InstanceHeld) == 0)
+        if (AttachedInstance(attachment) != nullptr && !AttachedInstance(attachment)->flags.attached)
         {
             return 0;
         }
@@ -337,10 +304,10 @@ u32 UpdateAttachment(Attachment* attachment)
     }
 
     Matrix4x4 placed;
-    switch (ModeOf(attachment))
+    switch (attachment->bits.follow)
     {
     case Attachment::FollowsPlace:
-        if (KindOf(attachment) != KindInstance)
+        if (attachment->bits.kind != Attachment::KindInstance)
         {
             return 1;
         }
@@ -350,7 +317,7 @@ u32 UpdateAttachment(Attachment* attachment)
             return 0;
         }
 
-        if ((attachment->bits & Attachment::BitKeepsOffset) != 0)
+        if (attachment->bits.keepsOffset)
         {
             VuMultiplyMatrices(&attachment->offset, holder, &placed);
             PlaceAt(AttachedInstance(attachment), &placed);
@@ -363,9 +330,9 @@ u32 UpdateAttachment(Attachment* attachment)
         HandOnVelocity(attachment);
         return 1;
     case Attachment::FollowsPosition:
-        if (KindOf(attachment) == KindInstance)
+        if (attachment->bits.kind == Attachment::KindInstance)
         {
-            if ((attachment->bits & Attachment::BitKeepsOffset) != 0)
+            if (attachment->bits.keepsOffset)
             {
                 VuMultiplyMatrices(&attachment->offset, holder, &placed);
                 MoveInstance(AttachedInstance(attachment), RowOf(&placed, 3));
@@ -377,7 +344,7 @@ u32 UpdateAttachment(Attachment* attachment)
 
             HandOnVelocity(attachment);
         }
-        else if (KindOf(attachment) == Attachment::KindPosition)
+        else if (attachment->bits.kind == Attachment::KindPosition)
         {
             VuMultiplyMatrices(&attachment->offset, holder, &placed);
             Vector4* position = &attachment->position->position;
@@ -395,7 +362,7 @@ u32 UpdateAttachment(Attachment* attachment)
         return 1;
     case Attachment::FollowsPinned:
     {
-        auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, BodyNodeKind));
+        auto* body = static_cast<RigidBody*>(NodeOf(attachment->holder, NodeRigidBody));
         if (body != nullptr)
         {
             body->SetMatrix(&attachment->offset);
@@ -416,7 +383,7 @@ u32 UpdateAttachment(Attachment* attachment)
         return 1;
     }
     case Attachment::FollowsJoining:
-        if ((attachment->bits & Attachment::Bit24) == 0)
+        if (!attachment->bits.joined)
         {
             Vector4 middle = MiddleOf(AttachedInstance(attachment));
             InstanceContext* holderInstance = attachment->holder;
@@ -450,7 +417,7 @@ u32 UpdateAttachment(Attachment* attachment)
             }
             else
             {
-                attachment->bits |= Attachment::Bit24;
+                attachment->bits.joined = 1;
             }
         }
 
@@ -465,7 +432,7 @@ u32 UpdateAttachment(Attachment* attachment)
 
 u32 UpdateHanging(Attachment* attachment, const Matrix4x4* holder)
 {
-    if (KindOf(attachment) != KindInstance)
+    if (attachment->bits.kind != Attachment::KindInstance)
     {
         return 1;
     }
@@ -477,7 +444,7 @@ u32 UpdateHanging(Attachment* attachment, const Matrix4x4* holder)
     Matrix4x4 placed;
     Vector4 to;
     f32 length;
-    if ((attachment->bits & Attachment::BitKeepsOffset) != 0)
+    if (attachment->bits.keepsOffset)
     {
         VuMultiplyMatrices(&attachment->offset, holder, &placed);
         const Vector4* offset = RowOf(&attachment->offset, 3);
@@ -546,8 +513,8 @@ u32 UpdateHanging(Attachment* attachment, const Matrix4x4* holder)
 
 u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
 {
-    auto* node = static_cast<ObjectNode*>(NodeOf(attachment->holder, ObjectNodeKind));
-    if (CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) == 0)
+    auto* node = static_cast<ObjectNode*>(NodeOf(attachment->holder, NodeObject));
+    if (CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) == 0)
     {
         return 1;
     }
@@ -556,7 +523,7 @@ u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
     AttachmentAnchor(attachment, &end);
     Matrix4x4 placed;
     Vector4 start;
-    if ((attachment->bits & Attachment::BitKeepsOffset) != 0)
+    if (attachment->bits.keepsOffset)
     {
         VuMultiplyMatrices(&attachment->offset, holder, &placed);
         start = *RowOf(&placed, 3);
@@ -571,7 +538,7 @@ u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
     {
         DynamicBody* body = node->rigidBody->physicsBody;
         Vector4 local;
-        if ((attachment->bits & Attachment::BitKeepsOffset) == 0 && attachment->exitPoint == nullptr)
+        if (!attachment->bits.keepsOffset && attachment->exitPoint == nullptr)
         {
             local = {0.0f, 0.0f, 0.0f, 1.0f};
         }
@@ -583,7 +550,7 @@ u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
         body->Spring(attachment->length, attachment->stiffness, attachment->damping, &end, &local, 0);
     }
 
-    if ((attachment->bits & Attachment::BitHangs) == 0)
+    if (!attachment->bits.hangs)
     {
         return 1;
     }
@@ -608,7 +575,7 @@ u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
     y.y = along.z * holderX.x - along.x * holderX.z;
     y.z = along.x * holderX.y - along.y * holderX.x;
     y.w = 1.0f;
-    if (__builtin_fabsf(__builtin_sqrtf(y.x * y.x + y.y * y.y + y.z * y.z)) <= TinyLength)
+    if (__builtin_fabsf(__builtin_sqrtf(y.x * y.x + y.y * y.y + y.z * y.z)) <= Epsilon)
     {
         return 1;
     }
@@ -635,14 +602,14 @@ u32 UpdateSpring(Attachment* attachment, const Matrix4x4* holder)
 
 AttachmentsPath* ConstructPath(AttachmentsPath* path)
 {
-    path->bits &= ~AttachmentsPath::CountMask;
+    path->bits.count = 0;
     return path;
 }
 
 void DestroyPath(AttachmentsPath* path, u32 destroyFlags)
 {
     ClearPath(path);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(path);
     }
@@ -650,9 +617,9 @@ void DestroyPath(AttachmentsPath* path, u32 destroyFlags)
 
 u32 AddToPath(AttachmentsPath* path, Attachment* attachment)
 {
-    switch (KindOf(attachment))
+    switch (attachment->bits.kind)
     {
-    case KindInstance:
+    case Attachment::KindInstance:
     {
         InstanceContext* instance = AttachedInstance(attachment);
         if (instance != nullptr && PathIndexOf(path, instance) != -1)
@@ -663,8 +630,8 @@ u32 AddToPath(AttachmentsPath* path, Attachment* attachment)
         Append(path, attachment);
         if (instance != nullptr)
         {
-            auto* node = static_cast<ObjectNode*>(NodeOf(instance, ObjectNodeKind));
-            if (node != nullptr && CallVirtual<u32>(node, node->vtable, TakesPacketsSlot) != 0)
+            auto* node = static_cast<ObjectNode*>(NodeOf(instance, NodeObject));
+            if (node != nullptr && CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0)
             {
                 node->motion->Stop();
             }
@@ -675,7 +642,7 @@ u32 AddToPath(AttachmentsPath* path, Attachment* attachment)
     case Attachment::KindPosition:
         for (u8 index = 0; index < path->Count(); index++)
         {
-            if (KindOf(path->entries[index]) == Attachment::KindPosition)
+            if (path->entries[index]->bits.kind == Attachment::KindPosition)
             {
                 return 0;
             }
@@ -738,7 +705,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) void RemoveFromPat
         path->entries[next - 1] = path->entries[next];
     }
 
-    path->bits = (path->bits & ~AttachmentsPath::CountMask) | ((path->Count() - 1) & AttachmentsPath::CountMask);
+    path->bits.count = path->Count() - 1;
 }
 
 void ClearPath(AttachmentsPath* path)
@@ -752,12 +719,12 @@ void ClearPath(AttachmentsPath* path)
         }
     }
 
-    path->bits &= ~AttachmentsPath::CountMask;
+    path->bits.count = 0;
 }
 
 InstanceContext* UnslottedAttachment(void* path)
 {
-    return SlottedAttachment(path, NoExitPoint);
+    return SlottedAttachment(path, GameOGI::NoExitPoint);
 }
 
 InstanceContext* SlottedAttachment(void* path, u32 slot)
@@ -767,7 +734,7 @@ InstanceContext* SlottedAttachment(void* path, u32 slot)
     for (u32 index = 0; index < count; index++)
     {
         Attachment* attachment = attachments->entries[index];
-        if (ExitPointOf(attachment) == static_cast<u8>(slot))
+        if (attachment->bits.exitPoint == static_cast<u8>(slot))
         {
             return AttachedInstance(attachment);
         }
@@ -778,7 +745,7 @@ InstanceContext* SlottedAttachment(void* path, u32 slot)
 
 InstanceContext* TakeUnslotted(AttachmentsPath* path)
 {
-    return TakeSlotted(path, NoExitPoint);
+    return TakeSlotted(path, GameOGI::NoExitPoint);
 }
 
 InstanceContext* TakeSlotted(AttachmentsPath* path, u32 slot)
@@ -786,7 +753,7 @@ InstanceContext* TakeSlotted(AttachmentsPath* path, u32 slot)
     for (u32 index = 0; index < path->Count(); index++)
     {
         Attachment* attachment = path->entries[index];
-        if (ExitPointOf(attachment) == static_cast<u8>(slot))
+        if (attachment->bits.exitPoint == static_cast<u8>(slot))
         {
             InstanceContext* instance = AttachedInstance(attachment);
             RemoveFromPath(path, index, 1);
@@ -855,13 +822,13 @@ s32 IndexOfLinked(void* attachments, InstanceContext* instance)
 
 u32 AttachmentsNode::UnlinkAt(u32 index, u32 force)
 {
-    if (force == 0 && (linkFlags[index] & LinkKept) != 0)
+    if (force == 0 && linkFlags[index].kept)
     {
         return 0;
     }
 
-    u32 count = (LinkedCount() - 1) & CountMask;
-    bits = (bits & ~CountMask) | count;
+    bits.linkedCount = LinkedCount() - 1;
+    u32 count = LinkedCount();
     if (count != 0)
     {
         linked[index] = linked[count];
@@ -898,7 +865,7 @@ void AttachmentsNode::FreeEmptyPath()
 
     DestroyPath(path, DestroyAndFree);
     path = nullptr;
-    bits |= NoPath;
+    bits.noPath = 1;
 }
 
 AttachmentsNode* AttachmentsNode::Construct(AttachmentsNode* node)
@@ -918,7 +885,7 @@ void AttachmentsNode::Destroy(u32 destroyFlags)
 
 u32 AttachmentsNode::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
@@ -939,11 +906,11 @@ void AttachmentsNode::Step(TimeClock*, u32)
 {
     ReleaseAttachmentsNode(this, 0, 0, 1);
     UnlinkUnkept();
-    owner->flags &= ~InstanceHolds;
-    owner->flags &= ~InstanceHeld;
+    owner->flags.hasAttachment = 0;
+    owner->flags.attached = 0;
     owner->parent = nullptr;
     stickiness = 0.0f;
-    bits &= ~Bits7To11;
+    bits.currentLinked = 0;
     if (NoneKept() != 0)
     {
         RemoveNode(owner, this);
@@ -952,12 +919,14 @@ void AttachmentsNode::Step(TimeClock*, u32)
 
 __attribute__((optimize("no-tree-loop-distribute-patterns"))) void AttachmentsNode::Reset()
 {
-    bits &= ~CountMask & ~NoPath & ~Bits7To11;
+    bits.linkedCount = 0;
+    bits.noPath = 0;
+    bits.currentLinked = 0;
     path = nullptr;
     stickiness = 0.0f;
     for (u8 index = 0; index < MostLinked; index++)
     {
-        linkFlags[index] = 0;
+        linkFlags[index].value = 0;
     }
 }
 
@@ -978,15 +947,15 @@ u32 LinkInstance(void* attachments, InstanceContext* instance, u32 flag)
 
     if (flag != 0)
     {
-        node->linkFlags[count] |= AttachmentsNode::LinkKept;
+        node->linkFlags[count].kept = 1;
     }
     else
     {
-        node->linkFlags[count] &= ~AttachmentsNode::LinkKept;
+        node->linkFlags[count].kept = 0;
     }
 
     count = node->LinkedCount();
-    node->bits = (node->bits & ~AttachmentsNode::CountMask) | ((count + 1) & AttachmentsNode::CountMask);
+    node->bits.linkedCount = count + 1;
     node->linked[count] = instance;
     return 1;
 }
@@ -997,10 +966,10 @@ void LinkAllOf(void* attachments, void* other)
     for (u32 index = 0; index < from->LinkedCount(); index++)
     {
         InstanceContext* instance = from->linked[index];
-        u8 flags = from->linkFlags[index];
+        AttachmentLinkFlags flags = from->linkFlags[index];
         if (instance != nullptr)
         {
-            LinkInstance(attachments, instance, flags & AttachmentsNode::LinkKept);
+            LinkInstance(attachments, instance, flags.kept);
         }
     }
 }
@@ -1010,7 +979,7 @@ u32 AttachmentsNode::NoneKept()
     u32 count = LinkedCount();
     for (u32 index = 0; index < count; index++)
     {
-        if ((linkFlags[index] & LinkKept) != 0)
+        if (linkFlags[index].kept)
         {
             return 0;
         }
@@ -1024,6 +993,7 @@ u32 HangOnExitPoint(void* attachments, InstanceContext* holder, InstanceContext*
 {
     AttachmentsNode* node = AsNode(attachments);
     u8 slot = static_cast<u8>(exitPoint);
+    AttachFlags attach = {flags};
     if (force == 0 && LinkInstance(node, instance, 0) == 0)
     {
         return 0;
@@ -1033,9 +1003,9 @@ u32 HangOnExitPoint(void* attachments, InstanceContext* holder, InstanceContext*
     {
         MakePath(node);
     }
-    else if ((flags & AttachReplaces) != 0)
+    else if (attach.replaces)
     {
-        if ((flags & AttachLaunchesReplaced) != 0)
+        if (attach.launchesReplaced)
         {
             LaunchTaken(TakeSlotted(node->path, slot));
         }
@@ -1051,8 +1021,8 @@ u32 HangOnExitPoint(void* attachments, InstanceContext* holder, InstanceContext*
     }
 
     Attachment* attachment = ConstructAttachment(static_cast<Attachment*>(MemoryAllocate(sizeof(Attachment))), holder, instance);
-    AttachAtExitPoint(attachment, slot, flags & AttachWithOffset, const_cast<Matrix4x4*>(offset));
-    Attached(node, attachment, holder, instance, flags);
+    AttachAtExitPoint(attachment, slot, attach.withOffset, const_cast<Matrix4x4*>(offset));
+    Attached(node, attachment, holder, instance, attach);
     return 1;
 }
 
@@ -1075,7 +1045,7 @@ Attachment* AttachmentsNode::Add(InstanceContext* holder, InstanceContext* insta
 
     Attachment* attachment = ConstructAttachment(static_cast<Attachment*>(MemoryAllocate(sizeof(Attachment))), holder, instance);
     AddToPath(path, attachment);
-    bits &= ~NoPath;
+    bits.noPath = 0;
     g_LastAttachment = attachment;
     return attachment;
 }
@@ -1115,18 +1085,18 @@ u32 AttachToAiPosition(void* attachments, InstanceContext* instance, AiPosition*
 
     Attachment* attachment =
         ConstructPositionAttachment(static_cast<Attachment*>(MemoryAllocate(sizeof(Attachment))), instance, position);
-    attachment->bits = (attachment->bits & ~u64{Attachment::FollowMask}) | Attachment::FollowsPosition;
+    attachment->bits.follow = Attachment::FollowsPosition;
     // Retail leaks the attachment when the path has an AI position already
     if (AddToPath(node->path, attachment) == 0)
     {
         return 0;
     }
 
-    node->bits &= ~AttachmentsNode::NoPath;
+    node->bits.noPath = 0;
     Vector4 point = attachment->position->position;
     point.w = 1.0f;
     attachment->point = point;
-    attachment->position->flags |= g_AttachedPositionFlag;
+    attachment->position->flags.value |= g_AttachedPositionFlag;
     MakeAttachmentMatrix(attachment, 0);
     g_LastAttachment = attachment;
     return 1;
@@ -1142,7 +1112,7 @@ u32 HoldOnSpring(f32 strength, f32 stiffness, void* attachments, InstanceContext
 
     if (held->parent != nullptr)
     {
-        void* before = GetGameNode(&held->parent->nodes, AttachmentsNode::Kind);
+        void* before = GetGameNode(&held->parent->nodes, NodeAttachments);
         if (before != nullptr)
         {
             UnlinkInstance(before, held, 0, 1, 0);
@@ -1169,6 +1139,7 @@ u32 HoldInPlace(f32 strength, f32 stiffness, void* attachments, InstanceContext*
 u32 AttachInstance(void* attachments, InstanceContext* holder, InstanceContext* instance, u32 flags, const Matrix4x4* offset)
 {
     AttachmentsNode* node = AsNode(attachments);
+    AttachFlags attach = {flags};
     if (LinkInstance(node, instance, 0) == 0)
     {
         return 0;
@@ -1178,9 +1149,9 @@ u32 AttachInstance(void* attachments, InstanceContext* holder, InstanceContext* 
     {
         MakePath(node);
     }
-    else if ((flags & AttachReplaces) != 0)
+    else if (attach.replaces)
     {
-        if ((flags & AttachLaunchesReplaced) != 0)
+        if (attach.launchesReplaced)
         {
             LaunchTaken(TakeUnslotted(node->path));
         }
@@ -1196,15 +1167,15 @@ u32 AttachInstance(void* attachments, InstanceContext* holder, InstanceContext* 
     }
 
     Attachment* attachment = ConstructAttachment(static_cast<Attachment*>(MemoryAllocate(sizeof(Attachment))), holder, instance);
-    AttachToHolder(node->stickiness, attachment, flags & AttachWithOffset, const_cast<Matrix4x4*>(offset));
-    Attached(node, attachment, holder, instance, flags);
+    AttachToHolder(node->stickiness, attachment, attach.withOffset, const_cast<Matrix4x4*>(offset));
+    Attached(node, attachment, holder, instance, attach);
     return 1;
 }
 
 void AttachLinkedAgents(void* attachments, InstanceContext* instance, u32 withOffset)
 {
     AttachmentsNode* node = AsNode(attachments);
-    u32 flags = withOffset != 0 ? AttachWithOffset : 0;
+    u32 flags = withOffset != 0 ? AttachFlags::WithOffset : 0;
     for (u32 index = 0; index < node->LinkedCount(); index++)
     {
         AttachInstance(node, instance, node->linked[index], flags, nullptr);
@@ -1215,7 +1186,7 @@ void AttachLinkedAgentsToSlot(void* attachments, InstanceContext* instance, u32 
 {
     AttachmentsNode* node = AsNode(attachments);
     u8 exitPoint = static_cast<u8>(slot);
-    u32 flags = withOffset != 0 ? AttachWithOffset : 0;
+    u32 flags = withOffset != 0 ? AttachFlags::WithOffset : 0;
     for (u32 index = 0; index < node->LinkedCount(); index++)
     {
         HangOnExitPoint(node, instance, node->linked[index], exitPoint, flags, nullptr, 0);
@@ -1313,9 +1284,9 @@ void ReleaseAttachmentsNode(void* attachments, u32 update, u32 remove, u32 clear
         {
             Attachment* attachment = node->path->entries[static_cast<u8>(index)];
             InstanceContext* instance = nullptr;
-            switch (KindOf(attachment))
+            switch (attachment->bits.kind)
             {
-            case KindInstance:
+            case Attachment::KindInstance:
                 instance = AttachedInstance(attachment);
                 if (instance == nullptr)
                 {
@@ -1339,13 +1310,13 @@ void ReleaseAttachmentsNode(void* attachments, u32 update, u32 remove, u32 clear
                 position->position.x = point.x;
                 position->position.y = point.y;
                 position->position.z = point.z;
-                attachment->position->flags &= ~g_AttachedPositionFlag;
+                attachment->position->flags.value &= ~g_AttachedPositionFlag;
                 RemoveFromPath(node->path, index, 0);
                 node->UnlinkMissing();
                 continue;
             }
             case Attachment::KindSpring:
-                if ((attachment->bits & Attachment::BitHangs) != 0)
+                if (attachment->bits.hangs)
                 {
                     instance = AttachedInstance(attachment);
                 }
@@ -1373,7 +1344,7 @@ void ReleaseAttachmentsNode(void* attachments, u32 update, u32 remove, u32 clear
         node->FreeEmptyPath();
     }
 
-    if (remove != 0 && node->LinkedCount() == 0 && (node->flags & GameNode::FlagListed) != 0)
+    if (remove != 0 && node->LinkedCount() == 0 && node->flags.listed != 0)
     {
         RemoveNode(node->owner, node);
     }
@@ -1403,18 +1374,18 @@ void DetachAllSprings(void* attachments)
     {
         Attachment* attachment = node->path->entries[static_cast<u8>(index)];
         InstanceContext* instance = AttachedInstance(attachment);
-        if (ModeOf(attachment) != Attachment::FollowsSpring)
+        if (attachment->bits.follow != Attachment::FollowsSpring)
         {
             // Retail bug: the loop takes an attachment that isn't a spring again for ever
             continue;
         }
 
-        InstanceContext* end = (attachment->bits & Attachment::BitHangs) != 0 ? AttachedInstance(attachment) : nullptr;
+        InstanceContext* end = attachment->bits.hangs ? AttachedInstance(attachment) : nullptr;
         if (end != nullptr)
         {
-            GameNode* endNode = NodeOf(end, ObjectNodeKind);
-            CallVirtual<void>(endNode, endNode->vtable, ReleaseLinksSlot);
-            CallVirtual<u32>(end, end->vtable, SleepSlot);
+            GameNode* endNode = NodeOf(end, NodeObject);
+            CallVirtual<void>(endNode, endNode->vtable, ObjectNode::ReleasePartsUnlessUnloadingSlot);
+            CallVirtual<u32>(end, end->vtable, InstanceContext::SleepSlot);
             instance = end;
         }
         else if (instance == nullptr)
@@ -1488,13 +1459,13 @@ void UnlinkSpawned(void* attachments, u32 sleep)
             continue;
         }
 
-        GameNode* objectNode = NodeOf(instance, ObjectNodeKind);
+        GameNode* objectNode = NodeOf(instance, NodeObject);
         if (objectNode != nullptr)
         {
-            CallVirtual<void>(objectNode, objectNode->vtable, ReleaseLinksSlot);
+            CallVirtual<void>(objectNode, objectNode->vtable, ObjectNode::ReleasePartsUnlessUnloadingSlot);
         }
 
-        CallVirtual<u32>(instance, instance->vtable, SleepSlot);
+        CallVirtual<u32>(instance, instance->vtable, InstanceContext::SleepSlot);
     }
 }
 
@@ -1513,7 +1484,7 @@ InstanceContext* AttachmentsNode::UnlinkIndex(u32 index)
 
 void SetLastAttachmentMode(void*, u32 mode)
 {
-    g_LastAttachment->bits = (g_LastAttachment->bits & ~u64{Attachment::FollowMask}) | (mode & Attachment::FollowMask);
+    g_LastAttachment->bits.follow = mode;
     g_LastAttachment = nullptr;
 }
 
@@ -1536,9 +1507,9 @@ u32 AttachmentsNode::FollowPath()
 
 u32 AttachmentsNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) != 0 && FollowPath() != 0)
+    if (clock->flags.running != 0 && FollowPath() != 0)
     {
-        owner->flags &= ~InstanceHolds;
+        owner->flags.hasAttachment = 0;
     }
 
     return GameNode::Update(clock);
@@ -1546,14 +1517,14 @@ u32 AttachmentsNode::Update(TimeClock* clock)
 
 void* AttachmentsOf(InstanceContext* instance)
 {
-    void* node = GetGameNode(&instance->nodes, AttachmentsNode::Kind);
+    void* node = GetGameNode(&instance->nodes, NodeAttachments);
     if (node != nullptr)
     {
         return node;
     }
 
     AttachmentsNode* made = AttachmentsNode::Construct(static_cast<AttachmentsNode*>(MemoryAllocate(sizeof(AttachmentsNode))));
-    RegisterNode(instance, 1, made);
+    RegisterNode(instance, AttachNode, made);
     return made;
 }
 
@@ -1562,7 +1533,7 @@ void ReleaseLinkedInstances(void* attachments, u32 flags)
     AttachmentsNode* node = AsNode(attachments);
     for (u8 index = 0; index < node->LinkedCount();)
     {
-        if ((node->linkFlags[index] & flags) != 0)
+        if ((node->linkFlags[index].value & flags) != 0)
         {
             node->UnlinkIndex(index);
         }
@@ -1575,7 +1546,7 @@ void ReleaseLinkedInstances(void* attachments, u32 flags)
 
 u32 AttachmentsNode::GetKind()
 {
-    return Kind;
+    return NodeAttachments;
 }
 
 u32 AttachmentsNode::GetClassId()

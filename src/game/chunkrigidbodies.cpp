@@ -7,30 +7,16 @@
 
 namespace
 {
-// The lists' room, and the indexes of a body in neither
-constexpr u16 MostListed = 0xFF;
-constexpr u16 NoFirstIndex = 0xFFFF;
-constexpr u8 NoSecondIndex = 0xFF;
-// The rigid body's bit 44: it's in the first list
-constexpr u64 InFirstList = u64{1} << 44;
-// The kind of a rigid body's motion (bits 32-35 of its 64 bits): from 9 on its physics body moves it
-constexpr u32 MotionKindShift = 32;
-constexpr u64 KindMask = 0xF;
-constexpr u32 PhysicsKinds = 9;
-// The object node's flag 3: it was updated this frame; the instance's flag 6: it's attached to its parent
-constexpr u32 NodeUpdated = 0x8;
-constexpr u32 AttachedFlag = 0x40;
-
 // A body collides this frame while its node was updated or its instance is attached
 bool Collides(const ObjectNode* node)
 {
-    return (node->flags & NodeUpdated) != 0 || (node->owner->flags & AttachedFlag) != 0;
+    return node->flags.updated || node->owner->flags.attached;
 }
 
 void ForgetFirstList(ObjectRigidBody* body)
 {
-    body->firstIndex = NoFirstIndex;
-    body->bits88 &= ~InFirstList;
+    body->firstIndex = ObjectRigidBody::NoFirstIndex;
+    body->bits.inFirstList = 0;
 }
 }
 
@@ -44,14 +30,14 @@ ChunkRigidBodies* ConstructChunkRigidBodies(void* memory)
 
 void DestroyChunkRigidBodies(ChunkRigidBodies* bodies, u32 destroyFlags)
 {
-    for (u32 i = 0; i < bodies->firstCount; i++)
+    for (u32 index = 0; index < bodies->firstCount; index++)
     {
-        ForgetFirstList(bodies->first[i]);
+        ForgetFirstList(bodies->first[index]);
     }
 
-    for (u32 i = 0; i < bodies->secondCount; i++)
+    for (u32 index = 0; index < bodies->secondCount; index++)
     {
-        bodies->second[i]->secondIndex = NoSecondIndex;
+        bodies->second[index]->secondIndex = ObjectRigidBody::NoSecondIndex;
     }
 
     if ((destroyFlags & 1) != 0)
@@ -62,7 +48,7 @@ void DestroyChunkRigidBodies(ChunkRigidBodies* bodies, u32 destroyFlags)
 
 u32 PutFirstRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
-    if (bodies->firstCount >= MostListed)
+    if (bodies->firstCount >= ChunkRigidBodies::MostBodies)
     {
         return 0;
     }
@@ -80,7 +66,7 @@ u32 PutFirstRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 u32 TakeFirstRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
     u16 index = body->firstIndex;
-    if (index == NoFirstIndex)
+    if (index == ObjectRigidBody::NoFirstIndex)
     {
         return 0;
     }
@@ -96,14 +82,14 @@ u32 TakeFirstRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 // The bodies' indexes forgotten (the second list's lists too once they're in neither) and both lists emptied
 void ReleaseChunkRigidBodies(ChunkRigidBodies* bodies)
 {
-    for (s32 i = 0; i < bodies->firstCount; i++)
+    for (s32 index = 0; index < bodies->firstCount; index++)
     {
-        ForgetFirstList(bodies->first[i]);
+        ForgetFirstList(bodies->first[index]);
     }
 
-    for (s32 i = 0; i < bodies->secondCount; i++)
+    for (s32 index = 0; index < bodies->secondCount; index++)
     {
-        ForgetSecondIndex(bodies->second[i]);
+        ForgetSecondIndex(bodies->second[index]);
     }
 
     bodies->secondCount = 0;
@@ -112,7 +98,7 @@ void ReleaseChunkRigidBodies(ChunkRigidBodies* bodies)
 
 u32 PutSecondRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
-    if (bodies->secondCount >= MostListed)
+    if (bodies->secondCount >= ChunkRigidBodies::MostBodies)
     {
         return 0;
     }
@@ -130,7 +116,7 @@ u32 PutSecondRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 u32 TakeSecondRigidBody(ChunkRigidBodies* bodies, ObjectRigidBody* body)
 {
     u8 index = body->secondIndex;
-    if (index == NoSecondIndex)
+    if (index == ObjectRigidBody::NoSecondIndex)
     {
         return 0;
     }
@@ -148,13 +134,13 @@ void CollideChunkRigidBodies(ChunkRigidBodies* bodies)
     for (u32 index = 0; index < bodies->firstCount; index++)
     {
         ObjectRigidBody* body = bodies->first[index];
-        if (body == nullptr || (body->bits88 >> MotionKindShift & KindMask) >= PhysicsKinds || !Collides(body->node))
+        if (body == nullptr || body->bits.motionKind >= FirstPhysicsBodyKind || !Collides(body->node))
         {
             continue;
         }
 
         ObjectNode* node = body->node;
-        Vector4 sphere = node->unknown20;
+        Vector4 sphere = node->middle;
         sphere.w = node->rollRadius;
         CollideRigidBodyWithInstances(body, &sphere);
     }

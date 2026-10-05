@@ -25,11 +25,23 @@
 // The commands that work the cameras: the played character's follow camera, the game's camera rig the cutscenes' commands
 // place, the camera shown, and the screen's fade
 
+// What command 592 saves of the follow camera's bits (FollowCamera's) and puts back: smoothed, steering, ignoring the triggers,
+// stepping its rig
+struct SavedFollowCameraBits
+{
+    u8 smoothed;
+    u8 steers;
+    u8 ignoresTriggers;
+    u8 stepsRig;
+};
+CHECK_SIZE(SavedFollowCameraBits, 4);
+
 extern "C"
 {
-    // What command 592 saves of the follow camera and puts back: its bits 0, 1, 2 and 5, its bit 4, and the rig its lens showed
-    extern u8 g_SavedCameraBits[4] RETAIL(D_0030AAB4);
-    extern u8 g_SavedCameraBit4 RETAIL(D_0030AAB8);
+    // What command 592 saves of the follow camera and puts back: its bits, whether its rig isn't the lens's, and the rig its lens
+    // showed
+    extern SavedFollowCameraBits g_SavedCameraBits RETAIL(D_0030AAB4);
+    extern u8 g_SavedRigAway RETAIL(D_0030AAB8);
     extern CameraRig* g_SavedLensRig RETAIL(D_0030AAB0);
     // The height command 583 keeps its camera at, taken from the first command it runs
     extern f32 g_OrbitHeight RETAIL(D_0030A498);
@@ -68,22 +80,6 @@ EABI_EXPORT(FUN_0011ff40, FramingDistance);
 
 namespace
 {
-constexpr u32 ShowsFollowCamera = 0;
-constexpr u32 ShowsGameRig = 3;
-constexpr u32 ShowsCutsceneRig = 4;
-// The main camera's flags taking its pitch's, distance's, yaw's and field of view's ends
-constexpr u32 SetsPitch = 0x4;
-constexpr u32 SetsDistance = 0x8;
-constexpr u32 SetsYaw = 0x40;
-constexpr u32 SetsFov = 0x80;
-// The game rig's script bit that turns its framing's angles the other way
-constexpr u32 RigMirrored = 0x8;
-// The object nodes' vtable functions giving a designator's instance and position
-constexpr u32 GetDesignatorSlot = 36;
-constexpr u32 GetDesignatorPositionSlot = 37;
-// A vector's length below which it isn't normalized (InverseLength's)
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
     return static_cast<ObjectNode*>(runner->agentNode);
@@ -110,18 +106,18 @@ ReferencedObject* ObjectOf(const Reference* reference)
 InstanceContext* PlayedInstance()
 {
     GameProgress* progress = &G_GameController->progress;
-    return progress->Instance(progress->Field(GameProgress::CharacterShift));
+    return progress->Instance(progress->play.character);
 }
 
 FollowNode* PlayedFollowNode()
 {
-    return static_cast<FollowNode*>(GetGameNode(NodesOf(PlayedInstance()), Node16));
+    return static_cast<FollowNode*>(GetGameNode(NodesOf(PlayedInstance()), NodeFollow));
 }
 
 // A playable character's velocity: its vehicle's while it rides one, else its own
 void CharacterVelocity(InstanceContext* character, Vector4* velocity)
 {
-    auto* node = static_cast<AgentNode*>(GetGameNode(NodesOf(character), NodePlayer));
+    auto* node = static_cast<AgentNode*>(GetGameNode(NodesOf(character), NodeCharacter));
     auto* agent = static_cast<CharacterAgent*>(node->agent);
     Vehicle* vehicle = agent->vehicle;
     if (vehicle != nullptr)
@@ -133,16 +129,6 @@ void CharacterVelocity(InstanceContext* character, Vector4* velocity)
     *velocity = agent->velocity;
 }
 
-// The paths the cutscenes' commands move the game rig's scripted target and positioner along (its words 0xB4 and 0xB8)
-LayoutPath*& TargetPathOf(GameCameraRig* rig)
-{
-    return *reinterpret_cast<LayoutPath**>(&rig->unknownB4);
-}
-
-LayoutPath*& CameraPathOf(GameCameraRig* rig)
-{
-    return *reinterpret_cast<LayoutPath**>(&rig->unknownB8);
-}
 
 s32 ClockUnits(f32 seconds)
 {
@@ -164,33 +150,31 @@ Vector4 RigPlace(ReferencedObject* object, const Vector4* place)
 
 ReferencedObject* DesignatorOf(ObjectNode* node, u32 designator)
 {
-    return CallVirtual<ReferencedObject*>(node, node->vtable, GetDesignatorSlot, designator);
+    return CallVirtual<ReferencedObject*>(node, node->vtable, ObjectNode::GetDesignatorSlot, designator);
 }
 
 bool DesignatorPosition(ObjectNode* node, u32 designator, Vector4* position)
 {
-    return CallVirtual<u32>(node, node->vtable, GetDesignatorPositionSlot, designator, position) != 0;
+    return CallVirtual<u32>(node, node->vtable, ObjectNode::GetDesignatorPositionSlot, designator, position) != 0;
 }
 }
 
-// The follow camera's distance (bit 1, units) and pitch (bit 0, a tagged angle) given to its blenders
+// The follow camera's distance and pitch given to its blenders
 void SetCameraCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 GivesPitch = 0x1;
-    constexpr u32 GivesDistance = 0x2;
     FollowCameraPositioner* positioner = &PlayedFollowNode()->camera.rig.ownPositioner;
-    if ((value1.raw & GivesDistance) != 0)
+    if (given.distance)
     {
-        positioner->distance.bits |= AngleBlender::BitHolds;
-        positioner->distance.initial = std::bit_cast<f32>(value3);
+        positioner->distance.bits.holds = 1;
+        positioner->distance.initial = distance;
     }
 
-    if ((value1.raw & GivesPitch) != 0)
+    if (given.pitch)
     {
-        TaggedValue pitch;
-        TaggedValue::AngleWith(&pitch, &value2, NodeOf(runner)->PacketProperties());
-        positioner->pitch.bits |= AngleBlender::BitHolds;
-        positioner->pitch.initial = pitch.raw;
+        TaggedValue angle;
+        TaggedValue::AngleWith(&angle, &pitch, NodeOf(runner)->PacketProperties());
+        positioner->pitch.bits.holds = 1;
+        positioner->pitch.initial = angle.raw;
     }
 }
 
@@ -204,22 +188,23 @@ void CameraFocusObjectCommand::Execute(TimeClock*, BehaviourRunner* runner, Beha
 void CameraStopFocusObjectCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     InstanceContext* played = PlayedInstance();
-    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), Node16));
+    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), NodeFollow));
     AssignReference(&follow->camera.rig.ownTarget.followed, played);
 }
 
 // The agent's instance placed by the follow camera's instance: on a circle of the radius in its x-y plane at an angle that
 // swings with the sine of the phase (60 degrees either way about -90), the phase moving on 3 degrees each time, and along its
-// z axis at a height the played character's squared distance from the camera pushes up (nearer than the near distance) or
-// down (past the far one), kept within the limit; turned to look back at the camera, its z axis the camera's
-void CutsceneCameraOp583Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// z axis at the depth and a height the played character's squared distance from the camera pushes up (nearer than the near
+// distance) or down (past the far one), kept within the limit; turned to look back at the camera, its z axis the camera's
+void SwingAroundCameraCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr f32 ThirdOfPi = 0x1.0c1524p+0f;
-    constexpr f32 MinusHalfPi = -0x1.921fb6p+0f;
+    // 60 degrees, -90 degrees and 3 degrees (radians)
+    constexpr f32 SwingAngle = 0x1.0c1524p+0f;
+    constexpr f32 MinusHalfPi = -HalfPi;
     constexpr f32 PhaseStep = 0x1.aceea2p-5f;
     InstanceContext* played = PlayedInstance();
-    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), Node16));
-    ReferencedObject* cameraInstance = ObjectOf(follow->object);
+    auto* follow = static_cast<FollowNode*>(GetGameNode(NodesOf(played), NodeFollow));
+    ReferencedObject* cameraInstance = ObjectOf(follow->cameraInstance);
     // The character's velocity, which nothing reads
     Vector4 unused;
     CharacterVelocity(played, &unused);
@@ -238,35 +223,37 @@ void CutsceneCameraOp583Command::Execute(TimeClock*, BehaviourRunner* runner, Be
     f32 distanceSquared = dx * dx + dy * dy + dz * dz;
     if (g_OrbitHeightSet == 0)
     {
-        g_OrbitHeight = value15;
+        g_OrbitHeight = height;
         g_OrbitHeightSet = 1;
     }
 
-    f32 rate = std::bit_cast<f32>(value3);
-    if (distanceSquared < value5)
+    f32 rate = heightRate;
+    if (distanceSquared < nearDistanceSquared)
     {
-        g_OrbitHeight = g_OrbitHeight + (value5 - distanceSquared) * (1.0f / (value6 - value5)) * rate;
+        g_OrbitHeight = g_OrbitHeight + (nearDistanceSquared - distanceSquared)
+                                            * (1.0f / (farDistanceSquared - nearDistanceSquared)) * rate;
     }
-    else if (value6 < distanceSquared)
+    else if (farDistanceSquared < distanceSquared)
     {
-        g_OrbitHeight = g_OrbitHeight + (value6 - distanceSquared) * (1.0f / (value6 - value5)) * rate;
+        g_OrbitHeight = g_OrbitHeight + (farDistanceSquared - distanceSquared)
+                                            * (1.0f / (farDistanceSquared - nearDistanceSquared)) * rate;
     }
 
-    g_OrbitHeight = ClampFloat(g_OrbitHeight, -value4, value4);
-    value15 = g_OrbitHeight;
-    f32 phase = value14;
+    g_OrbitHeight = ClampFloat(g_OrbitHeight, -heightLimit, heightLimit);
+    height = g_OrbitHeight;
+    f32 now = phase;
     s32 angle;
-    AngleFrom(&angle, (phase + std::bit_cast<f32>(value7)) * std::bit_cast<f32>(value11), AngleRadians);
+    AngleFrom(&angle, (now + phaseOffset) * phaseScale, AngleRadians);
     f32 swing = SinOfAngle(&angle);
     s32 around;
-    AngleFrom(&around, swing * ThirdOfPi + MinusHalfPi, AngleRadians);
+    AngleFrom(&around, swing * SwingAngle + MinusHalfPi, AngleRadians);
     f32 cosine = CosOfAngle(&around);
-    x = std::bit_cast<f32>(value13) * cosine;
+    circleX = radius * cosine;
     f32 sine = SinOfAngle(&around);
-    f32 side = std::bit_cast<f32>(value13) * sine;
-    Vector4 offset = {x, side, std::bit_cast<f32>(value2) + g_OrbitHeight, 1.0f};
-    y = std::bit_cast<s32>(side);
-    value14 = phase + PhaseStep;
+    f32 side = radius * sine;
+    Vector4 offset = {circleX, side, depth + g_OrbitHeight, 1.0f};
+    circleY = side;
+    phase = now + PhaseStep;
     cameraPlace = PlaceOf(cameraInstance);
     RotateAndTranslate(cameraPlace);
     Matrix4x4 frame = cameraPlace->matrix;
@@ -306,9 +293,8 @@ void CutsceneCameraOp583Command::Execute(TimeClock*, BehaviourRunner* runner, Be
 // upright
 void PlayerFaceTowardsCameraCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr f32 Epsilon = Rounded(5e-05);
     FollowNode* follow = PlayedFollowNode();
-    ObjectPlace* cameraPlace = PlaceOf(ObjectOf(follow->object));
+    ObjectPlace* cameraPlace = PlaceOf(ObjectOf(follow->cameraInstance));
     InstanceContext* instance = runner->agentNode->owner;
     RotateAndTranslate(cameraPlace);
     Vector4 camera = *RowOf(&cameraPlace->matrix, 3);
@@ -355,34 +341,24 @@ void PlayerFaceTowardsCameraCommand::Execute(TimeClock*, BehaviourRunner* runner
 // view, at the field of view's distance), looking from the yaw and the pitch (degrees) the command gives
 void CutsceneCameraMoveCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    // The command's flags: it keeps its field of view (else it takes the positioner's), what it frames (bits 9-11: 0 the
-    // first place, 1 the second, 2 both)
-    constexpr u32 KeepsFov = 0x200000;
-    constexpr u32 AimShift = 9;
-    constexpr u32 AimMask = 0x7;
-    constexpr u32 AimsFirst = 0;
-    constexpr u32 AimsSecond = 1;
-    constexpr u32 AimsBoth = 2;
     constexpr f32 Aspect = Rounded(4.0 / 3.0);
     GameController* controller = G_GameController;
     GameCameraRig* rig = &controller->camera;
     ScriptedCameraTarget* target = &rig->ownTarget;
     ScriptedCameraPositioner* positioner = &rig->ownPositioner;
-    s32 fov = positioner->fov;
-    if ((flagsAndAngle.raw & KeepsFov) == 0)
+    s32 shownFov = positioner->fov;
+    if (!framing.fovGiven)
     {
-        value12 = static_cast<u32>(fov);
+        fov = shownFov;
     }
 
-    LayoutPath* targetPath = TargetPathOf(rig);
-    LayoutPath* cameraPath = CameraPathOf(rig);
+    LayoutPath* targetPath = rig->targetPath;
+    LayoutPath* cameraPath = rig->cameraPath;
     target->path = targetPath;
     positioner->path = cameraPath;
-    f32 targetAlong = std::bit_cast<f32>(value10);
-    f32 cameraAlong = std::bit_cast<f32>(value11);
     if (targetPath != nullptr || cameraPath != nullptr)
     {
-        StartScriptedMoves(this, target, positioner, offset3, offset4);
+        StartScriptedMoves(this, target, positioner, targetSeconds, cameraSeconds);
         // Retail bug: aims 3 to 7 leave the aim as the stack had it (here the origin)
         Vector4 aim = {0.0f, 0.0f, 0.0f, 1.0f};
         if (targetPath == nullptr)
@@ -421,11 +397,11 @@ void CutsceneCameraMoveCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourL
             positioner->end = place;
         }
 
-        positioner->endFov = static_cast<s32>(value12);
+        positioner->endFov = fov;
         return;
     }
 
-    f32 tangent = TanOfAngle(&fov);
+    f32 tangent = TanOfAngle(&shownFov);
     ReferencedObject* first = rig->firstObject;
     ReferencedObject* second = rig->secondObject;
     f32 viewSize = (tangent + tangent) / Aspect;
@@ -438,34 +414,34 @@ void CutsceneCameraMoveCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourL
     // Retail bug: the angles' modes 4 to 7 leave them as the stack had them (here 0)
     s32 side = 0;
     s32 half = 0;
-    StartScriptedMoves(this, target, positioner, offset3, offset4);
+    StartScriptedMoves(this, target, positioner, targetSeconds, cameraSeconds);
     MoveAim(this, rig, &aim);
-    FramingAngles(this, rig, &fov, &side, &half, &ratio);
+    FramingAngles(this, rig, &shownFov, &side, &half, &ratio);
     ShotShares(this, &heightShare, &viewShare);
     f32 size = 0.0f;
-    u32 framed = flagsAndAngle.raw >> AimShift & AimMask;
-    if (framed == AimsSecond)
+    u32 framed = framing.aim;
+    if (framed == AimSecond)
     {
         FramedHeight(this, second, &height, heightShare);
         size = FramedSize(this, second, heightShare);
     }
-    else if (framed == AimsFirst || framed == AimsBoth)
+    else if (framed == AimFirst || framed == AimBetween)
     {
         FramedHeight(this, first, &height, heightShare);
         size = FramedSize(this, first, heightShare);
     }
 
-    f32 distance = FramingDistance(this, size, ratio, viewShare, viewSize) + offset2;
+    f32 distance = FramingDistance(this, size, ratio, viewShare, viewSize) + extraDistance;
     f32 aimDistance = DistanceFromAim(this, rig, &aim);
-    s32 yaw;
-    FramingYaw(&yaw, this, rig, &half, distance, aimDistance);
+    s32 yawAngle;
+    FramingYaw(&yawAngle, this, rig, &half, distance, aimDistance);
     back.z = -distance;
-    s32 pitch;
-    AngleFrom(&pitch, offset1, AngleDegrees);
+    s32 pitchAngle;
+    AngleFrom(&pitchAngle, pitch, AngleDegrees);
     s32 roll;
     AngleFrom(&roll, 0.0f, AngleRadians);
     Matrix4x4 turn;
-    MatrixFromAngles(&turn, &pitch, &yaw, &roll);
+    MatrixFromAngles(&turn, &pitchAngle, &yawAngle, &roll);
     VuRotateVector(&turn, &back, &back);
     rig->MakeFrame();
     Matrix4x4 frame = rig->frame;
@@ -479,26 +455,26 @@ void CutsceneCameraMoveCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourL
     Vector4 point = {place.x + ahead.x, place.y + ahead.y, place.z + ahead.z, 1.0f};
     target->end = point;
     positioner->end = place;
-    positioner->endFov = static_cast<s32>(value12);
+    positioner->endFov = fov;
 }
 
-// The places the cutscenes' commands use (the objects' when there are): the first (by bits 9-11: 0), the second (1), or half
-// the way from the first to the second (2)
+// The place of the cutscenes' commands framing aims at (the objects' when there are): the first, the second, or half the way
+// from the first to the second
 void MoveAim(const CutsceneCameraMoveCommand* command, GameCameraRig* rig, Vector4* aim)
 {
     ReferencedObject* firstObject = rig->firstObject;
     ReferencedObject* secondObject = rig->secondObject;
     Vector4 first = RigPlace(firstObject, &rig->firstPlace);
     Vector4 second = RigPlace(secondObject, &rig->secondPlace);
-    switch (command->flagsAndAngle.raw >> 9 & 0x7)
+    switch (command->framing.aim)
     {
-    case 0:
+    case CutsceneCameraMoveCommand::AimFirst:
         *aim = first;
         break;
-    case 1:
+    case CutsceneCameraMoveCommand::AimSecond:
         *aim = second;
         break;
-    case 2:
+    case CutsceneCameraMoveCommand::AimBetween:
         // Retail bug: half the way from one place to the other, not the point between them (the first isn't added)
         aim->x = (second.x - first.x) * 0.5f;
         aim->y = (second.y - first.y) * 0.5f;
@@ -510,22 +486,22 @@ void MoveAim(const CutsceneCameraMoveCommand* command, GameCameraRig* rig, Vecto
     }
 }
 
-// The distance from a point to what bits 12-14 name the same way (else the origin)
+// The distance from a point to what the command measures it from the same way (else the origin)
 f32 DistanceFromAim(const CutsceneCameraMoveCommand* command, GameCameraRig* rig, const Vector4* point)
 {
     Vector4 first = RigPlace(rig->firstObject, &rig->firstPlace);
     // Retail bug: without a second object the first place stands in for the second
     Vector4 second = RigPlace(rig->secondObject, &rig->firstPlace);
     Vector4 aim = g_DefaultBox.min;
-    switch (command->flagsAndAngle.raw >> 12 & 0x7)
+    switch (command->framing.distanceFrom)
     {
-    case 0:
+    case CutsceneCameraMoveCommand::AimFirst:
         aim = first;
         break;
-    case 1:
+    case CutsceneCameraMoveCommand::AimSecond:
         aim = second;
         break;
-    case 2:
+    case CutsceneCameraMoveCommand::AimBetween:
         // Retail bug: half the way from one place to the other again
         aim.x = (second.x - first.x) * 0.5f;
         aim.y = (second.y - first.y) * 0.5f;
@@ -542,59 +518,54 @@ f32 DistanceFromAim(const CutsceneCameraMoveCommand* command, GameCameraRig* rig
 }
 
 // The scripted target's and positioner's moves stopped and timed (seconds; the positioner eases half a second), the
-// positioner's ease in (bit 16) and out (17), the curve of both (bits 18-20: 0 even, 1 smooth, else as they were) and its arc
-// (15); the command's word 0x2C given to the positioner
+// positioner's ease in and out, the curve of both and its arc; the command's unused2C given to the positioner
 void StartScriptedMoves(const CutsceneCameraMoveCommand* command, ScriptedCameraTarget* target,
                         ScriptedCameraPositioner* positioner, f32 targetSeconds, f32 cameraSeconds)
 {
-    constexpr u32 EasesInShift = 16;
-    constexpr u32 EasesOutShift = 17;
-    constexpr u32 CurveShift = 18;
-    constexpr u32 ArcsShift = 15;
+    constexpr f32 EaseSeconds = 0.5f;
     positioner->Stop();
     target->Stop();
     f32 units = g_ClockUnitsPerSecond;
     target->moveTicks = static_cast<s32>(targetSeconds * units);
-    positioner->easeTicks = static_cast<s32>(units * 0.5f);
+    positioner->easeTicks = static_cast<s32>(units * EaseSeconds);
     positioner->moveTicks = static_cast<s32>(cameraSeconds * units);
-    positioner->unknown44 = command->unused9;
-    u32 bits = static_cast<u32>(command->flagsAndAngle.raw);
-    positioner->bits = (positioner->bits & ~ScriptedCameraPositioner::BitEasesIn) | (bits >> EasesInShift & 1);
-    positioner->bits = (positioner->bits & ~ScriptedCameraPositioner::BitEasesOut) | (bits >> EasesOutShift & 1) << 1;
-    switch (bits >> CurveShift & 0x7)
+    positioner->unused44 = command->unused2C;
+    CutsceneCameraMoveCommand::Framing framing = command->framing;
+    positioner->bits.easesIn = framing.easesIn;
+    positioner->bits.easesOut = framing.easesOut;
+    switch (framing.curve)
     {
-    case 0:
-        target->bits &= ~ScriptedCameraTarget::CurveMask;
-        positioner->bits &= ~ScriptedCameraPositioner::CurveMask;
+    case CutsceneCameraMoveCommand::MoveEven:
+        target->bits.curve = CurveEven;
+        positioner->bits.curve = CurveEven;
         break;
-    case 1:
-        target->bits = (target->bits & ~ScriptedCameraTarget::CurveMask)
-                       | ScriptedCameraTarget::CurveSmooth << ScriptedCameraTarget::CurveShift;
-        positioner->bits = (positioner->bits & ~ScriptedCameraPositioner::CurveMask)
-                           | ScriptedCameraPositioner::CurveSmooth << ScriptedCameraPositioner::CurveShift;
+    case CutsceneCameraMoveCommand::MoveSmooth:
+        target->bits.curve = CurveSmooth;
+        positioner->bits.curve = CurveSmooth;
         break;
     default:
         break;
     }
 
-    positioner->bits = (positioner->bits & ~ScriptedCameraPositioner::BitArcs) | (bits >> ArcsShift & 1) << 5;
+    positioner->bits.arcs = framing.arcs;
 }
 
-// The angles framing takes of the field of view (bits 6-8): 0 none (the ratio 1), 1 a sixth to the side and half of it, 2 a
-// third and half, 3 half and two thirds (dividing by 1.5); the ratio is 1 over the side angle's cosine. The side angle is turned
-// the other way when the rig is mirrored; other values leave the angles as they were
+// The angles framing takes of the field of view: 0 none (the ratio 1), 1 a sixth to the side and half of it, 2 a third and half,
+// 3 half and two thirds (dividing by 1.5); the ratio is 1 over the side angle's cosine. The side angle is turned the other way
+// when the rig is mirrored; other values leave the angles as they were
 void FramingAngles(const CutsceneCameraMoveCommand* command, GameCameraRig* rig, const s32* fov, s32* side, s32* half,
                    f32* ratio)
 {
-    static constexpr f32 Divisors[3][2] = {{6.0f, 2.0f}, {3.0f, 2.0f}, {2.0f, 1.5f}};
-    u32 angles = command->flagsAndAngle.raw >> 6 & 0x7;
+    constexpr u32 FramedAngles = 3;
+    static constexpr f32 Divisors[FramedAngles][2] = {{6.0f, 2.0f}, {3.0f, 2.0f}, {2.0f, 1.5f}};
+    u32 angles = command->framing.angles;
     if (angles == 0)
     {
         *side = 0;
         *half = 0;
         *ratio = 1.0f;
     }
-    else if (angles <= 3)
+    else if (angles <= FramedAngles)
     {
         s32 angle = *fov;
         *side = *DivideAngle(&angle, Divisors[angles - 1][0]);
@@ -603,59 +574,40 @@ void FramingAngles(const CutsceneCameraMoveCommand* command, GameCameraRig* rig,
         *ratio = 1.0f / CosOfAngle(side);
     }
 
-    f32 sign = (rig->scriptBits & RigMirrored) != 0 ? -1.0f : 1.0f;
+    f32 sign = rig->scriptBits.mirrored != 0 ? -1.0f : 1.0f;
     *side = static_cast<s32>(static_cast<f32>(*side) * sign);
 }
 
-// The yaw the camera frames from (mirrored with the rig): with bits 12-14 at 3 one of the shot's angles (bits 0-2) plus the
-// command's (degrees); otherwise the angle whose sine is the distance's share of the angle's sine (over the aim's distance),
-// the command's angle and the given one together, the other way round
+// The yaw the camera frames from (mirrored with the rig): with the fixed yaw one of the shot's angles plus the command's (degrees);
+// otherwise the angle whose sine is the distance's share of the angle's sine (over the aim's distance), the command's angle and
+// the given one together, the other way round
 s32* FramingYaw(s32* yaw, const CutsceneCameraMoveCommand* command, GameCameraRig* rig, const s32* angle, f32 distance,
                 f32 aimDistance)
 {
-    constexpr u32 FixedMask = 0x7000;
-    constexpr u32 Fixed = 0x3000;
-    constexpr f32 UnitsPerDegree = Rounded(65536.0 / 360.0);
-    u32 bits = static_cast<u32>(command->flagsAndAngle.raw);
+    // The shot's fixed yaws (degrees)
+    constexpr u32 FixedYawCount = 4;
+    static constexpr f32 FixedYaws[FixedYawCount] = {-145.0f, -15.0f, -180.0f, -90.0f};
+    CutsceneCameraMoveCommand::Framing framing = command->framing;
     s32 value;
-    if ((bits & FixedMask) != Fixed)
+    if (framing.distanceFrom != CutsceneCameraMoveCommand::AimFixedYaw)
     {
         s32 aside;
         AngleOfSine(distance * SinOfAngle(angle) / aimDistance, &aside);
         s32 turn;
-        AngleFrom(&turn, command->offset6, AngleDegrees);
+        AngleFrom(&turn, command->yaw, AngleDegrees);
         value = -(turn + aside + *angle);
     }
     else
     {
-        f32 degrees;
-        switch (bits & 0x7)
-        {
-        case 0:
-            degrees = -145.0f;
-            break;
-        case 1:
-            degrees = -15.0f;
-            break;
-        case 2:
-            degrees = -180.0f;
-            break;
-        case 3:
-            degrees = -90.0f;
-            break;
-        default:
-            degrees = 0.0f;
-            break;
-        }
-
-        value = static_cast<s32>((degrees + command->offset6) * UnitsPerDegree);
+        f32 degrees = framing.fixedYaw < FixedYawCount ? FixedYaws[framing.fixedYaw] : 0.0f;
+        value = static_cast<s32>((degrees + command->yaw) * DegreesToAngle);
     }
 
-    *yaw = (rig->scriptBits & RigMirrored) != 0 ? -value : value;
+    *yaw = rig->scriptBits.mirrored != 0 ? -value : value;
     return yaw;
 }
 
-// The shot (bits 3-5): the share of the framed object's height looked at and the view's share it fills
+// The shot: the share of the framed object's height looked at and the view's share it fills
 void ShotShares(const CutsceneCameraMoveCommand* command, f32* height, f32* view)
 {
     static constexpr f32 Shares[8][2] = {
@@ -668,24 +620,24 @@ void ShotShares(const CutsceneCameraMoveCommand* command, f32* height, f32* view
         {0.0f, Rounded(0.35)},
         {0.0f, Rounded(0.2)},
     };
-    const f32* shares = Shares[command->flagsAndAngle.raw >> 3 & 0x7];
+    const f32* shares = Shares[command->framing.shot];
     *height = shares[0];
     *view = shares[1];
 }
 
-// The framed point's height above the object's base: half its own box's height and the share (plus the command's 0x20) of a
-// quarter of it (without an object the command's 0x20 alone)
+// The framed point's height above the object's base: half its own box's height and the share (plus the command's) of a quarter
+// of it (without an object the command's share alone)
 void FramedHeight(const CutsceneCameraMoveCommand* command, ReferencedObject* object, Vector4* point, f32 share)
 {
     if (object == nullptr)
     {
-        point->y = command->offset5;
+        point->y = command->extraHeightShare;
         return;
     }
 
     const Box* box = &object->collision.ownBox;
     f32 height = box->max.y - box->min.y;
-    point->y = height * 0.5f + (share + command->offset5) * 0.25f * height;
+    point->y = height * 0.5f + (share + command->extraHeightShare) * 0.25f * height;
 }
 
 // The size framed: the object's own box's lowest corner's w less the share, and the share of a quarter of its height (1
@@ -706,29 +658,30 @@ f32 FramingDistance(const CutsceneCameraMoveCommand*, f32 size, f32 ratio, f32 v
     return __builtin_fabsf(ratio * size / (viewShare * 0.5f * viewSize));
 }
 
-// What command 592 saves (mode 0) and puts back (1): the follow camera's bits 0, 1, 2, 4 and 5 and the rig its lens shows
+// What command 592 saves and puts back: whether the follow camera is smoothed, steers, ignores the triggers, steps its rig and has
+// its rig away from the lens, and the rig its lens shows
 void CameraSaveParamsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
-    auto* cameraInstance = static_cast<InstanceContext*>(ObjectOf(follow->object));
+    auto* cameraInstance = static_cast<InstanceContext*>(ObjectOf(follow->cameraInstance));
     FollowCamera* camera = &follow->camera;
-    switch (value1.raw & 0x7)
+    switch (mode.action)
     {
-    case 0:
-        g_SavedCameraBits[0] = camera->bits & FollowCamera::BitSmoothed;
-        g_SavedCameraBits[1] = camera->bits >> 1 & 1;
-        g_SavedCameraBits[2] = camera->bits >> 2 & 1;
-        g_SavedCameraBits[3] = camera->bits >> 5 & 1;
-        g_SavedCameraBit4 = camera->bits >> 4 & 1;
+    case ActionSave:
+        g_SavedCameraBits.smoothed = camera->bits.smoothed;
+        g_SavedCameraBits.steers = camera->bits.steers;
+        g_SavedCameraBits.ignoresTriggers = camera->bits.ignoresTriggers;
+        g_SavedCameraBits.stepsRig = camera->bits.stepsRig;
+        g_SavedRigAway = camera->bits.rigAway;
         g_SavedLensRig = camera->lensRig;
         break;
-    case 1:
+    case ActionRestore:
         camera->lensRig = g_SavedLensRig;
-        SetFollowCameraSmoothed(camera, g_SavedCameraBits[0]);
-        SetFollowCameraSteers(camera, g_SavedCameraBits[1]);
-        SetFollowCameraIgnoresTriggers(camera, g_SavedCameraBits[2]);
-        camera->bits = (camera->bits & ~FollowCamera::BitStepsRig) | (g_SavedCameraBits[3] & 1u) << 5;
-        camera->bits = (camera->bits & ~FollowCamera::BitRigAway) | (g_SavedCameraBit4 & 1u) << 4;
+        SetFollowCameraSmoothed(camera, g_SavedCameraBits.smoothed);
+        SetFollowCameraSteers(camera, g_SavedCameraBits.steers);
+        SetFollowCameraIgnoresTriggers(camera, g_SavedCameraBits.ignoresTriggers);
+        camera->bits.stepsRig = g_SavedCameraBits.stepsRig;
+        camera->bits.rigAway = g_SavedRigAway;
         PutFollowCameraOnLens(camera, cameraInstance);
         break;
     default:
@@ -736,29 +689,28 @@ void CameraSaveParamsCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLev
     }
 }
 
-// The camera shown (mode 0 the follow camera, 1 the game's rig, 2 the cutscenes' rig), blended to over the time when there's one
-// (bit 4 sets it back, bits 5-7 the curve); the follow camera put where the game's rig has its camera and looks (bit 3)
+// The camera shown, blended to over the time when there's one (set back to its start or not); the follow camera put where the
+// game's rig has its camera and looks when asked
 void ToggleCutsceneCameraCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    constexpr u32 PlacesFollowCamera = 0x8;
-    u32 flags = modeFlags;
-    u32 reset = flags >> 4 & 1;
-    u32 curve = flags >> 5 & 0x7;
-    switch (flags & 0x7)
+    Mode flags = mode;
+    u32 reset = flags.resets;
+    u32 curve = flags.curve;
+    switch (flags.shown)
     {
-    case 0:
+    case ShowsFollowCamera:
     {
         if (0.0f < blendTime)
         {
             s32 ticks = ClockUnits(blendTime);
-            BlendToCamera(G_GameController, ShowsFollowCamera, &ticks, reset, curve);
+            BlendToCamera(G_GameController, GameController::CameraFollow, &ticks, reset, curve);
         }
         else
         {
-            ShowCamera(G_GameController, ShowsFollowCamera, reset);
+            ShowCamera(G_GameController, GameController::CameraFollow, reset);
         }
 
-        if ((modeFlags & PlacesFollowCamera) == 0)
+        if (!mode.placesFollowCamera)
         {
             return;
         }
@@ -774,43 +726,42 @@ void ToggleCutsceneCameraCommand::Execute(TimeClock*, BehaviourRunner*, Behaviou
         static_cast<FollowCameraPositioner*>(rig->positioner)->PlaceBehind();
         break;
     }
-    case 1:
+    case ShowsGameRig:
         if (0.0f < blendTime)
         {
             s32 ticks = ClockUnits(blendTime);
-            BlendToCamera(G_GameController, ShowsGameRig, &ticks, 0, curve);
+            BlendToCamera(G_GameController, GameController::CameraGameRig, &ticks, 0, curve);
         }
         else
         {
-            ShowCamera(G_GameController, ShowsGameRig, 1);
+            ShowCamera(G_GameController, GameController::CameraGameRig, 1);
         }
 
         break;
-    case 2:
-        ShowCamera(G_GameController, ShowsCutsceneRig, reset);
+    case ShowsCutsceneRig:
+        ShowCamera(G_GameController, GameController::CameraCutsceneRig, reset);
         break;
     default:
         break;
     }
 }
 
-// What the game rig's scripted target and positioner go by: the agent's waypoints' path of a key (0xFF none: the target's in
-// byte 0x14, the positioner's in 0x15), else a designator's instance (bytes 0xC and 0xD) or position (0xE and 0xF; the
-// place's bit set); bit 0 mirrors the framing, bit 1 asks for the frame
+// What the game rig's scripted target and positioner go by: a path of the agent's waypoints, else a designator's instance or
+// position (the place's bit set); the framing mirrored, the frame asked for
 void CutsceneCameraTargetsCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u8 NoKey = 0xFF;
+    constexpr u8 NoPath = 0xFF;
     GameCameraRig* rig = &G_GameController->camera;
     rig->ResetScript();
     ObjectNode* node = NodeOf(runner);
-    u8 firstKey = static_cast<u8>(keys);
-    if (firstKey < NoKey)
+    u8 targetPath = paths.target;
+    if (targetPath < NoPath)
     {
-        TargetPathOf(rig) = node->waypoints->paths.data[firstKey];
+        rig->targetPath = node->waypoints->paths.data[targetPath];
     }
     else
     {
-        ReferencedObject* object = DesignatorOf(node, targets & 0xFF);
+        ReferencedObject* object = DesignatorOf(node, designators.first);
         if (object != nullptr)
         {
             rig->ClearFirstPlace();
@@ -819,23 +770,23 @@ void CutsceneCameraTargetsCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         else
         {
             Vector4 place;
-            if (DesignatorPosition(node, targets >> 16 & 0xFF, &place))
+            if (DesignatorPosition(node, designators.firstPosition, &place))
             {
                 rig->firstObject = nullptr;
                 rig->firstPlace = place;
-                rig->scriptBits |= GameCameraRig::BitHasFirstPlace;
+                rig->scriptBits.hasFirstPlace = 1;
             }
         }
     }
 
-    u8 secondKey = static_cast<u8>(keys >> 8);
-    if (secondKey < NoKey)
+    u8 cameraPath = paths.camera;
+    if (cameraPath < NoPath)
     {
-        CameraPathOf(rig) = node->waypoints->paths.data[secondKey];
+        rig->cameraPath = node->waypoints->paths.data[cameraPath];
     }
     else
     {
-        ReferencedObject* object = DesignatorOf(node, targets >> 8 & 0xFF);
+        ReferencedObject* object = DesignatorOf(node, designators.second);
         if (object != nullptr)
         {
             rig->ClearSecondPlace();
@@ -844,21 +795,21 @@ void CutsceneCameraTargetsCommand::Execute(TimeClock*, BehaviourRunner* runner, 
         else
         {
             Vector4 place;
-            if (DesignatorPosition(node, targets >> 24, &place))
+            if (DesignatorPosition(node, designators.secondPosition, &place))
             {
                 rig->secondObject = nullptr;
                 rig->secondPlace = place;
-                rig->scriptBits |= GameCameraRig::BitHasSecondPlace;
+                rig->scriptBits.hasSecondPlace = 1;
             }
         }
     }
 
-    rig->scriptBits = (rig->scriptBits & ~RigMirrored) | (flags & 1) << 3;
-    rig->scriptBits = (rig->scriptBits & ~GameCameraRig::BitFrameWanted) | (flags >> 1 & 1) << 4;
+    rig->scriptBits.mirrored = flags.mirrored;
+    rig->scriptBits.frameWanted = flags.frameWanted;
 }
 
-// The follow camera's own camera given both ends of one of its values: mode 0 the pitch, 2 the yaw (degrees), 3 the field of
-// view (radians), 1 the distance
+// The follow camera's own camera given both ends of one of its values: the pitch, the yaw (degrees), the field of view (radians),
+// the distance
 void SetCameraNodeValuesCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
     FollowNode* follow = PlayedFollowNode();
@@ -868,44 +819,44 @@ void SetCameraNodeValuesCommand::Execute(TimeClock*, BehaviourRunner*, Behaviour
     }
 
     MainCamera* camera = &follow->camera.rig.ownPositioner.camera;
-    switch (mode.raw & 0x7)
+    switch (mode.which)
     {
-    case 0:
+    case ValuePitch:
     {
-        s32 start;
-        AngleFrom(&start, value1, AngleDegrees);
-        s32 end;
-        AngleFrom(&end, value2, AngleDegrees);
-        camera->flags |= SetsPitch;
-        camera->pitchStart = static_cast<u32>(start);
-        camera->pitchEnd = static_cast<u32>(end);
+        s32 startAngle;
+        AngleFrom(&startAngle, start, AngleDegrees);
+        s32 endAngle;
+        AngleFrom(&endAngle, end, AngleDegrees);
+        camera->flags.setsPitch = 1;
+        camera->pitchStart = static_cast<u32>(startAngle);
+        camera->pitchEnd = static_cast<u32>(endAngle);
         break;
     }
-    case 1:
-        camera->flags |= SetsDistance;
-        camera->distanceEnd = value2;
-        camera->distanceStart = value1;
+    case ValueDistance:
+        camera->flags.setsDistance = 1;
+        camera->distanceEnd = end;
+        camera->distanceStart = start;
         break;
-    case 2:
+    case ValueYaw:
     {
-        s32 start;
-        AngleFrom(&start, value1, AngleDegrees);
-        s32 end;
-        AngleFrom(&end, value2, AngleDegrees);
-        camera->flags |= SetsYaw;
-        camera->yawStart = static_cast<u32>(start);
-        camera->yawEnd = static_cast<u32>(end);
+        s32 startAngle;
+        AngleFrom(&startAngle, start, AngleDegrees);
+        s32 endAngle;
+        AngleFrom(&endAngle, end, AngleDegrees);
+        camera->flags.setsYaw = 1;
+        camera->yawStart = static_cast<u32>(startAngle);
+        camera->yawEnd = static_cast<u32>(endAngle);
         break;
     }
-    case 3:
+    case ValueFov:
     {
-        s32 start;
-        AngleFrom(&start, value1, AngleRadians);
-        s32 end;
-        AngleFrom(&end, value2, AngleRadians);
-        camera->flags |= SetsFov;
-        camera->fovStart = static_cast<u32>(start);
-        camera->fovEnd = static_cast<u32>(end);
+        s32 startAngle;
+        AngleFrom(&startAngle, start, AngleRadians);
+        s32 endAngle;
+        AngleFrom(&endAngle, end, AngleRadians);
+        camera->flags.setsFov = 1;
+        camera->fovStart = static_cast<u32>(startAngle);
+        camera->fovEnd = static_cast<u32>(endAngle);
         break;
     }
     default:
@@ -924,10 +875,10 @@ void CameraTopdownModeCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLe
     }
 
     FollowCameraPositioner* positioner = &follow->camera.rig.ownPositioner;
-    auto* camera = static_cast<Camera1C0C*>(MemoryAllocate(sizeof(Camera1C0C)));
+    auto* camera = static_cast<OrbitCamera*>(MemoryAllocate(sizeof(OrbitCamera)));
     CameraSubtype::Construct(camera);
-    camera->unknown40[0] = 1;
-    camera->vtable = g_Camera1C0CVTable;
+    camera->unused40[0] = 1;
+    camera->vtable = g_OrbitCameraVTable;
     camera->radius = 11.0f;
     camera->farHeight = 16.0f;
     camera->farDistance = 20.0f;
@@ -937,46 +888,45 @@ void CameraTopdownModeCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLe
     camera->nearDistance = 0.0f;
     s32 fov;
     AngleFrom(&fov, 60.0f, AngleDegrees);
-    positioner->camera.flags |= SetsFov;
+    positioner->camera.flags.setsFov = 1;
     positioner->camera.fovStart = static_cast<u32>(fov);
     positioner->camera.fovEnd = static_cast<u32>(fov);
     positioner->camera.second = camera;
-    positioner->bits |= FollowCameraPositioner::BitOwnCamera;
-    positioner->Clear();
+    positioner->bits.ownCamera = 1;
+    positioner->ClearTriggerValues();
     FollowCameraTarget* target = &follow->camera.rig.ownTarget;
-    target->camera.flags = MainCamera::FlagSteers;
-    target->bits |= FollowCameraTarget::BitOwnCamera;
-    target->Clear();
+    target->camera.flags.value = 0;
+    target->camera.flags.steers = 1;
+    target->bits.ownCamera = 1;
+    target->ClearTriggerValues();
 }
 
-// The screen's fade (OLEG's widgets of slot 1) hidden (mode 0) or shown (1) over the duration, its colours black and the
-// command's (bit 3)
+// The screen's fade (OLEG's fader widgets) hidden or shown over the duration, its colours black and the command's when it
+// sets them
 void FadeoutScreenCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    constexpr u32 FadeSlot = 1;
-    constexpr u32 SetsColour = 0x8;
     GameController* controller = G_GameController;
     OLEG* oleg = &controller->oleg;
     u32 colour;
     MakeColour(&colour, red, green, blue);
-    switch (flags & 0x7)
+    switch (flags.mode)
     {
-    case 0:
-        oleg->Hide(oleg->masks[FadeSlot], ClockUnits(duration), 0);
+    case ModeHide:
+        oleg->Hide(oleg->screens[OLEG::ScreenFader], ClockUnits(duration), 0);
         break;
-    case 1:
-        oleg->Show(oleg->masks[FadeSlot], ClockUnits(duration), 0);
+    case ModeShow:
+        oleg->Show(oleg->screens[OLEG::ScreenFader], ClockUnits(duration), 0);
         break;
     default:
         return;
     }
 
-    if ((flags & SetsColour) != 0)
+    if (flags.setsColour)
     {
         u32 black;
-        GetColor(&black, 0);
-        oleg->sprite13B8.shownColour = colour;
-        oleg->sprite13B8.hiddenColour = black;
+        GetColor(&black, ColourTransparentBlack);
+        oleg->fader.shownColour = colour;
+        oleg->fader.hiddenColour = black;
     }
 }
 

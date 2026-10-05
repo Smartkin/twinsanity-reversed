@@ -8,6 +8,7 @@
 #include "game/gamecontroller.h"
 #include "game/instances.h"
 #include "game/objectnode.h"
+#include "game/player.h"
 #include "game/reference.h"
 
 #include <cstddef>
@@ -28,27 +29,13 @@ extern "C"
 
 namespace
 {
-constexpr u32 ControlsKind = 0xB;
 constexpr u32 ControlsType = 0x9006;
-constexpr u32 FollowKind = 0x16;
 constexpr u32 FollowType = 0x9007;
-// The instance's object node and the playable character's node
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 PlayerNodeKind = 0xC;
-// The controls' handlers' destructor
-constexpr u32 HandlerDestroySlot = 1;
-// The referenced objects' vtable functions the follow node's camera is told with: released, put to sleep
-constexpr u32 ObjectReleaseSlot = 4;
-constexpr u32 ObjectSleepSlot = 3;
-// The camera's instance's bit 17 (ShowCamera clears it) keeps it from following the character into another chunk
-constexpr u32 CameraStaysFlag = 0x20000;
-// The follow node's bit 0: its last update came while its clock was stopped
-constexpr u32 UpdatedStopped = 0x1;
 
 // The instance's move this frame (its object node's vector at 0xC0)
 const Vector4* FrameMove(InstanceContext* instance)
 {
-    return &static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, ObjectNodeKind))->unknownC0;
+    return &static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject))->frameMove;
 }
 
 void DestroyReplacement(ControlsNode* node)
@@ -56,13 +43,13 @@ void DestroyReplacement(ControlsNode* node)
     ControlsHandler* replacement = node->replacement;
     if (replacement != nullptr)
     {
-        CallVirtual<void>(replacement, replacement->vtable, HandlerDestroySlot, u32{DestroyAndFree});
+        CallVirtual<void>(replacement, replacement->vtable, ControlsHandler::DestroySlot, u32{DestroyAndFree});
     }
 }
 
 ReferencedObject* FollowedOf(const FollowNode* node)
 {
-    return node->object != nullptr ? node->object->object : nullptr;
+    return node->cameraInstance != nullptr ? node->cameraInstance->object : nullptr;
 }
 
 // What it follows released, and let go of when it's still there
@@ -74,11 +61,11 @@ void ReleaseFollowed(FollowNode* node)
         return;
     }
 
-    CallVirtual<u32>(object, object->vtable, ObjectReleaseSlot);
+    CallVirtual<u32>(object, object->vtable, ReferencedObject::ReleaseSlot);
     if (FollowedOf(node) != nullptr)
     {
-        RemoveReference(&node->object);
-        node->object = nullptr;
+        RemoveReference(&node->cameraInstance);
+        node->cameraInstance = nullptr;
     }
 }
 
@@ -86,9 +73,9 @@ void ReleaseFollowed(FollowNode* node)
 void RestartCamera(FollowNode* node, ChunkData* chunk)
 {
     InstanceContext* camera = node->MakeCamera(chunk);
-    RestartFollowCamera(&node->camera, G_GameController_00309890, camera, node->owner);
+    RestartFollowCamera(&node->camera, g_AgentNodesGameController, camera, node->owner);
     RestoreCameraDefaults(node);
-    node->timer = 0.0f;
+    node->unused760 = 0.0f;
 }
 }
 
@@ -100,7 +87,7 @@ ControlsNode* ConstructControlsNode(void* memory)
     node->vtable = g_ControlsNodeVTable;
     CharacterControls::Construct(&node->handler);
     node->replacement = nullptr;
-    node->bits &= ~ControlsNode::BitMotionDriven;
+    node->bits.motionDriven = 0;
     return node;
 }
 
@@ -110,25 +97,25 @@ void ReplaceControlsHandler(ControlsNode* controls, void* handler)
     controls->replacement = static_cast<ControlsHandler*>(handler);
 }
 
-void ControlsNode::Destroy(u32 flags)
+void ControlsNode::Destroy(u32 destroyFlags)
 {
     vtable = g_ControlsNodeVTable;
     DestroyReplacement(this);
     handler.Destroy(DestroyOnly);
     vtable = g_GameNodeBaseVTable;
-    GameNode::Destroy(flags);
+    GameNode::Destroy(destroyFlags);
 }
 
 u32 ControlsNode::Kind()
 {
-    return ControlsKind;
+    return NodeControls;
 }
 
 void ControlsNode::Step(TimeClock*, u32)
 {
     DestroyReplacement(this);
     replacement = nullptr;
-    bits &= ~BitMotionDriven;
+    bits.motionDriven = 0;
     handler.Reset();
 }
 
@@ -136,9 +123,9 @@ void ControlsNode::Step(TimeClock*, u32)
 // pad, the controls in use read it for the instance, and its follow camera reads it
 u32 ControlsNode::Update(TimeClock* clock)
 {
-    if ((clock->flags & TimeClock::FlagRunning) != 0)
+    if (clock->flags.running != 0)
     {
-        if ((bits & BitMotionDriven) != 0)
+        if (bits.motionDriven != 0)
         {
             Vector4 velocity = *FrameMove(owner);
             f32 inverse = 1.0f / (static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit);
@@ -149,7 +136,7 @@ u32 ControlsNode::Update(TimeClock* clock)
         }
         else if (pad != nullptr)
         {
-            auto* follow = static_cast<FollowNode*>(GetGameNode(&owner->nodes, FollowKind));
+            auto* follow = static_cast<FollowNode*>(GetGameNode(&owner->nodes, NodeFollow));
             ControlsHandler* controls = replacement != nullptr ? replacement : &handler;
             controls->FrameVirtual(clock, pad, owner);
             controls->ReadButtons(pad, owner);
@@ -169,24 +156,24 @@ FollowNode* ConstructFollowNode(FollowNode* node, ChunkEntry* chunk)
 {
     GameNode::Construct(node);
     node->chunk = chunk;
-    node->object = nullptr;
+    node->cameraInstance = nullptr;
     node->vtable = g_FollowNodeVTable;
     ConstructFollowCamera(&node->camera);
-    node->nodeBits = 0;
+    node->bits.value = 0;
     return node;
 }
 
 void RestoreCameraDefaults(FollowNode* node)
 {
-    auto* player = static_cast<PlayerNode*>(GetGameNode(&node->owner->nodes, PlayerNodeKind));
-    RestoreFollowCameraDefaults(&node->camera, reinterpret_cast<CharacterAgent*>(player->character));
+    auto* player = static_cast<PlayerNode*>(GetGameNode(&node->owner->nodes, NodeCharacter));
+    RestoreFollowCameraDefaults(&node->camera, player->character);
 }
 
 InstanceContext* FollowNode::MakeCamera(ChunkData* chunk)
 {
-    AssignReference(&object, MakeCameraInstance(chunk, nullptr));
+    AssignReference(&cameraInstance, MakeCameraInstance(chunk, nullptr));
     // Its clock the chunk's first (unchecked: without a camera, a byte of low memory at 0x153 is written)
-    static_cast<InstanceContext*>(FollowedOf(this))->clockIndex = 0;
+    static_cast<InstanceContext*>(FollowedOf(this))->clockIndex = FirstClock;
     return static_cast<InstanceContext*>(FollowedOf(this));
 }
 
@@ -196,24 +183,24 @@ void FollowNode::StopFollowing()
     ReferencedObject* object = FollowedOf(this);
     if (object != nullptr)
     {
-        CallVirtual<u32>(object, object->vtable, ObjectSleepSlot);
+        CallVirtual<u32>(object, object->vtable, ReferencedObject::SleepSlot);
     }
 }
 
-void FollowNode::Destroy(u32 flags)
+void FollowNode::Destroy(u32 destroyFlags)
 {
     vtable = g_FollowNodeVTable;
     ReleaseFollowed(this);
     DestroyFollowCamera(&camera, DestroyOnly);
-    RemoveReference(&object);
+    RemoveReference(&cameraInstance);
     vtable = g_GameNodeBaseVTable;
-    GameNode::Destroy(flags);
+    GameNode::Destroy(destroyFlags);
 }
 
 void FollowNode::SetOwner(InstanceContext* instance)
 {
-    Reference* data = chunk->data;
-    auto* chunkData = data != nullptr ? reinterpret_cast<ChunkData*>(data->object) : nullptr;
+    ChunkDataReference* data = chunk->data;
+    ChunkData* chunkData = data != nullptr ? data->chunk : nullptr;
     GameNode::SetOwner(instance);
     RestartCamera(this, chunkData);
 }
@@ -222,14 +209,15 @@ void FollowNode::SetOwner(InstanceContext* instance)
 // whether it moved
 u32 FollowNode::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 {
-    if ((link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link->flags.linkedRm2Loaded == 0)
     {
         return 0;
     }
 
-    // The camera's flags (at address 4 without a camera)
+    // The camera's flags (at address 4 without a camera): one that moves between chunks by itself (ShowCamera clears it) doesn't
+    // follow the character into another chunk
     std::uintptr_t followed = reinterpret_cast<std::uintptr_t>(FollowedOf(this));
-    if ((*reinterpret_cast<const u32*>(followed + offsetof(ReferencedObject, flags)) & CameraStaysFlag) == CameraStaysFlag)
+    if (reinterpret_cast<const ReferencedObjectFlags*>(followed + offsetof(ReferencedObject, flags))->movesBetweenChunks)
     {
         return 0;
     }
@@ -239,7 +227,7 @@ u32 FollowNode::CanChangeChunk(ChunkData*, ChunkLinkData* link)
 
 u32 FollowNode::Kind()
 {
-    return FollowKind;
+    return NodeFollow;
 }
 
 void FollowNode::LeftChunk(u32)
@@ -263,31 +251,32 @@ void FollowNode::Step(TimeClock* clock, u32)
 // while the clock runs; otherwise it stops following
 u32 FollowNode::Update(TimeClock* clock)
 {
-    GameProgress& progress = G_GameController_00309890->progress;
-    InstanceContext* player = progress.Instance(progress.Field(GameProgress::CharacterShift));
+    GameProgress& progress = g_AgentNodesGameController->progress;
+    InstanceContext* player = progress.Instance(progress.play.character);
     if (player != owner && player != nullptr)
     {
         StopFollowing();
         return GameNode::Update(clock);
     }
 
-    auto* playerNode = static_cast<PlayerNode*>(GetGameNode(&owner->nodes, PlayerNodeKind));
+    auto* playerNode = static_cast<PlayerNode*>(GetGameNode(&owner->nodes, NodeCharacter));
     PlayerCharacter* character = playerNode->character;
-    if ((clock->flags & TimeClock::FlagRunning) == 0)
+    if (clock->flags.running == 0)
     {
-        nodeBits |= UpdatedStopped;
+        // Its last update came while its clock was stopped
+        bits.unused0 = 1;
         return GameNode::Update(clock);
     }
 
-    timer -= static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit;
-    if (timer < 0.0f)
+    unused760 -= static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit;
+    if (unused760 < 0.0f)
     {
-        timer = 0.0f;
+        unused760 = 0.0f;
     }
 
     // The camera's instance read without checking the reference (it always has one: SetOwner and Step make it)
-    StepFollowCamera(&camera, clock, reinterpret_cast<CharacterAgent*>(character), static_cast<InstanceContext*>(object->object));
-    nodeBits &= ~UpdatedStopped;
+    StepFollowCamera(&camera, clock, character, static_cast<InstanceContext*>(cameraInstance->object));
+    bits.unused0 = 0;
     return GameNode::Update(clock);
 }
 

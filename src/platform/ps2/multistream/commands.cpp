@@ -1,31 +1,81 @@
 #include "multistream.h"
 
-// The commands with nothing more to them than their words. Their names are the IOP side's where it's known, the opcode's
-// otherwise
+// The commands with nothing more to them than their words, and the channels' volumes by their groups
 using namespace MultiStream;
 
 namespace
 {
-// A channel's volume scaled by its group's (4.12 fixed point). Volumes past 0x3FFF are the SPU2's inverted phase, scaled from
-// the other end
+// libsd's voice attribute word (SOUND_SetParam's): the core, the voice and the parameter
+union SdVoiceAttribute
+{
+    u16 value;
+    struct
+    {
+        u16 core : 1;
+        u16 voice : 5;
+        u16 unused6 : 2;
+        u16 parameter : 8;
+    };
+};
+CHECK_SIZE(SdVoiceAttribute, 2);
+
+// SD_VP_ADSR2's parameter: the release rate and its mode, the sustain's rate, direction and mode
+constexpr u16 SdAdsr2 = 4;
+
+union Adsr2
+{
+    u16 value;
+    struct
+    {
+        u16 releaseRate : 5;
+        u16 releaseExponential : 1;
+        u16 sustainRate : 7;
+        u16 unused13 : 1;
+        u16 sustainDecreasing : 1;
+        u16 sustainExponential : 1;
+    };
+};
+CHECK_SIZE(Adsr2, 2);
+
+// The release rate MsSetChannelRelease takes is below it; the sustain it sets is its slowest
+constexpr u32 ReleaseRateLimit = 0x20;
+constexpr u16 SlowestSustain = 0x7F;
+
+// The SPU2's buffers are sized in blocks of 64 bytes, of 1 KB at least
+constexpr u32 SpuBufferAlignment = 0x40;
+constexpr u32 MinimumSpuBuffer = 0x400;
+// The SPU2's reverb modes
+constexpr s32 EffectModes = 10;
+// A pitch of 0x1000 plays 48 kHz
+constexpr s32 PitchShift = 12;
+constexpr s32 PitchRate = 48000;
+
+// A channel's volume scaled by its group's (4.12 fixed point). Volumes past MaxVolume are the SPU2's inverted phase, scaled
+// from the other end
 s32 ScaleVolume(s32 groupVolume, s32 volume)
 {
-    bool inverted = volume > 0x3FFF;
+    bool inverted = volume > Platform::Audio::MaxVolume;
     if (inverted)
     {
-        volume = 0x7FFF - volume;
+        volume = Platform::Audio::InvertedVolumeBase - volume;
     }
 
     s32 scaled = volume * groupVolume;
     if (scaled < 0)
     {
-        scaled += 0xFFF;
+        scaled += (1 << GroupVolumeShift) - 1;
     }
 
-    scaled >>= 12;
-    return inverted ? 0x7FFF - scaled : scaled;
+    scaled >>= GroupVolumeShift;
+    return inverted ? Platform::Audio::InvertedVolumeBase - scaled : scaled;
+}
+
+s32 GroupIndex(s32 group)
+{
+    return (group >> Platform::Audio::GroupShift) - 1;
 }
 }
+
 
 extern "C"
 {
@@ -37,7 +87,7 @@ extern "C"
     // Groups are numbered from 1, in the top half of the value
     void MsComputeChannelVolumes(s32 group, s32 channel)
     {
-        s32 index = (group >> 16) - 1;
+        s32 index = GroupIndex(group);
         g_MsLeftVolume = MsGroupScale(g_MsGroupVolumesLeft[index], g_MsChannelVolumesLeft[channel]);
         g_MsRightVolume = MsGroupScale(g_MsGroupVolumesRight[index], g_MsChannelVolumesRight[channel]);
     }
@@ -56,7 +106,7 @@ extern "C"
         s32 rightVolume = right;
         if (group != 0)
         {
-            s32 index = (group >> 16) - 1;
+            s32 index = GroupIndex(group);
             g_MsLeftVolume = MsGroupScale(g_MsGroupVolumesLeft[index], left);
             rightVolume = MsGroupScale(g_MsGroupVolumesRight[index], g_MsChannelVolumesRight[channel]);
             leftVolume = g_MsLeftVolume;
@@ -68,18 +118,18 @@ extern "C"
 
     s32 MsSetGroupVolume(s32 group, u32 left, u32 right)
     {
-        u32 index = static_cast<u32>(group) >> 16;
-        if (index >= 5 || group == 0)
+        u32 index = static_cast<u32>(group) >> Platform::Audio::GroupShift;
+        if (index > Groups || group == 0)
         {
             return -1;
         }
 
-        if (left > 0x1000)
+        if (left > Platform::Audio::FullGroupVolume)
         {
             return -2;
         }
 
-        if (right > 0x1000)
+        if (right > Platform::Audio::FullGroupVolume)
         {
             return -3;
         }
@@ -93,16 +143,16 @@ extern "C"
     // Sends the channels of the group that play their volumes again
     void MsApplyGroupVolume(s32 group)
     {
-        for (s32 channel = 0; channel < static_cast<s32>(Streams); channel++)
+        for (s32 channel = 0; channel < static_cast<s32>(Channels); channel++)
         {
-            if (g_MsChannelGroups[channel] != group || g_MsChannelStates[channel] == 0)
+            if (g_MsChannelGroups[channel] != group || g_MsChannelStates[channel] == ChannelOff)
             {
                 continue;
             }
 
             MsLock();
             MsComputeChannelVolumes(group, channel);
-            Begin(2);
+            Begin(OpSetVolume);
             Push(static_cast<u16>(channel));
             Push(static_cast<u16>(g_MsLeftVolume));
             Push(static_cast<u16>(g_MsRightVolume));
@@ -113,14 +163,14 @@ extern "C"
 
     s32 MsSetChannelVolume(s16 channel, s16 left, s16 right)
     {
-        if (static_cast<u16>(channel) >= Streams)
+        if (static_cast<u16>(channel) >= Channels)
         {
             return -1;
         }
 
         MsStoreChannelVolumes(channel, left, right);
         MsLock();
-        Begin(0x60);
+        Begin(OpSetVolumeSmooth);
         Push(static_cast<u16>(channel));
         Push(static_cast<u16>(g_MsLeftVolume));
         Push(static_cast<u16>(g_MsRightVolume));
@@ -129,45 +179,44 @@ extern "C"
         return 0;
     }
 
-    s32 MsNextRequest()
+    s32 MsNextFileId()
     {
-        s32 request = g_MsRequestCounter;
-        g_MsRequestCounter++;
-        if (g_MsRequestCounter == -1)
+        s32 file = g_MsFileIdCounter;
+        g_MsFileIdCounter++;
+        if (g_MsFileIdCounter == -1)
         {
-            g_MsRequestCounter = 0;
+            g_MsFileIdCounter = 0;
         }
 
-        return request;
+        return file;
     }
 
-    // 48 kHz is 4096
     s32 MsPitchOfRate(s32 rate)
     {
-        return (rate << 12) / 48000;
+        return (rate << PitchShift) / PitchRate;
     }
 
-    s32 MsStreamOnSlot(u32 slot)
+    s32 MsStreamOnChannel(u32 channel)
     {
-        if (slot >= Streams)
+        if (channel >= Channels)
         {
             return -2;
         }
 
-        return static_cast<s8>(g_MsSlotStreams[slot]);
+        return static_cast<s8>(g_MsChannelStreams[channel]);
     }
 
-    s32 MsSetVoicePitch(u32 channel, u16 value)
+    s32 MsSetChannelPitch(u32 channel, u16 pitch)
     {
-        if (channel >= Streams)
+        if (channel >= Channels)
         {
             return -1;
         }
 
         MsLock();
-        Begin(3);
+        Begin(OpSetPitch);
         Push(static_cast<u16>(channel));
-        Push(value);
+        Push(pitch);
         MsCommit();
         MsUnlock();
         return 0;
@@ -175,13 +224,13 @@ extern "C"
 
     s32 MsKeyOff(u32 channel)
     {
-        if (channel >= Streams)
+        if (channel >= Channels)
         {
             return -1;
         }
 
         MsLock();
-        Begin(4);
+        Begin(OpStopSound);
         Push(static_cast<u16>(channel));
         MsCommit();
         MsUnlock();
@@ -196,22 +245,22 @@ extern "C"
         }
 
         MsLock();
-        if (stream >= 64)
+        if (stream >= ChannelStreams)
         {
-            u32 slot = static_cast<u32>(stream - 64);
-            s32 playing = MsStreamOnSlot(slot);
+            u32 channel = static_cast<u32>(stream - ChannelStreams);
+            s32 playing = MsStreamOnChannel(channel);
             if (playing < 0)
             {
                 MsUnlock();
                 return -1;
             }
 
-            g_MsSlotStreams[slot] = 0xFF;
+            g_MsChannelStreams[channel] = NoStream;
             stream = playing;
         }
 
-        g_MsStreamStates[stream] = 3;
-        Begin(5);
+        g_MsStreamStates[stream] = StreamStopRequested;
+        Begin(OpStopStream);
         Push(static_cast<u16>(stream));
         MsCommit();
         MsUnlock();
@@ -221,7 +270,7 @@ extern "C"
     void MsResetSound()
     {
         MsLock();
-        Begin(7);
+        Begin(OpInitSpu);
         MsCommit();
         MsUnlock();
     }
@@ -229,7 +278,7 @@ extern "C"
     void MsPauseAll()
     {
         MsLock();
-        Begin(0xA);
+        Begin(OpPause);
         MsCommit();
         MsUnlock();
     }
@@ -237,25 +286,25 @@ extern "C"
     void MsResumeAll()
     {
         MsLock();
-        Begin(0xB);
+        Begin(OpResume);
         MsCommit();
         MsUnlock();
     }
 
-    void MsConfigure(u16 first, u16 second, u16 third)
+    void MsInitStreamData(u16 loadType, u16 maxFiles, u16 maxSounds)
     {
         MsLock();
-        Begin(0xC);
-        Push(first);
-        Push(second);
-        Push(third);
-        Push(static_cast<u16>(g_MsVolume));
+        Begin(OpInitStreamData);
+        Push(loadType);
+        Push(maxFiles);
+        Push(maxSounds);
+        Push(static_cast<u16>(g_MsIopThreadPriority));
         MsCommit();
-        D_0030A8B8 = 1;
+        g_MsStreamDataInitialised = 1;
         MsUnlock();
     }
 
-    s32 MsSetStreamBuffer(s32 stream, u32 location, u32 size)
+    s32 MsAllocateStreamBuffer(s32 stream, u32 spuAddress, u32 size)
     {
         if (stream >= static_cast<s32>(Streams))
         {
@@ -263,40 +312,40 @@ extern "C"
         }
 
         MsLock();
-        g_MsStreamBufferSizes[stream] = size;
-        g_MsStreamBufferCapacities[stream] = size;
-        g_MsStreamBufferUsed[stream] = size;
-        if (location == 1)
+        g_MsIopBufferSizes[stream] = size;
+        g_MsIopBufferCurrentSizes[stream] = size;
+        g_MsSpuBufferSizes[stream] = size;
+        if (spuAddress == DataStream)
         {
-            location = 0;
-            g_MsStreamBufferInEe[stream] = 1;
+            spuAddress = 0;
+            g_MsStreamIsData[stream] = 1;
         }
         else
         {
-            g_MsStreamBufferInEe[stream] = 0;
+            g_MsStreamIsData[stream] = 0;
         }
 
-        Begin(0xD);
+        Begin(OpAllocateStreamBuffer);
         Push(static_cast<u16>(stream));
-        Push32(location);
+        Push32(spuAddress);
         Push32(size);
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    void MsSetSoundDestination(u32 address)
+    void MsSetSpuWriteAddress(u32 address)
     {
         MsLock();
-        g_MsHoldStatus4 = 1;
-        g_MsStatus4 = address;
-        Begin(0xE);
+        g_MsSpuWriteAddressSet = 1;
+        g_MsSpuWriteAddress = address;
+        Begin(OpSetSpuWriteAddress);
         Push32(address);
         MsCommit();
         MsUnlock();
     }
 
-    s32 MsReleaseStreamBuffer(u32 stream)
+    s32 MsCloseStreamBuffer(u32 stream)
     {
         if (stream >= Streams)
         {
@@ -304,11 +353,11 @@ extern "C"
         }
 
         MsLock();
-        g_MsStreamBufferSizes[stream] = 0;
-        g_MsStreamBufferCapacities[stream] = 0;
-        g_MsStreamBufferUsed[stream] = 0;
-        g_MsStreamBufferInEe[stream] = 0;
-        Begin(0xF);
+        g_MsIopBufferSizes[stream] = 0;
+        g_MsIopBufferCurrentSizes[stream] = 0;
+        g_MsSpuBufferSizes[stream] = 0;
+        g_MsStreamIsData[stream] = 0;
+        Begin(OpCloseStreamBuffer);
         Push(static_cast<u16>(stream));
         MsCommit();
         MsUnlock();
@@ -324,7 +373,7 @@ extern "C"
 
         MsLock();
         g_MsStreamCount = static_cast<s32>(count);
-        Begin(0x10);
+        Begin(OpSetMaxStreamLimit);
         Push(static_cast<u16>(count));
         MsCommit();
         MsUnlock();
@@ -333,7 +382,7 @@ extern "C"
 
     s32 MsSetEffect(u32 core, s32 mode, u16 depthLeft, u16 depthRight, u16 delay, u16 feedback)
     {
-        if (core >= 2 || mode >= 10)
+        if (core >= Platform::Audio::Cores || mode >= EffectModes)
         {
             return -1;
         }
@@ -355,7 +404,7 @@ extern "C"
 
         g_MsEffectSizes[core] = g_MsEffectSizesByMode[mode];
         g_MsEffectModes[core] = mode;
-        Begin(0x13);
+        Begin(OpEnableEffect);
         Push(static_cast<u16>(core));
         Push(static_cast<u16>(mode));
         Push(depthLeft);
@@ -372,37 +421,37 @@ extern "C"
         MsLock();
         g_MsEffectModes[core] = 0;
         g_MsEffectSizes[core] = 0;
-        Begin(0x14);
+        Begin(OpDisableEffect);
         Push(static_cast<u16>(core));
         MsCommit();
         MsUnlock();
     }
 
-    void MsSetEffectVolume(u16 first, u16 second, u16 third)
+    void MsSetEffectVolume(u16 core, u16 left, u16 right)
     {
         MsLock();
-        Begin(0x15);
-        Push(first);
-        Push(second);
-        Push(third);
+        Begin(OpSetEffectVolume);
+        Push(core);
+        Push(left);
+        Push(right);
         MsCommit();
         MsUnlock();
     }
 
-    void MsEffectSendOn(u16 value)
+    void MsEffectSendOn(u16 channel)
     {
         MsLock();
-        Begin(0x18);
-        Push(value);
+        Begin(OpEffectChannelOn);
+        Push(channel);
         MsCommit();
         MsUnlock();
     }
 
-    void MsEffectSendOff(u16 value)
+    void MsEffectSendOff(u16 channel)
     {
         MsLock();
-        Begin(0x19);
-        Push(value);
+        Begin(OpEffectChannelOff);
+        Push(channel);
         MsCommit();
         MsUnlock();
     }
@@ -410,37 +459,37 @@ extern "C"
     s32 MsSetBankAddress(u32 bank, u32 address)
     {
         MsLock();
-        Begin(0x1C);
+        Begin(OpPatchSoundBank);
         Push32(bank);
         Push32(address);
         MsCommit();
         MsUnlock();
-        return MsFindBank(bank, address);
+        return MsCheckSoundId(bank, address);
     }
 
     void MsCloseFile(u32 file)
     {
         MsLock();
-        Begin(0x20);
+        Begin(OpFreeFileId);
         Push32(file);
         MsCommit();
         MsUnlock();
     }
 
-    void MsReserveSounds(u16 value)
+    void MsReserveSounds(u16 count)
     {
         MsLock();
-        Begin(0x25);
-        Push(value);
+        Begin(OpAllocateSoundTable);
+        Push(count);
         MsCommit();
         MsUnlock();
     }
 
-    void MsFreeSound(u32 value)
+    void MsFreeSound(u32 sound)
     {
         MsLock();
-        Begin(0x28);
-        Push32(value);
+        Begin(OpFreeSound);
+        Push32(sound);
         MsCommit();
         MsUnlock();
     }
@@ -448,7 +497,7 @@ extern "C"
     void MsReadFile(u32 file, u32 offset, u32 size)
     {
         MsLock();
-        Begin(0x29);
+        Begin(OpSetFileOffsetAndSize);
         Push32(file);
         Push32(offset);
         Push32(size);
@@ -456,16 +505,16 @@ extern "C"
         MsUnlock();
     }
 
-    void MsCommand2A(u16 value)
+    void MsInitDisc(u16 type)
     {
         MsLock();
-        Begin(0x2A);
-        Push(value);
+        Begin(OpInitDisc);
+        Push(type);
         MsCommit();
         MsUnlock();
     }
 
-    void MsInterleaveStream(s32 stream, u16 value, u32 second)
+    void MsInterleaveStream(s32 stream, u16 track, u32 trackSize)
     {
         if (stream >= g_MsStreamCount)
         {
@@ -473,10 +522,10 @@ extern "C"
         }
 
         MsLock();
-        Begin(0x2B);
+        Begin(OpSetStreamParent);
         Push(static_cast<u16>(stream));
-        Push(value);
-        Push32(second);
+        Push(track);
+        Push32(trackSize);
         MsCommit();
         MsUnlock();
     }
@@ -484,12 +533,12 @@ extern "C"
     void MsQueryFreeMemory()
     {
         MsLock();
-        Begin(0x2D);
+        Begin(OpGetMaxIopMemory);
         MsCommit();
         MsUnlock();
     }
 
-    s32 MsStartPrepared(s32 stream)
+    s32 MsAllowKeyOn(s32 stream)
     {
         if (stream >= g_MsStreamCount)
         {
@@ -497,14 +546,14 @@ extern "C"
         }
 
         MsLock();
-        Begin(0x2E);
+        Begin(OpAllowKeyOn);
         Push(static_cast<u16>(stream));
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    s32 MsPrepareStream(s32 stream)
+    s32 MsDisableKeyOn(s32 stream)
     {
         if (stream >= g_MsStreamCount)
         {
@@ -512,130 +561,130 @@ extern "C"
         }
 
         MsLock();
-        Begin(0x2F);
+        Begin(OpDisableKeyOn);
         Push(static_cast<u16>(stream));
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    void MsSetEeDestination(u32 address)
+    void MsSetEeWriteAddress(u32 address)
     {
         MsLock();
-        g_MsHoldStatus56 = 1;
-        Begin(0x31);
-        g_MsStatus56 = address;
+        g_MsEeWriteAddressSet = 1;
+        Begin(OpSetEeWriteAddress);
+        g_MsEeWriteAddress = address;
         Push32(address);
         MsCommit();
         MsUnlock();
     }
 
-    void MsSetStatus57(u32 value)
+    void MsSetIopWriteAddress(u32 address)
     {
         MsLock();
-        g_MsHoldStatus57 = 1;
-        Begin(0x32);
-        g_MsStatus57 = value;
-        Push32(value);
+        g_MsIopWriteAddressSet = 1;
+        Begin(OpSetIopWriteAddress);
+        g_MsIopWriteAddress = address;
+        Push32(address);
         MsCommit();
         MsUnlock();
     }
 
-    void MsRestartReading()
+    void MsRestartFromDiscError()
     {
         MsLock();
-        Begin(0x35);
+        Begin(OpRestartFromDiscError);
         MsCommit();
         MsUnlock();
     }
 
-    void MsHoldReading()
+    void MsCheckDiscError()
     {
         MsLock();
-        Begin(0x37);
+        Begin(OpCheckDiscError);
         MsCommit();
         MsUnlock();
     }
 
-    void MsLendTransfer()
+    void MsDisableSpuCallback()
     {
         MsLock();
-        Begin(0x3B);
+        Begin(OpDisableSpuCallback);
         MsCommit();
         MsUnlock();
     }
 
-    void MsReclaimTransfer()
+    void MsEnableSpuCallback()
     {
         MsLock();
-        Begin(0x3C);
+        Begin(OpEnableSpuCallback);
         MsCommit();
         MsUnlock();
     }
 
-    void MsStopProgress()
+    void MsCloseWaitUpdate()
     {
         MsLock();
-        Begin(0x49);
+        Begin(OpInitWait);
         Push(0);
         Push(0);
         MsCommit();
         MsUnlock();
     }
 
-    s32 MsSetServerMode(u32 mode)
+    s32 MsSetFastLoadMode(u32 mode)
     {
-        if (mode < 2 || mode == 7 || mode == 6)
+        if (mode == FastLoadOff || mode == FastLoadOn || mode == FastLoadInvalidateCacheOn || mode == FastLoadInvalidateCacheOff)
         {
-            if (g_MsServer.running != 1)
+            if (g_MsFastLoad.eeStatus != FastLoadOn)
             {
                 return -1;
             }
 
-            Begin(0x51);
-            g_MsServer.unknown18 = static_cast<s32>(mode);
-            Push(1);
+            Begin(OpFastLoad);
+            g_MsFastLoad.iopStatus = static_cast<s32>(mode);
+            Push(FastLoadOnOff);
             Push(static_cast<u16>(mode));
             MsCommit();
-            if (mode - 6 >= 2)
+            if (mode != FastLoadInvalidateCacheOff && mode != FastLoadInvalidateCacheOn)
             {
-                g_MsServer.mode = 4;
+                g_MsFastLoad.allowLoad = FastLoadContinue;
             }
 
             return 0;
         }
 
-        if (mode - 2 < 3)
+        if (mode >= FastLoadStop && mode <= FastLoadContinue)
         {
-            g_MsServer.mode = static_cast<s32>(mode);
+            g_MsFastLoad.allowLoad = static_cast<s32>(mode);
             return 0;
         }
 
         return -1;
     }
 
-    // The size goes up to the next 64 bytes, and has to fit the stream's buffer; sizes of 1 to 1023 aren't taken
-    s32 MsSetStreamBufferSize(s32 stream, u32 size)
+    // The size goes up to the next 64 bytes, and has to fit the stream's IOP buffer; sizes of 1 to 1023 aren't taken
+    s32 MsResizeSpuBuffer(s32 stream, u32 size)
     {
         if (stream >= g_MsStreamCount)
         {
             return -1;
         }
 
-        if (size - 1 < 0x3FF)
+        if (size != 0 && size < MinimumSpuBuffer)
         {
             return -2;
         }
 
-        u32 aligned = (size + 0x3F) & ~0x3Fu;
-        if (g_MsStreamBufferSizes[stream] == 0 || g_MsStreamBufferCapacities[stream] < aligned)
+        u32 aligned = (size + SpuBufferAlignment - 1) & ~(SpuBufferAlignment - 1);
+        if (g_MsIopBufferSizes[stream] == 0 || g_MsIopBufferCurrentSizes[stream] < aligned)
         {
             return -1;
         }
 
         MsLock();
-        g_MsStreamBufferUsed[stream] = aligned;
-        Begin(0x52);
+        g_MsSpuBufferSizes[stream] = aligned;
+        Begin(OpResizeSpuBuffer);
         Push(static_cast<u16>(stream));
         Push32(aligned);
         MsCommit();
@@ -643,57 +692,67 @@ extern "C"
         return 0;
     }
 
-    s32 MsSetVoiceRelease(u32 voice, u32 parameter)
+    // The channel's ADSR2: the release rate, and the slowest sustain
+    s32 MsSetChannelRelease(u32 channel, u32 rate)
     {
-        if (parameter >= 0x20)
+        if (rate >= ReleaseRateLimit)
         {
             return -1;
         }
 
-        if (voice >= Streams)
+        if (channel >= Channels)
         {
             return -2;
         }
 
         MsLock();
-        Begin(0x5C);
-        s32 index = static_cast<s32>(voice);
-        Push(static_cast<u16>((index / 24) | (index % 24) << 1 | 0x400));
-        Push(static_cast<u16>(parameter | 0x1FC0));
+        Begin(OpSetParameter);
+        s32 index = static_cast<s32>(channel);
+        SdVoiceAttribute attribute;
+        attribute.value = 0;
+        attribute.core = index / Platform::Audio::VoicesPerCore;
+        attribute.voice = index % Platform::Audio::VoicesPerCore;
+        attribute.parameter = SdAdsr2;
+        Push(attribute.value);
+        Adsr2 envelope;
+        envelope.value = 0;
+        envelope.releaseRate = rate;
+        envelope.sustainRate = SlowestSustain;
+        Push(envelope.value);
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    s32 MsCommand63(s32 stream, u32 value)
+    s32 MsSetMibEndOffset(s32 stream, u32 offset)
     {
-        if (stream >= g_MsStreamCount || value == 0)
+        if (stream >= g_MsStreamCount || offset == 0)
         {
             return -1;
         }
 
         MsLock();
-        Begin(0x63);
+        Begin(OpSetMibEnd);
         Push(static_cast<u16>(stream));
-        Push32(value);
+        Push32(offset);
         MsCommit();
         MsUnlock();
         return 0;
     }
 
-    void MsCommand103(u16 value)
+    void MsSoundBankLoaded(u16 bank)
     {
         MsLock();
-        Begin(0x103);
-        Push(value);
+        Begin(OpSoundBankLoaded);
+        Push(bank);
         MsCommit();
         MsUnlock();
     }
 
-    void MsCommand104()
+    void MsCompactSoundMemory()
     {
         MsLock();
-        Begin(0x104);
+        Begin(OpCompactSoundMemory);
         MsCommit();
         MsUnlock();
     }

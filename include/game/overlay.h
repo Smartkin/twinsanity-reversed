@@ -20,7 +20,7 @@ struct QueuedText
     Vector2 position;
     Vector2 scale;
     u32 colour;
-    u32 flags;
+    TextAlignment alignment;
     String text;
 };
 CHECK_SIZE(QueuedText, 0x24);
@@ -34,17 +34,31 @@ struct FontTexts
 };
 CHECK_SIZE(FontTexts, 0x14);
 
+// How a queued shape is drawn: as it is (not placed by its matrix), in its own colours (not in its colour)
+union QueuedShapeFlags
+{
+    u32 value;
+    struct
+    {
+        u32 withoutMatrix : 1;
+        u32 ownColours : 1;
+        u32 unused2 : 30;
+    };
+
+    // The bits' masks, for the flags a shape is queued with
+    enum Mask : u32
+    {
+        WithoutMatrix = 0x1,
+        OwnColours = 0x2,
+    };
+};
+CHECK_SIZE(QueuedShapeFlags, 4);
+
 // A shape queued in a layer: drawn placed by its matrix or as it is, in its colour or in its own colours
 struct QueuedShape
 {
-    enum Flags : u32
-    {
-        WithoutMatrix = 1,
-        OwnColours = 2,
-    };
-
     Matrix4x4 matrix;
-    u32 flags;
+    QueuedShapeFlags flags;
     u32 colour;
     Shape2D* shape;
     QueuedShape* next;
@@ -76,8 +90,8 @@ extern "C"
     void QueuedShapeDestroy(QueuedShape* queued, u32 flags) RETAIL(FUN_001abb60);
     void QueuedShapeDraw(QueuedShape* queued) RETAIL(FUN_001abbb0);
 
-    // The text queued in the renderer's font, scale, colour and flags at the place (pixels of the frame). No text or an empty one
-    // queues nothing
+    // The text queued in the renderer's font, scale, colour and alignment at the place (pixels of the frame). No text or an empty
+    // one queues nothing
     void QueueText(Renderer* renderer, const char* text, f32 x, f32 y) RETAIL_N32(FUN_001a0b30);
     // The shape queued in the layer in the renderer's colour, as it is or placed by the matrix
     void QueueShape(Renderer* renderer, Shape2D* shape, u32 layer) RETAIL(FUN_001a0be0);

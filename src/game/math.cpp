@@ -1,6 +1,7 @@
 #include "game/math.h"
 
 #include "game/place.h"
+#include "gcc2.h"
 
 #include "platform/math.h"
 
@@ -12,7 +13,26 @@ extern "C"
 
 namespace
 {
-constexpr f32 TurnStep = 0x1.921FB6p-14f;
+// Numerical Recipes' ran0: Park and Miller's multiplier and modulus, the modulus's quotient and remainder by the multiplier
+// (Schrage's method), and the mask its seeds are kept with
+constexpr s32 ParkMillerMultiplier = 16807;
+constexpr s32 ParkMillerModulus = 0x7FFFFFFF;
+constexpr s32 ParkMillerQuotient = 127773;
+constexpr s32 ParkMillerRemainder = 2836;
+constexpr s32 SeedMask = 0x75BD924;
+// Numerical Recipes' quick generator's multiplier and increment
+constexpr u64 QuickMultiplier = 1664525;
+constexpr u64 QuickIncrement = 0x3C6EF35F;
+// rand's 2^31 values made [0, 1), and less their middle [-1, 1)
+constexpr f32 RandScale = 0x1.0p-31f;
+constexpr f32 RandMiddle = 0x1.0p+30f;
+constexpr f32 SignedRandScale = 0x1.0p-30f;
+// 65536ths of a turn in a turn (AngleFrom's turns)
+constexpr f32 TurnsToAngle = FullTurnAngle;
+// What a value within this of none isn't divided by, and InverseEpsilon squared (the float product, a bit above 1e-20): a
+// rotation's length squared up to it is none
+constexpr f32 DivisionEpsilon = InverseEpsilon;
+constexpr f32 InverseEpsilonSquared = 0x1.79ca12p-67f;
 
 // VU0's (the platform's)
 void SinCos(f32 radians, f32* out)
@@ -22,13 +42,6 @@ void SinCos(f32 radians, f32* out)
     out[0] = values[0];
     out[1] = values[1];
 }
-
-// 65536ths of a turn in a radian and in a degree
-constexpr f32 RadiansToAngle = 0x1.45F306p+13f;
-constexpr f32 DegreesToAngle = 0x1.6C16C2p+7f;
-constexpr f32 TurnsToAngle = 65536.0f;
-constexpr u32 UnitDegrees = 1;
-constexpr u32 UnitTurns = 2;
 }
 
 extern "C"
@@ -86,7 +99,6 @@ extern "C"
 
     s32 RandomNext(s32* seed)
     {
-        constexpr s32 Mask = 0x75BD924;
         if (seed == nullptr)
         {
             seed = &g_RandomSeed;
@@ -96,24 +108,27 @@ extern "C"
             *seed = 1;
         }
 
-        s32 value = *seed ^ Mask;
-        s32 high = value / 127773;
-        value = 16807 * (value - high * 127773) - 2836 * high;
-        if (value < 0)
+        s32 next = *seed ^ SeedMask;
+        s32 high = next / ParkMillerQuotient;
+        next = ParkMillerMultiplier * (next - high * ParkMillerQuotient) - ParkMillerRemainder * high;
+        if (next < 0)
         {
-            value += 0x7FFFFFFF;
+            next += ParkMillerModulus;
         }
 
-        *seed = value ^ Mask;
+        *seed = next ^ SeedMask;
         return *seed;
     }
 
     f32 RandomFloat01(u64* state)
     {
-        u64 next = *state * 1664525 + 0x3C6EF35F;
+        u64 next = *state * QuickMultiplier + QuickIncrement;
         *state = next;
-        u32 bits = (static_cast<u32>(next) & 0x7FFFFF) | 0x3F800000;
-        return __builtin_bit_cast(f32, bits) - 1.0f;
+        // Its low 23 bits the mantissa of a float of [1, 2)
+        FloatBits bits = {};
+        bits.mantissa = static_cast<u32>(next);
+        bits.exponent = FloatExponentBias;
+        return __builtin_bit_cast(f32, bits.value) - 1.0f;
     }
 
     void SinCosRadians(f32 radians, f32* out)
@@ -123,7 +138,7 @@ extern "C"
 
     void SinCos16(s32 angle, f32* out)
     {
-        SinCos(static_cast<f32>(angle) * TurnStep, out);
+        SinCos(static_cast<f32>(angle) * AngleToRadians, out);
     }
 
     f32 Sin16(s32 angle)
@@ -142,7 +157,7 @@ extern "C"
 
     void SinCos16Pair(s32 first, s32 second, f32* out)
     {
-        Platform::Math::SinCos(static_cast<f32>(first) * TurnStep, static_cast<f32>(second) * TurnStep, out);
+        Platform::Math::SinCos(static_cast<f32>(first) * AngleToRadians, static_cast<f32>(second) * AngleToRadians, out);
     }
 
     void AngleFrom(s32* angle, f32 value, u32 unit)
@@ -150,10 +165,10 @@ extern "C"
         f32 scale;
         switch (unit)
         {
-        case UnitDegrees:
+        case AngleDegrees:
             scale = DegreesToAngle;
             break;
-        case UnitTurns:
+        case AngleTurns:
             scale = TurnsToAngle;
             break;
         default:
@@ -296,17 +311,17 @@ extern "C"
 
     f32 GetRandFloat()
     {
-        return static_cast<f32>(GetRand()) * 0x1.0p-31f;
+        return static_cast<f32>(GetRand()) * RandScale;
     }
 
     f32 RandomSigned()
     {
-        return (static_cast<f32>(GetRand()) - 0x1.0p+30f) * 0x1.0p-30f;
+        return (static_cast<f32>(GetRand()) - RandMiddle) * SignedRandScale;
     }
 
     f32 RandomSignedTimes(f32 range)
     {
-        return (static_cast<f32>(GetRand()) - 0x1.0p+30f) * 0x1.0p-30f * range;
+        return (static_cast<f32>(GetRand()) - RandMiddle) * SignedRandScale * range;
     }
 
     s32 NextPowerOfTwo(s32 value)
@@ -486,7 +501,6 @@ void MatrixFromRows(Matrix4x4* matrix, const Vector4* x, const Vector4* y, const
 
 void ScaleAlongAxis(f32 share, Vector4* vector, const Vector4* axis, u32 unitAxis)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 along = vector->x * axis->x + vector->y * axis->y + vector->z * axis->z;
     if (along == 0.0f)
     {
@@ -671,14 +685,12 @@ namespace
 {
 bool TooShort(const Vector4* vector)
 {
-    constexpr f32 Tiny = Rounded(5e-5);
-    return __builtin_fabsf(vector->x) <= Tiny && __builtin_fabsf(vector->y) <= Tiny && __builtin_fabsf(vector->z) <= Tiny;
+    return __builtin_fabsf(vector->x) <= Epsilon && __builtin_fabsf(vector->y) <= Epsilon && __builtin_fabsf(vector->z) <= Epsilon;
 }
 }
 
 void PlaneFromTriangle(Vector4* plane, const Vector4* first, const Vector4* second, const Vector4* third)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     Vector4 toSecond = *second;
     Vector4 toThird = *third;
     toThird.x = toThird.x - first->x;
@@ -721,13 +733,14 @@ void PlaneFromTriangle(Vector4* plane, const Vector4* first, const Vector4* seco
 
 u32 PerpendicularOf(const Vector4* vector, Vector4* out)
 {
-    constexpr f32 Tiny = Rounded(1e-20);
+    // A vector this short (squared) has no perpendicular
+    constexpr f32 PerpendicularEpsilon = Rounded(1e-20);
     f32 x = vector->x;
     f32 y = vector->y;
     f32 z = vector->z;
     f32 xx = x * x;
     f32 zz = z * z;
-    if (!(Tiny < xx + y * y + zz))
+    if (!(PerpendicularEpsilon < xx + y * y + zz))
     {
         *out = *vector;
         return 0;
@@ -778,19 +791,11 @@ void HalfAngleSinCos(f32* sine, f32* cosine)
 
 void AxisAngleOfRotation(Vector4* rotation, Vector4* axis, s32* angle, u32 normalized)
 {
-    constexpr f32 Tiny = 0x1.79ca12p-67f;
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    // Abramowitz and Stegun's arc cosine (4.4.45) and pi
-    constexpr f32 AcosA = -0x1.32dc6p-6f;
-    constexpr f32 AcosB = 0x1.302c4ep-4f;
-    constexpr f32 AcosC = 0x1.b26908p-3f;
-    constexpr f32 AcosD = 0x1.921b48p+0f;
-    constexpr f32 Pi = 0x1.921fb6p+1f;
     if (normalized == 0)
     {
         f32 squared = rotation->x * rotation->x + rotation->y * rotation->y + rotation->z * rotation->z + rotation->w * rotation->w;
         f32 inverse = 0.0f;
-        if (Tiny < squared)
+        if (InverseEpsilonSquared < squared)
         {
             // One RSQRT.S, as retail
             inverse = 1.0f / __builtin_sqrtf(squared);
@@ -818,7 +823,7 @@ void AxisAngleOfRotation(Vector4* rotation, Vector4* axis, s32* angle, u32 norma
     }
 
     // Half the angle, in whole 65536ths of a turn before it's doubled
-    f32 half = (((size * AcosA + AcosB) * size - AcosC) * size + AcosD) * __builtin_sqrtf(rest);
+    f32 half = ArcCosineOfPositive(size) * __builtin_sqrtf(rest);
     if (w < 0.0f)
     {
         half = Pi - half;
@@ -845,8 +850,7 @@ void AxisAngleOfRotation(Vector4* rotation, Vector4* axis, s32* angle, u32 norma
 
 void InitMathConstants(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -861,16 +865,6 @@ void InitMathConstants(u32 initialise, u32 priority)
 
 namespace
 {
-// Abramowitz and Stegun's 4.4.45: the arc cosine of a value from 0 to 1 is about the square root of 1 less it times this cubic
-f32 ArcCosineOfPositive(f32 value)
-{
-    constexpr f32 A3 = -0x1.32dc6p-6f;
-    constexpr f32 A2 = 0x1.302c4ep-4f;
-    constexpr f32 A1 = 0x1.b26908p-3f;
-    constexpr f32 A0 = 0x1.921b48p+0f;
-    return ((value * A3 + A2) * value - A1) * value + A0;
-}
-
 f32 RootOfComplement(f32 value)
 {
     f32 complement = 1.0f - value;
@@ -881,8 +875,6 @@ f32 RootOfComplement(f32 value)
 
     return __builtin_sqrtf(complement);
 }
-
-constexpr f32 NearlyNone = 0x1.b7cdfep-34f;
 
 // Made a unit vector unless its length squared is within a tolerance of 1 (squared)
 void NormalizeTwo(f32* x, f32* y, f32 tolerance)
@@ -896,7 +888,7 @@ void NormalizeTwo(f32* x, f32* y, f32 tolerance)
 
     f32 length = __builtin_sqrtf(lengthSquared);
     f32 scale = 0.0f;
-    if (NearlyNone < length || length < -NearlyNone)
+    if (DivisionEpsilon < length || length < -DivisionEpsilon)
     {
         scale = 1.0f / length;
     }
@@ -908,13 +900,12 @@ void NormalizeTwo(f32* x, f32* y, f32 tolerance)
 
 s32* AngleOfCosine(f32 cosine, s32* angle)
 {
-    constexpr f32 HalfTurn = 0x1.921fb6p+1f;
     f32 value = __builtin_fabsf(cosine);
     f32 root = RootOfComplement(value);
     f32 radians = ArcCosineOfPositive(value) * root;
     if (cosine < 0.0f)
     {
-        radians = HalfTurn - radians;
+        radians = Pi - radians;
     }
 
     *angle = static_cast<s32>(radians * RadiansToAngle);
@@ -923,10 +914,9 @@ s32* AngleOfCosine(f32 cosine, s32* angle)
 
 s32* AngleOfSine(f32 sine, s32* angle)
 {
-    constexpr f32 QuarterTurn = 0x1.921fb6p+0f;
     f32 value = __builtin_fabsf(sine);
     f32 root = RootOfComplement(value);
-    f32 radians = QuarterTurn - root * ArcCosineOfPositive(value);
+    f32 radians = HalfPi - root * ArcCosineOfPositive(value);
     if (sine < 0.0f)
     {
         radians = -radians;
@@ -1005,17 +995,17 @@ s32 RandomFrom(s32 low, s32 count)
 
 f32 RandomBelowFloat(f32 range)
 {
-    return static_cast<f32>(GetRand()) * 0x1.0p-31f * range;
+    return static_cast<f32>(GetRand()) * RandScale * range;
 }
 
 f32 RandomFromFloat(f32 low, f32 range)
 {
-    return low + static_cast<f32>(GetRand()) * 0x1.0p-31f * range;
+    return low + static_cast<f32>(GetRand()) * RandScale * range;
 }
 
 f32 RandomAround(f32 centre, f32 range)
 {
-    return centre + (static_cast<f32>(GetRand()) - 0x1.0p+30f) * 0x1.0p-30f * range;
+    return centre + (static_cast<f32>(GetRand()) - RandMiddle) * SignedRandScale * range;
 }
 
 s32 SolveQuadratic(f32* roots, f32 a, f32 b, f32 c)
@@ -1303,7 +1293,6 @@ void ProjectOntoPlaneInPlace(const Vector4* plane, Vector4* point)
 
 void RotationFromAxisSine(f32 sine, f32 cosine, Vector4* rotation, const Vector4* axis, u32 unitAxis)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 scale = sine;
     if (unitAxis == 0)
     {
@@ -1328,7 +1317,6 @@ namespace
 // A vector less its part along a normal times a factor (the normal made a unit one when it isn't)
 void TakeAlong(Vector4* vector, const Vector4* normal, u32 unitNormal, f32 factor)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 along = vector->x * normal->x + vector->y * normal->y + vector->z * normal->z;
     if (along == 0.0f)
     {
@@ -1398,8 +1386,6 @@ u32 AreParallel(f32 tolerance, const Vector4* a, const Vector4* b, f32* dot)
 
 void GetRotationVec(Vector4* rotation, const Matrix4x4* matrix)
 {
-    // The axis after each (the quaternion's x, y and z)
-    constexpr s32 Next[3] = {1, 2, 0};
     const auto& m = matrix->m;
     f32 trace = m[0][0] + m[1][1] + m[2][2];
     if (0.0f < trace)
@@ -1425,8 +1411,8 @@ void GetRotationVec(Vector4* rotation, const Matrix4x4* matrix)
         i = 2;
     }
 
-    s32 j = Next[i];
-    s32 k = Next[j];
+    s32 j = NextAxis[i];
+    s32 k = NextAxis[j];
     f32 quaternion[4];
     f32 root = Kept(__builtin_sqrtf(m[i][i] - (m[j][j] + m[k][k]) + 1.0f));
     quaternion[i] = root * 0.5f;
@@ -1446,10 +1432,6 @@ void GetRotationVec(Vector4* rotation, const Matrix4x4* matrix)
 
 s32* SignedAngleAbout(s32* angle, const Vector4* from, const Vector4* to, u32 axis)
 {
-    constexpr f32 NoTurn = Rounded(5e-5);
-    constexpr f32 HalfTurn = 0x1.921fb6p+1f;
-    constexpr s32 HalfTurnAngle = 0x8000;
-    constexpr s32 QuarterTurnAngle = 0x4000;
     f32 fromSquared = from->x * from->x + from->y * from->y + from->z * from->z;
     f32 toSquared = to->x * to->x + to->y * to->y + to->z * to->z;
     f32 lengths = Kept(__builtin_sqrtf(fromSquared * toSquared));
@@ -1469,16 +1451,17 @@ s32* SignedAngleAbout(s32* angle, const Vector4* from, const Vector4* to, u32 ax
 
     Vector4 cross = {from->y * to->z - from->z * to->y, from->z * to->x - from->x * to->z, from->x * to->y - from->y * to->x,
                      from->w};
-    bool parallel = __builtin_fabsf(cross.x) <= NoTurn && __builtin_fabsf(cross.y) <= NoTurn && __builtin_fabsf(cross.z) <= NoTurn;
+    bool parallel =
+        __builtin_fabsf(cross.x) <= Epsilon && __builtin_fabsf(cross.y) <= Epsilon && __builtin_fabsf(cross.z) <= Epsilon;
     if (parallel)
     {
-        AngleFrom(&result, result < QuarterTurnAngle ? 0.0f : HalfTurn, AngleRadians);
+        AngleFrom(&result, result < QuarterTurnAngle ? 0.0f : Pi, AngleRadians);
         *angle = result;
         return angle;
     }
 
     f32 along = (&cross.x)[axis];
-    if (__builtin_fabsf(along) <= NoTurn)
+    if (__builtin_fabsf(along) <= Epsilon)
     {
         AngleFrom(&result, 0.0f, AngleRadians);
         *angle = result;
@@ -1498,9 +1481,6 @@ s32* AngleOfPoint(s32* angle, f32 y, f32 x)
     constexpr f32 A2 = 0x1.70edc4p-3f;
     constexpr f32 A1 = 0x1.523a08p-2f;
     constexpr f32 A0 = 0x1.ffee7p-1f;
-    constexpr f32 QuarterTurn = 0x1.921fb6p+0f;
-    constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
-    constexpr s32 HalfTurnAngle = 0x8000;
     // atan2(y, x) is twice atan(y / (r + x))
     f32 beyond = Kept(__builtin_sqrtf(x * x + y * y)) + x;
     if (!(0.0f < beyond))
@@ -1521,7 +1501,7 @@ s32* AngleOfPoint(s32* angle, f32 y, f32 x)
         f32 inverse = 1.0f / tangent;
         f32 inverseSquared = inverse * inverse;
         f32 rest = ((((inverseSquared * A4 - A3) * inverseSquared + A2) * inverseSquared - A1) * inverseSquared + A0) * inverse;
-        half = 0.0f < tangent ? QuarterTurn - rest : -QuarterTurn - rest;
+        half = 0.0f < tangent ? HalfPi - rest : -HalfPi - rest;
     }
 
     s32 halfAngle = static_cast<s32>(half * RadiansToAngle);
@@ -1533,7 +1513,6 @@ s32* AngleOfPoint(s32* angle, f32 y, f32 x)
 void EulerAnglesOfMatrix(const Matrix4x4* matrix, s32* x, s32* y, s32* z)
 {
     constexpr f32 Near = 0x1.0624dep-11f;
-    constexpr s32 QuarterTurnAngle = 0x4000;
     const auto& m = matrix->m;
     // A turn about y alone: x and z none
     if (__builtin_fabsf(m[0][1]) <= Near && __builtin_fabsf(m[1][0]) <= Near && __builtin_fabsf(m[1][2]) <= Near &&
@@ -1569,7 +1548,6 @@ void EulerAnglesOfMatrix(const Matrix4x4* matrix, s32* x, s32* y, s32* z)
 
 void MatrixFacing(Matrix4x4* matrix, const Vector4* direction)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     *RowOf(matrix, 2) = *direction;
     f32 flat = 1.0f - direction->y * direction->y;
     if (flat == 0.0f)
@@ -1617,12 +1595,11 @@ void MatrixFacing(Matrix4x4* matrix, const Vector4* direction)
 
 void BasisAround(Matrix4x4* matrix, const Vector4* axis, s32 row)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    // The row after each
-    constexpr s32 Next[3] = {1, 2, 0};
-    s32 second = Next[row];
+    // The row after each, a copy on the stack like retail's (a row past 2 reads the stack after it)
+    const s32 next[3] = {NextAxis[0], NextAxis[1], NextAxis[2]};
+    s32 second = next[row];
     *RowOf(matrix, row) = *axis;
-    s32 third = Next[second];
+    s32 third = next[second];
     Vector4* square = RowOf(matrix, second);
     PerpendicularOf(axis, square);
     f32 inverse = InverseLength(square, LengthEpsilon);
@@ -1673,7 +1650,6 @@ void LookAlong(Matrix4x4* matrix, const Vector4* direction, const Vector4* up)
 
 void AxesAround(const Vector4* direction, Vector4* side, Vector4* up)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 off = direction->y * direction->y - 1.0f;
     if (off == 0.0f)
     {
@@ -1717,13 +1693,12 @@ void AxesAround(const Vector4* direction, Vector4* side, Vector4* up)
 
 void AngleBetweenRotations(s32* angle, Vector4* a, Vector4* b)
 {
-    constexpr f32 Tiny = 0x1.b7cdfep-34f;
-    f32 inverse = InverseLength4(0.0f, Tiny, a);
+    f32 inverse = InverseLength4(0.0f, InverseEpsilon, a);
     a->x = a->x * inverse;
     a->y = a->y * inverse;
     a->z = a->z * inverse;
     a->w = a->w * inverse;
-    f32 otherInverse = InverseLength4(0.0f, Tiny, b);
+    f32 otherInverse = InverseLength4(0.0f, InverseEpsilon, b);
     b->x = b->x * otherInverse;
     b->y = b->y * otherInverse;
     b->z = b->z * otherInverse;
@@ -1739,13 +1714,12 @@ void AngleBetweenRotations(s32* angle, Vector4* a, Vector4* b)
 
 void RotateByQuaternion(Vector4* rotation, const Vector4* vector, Vector4* out, u32 normalized)
 {
-    constexpr f32 Tiny = 0x1.79ca12p-67f;
     if (normalized == 0)
     {
         f32 x = rotation->x;
         f32 lengthSquared = x * x + rotation->y * rotation->y + rotation->z * rotation->z + rotation->w * rotation->w;
         f32 scale = 0.0f;
-        if (Tiny < lengthSquared)
+        if (InverseEpsilonSquared < lengthSquared)
         {
             scale = Platform::Math::DivideBySquareRoot(1.0f, lengthSquared);
         }
@@ -1780,7 +1754,6 @@ void RotateByQuaternion(Vector4* rotation, const Vector4* vector, Vector4* out, 
 
 void MatrixAboutAxis(f32 sine, f32 cosine, Matrix4x4* matrix, const Vector4* axis, u32 unitAxis)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     f32 x = axis->x;
     f32 y = axis->y;
     f32 z = axis->z;
@@ -1832,16 +1805,16 @@ void MatrixAboutAxis(f32 sine, f32 cosine, Matrix4x4* matrix, const Vector4* axi
 namespace
 {
 // Two directions' cross product, its length squared and their dot product, as the rotations between them work them out
-struct Between
+struct CrossAndDot
 {
     Vector4 cross;
     f32 crossSquared;
     f32 dot;
 };
 
-Between BetweenOf(const Vector4* from, const Vector4* to)
+CrossAndDot CrossAndDotOf(const Vector4* from, const Vector4* to)
 {
-    Between between;
+    CrossAndDot between;
     Vector4 copy = *from;
     between.cross.y = copy.z * to->x - copy.x * to->z;
     between.cross.x = copy.y * to->z - copy.z * to->y;
@@ -1873,7 +1846,7 @@ Vector4 SquareToLonger(const Vector4* from, const Vector4* to)
 
 void MatrixBetween(Matrix4x4* matrix, const Vector4* from, const Vector4* to)
 {
-    Between between = BetweenOf(from, to);
+    CrossAndDot between = CrossAndDotOf(from, to);
     if (0.0f < between.crossSquared)
     {
         f32 cross = __builtin_sqrtf(between.crossSquared);
@@ -1894,14 +1867,12 @@ void MatrixBetween(Matrix4x4* matrix, const Vector4* from, const Vector4* to)
 
 void RotationBetween(Vector4* rotation, const Vector4* from, const Vector4* to)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-    constexpr f32 NearlyNone = 0x1.b7cdfep-34f;
-    Between between = BetweenOf(from, to);
+    CrossAndDot between = CrossAndDotOf(from, to);
     if (0.0f < between.crossSquared)
     {
         f32 lengths = SquaredLength3(from) * SquaredLength3(to);
         f32 inverse = 0.0f;
-        if (NearlyNone < lengths || lengths < -NearlyNone)
+        if (DivisionEpsilon < lengths || lengths < -DivisionEpsilon)
         {
             inverse = 1.0f / lengths;
         }
@@ -1964,7 +1935,6 @@ void RotationBetween(Vector4* rotation, const Vector4* from, const Vector4* to)
 
 void LookAtMatrix(Matrix4x4* matrix, const Vector4* eye, const Vector4* target, const Vector4* up)
 {
-    constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
     Vector4 forward = *target;
     forward.x = forward.x - eye->x;
     forward.y = forward.y - eye->y;
@@ -2032,6 +2002,6 @@ f32 HalfLifeShare(f32 halfLife, f32 seconds)
     return Exponential(seconds * MinusLn2 / halfLife);
 }
 
-void UnkDebugFunction3()
+void MathsDebugStub()
 {
 }

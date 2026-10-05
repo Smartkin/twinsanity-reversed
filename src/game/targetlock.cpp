@@ -1,6 +1,7 @@
 #include "game/characters.h"
 
 #include "game/agentparts.h"
+#include "game/attachments.h"
 #include "game/clock.h"
 #include "game/collision.h"
 #include "game/followcamera.h"
@@ -22,30 +23,16 @@ EABI_EXPORT(FUN_00161c68, &TargetLock::SetFlatShape);
 
 namespace
 {
-// An instance's attachments (its kind 6 node): how many instances are attached (bits 0-4) and the instances
-struct AttachmentsNode
-{
-    static constexpr u32 CountMask = 0x1F;
-
-    u8 unknown00[0x18];
-    u32 count;
-    u8 unknown1C[4];
-    InstanceContext* attached[16];
-};
-
-// The nodes it uses: the holder's attachments (the marker is its first attached instance) and the owner's camera
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 FollowNodeKind = 0x16;
 // The kinds of the nodes the search asks for (characters, crates, pickups, creatures, generic objects, grabbables, pay gates,
-// graples, projectiles and kind 21) and how many instances it ranks at most
-constexpr u32 SearchedKinds = 0x3FF000;
+// graples, projectiles and kind 0x15) and how many instances it ranks at most
+constexpr u32 SearchedKinds = 1u << NodeCharacter | 1u << NodeCrate | 1u << NodePickup | 1u << NodeCreature |
+                              1u << NodeGenericObject | 1u << NodeGrabbable | 1u << NodePayGate | 1u << NodeGraple |
+                              1u << NodeProjectile | 1u << NodeUnusedObjectType;
 constexpr u16 MostFound = 0x40;
-// The collision hiding an instance from the hull's start: what's solid to the player's probes
-constexpr u32 SightSurfaces = 0x10;
-constexpr f32 NoHitDistance = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// How much being off the hull's middle counts against an instance (times its squared distance)
+// How much being off the hull's middle counts against an instance (times its squared distance), and where a kind's priority goes
+// in an instance's score (its top byte, above any distance)
 constexpr f32 OffMiddleWeight = 100.0f;
+constexpr u32 PriorityShift = 24;
 // A target is kept for a quarter of a second after it was last the best
 constexpr f32 KeepSeconds = 0.25f;
 // The marker stands this far in front of the target, toward the camera
@@ -81,15 +68,15 @@ Vector4 MiddleOf(const Box* box)
 }
 
 // A query of a chunk's instances into the results: none of the asleep ones, all the wanted flags needed (none)
-void StartQuery(InstanceRayHit* query, InstanceContext** results, u16 most)
+void StartQuery(InstanceQuery* query, InstanceContext** results, u16 most)
 {
     query->results = reinterpret_cast<void**>(results);
     query->most = most;
     query->count = 0;
     query->distance = NoHitDistance;
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = 0;
-    query->unwantedFlags = ReferencedObject::FlagAsleep;
+    query->unwantedFlags = ReferencedObjectFlags::Asleep;
     query->skipped[0] = nullptr;
     query->skipped[1] = nullptr;
     query->instance = nullptr;
@@ -113,11 +100,11 @@ TargetLock* TargetLock::Construct(TargetLock* lock)
 
 void TargetLock::Reset()
 {
-    u32 kindCount = bits >> KindCountShift & KindCountMask;
-    u32 untargettable = bits & TakesUntargettable;
+    u32 kindCount = bits.kindCount;
+    u32 untargettable = bits.takesUntargettable;
     RetailLibc::MemorySet(&bits, 0, sizeof(bits));
-    bits = (bits & ~(KindCountMask << KindCountShift)) | kindCount << KindCountShift;
-    bits = (bits & ~TakesUntargettable) | untargettable;
+    bits.kindCount = kindCount;
+    bits.takesUntargettable = untargettable;
     seenTime = 0;
     AssignReference(&target, nullptr);
     AssignReference(&marker, nullptr);
@@ -176,34 +163,34 @@ void TargetLock::SetFlatShape(f32 length, f32 nearHalf, f32 farHalf)
 
 void TargetLock::AddKind(u32 kind, u32 priority)
 {
-    u32 count = bits >> KindCountShift & KindCountMask;
+    u32 count = bits.kindCount;
     kinds[count][0] = kind;
     kinds[count][1] = priority;
-    bits = (bits & ~(KindCountMask << KindCountShift)) | ((count + 1) & KindCountMask) << KindCountShift;
+    bits.kindCount = count + 1;
 }
 
 u32 TargetLock::CanTarget(InstanceContext* instance)
 {
-    if (instance == nullptr || (instance->flags & ReferencedObject::FlagAsleep) != 0)
+    if (instance == nullptr || instance->flags.asleep)
     {
         return 0;
     }
 
     // Retail reads the agent without checking the instance has an agent node
     Agent* agent = RetailAgentOf(AgentNodeOf2(instance));
-    if ((bits & TakesUntargettable) == 0
-        && (static_cast<BasicAgentPart*>(agent->part)->bits & BasicAgentPart::Targettable) == 0)
+    if (bits.takesUntargettable == 0
+        && static_cast<BasicAgentPart*>(agent->part)->bits.targettable == 0)
     {
         return 0;
     }
 
     // The first of its kinds the instance has a node of gives the priority; 0 and 128 up can't be targeted
-    u32 kindCount = bits >> KindCountShift & KindCountMask;
+    u32 kindCount = bits.kindCount;
     for (u32 index = 0; index < kindCount; index++)
     {
         if (instance->nodes.nodes[kinds[index][0]] != nullptr)
         {
-            return static_cast<s32>(u32{kinds[index][1]} << 24) > 0;
+            return static_cast<s32>(u32{kinds[index][1]} << PriorityShift) > 0;
         }
     }
 
@@ -213,7 +200,7 @@ u32 TargetLock::CanTarget(InstanceContext* instance)
 void TargetLock::Search(TimeClock* clock, InstanceContext* owner, InstanceContext* holder)
 {
     InstanceContext* found[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     u32 now = clock->time;
     bool targetFound = false;
     StartQuery(&query, found, MostFound);
@@ -239,7 +226,7 @@ void TargetLock::Search(TimeClock* clock, InstanceContext* owner, InstanceContex
         }
 
         Vector4 middle = MiddleOf(instance->CollisionBox());
-        if (GetCollisionCheck(chunk, start, &middle, SightSurfaces, nullptr, nullptr, nullptr) != 0)
+        if (GetCollisionCheck(chunk, start, &middle, SurfaceFlags::SolidToPlayerProbes, nullptr, nullptr, nullptr) != 0)
         {
             continue;
         }
@@ -247,12 +234,12 @@ void TargetLock::Search(TimeClock* clock, InstanceContext* owner, InstanceContex
         // Ranked by the priority of its kind, then by how far off the hull's middle it is (along the hull's sideways axis, times
         // 100) times its squared distance
         u32 priority = 0;
-        u32 kindCount = bits >> KindCountShift & KindCountMask;
+        u32 kindCount = bits.kindCount;
         for (u32 kind = 0; kind < kindCount; kind++)
         {
             if (instance->nodes.nodes[kinds[kind][0]] != nullptr)
             {
-                priority = u32{kinds[kind][1]} << 24;
+                priority = u32{kinds[kind][1]} << PriorityShift;
                 break;
             }
         }
@@ -334,18 +321,19 @@ void TargetLock::Drop()
     InstanceContext* shown = ObjectOf(marker);
     if (shown != nullptr)
     {
-        shown->flags &= ~ReferencedObject::FlagVisible;
+        shown->flags.visible = 0;
     }
 }
 
 void TargetLock::PlaceMarker(InstanceContext* owner, InstanceContext* holder)
 {
+    // The marker is the first instance linked to the holder
     if (ObjectOf(marker) == nullptr && holder != nullptr)
     {
-        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&holder->nodes, AttachmentsKind));
-        if (attachments != nullptr && (attachments->count & AttachmentsNode::CountMask) != 0)
+        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&holder->nodes, NodeAttachments));
+        if (attachments != nullptr && attachments->LinkedCount() != 0)
         {
-            AssignReference(&marker, attachments->attached[0]);
+            AssignReference(&marker, attachments->linked[0]);
         }
     }
 
@@ -358,13 +346,13 @@ void TargetLock::PlaceMarker(InstanceContext* owner, InstanceContext* holder)
     InstanceContext* aimed = ObjectOf(target);
     if (aimed == nullptr)
     {
-        shown->flags &= ~ReferencedObject::FlagVisible;
+        shown->flags.visible = 0;
         return;
     }
 
     // Turned like the camera, 2 units in front of the target's middle toward it (on it when the camera is nearer)
-    auto* follow = static_cast<FollowNode*>(GetGameNode(&owner->nodes, FollowNodeKind));
-    ObjectPlace* cameraPlace = RetailPlaceOf(ObjectOf(follow->object));
+    auto* follow = static_cast<FollowNode*>(GetGameNode(&owner->nodes, NodeFollow));
+    ObjectPlace* cameraPlace = RetailPlaceOf(ObjectOf(follow->cameraInstance));
     ObjectPlace* aimedPlace = aimed->place;
     RotateAndTranslate(cameraPlace);
     Matrix4x4 matrix = cameraPlace->matrix;
@@ -388,7 +376,7 @@ void TargetLock::PlaceMarker(InstanceContext* owner, InstanceContext* holder)
     at->x = at->x + way.x;
     at->y = at->y + way.y;
     at->z = at->z + way.z;
-    shown->flags |= ReferencedObject::FlagVisible;
+    shown->flags.visible = 1;
     if (SetPlaceMatrix(shown->place, &matrix) != 0)
     {
         QueueObject(shown);

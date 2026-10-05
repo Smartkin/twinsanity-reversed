@@ -7,52 +7,120 @@
 
 struct ReferencedObject;
 
-// A reference to an object (an instance context, a chunk's data, a loader): the object, and a count of 24 bits with flags above
-// it. Bit 24 makes the reference own the object: the last one destroys it. An object keeps the block of its references at 0xB0
+union ReferenceBits
+{
+    u32 value;
+    struct
+    {
+        u32 count : 24;
+        // The reference owns the object: letting the last one go destroys it
+        u32 owns : 1;
+        // What the memory held when the block was made
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(ReferenceBits, 4);
+
+// A reference to an object (an instance context, a chunk's data, a loader): the object, and a count with flags above it. An
+// object keeps the block of its references at 0xB0
 struct Reference
 {
     ReferencedObject* object;
-    u32 value;
+    ReferenceBits bits;
 };
 CHECK_SIZE(Reference, 8);
 
 struct ObjectPlace;
 
-// What references point at (the game's objects' base, its vtable at 0xA4: 1 the destructor, 2 woken and 3 put to sleep (whether it
-// was asleep, and whether it wasn't), 4 released (whether it wasn't before), 5 its step once it was queued): its flags (bit 0 asleep,
-// bit 1 queued to be stepped, bit 2 released), its place (0x70 bytes of its own), its collision (0x10 bytes in),
-// the chunk it's in (its data), the reference block at 0xB0
-struct ReferencedObject
+// A referenced object's flags. An instance's bits 3, 4, 10 and 12 follow its agent's state (game/properties.h's InstanceState)
+union ReferencedObjectFlags
 {
-    enum Flags : u32
+    u32 value;
+    struct
     {
-        FlagAsleep = 0x1,
-        FlagQueued = 0x2,
-        FlagReleased = 0x4,
-        // Its agent's state flags (game/instances.h): triggers' signals reach it, it's drawn, it casts a shadow
-        FlagTriggerSignals = 0x8,
+        u32 asleep : 1;
+        // Queued to be stepped (QueueObject), until its step
+        u32 queued : 1;
+        u32 released : 1;
+        // Triggers' signals reach it
+        u32 receivesTriggerSignals : 1;
+        // The collision queries that want it find it: the character's solver keeps out of its kind 5 node's sphere while that
+        // node is on, of its hulls otherwise
+        u32 collisionActive : 1;
+        u32 unused5 : 1;
+        // Attached to an agent that holds it, and holding an attached object (the scripts' AttachedToAnAgent and
+        // GotAttachedObject)
+        u32 attached : 1;
+        u32 hasAttachment : 1;
+        // Taken by a request or a linked object search (the scripts' IsBusy)
+        u32 busy : 1;
         // It's in a scenery cell drawn this frame
-        FlagInDrawnCell = 0x200,
-        FlagVisible = 0x400,
-        FlagShadow = 0x1000,
-        // A projectile's
-        FlagProjectile = 0x20000,
-        // The character's solver keeps the body out of its kind 5 node's sphere while that node is on, out of its hulls otherwise
-        FlagSphereContact = 0x10,
+        u32 inDrawnCell : 1;
+        u32 visible : 1;
+        u32 unused11 : 1;
+        u32 shadowActive : 1;
+        // Set on the instances of layouts that aren't their chunk's own (InstanceFactory::NotChunkOwn)
+        u32 unused13 : 1;
+        // What stands on it rides along
+        u32 carriesRiders : 1;
         // It has a physics body whose collisions its object node hears of
-        FlagPhysicsBody = 0x8000,
+        u32 physicsBody : 1;
+        u32 unused16 : 1;
+        // Its chunk follows where it is (UpdateInstanceChunk: projectiles, thrown characters), and the follow node doesn't move
+        // such a camera through links
+        u32 movesBetweenChunks : 1;
+        // A dynamic scenery's (the scenery cells keep such instances on a list of their own)
+        u32 dynamicScenery : 1;
         // Its model's hulls collide (ModelNode::SetSolid)
-        FlagSolidModel = 0x80000,
+        u32 solidModel : 1;
+        u32 unused20 : 12;
     };
 
-    u32 unknown00;
-    u32 flags;
+    // The bits' masks: the collision queries' wanted and unwanted flags
+    enum Mask : u32
+    {
+        Asleep = 0x1,
+        Queued = 0x2,
+        Released = 0x4,
+        ReceivesTriggerSignals = 0x8,
+        CollisionActive = 0x10,
+        Attached = 0x40,
+        HasAttachment = 0x80,
+        Busy = 0x100,
+        InDrawnCell = 0x200,
+        Visible = 0x400,
+        ShadowActive = 0x1000,
+        CarriesRiders = 0x4000,
+        PhysicsBody = 0x8000,
+        MovesBetweenChunks = 0x20000,
+        DynamicScenery = 0x40000,
+        SolidModel = 0x80000,
+    };
+};
+CHECK_SIZE(ReferencedObjectFlags, 4);
+
+// What references point at (the game's objects' base, its vtable at 0xA4: 1 the destructor, 2 woken and 3 put to sleep (whether
+// it was asleep, and whether it wasn't), 4 released (whether it wasn't before), 5 its step once it was queued): its flags, its
+// place (0x70 bytes of its own), its collision (0x10 bytes in), the chunk it's in (its data), the reference block at 0xB0
+struct ReferencedObject
+{
+    enum Slot : u32
+    {
+        DestroySlot = 1,
+        WakeSlot = 2,
+        SleepSlot = 3,
+        ReleaseSlot = 4,
+        StepQueuedSlot = 5,
+    };
+
+    u32 unused00;
+    ReferencedObjectFlags flags;
     ObjectPlace* place;
-    u32 unknown0C;
+    u32 unused0C;
     ObjectCollision collision;
     struct ChunkData* chunk;
     const GccVTableEntry* vtable;
-    u8 unknownA8[0xB0 - 0xA8];
+    u8 unusedA8[0xB0 - 0xA8];
     Reference* reference;
 
     static ReferencedObject* Construct(ReferencedObject* object) RETAIL(FUN_001976a8);
@@ -65,7 +133,7 @@ struct ReferencedObject
 
     void Destroy(u32 destroyFlags)
     {
-        CallVirtual<void>(this, vtable, 1, destroyFlags);
+        CallVirtual<void>(this, vtable, DestroySlot, destroyFlags);
     }
 
     // The box of its collision
@@ -74,14 +142,10 @@ struct ReferencedObject
         return &collision.box;
     }
 };
+CHECK_OFFSET(ReferencedObject, flags, 4);
+CHECK_OFFSET(ReferencedObject, unused0C, 0xC);
 CHECK_OFFSET(ReferencedObject, chunk, 0xA0);
 CHECK_OFFSET(ReferencedObject, reference, 0xB0);
-
-namespace ReferenceBits
-{
-constexpr u32 CountMask = 0xFFFFFF;
-constexpr u32 Owns = 0x1000000;
-}
 
 // An array of references (a growable array of handles): a full one grows by its growth
 struct ReferenceArray
@@ -109,8 +173,10 @@ extern "C"
 // Up to 32 references (0x84 bytes): their count and the handles, kept sorted by their objects' addresses when gathered
 struct ReferenceSet
 {
+    static constexpr u32 MostHandles = 32;
+
     u32 count;
-    Reference* handles[32];
+    Reference* handles[MostHandles];
 
     // Made empty, a reference to an object taken when there's one
     static ReferenceSet* Construct(ReferenceSet* set, ReferencedObject* first) RETAIL(FUN_001f4bc0);
@@ -134,6 +200,12 @@ extern "C"
 class HandleWalk
 {
 public:
+    enum Slot : u32
+    {
+        SlotIsDone = 3,
+        SlotCurrent = 4,
+    };
+
     const GccVTableEntry* vtable;
     u32 index;
     const ReferenceSet* set;
@@ -146,15 +218,15 @@ public:
     Reference* const* Current() RETAIL(FUN_0013e4b8);
     void Next() RETAIL(FUN_0013e4d0);
 
-    // Through the vtable: whether it's done, the object of the handle it's at
+    // Through the vtable: whether it's done (a bool: its low byte), the object of the handle it's at
     bool AtEnd()
     {
-        return (CallVirtual<u32>(this, vtable, 3) & 0xFF) != 0;
+        return (CallVirtual<u32>(this, vtable, SlotIsDone) & 0xFF) != 0;
     }
 
     ReferencedObject* Object()
     {
-        Reference* const* handle = CallVirtual<Reference* const*>(this, vtable, 4);
+        Reference* const* handle = CallVirtual<Reference* const*>(this, vtable, SlotCurrent);
         return *handle != nullptr ? (*handle)->object : nullptr;
     }
 
@@ -167,6 +239,7 @@ public:
         }
     }
 };
+CHECK_SIZE(HandleWalk, 0xC);
 
 extern "C"
 {
@@ -174,8 +247,7 @@ extern "C"
     extern const GccVTableEntry g_HandleWalkBaseVTable[] RETAIL(D_002F2DE0);
 }
 
-// The object's reference block, made the first time (its flags are what the memory held, but for bit 24 and the count), with
-// one more reference
+// The object's reference block, made the first time (its unused bits what the memory held), with one more reference
 Reference* AddReference(ReferencedObject* object);
 
 // A handle pointed at another object (none for nullptr): the old reference let go, a new one taken

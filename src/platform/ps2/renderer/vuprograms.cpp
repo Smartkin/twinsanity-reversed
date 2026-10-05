@@ -2,19 +2,30 @@
 
 #include "platform/graphics.h"
 
+#include <libgs.h>
+
 namespace
 {
-// An MPG loads at most 256 instructions: the programs go in 240 at a time
+// An MPG loads at most 256 instructions (of 8 bytes, two a quadword): the programs go in 240 at a time
 constexpr u32 MpgChunk = 0xF0;
+constexpr u32 InstructionBytes = 8;
+constexpr u32 InstructionsPerQuadwordShift = 1;
 // The programs loaded when a material needs them, from 14 on (0-13 are the first bucket's every frame)
 constexpr u32 FirstLoadedProgram = 0xE;
-constexpr u32 VuProgramCount = 0x2B;
-// The two GIF tag templates the programs start their packets from (one A+D register pair at 0x512, the other's 0x51), with
-// their loop counts of 0 and the end of the packet set
-constexpr u64 GifTemplate1 = 0xC00Bull << 46 | 0x8000;
-constexpr u64 GifRegisters1 = 0x512;
-constexpr u64 GifTemplate2 = 0x800Bull << 46 | 0x8000;
-constexpr u64 GifRegisters2 = 0x51;
+// The two GIF tag templates the programs start their packets from: triangle fans (PRIM preset) ending the GIF's packet, their
+// loops 0 (the programs put theirs in), the first's vertexes writing ST, RGBAQ and XYZ2, the other's RGBAQ and XYZ2
+constexpr u64 TexturedVertexRegisters = GifDescriptors(GifSt, GifRgbaq, GifXyz2);
+constexpr u64 ColouredVertexRegisters = GifDescriptors(GifRgbaq, GifXyz2);
+
+u64 TriangleFanTemplate(u32 registerCount)
+{
+    GifTag tag = {};
+    tag.endOfPacket = 1;
+    tag.setsPrim = 1;
+    tag.prim = GS_PRIM_TRI_FAN;
+    tag.registerCount = registerCount;
+    return tag.value;
+}
 
 // A CNT tag of nothing but VIF1's FLUSHE and STCYCL, then the program's code by REF tags, an MPG of 240 instructions each, to
 // address. Returns where it ends
@@ -30,13 +41,13 @@ u32* WriteProgram(u32* at, const VuProgram& program, u32 address)
     do
     {
         u32 count = left <= MpgChunk ? left : MpgChunk;
-        at[0] = count >> 1 | ReferenceTag;
+        at[0] = count >> InstructionsPerQuadwordShift | ReferenceTag;
         at[1] = Address(source);
         at[2] = 0;
-        at[3] = address | count << 16 | VifMpg;
+        at[3] = address | count << VifCountShift | VifMpg;
         at += 4;
         left -= count;
-        source += count * 8;
+        source += count * InstructionBytes;
         address += count;
     } while (left != 0);
 
@@ -64,21 +75,21 @@ extern "C"
         EndPacket(bucket, reinterpret_cast<u8*>(at));
     }
 
-    void FUN_001da718()
+    void ForgetLoadedPrograms()
     {
         g_VuProgramTime = 0;
         for (u32 program = FirstLoadedProgram; program < VuProgramCount; program++)
         {
-            FUN_001da758(program);
+            ForgetLoadedProgram(program);
         }
     }
 
-    void FUN_001da758(u32 program)
+    void ForgetLoadedProgram(u32 program)
     {
-        g_VuPrograms[program].loaded = 0xFFFFFFFF;
+        g_VuPrograms[program].loaded = ProgramNotLoaded;
     }
 
-    u8* FUN_001da880(u8* packet, u32 program)
+    u8* LoadProgramForMaterial(u8* packet, u32 program)
     {
         VuProgram& entry = g_VuPrograms[program];
         if (entry.loaded == g_VuProgramTime)
@@ -90,12 +101,12 @@ extern "C"
         entry.address = address;
         entry.loaded = g_VuProgramTime;
         entry.bucketAddresses[g_VuProgramBucket] = static_cast<u16>(address);
-        packet = FUN_001da918(packet, program);
+        packet = WriteProgramUpload(packet, program);
         g_VuProgramNext += entry.size;
         return packet;
     }
 
-    u8* FUN_001da918(u8* packet, u32 program)
+    u8* WriteProgramUpload(u8* packet, u32 program)
     {
         const VuProgram& entry = g_VuPrograms[program];
         return reinterpret_cast<u8*>(WriteProgram(reinterpret_cast<u32*>(packet), entry, entry.bucketAddresses[g_VuProgramBucket]));
@@ -103,7 +114,7 @@ extern "C"
 
     // The first bucket's packet of what the VU1 programs share: VIF1's double buffers, the entries of programs 9 to 13 the
     // programs go on to, and the GIF tags they start their packets from, each at its place in VU1's memory
-    void FUN_001bc650()
+    void QueueSharedProgramData()
     {
         RenderBucket& bucket = g_FrameBuckets.buckets[0];
         u32* at = BeginPacket(bucket);
@@ -132,22 +143,22 @@ extern "C"
         at[22] = 0;
         at[23] = g_VuGifTemplateAddress1 | VifUnpackV4;
         auto* templates = reinterpret_cast<u64*>(at + 24);
-        templates[0] = GifTemplate1;
-        templates[1] = GifRegisters1;
+        templates[0] = TriangleFanTemplate(3);
+        templates[1] = TexturedVertexRegisters;
         at[28] = 0;
         at[29] = 0;
         at[30] = 0;
         at[31] = g_VuGifTemplateAddress2 | VifUnpackV4;
         templates = reinterpret_cast<u64*>(at + 32);
-        templates[0] = GifTemplate2;
-        templates[1] = GifRegisters2;
+        templates[0] = TriangleFanTemplate(2);
+        templates[1] = ColouredVertexRegisters;
         EndPacket(bucket, reinterpret_cast<u8*>(at + 36));
     }
 }
 
 void Platform::Graphics::FinishFrame()
 {
-    FUN_001da718();
+    ForgetLoadedPrograms();
 }
 
 // The registration of the programs at start-up: the five the renderer's own packets use and five more are resident (loaded with
@@ -180,18 +191,15 @@ extern "C"
     extern const u64 g_BlendParameterCode[] RETAIL(D_002E21F0);
     extern s16 g_BlendParameterSize RETAIL(D_002EC3A0);
     extern ProgramCode g_BlendParameterCopy RETAIL(D_0030ABCC);
-    extern u32 g_Resident8Program RETAIL(G_MicroCode_8_Index);
-    extern const u64 g_Resident8Code[] RETAIL(D_002E2450);
-    extern s16 g_Resident8Size RETAIL(D_002EC3A4);
-    extern ProgramCode g_Resident8Copy RETAIL(D_0030ABD4);
-    extern u32 g_Resident9Program RETAIL(G_MicroCode_9_Index);
-    extern const u64 g_Resident9Code[] RETAIL(D_002E25B0);
-    extern s16 g_Resident9Size RETAIL(D_002EC3A8);
-    extern ProgramCode g_Resident9Copy RETAIL(D_0030ABDC);
-    extern u32 g_ResidentE1CProgram RETAIL(D_00309E1C);
-    extern const u64 g_ResidentE1CCode[] RETAIL(D_002E2750);
-    extern s16 g_ResidentE1CSize RETAIL(D_002EC3AC);
-    extern ProgramCode g_ResidentE1CCopy RETAIL(D_0030ABE4);
+    extern const u64 g_BlendNoShapesCode[] RETAIL(D_002E2450);
+    extern s16 g_BlendNoShapesSize RETAIL(D_002EC3A4);
+    extern ProgramCode g_BlendNoShapesCopy RETAIL(D_0030ABD4);
+    extern const u64 g_BlendFirstShapeCode[] RETAIL(D_002E25B0);
+    extern s16 g_BlendFirstShapeSize RETAIL(D_002EC3A8);
+    extern ProgramCode g_BlendFirstShapeCopy RETAIL(D_0030ABDC);
+    extern const u64 g_BlendNextShapeCode[] RETAIL(D_002E2750);
+    extern s16 g_BlendNextShapeSize RETAIL(D_002EC3AC);
+    extern ProgramCode g_BlendNextShapeCopy RETAIL(D_0030ABE4);
     extern u32 g_ShaderType04Program RETAIL(D_00309E30);
     extern const u64 g_ShaderType04Code[] RETAIL(D_002E3B40);
     extern s16 g_ShaderType04Size RETAIL(D_002EC3C4);
@@ -302,7 +310,7 @@ void Register(u32 index, const u64* code, s16 size, bool resident)
     program.size = static_cast<u32>(size + 1) & ~1u;
     program.address = g_VuProgramStart;
     program.resident = resident ? 1 : 0;
-    program.loaded = 0xFFFFFFFF;
+    program.loaded = ProgramNotLoaded;
     if (resident)
     {
         g_VuProgramStart += program.size;
@@ -317,9 +325,9 @@ extern "C"
     void RegisterShaderType00Program() RETAIL(FUN_001db738);
     void RegisterParameterProgram() RETAIL(FUN_001dcea0);
     void RegisterBlendParameterProgram() RETAIL(FUN_001dc9a8);
-    void RegisterResident8Program() RETAIL(FUN_001dcb78);
-    void RegisterResident9Program() RETAIL(FUN_001dcc90);
-    void RegisterResidentE1CProgram() RETAIL(FUN_001dcda8);
+    void RegisterBlendNoShapesProgram() RETAIL(FUN_001dcb78);
+    void RegisterBlendFirstShapeProgram() RETAIL(FUN_001dcc90);
+    void RegisterBlendNextShapeProgram() RETAIL(FUN_001dcda8);
     void RegisterShaderType04Program() RETAIL(FUN_001dd350);
     void RegisterShaderType01Program() RETAIL(FUN_001dc350);
     void RegisterShaderType03Program() RETAIL(FUN_001db350);
@@ -366,22 +374,22 @@ extern "C"
         g_BlendParameterCopy = {g_BlendParameterCode, g_BlendParameterSize};
     }
 
-    void RegisterResident8Program()
+    void RegisterBlendNoShapesProgram()
     {
-        Register(g_Resident8Program, g_Resident8Code, g_Resident8Size, true);
-        g_Resident8Copy = {g_Resident8Code, g_Resident8Size};
+        Register(g_BlendNoShapesProgram, g_BlendNoShapesCode, g_BlendNoShapesSize, true);
+        g_BlendNoShapesCopy = {g_BlendNoShapesCode, g_BlendNoShapesSize};
     }
 
-    void RegisterResident9Program()
+    void RegisterBlendFirstShapeProgram()
     {
-        Register(g_Resident9Program, g_Resident9Code, g_Resident9Size, true);
-        g_Resident9Copy = {g_Resident9Code, g_Resident9Size};
+        Register(g_BlendFirstShapeProgram, g_BlendFirstShapeCode, g_BlendFirstShapeSize, true);
+        g_BlendFirstShapeCopy = {g_BlendFirstShapeCode, g_BlendFirstShapeSize};
     }
 
-    void RegisterResidentE1CProgram()
+    void RegisterBlendNextShapeProgram()
     {
-        Register(g_ResidentE1CProgram, g_ResidentE1CCode, g_ResidentE1CSize, true);
-        g_ResidentE1CCopy = {g_ResidentE1CCode, g_ResidentE1CSize};
+        Register(g_BlendNextShapeProgram, g_BlendNextShapeCode, g_BlendNextShapeSize, true);
+        g_BlendNextShapeCopy = {g_BlendNextShapeCode, g_BlendNextShapeSize};
     }
 
     void RegisterShaderType04Program()
@@ -538,7 +546,7 @@ extern "C"
             VuProgram& program = g_VuPrograms[index];
             program.size = 0;
             program.address = 0;
-            program.loaded = 0xFFFFFFFF;
+            program.loaded = ProgramNotLoaded;
             program.resident = 0;
         }
 
@@ -550,9 +558,9 @@ extern "C"
         RegisterShaderType00Program();
         RegisterParameterProgram();
         RegisterBlendParameterProgram();
-        RegisterResident8Program();
-        RegisterResident9Program();
-        RegisterResidentE1CProgram();
+        RegisterBlendNoShapesProgram();
+        RegisterBlendFirstShapeProgram();
+        RegisterBlendNextShapeProgram();
         RegisterShaderType04Program();
         RegisterShaderType01Program();
         RegisterShaderType03Program();
@@ -595,7 +603,7 @@ extern "C"
 
     void ConstructVuProgramsModule(u32 initialize, u32 priority)
     {
-        if (priority == 0xFFFF && initialize != 0)
+        if (priority == DefaultInitPriority && initialize != 0)
         {
             g_VuProgramsUnread = -1;
         }
@@ -603,6 +611,6 @@ extern "C"
 
     void InitVuProgramsModule()
     {
-        ConstructVuProgramsModule(1, 0xFFFF);
+        ConstructVuProgramsModule(1, DefaultInitPriority);
     }
 }

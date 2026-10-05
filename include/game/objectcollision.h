@@ -9,19 +9,29 @@ struct GameOGI;
 struct InstanceContext;
 struct ReferencedObject;
 
+// An object's collision's bits: its hulls stop rigid bodies (some agents' instances and the dynamic scenery's set it), its OGI's
+// hulls' joints' matrices are kept (for when its model has no animator), a side of its own box is under 0.05
+union ObjectCollisionBits
+{
+    u64 value;
+    struct
+    {
+        u64 stopsBodies : 1;
+        u64 keepsJointMatrices : 1;
+        u64 thin : 1;
+        u64 unused3 : 61;
+    };
+};
+CHECK_SIZE(ObjectCollisionBits, 8);
+
 // An object's collision (0x90 bytes, 0x10 into the object): the object, a box hull of its own or a hull it's given, the scenery
 // cell it's sorted into (its link, the node, the cell's index: -1 none), an object its queries leave out, a matrix its hulls are
 // placed with instead of its place's, its bits, its box in the world and its own, the OGI whose hulls it has with the matrices of
 // those hulls' joints (kept for the OGI they were made for, how many: -1 once destroyed) and every hull's surface. Its hulls are
-// its own or given one, else its OGI's (placed at their joints), else those of its kind 4 node
+// its own or given one, else its OGI's (placed at their joints), else those of its dynamic scenery node
 struct ObjectCollision
 {
-    enum Bits : u64
-    {
-        // Its OGI's hulls' joints' matrices are kept (for when its model has no animator), a side of its own box is under 0.05
-        BitKeepsJointMatrices = 0x2,
-        BitThin = 0x4,
-    };
+    static constexpr s32 NoCell = -1;
 
     ReferencedObject* owner;
     CollisionHull* hull;
@@ -32,8 +42,8 @@ struct ObjectCollision
     s32 cell;
     ReferencedObject* leftOut;
     Matrix4x4* hullMatrix;
-    u64 bits;
-    u8 unknown28[8];
+    ObjectCollisionBits bits;
+    u8 unused28[8];
     Box box;
     Box ownBox;
     GameOGI* ogi;
@@ -41,7 +51,7 @@ struct ObjectCollision
     s32 jointMatrixCount;
     GameOGI* jointMatricesOgi;
     u16* surfaces;
-    u8 unknown84[0xC];
+    u8 unused84[0xC];
 };
 CHECK_OFFSET(ObjectCollision, bits, 0x20);
 CHECK_OFFSET(ObjectCollision, box, 0x30);
@@ -51,14 +61,14 @@ CHECK_SIZE(ObjectCollision, 0x90);
 
 extern "C"
 {
-    // Made for its object (no hulls, no cell, its bits 0 and 2 clear and 1 set) and destroyed (its hull, matrices and surfaces
-    // freed)
+    // Made for its object (no hulls, no cell, its hulls stopping no bodies, not thin, its joints' matrices kept) and destroyed
+    // (its hull, matrices and surfaces freed)
     ObjectCollision* ConstructObjectCollision(ObjectCollision* collision, ReferencedObject* owner) RETAIL(InitCollisionInformation_);
     void DestroyObjectCollision(ObjectCollision* collision, u32 destroyFlags) RETAIL(FUN_001f0870);
-    // How many hulls it has (one of its own or given, its OGI's, its kind 4 node's, none), a hull, a hull's own surface (0xFFFF
-    // none), the surface it has for a hull (the game's surfaces', none without hulls), its surfaces made (for so many hulls) and
-    // set from the hulls' own, all set to one, a hull's own set (none for a hull it doesn't have), and the one it has for a hull
-    // (0 past its hulls)
+    // How many hulls it has (one of its own or given, its OGI's, its dynamic scenery node's, none), a hull, a hull's own surface
+    // (0xFFFF none), the surface it has for a hull (the game's surfaces', none without hulls), its surfaces made (for so many
+    // hulls) and set from the hulls' own, all set to one, a hull's own set (none for a hull it doesn't have), and the one it has
+    // for a hull (0 past its hulls)
     s32 GetHullCount(ObjectCollision* collision) RETAIL(GetHullCount);
     CollisionHull* GetCollisionModel(ObjectCollision* collision, u32 index) RETAIL(FUN_001f0d30);
     u16 HullOwnSurface(ObjectCollision* collision, u32 index) RETAIL(GetHullSurface);
@@ -88,7 +98,7 @@ extern "C"
         RETAIL(FUN_001f09a8);
     void SetCollisionMatrix(ObjectCollision* collision, const Matrix4x4* matrix) RETAIL(FUN_001f0a78);
     void SetCollisionOgi(ObjectCollision* collision, GameOGI* ogi) RETAIL(FUN_001eb400);
-    // Its instance's FlagSolidModel set or cleared, and the instance queued
+    // Its instance's solidModel flag set or cleared, and the instance queued
     void SetCollisionSolid(ObjectCollision* collision, u32 solid) RETAIL(FUN_001f06f0);
     // Its box hull of its own destroyed (it has none after)
     void ReleaseCollisionHull(ObjectCollision* collision) RETAIL(FUN_001f06b8);

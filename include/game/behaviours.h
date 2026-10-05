@@ -6,31 +6,40 @@
 #include "gcc2.h"
 
 class GameNode;
+struct Reference;
 struct TimeClock;
 
 // The behaviour scripts at work: an agent's runner keeps a stack of levels, each running a graph; a state whose child behaviour
 // runs puts a level on top for it
 
+// A level's bits: its index in the stack, whether it finished, whether the last body restarts its state, and a message the level
+// above it gave it (SetParentExecutionValue; NoMessage none), which a condition takes once
+union BehaviourLevelBits
+{
+    u32 value;
+    struct
+    {
+        u32 index : 8;
+        u32 finished : 1;
+        u32 restart : 1;
+        u32 unused10 : 6;
+        u32 message : 16;
+    };
+};
+CHECK_SIZE(BehaviourLevelBits, 4);
+
 // A level of a runner's stack (retail's ExecutionState, 0x20 bytes; vtable 0x1C bytes in: 1 the destructor): the graph it runs,
-// the state it's in and the one it last entered (to tell a first entry; none after a restart), the child graph its state runs, a
-// body to run next, when its last body ran, its index in the stack, and its bits (8: it finished, 9: the last body restarts its
-// state)
+// the state it's in and the one it last entered (to tell a first entry; none after a restart), the child graph its state runs,
+// the body the Else condition marked while the bodies were checked (run when none passes), when its last body ran, and its bits
 struct BehaviourLevel
 {
-    enum Bits : u32
-    {
-        LevelMask = 0xFF,
-        Finished = 0x100,
-        Restart = 0x200,
-    };
-
     GraphData* graph;
     GraphState* state;
     GraphState* entered;
     GraphData* child;
-    StateBody* pendingBody;
+    StateBody* elseBody;
     u32 time;
-    u32 bits;
+    BehaviourLevelBits bits;
     const GccVTableEntry* vtable;
 
     static BehaviourLevel* Construct(BehaviourLevel* level) RETAIL(ConstructExecutionState);
@@ -40,26 +49,32 @@ struct BehaviourLevel
 };
 CHECK_SIZE(BehaviourLevel, 0x20);
 
+// The receivers' bits: the starter's priority (the scripts can change it), whether the same starter queued again restarts the
+// running one (SetRestartable sets it), the starter's assigners, the runners using them and the assigners whose graph runs (a
+// bit each)
+union StarterReceiversBits
+{
+    u32 value;
+    struct
+    {
+        u32 priority : 7;
+        u32 restartable : 1;
+        u32 assignerCount : 4;
+        u32 users : 4;
+        u32 running : 8;
+        u32 unused24 : 8;
+    };
+};
+CHECK_SIZE(StarterReceiversBits, 4);
+
 // The instances a starter's assigners run their graphs on (0x2C bytes): the starter, an instance for each assigner (the first the
-// runner's agent's), the originator, and bits (0-6 the starter's priority, 8-11 its assigners, 12-15 the runners using it, 16-23
-// the assigners whose graph runs)
+// runner's agent's), the originator, and bits
 struct StarterReceivers
 {
-    enum Bits : u32
-    {
-        PriorityMask = 0x7F,
-        AssignersShift = 8,
-        UsersShift = 12,
-        FieldMask = 0xF,
-        RunningShift = 16,
-        // A starter of the same priority restarts the running one
-        Restartable = 0x80,
-    };
-
     ScriptStarter* starter;
     struct InstanceContext* instances[8];
     void* originator;
-    u32 bits;
+    StarterReceiversBits bits;
 
     static StarterReceivers* Construct(StarterReceivers* receivers, ScriptStarter* starter) RETAIL(FUN_00254ad8);
     void Destroy(u32 destroyFlags) RETAIL(FUN_00254b28);
@@ -76,26 +91,37 @@ CHECK_OFFSET(StarterReceivers, instances, 0x4);
 CHECK_OFFSET(StarterReceivers, originator, 0x24);
 CHECK_OFFSET(StarterReceivers, bits, 0x28);
 
-// An agent's behaviour runner (retail's ScriptCall, 0x60 bytes): its flags (1: run the levels again, 3: the packet's end is due, 4:
-// a packet is waiting, 5: a packet runs, 6-8 its slot, 9: interrupting states are checked from the interrupt level), the agent's
-// node (its vtable: 15 whether it takes packets, 42 no packet, 43 a packet started), the control packet that runs and the last
-// one, its receivers, the starter's assigner it runs, its originator, the stack's depth and interrupt level (0xFF none) and its levels
+// A runner's flags: run the levels again, the packet's end is due, a packet is waiting (its motion runs), a packet runs, the
+// runner's slot among its node's, and whether the interrupting states are checked from the interrupt level
+union BehaviourRunnerFlags
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 runLevels : 1;
+        u32 unused2 : 1;
+        u32 packetEnded : 1;
+        u32 packetWaiting : 1;
+        u32 packetRuns : 1;
+        u32 slot : 3;
+        u32 interruptFromLevel : 1;
+        u32 unused10 : 22;
+    };
+};
+CHECK_SIZE(BehaviourRunnerFlags, 4);
+
+// An agent's behaviour runner (retail's ScriptCall, 0x60 bytes): its flags, the agent's node, the control packet that runs and the
+// last one, its receivers, the starter's assigner it runs, its originator, the stack's depth and interrupt level (NoLevel none)
+// and its levels
 struct BehaviourRunner
 {
-    enum Flags : u32
-    {
-        FlagRunLevels = 0x2,
-        FlagPacketEnded = 0x8,
-        FlagPacketWaiting = 0x10,
-        FlagPacketRuns = 0x20,
-        SlotShift = 6,
-        SlotMask = 0x7,
-        FlagInterruptFromLevel = 0x200,
-    };
-
     static constexpr u32 Levels = 8;
+    static constexpr u8 NoLevel = 0xFF;
+    // The designator of the originator (those below it are the receivers' indexes)
+    static constexpr u32 OriginatorDesignator = 0xFF;
 
-    u32 flags;
+    BehaviourRunnerFlags flags;
     GameNode* agentNode;
     ControlPacket* packet;
     ControlPacket* lastPacket;
@@ -106,15 +132,18 @@ struct BehaviourRunner
     ScriptStarter* nextStarter;
     void* nextOriginator;
     void* originator;
-    u16 unknown24;
-    u8 unknown26;
+    // The ID of the starter of the receivers it had when it was last started (NoScriptId none), which RestartPrevious starts
+    // again
+    u16 previousStarter;
+    u8 unused26;
     // The joint the packet moves (0xFF the instance)
     u8 joint;
     u8 depth;
     u8 interruptLevel;
-    u8 unknown2A[2];
+    u8 unused2A[2];
     BehaviourLevel* levels[Levels];
-    u32 unknown4C;
+    // Cleared when the runner's made and started, never read
+    u32 unused4C;
     // The packet's sync unit, when it ends (with its delay) and when it started (clock units)
     u32 syncUnit;
     s32 packetEnd;
@@ -134,7 +163,7 @@ struct BehaviourRunner
     void Unwind(BehaviourLevel* level) RETAIL(UnwindBehaviourStack);
     // A level put on top for a state's child behaviour (made the first time)
     void EnterChild(u32 level, GraphState* state) RETAIL(EnterChildBehaviour);
-    // The states that interrupt (bit 11) checked level by level: whether one switched
+    // The states that interrupt checked level by level: whether one switched
     u32 CheckInterrupts(TimeClock* clock) RETAIL(CheckInterruptingStates);
     // Stopped: no graph, packet or receivers (they're let go when asked and no other runner uses them)
     void Stop(u32 release) RETAIL(FUN_0020cc38);
@@ -150,7 +179,7 @@ struct BehaviourRunner
     // A starter to take at the next frame (forced, or of a priority above the next one's and the running one's, or of the same
     // priority as the running one's but another starter, the same one when its receivers allow it): whether it's taken
     u32 QueueStarter(ScriptStarter* starter, void* originator, u32 force) RETAIL(FUN_0020fb58);
-    // The instance a designator below 0xFF stands for among the receivers, the originator for the others
+    // The instance a designator below OriginatorDesignator stands for among the receivers, the originator for the others
     struct InstanceContext* InstanceOf(u32 designator) RETAIL(FUN_0020fef0);
 };
 CHECK_OFFSET(BehaviourRunner, tolerance, 0x10);
@@ -158,7 +187,7 @@ CHECK_OFFSET(BehaviourRunner, receivers, 0x14);
 CHECK_OFFSET(BehaviourRunner, nextStarter, 0x18);
 CHECK_OFFSET(BehaviourRunner, nextOriginator, 0x1C);
 CHECK_OFFSET(BehaviourRunner, originator, 0x20);
-CHECK_OFFSET(BehaviourRunner, unknown24, 0x24);
+CHECK_OFFSET(BehaviourRunner, previousStarter, 0x24);
 CHECK_OFFSET(BehaviourRunner, joint, 0x27);
 CHECK_OFFSET(BehaviourRunner, interruptLevel, 0x29);
 CHECK_OFFSET(BehaviourRunner, syncUnit, 0x50);
@@ -168,6 +197,9 @@ CHECK_OFFSET(BehaviourRunner, packetStart, 0x58);
 CHECK_OFFSET(BehaviourRunner, levels, 0x2C);
 CHECK_SIZE(BehaviourRunner, 0x60);
 
+// The global agents' indexes (a byte)
+constexpr u32 GlobalAgentSlots = 0x100;
+
 extern "C"
 {
     extern const GccVTableEntry g_BehaviourLevelVTable[] RETAIL(D_002FF950);
@@ -176,7 +208,7 @@ extern "C"
     extern ScriptCondition* g_CheckedCondition RETAIL(G_ScriptCondition_Ptr);
 
     // A level's state's frame: the packet that ended runs the completion body, else the bodies' conditions are checked and the best
-    // runs, else a pending body; entering a state starts its packet. The state the level goes to (nullptr: finished)
+    // runs, else the else body; entering a state starts its packet. The state the level goes to (nullptr: finished)
     GraphState* ExecuteState(GraphState* state, BehaviourRunner* runner, BehaviourLevel* level, TimeClock* clock, ControlPacket* ended)
         RETAIL(ExecuteScripts_);
     // An interrupting state's bodies checked (the completion body left out): whether the best ran
@@ -192,7 +224,10 @@ extern "C"
     GraphData* ChildGraphOf(GraphState* state, void* object) RETAIL(GetChildScriptDataToCall);
     // The instance a call convention stands for: the agent's, one it links, a starter's receiver, the player, the originator
     struct InstanceContext* InstanceOfConvention(const CallConvention* convention, BehaviourRunner* runner) RETAIL(GetContextByCallConvention);
-    // The instance a starter's receiver index stands for set: a reference to it taken, the one before let go of
+    // The global agents: the instances registered under their reference list index (an object instance's, when it's made), which
+    // the call conventions' global agents stand for
+    extern Reference* g_GlobalAgents[GlobalAgentSlots] RETAIL(G_InstanceContextRefsCounterArray);
+    // An instance registered as the global agent of an index: a reference to it taken, the one before let go of
     // (game/commandsattach.cpp)
-    void SetReceiverInstance(u32 index, struct InstanceContext* instance) RETAIL(FUN_00252af8);
+    void SetGlobalAgent(u32 index, struct InstanceContext* instance) RETAIL(FUN_00252af8);
 }

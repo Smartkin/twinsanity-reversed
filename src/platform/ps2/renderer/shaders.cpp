@@ -1,21 +1,15 @@
 #include "renderer.h"
+#include "gsvalues.h"
 
-extern "C"
-{
-    // The frame and depth buffers' pages (in 2048 words)
-    extern u32 g_FrameBufferPage RETAIL(D_0030AAFC);
-    extern u32 g_DepthBufferPage RETAIL(D_0030AB00);
-}
+#include <bit>
+#include <libgs.h>
 
 namespace
 {
 // A shader's entry for VU1 (its program, where in it, where VU1 goes on to), its colour and its UV scroll
 constexpr u32 EntrySize = 3;
-
-const Texture* TextureOf(const Shader* shader)
-{
-    return reinterpret_cast<const Texture*>(shader->texture + 0xC);
-}
+// The middle of the GS's coordinates in 16ths of a pixel
+constexpr s32 GsCentre = GsScreenMiddle << GsSubpixelShift;
 
 // A CNT tag of an UNPACK of the quadwords after it to the counter's places (it counts them)
 u32* Unpack(u8* packet, u32* counter, u32 count)
@@ -24,7 +18,7 @@ u32* Unpack(u8* packet, u32* counter, u32 count)
     at[0] = CountTag | count;
     at[1] = 0;
     at[2] = 0;
-    at[3] = *counter | count << 16 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, *counter, count);
     *counter += count;
     return at + 4;
 }
@@ -64,7 +58,7 @@ u32 NextAfterRegisters(const Shader* shader, u32 counter)
     u32 next = counter + shader->registerCount + 1;
     if (shader->texture != nullptr)
     {
-        next += TextureRegisterCount(&D_0030A820, TextureOf(shader));
+        next += TextureRegisterCount(&g_TextureUploadContext, TextureOf(shader));
     }
 
     return next;
@@ -96,12 +90,13 @@ u8* WriteRegistersToVu(u32* at, const Shader* shader, u32* counter)
     at[0] = shader->registerCount | ReferenceTag;
     at[1] = shader->registers;
     at[2] = 0;
-    at[3] = (tagPlace + 1) | shader->registerCount << 16 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, tagPlace + 1, shader->registerCount);
     *counter = tagPlace + 1 + shader->registerCount;
     at += 4;
     if (shader->texture != nullptr)
     {
-        return WriteTextureRegistersToVu(&D_0030A820, reinterpret_cast<u8*>(at), TextureOf(shader), counter, tagPlace);
+        return WriteTextureRegistersToVu(&g_TextureUploadContext, reinterpret_cast<u8*>(at), TextureOf(shader), counter,
+                                         tagPlace);
     }
 
     at[0] = CountTag | 1;
@@ -109,8 +104,8 @@ u8* WriteRegistersToVu(u32* at, const Shader* shader, u32* counter)
     at[2] = 0;
     at[3] = tagPlace | VifUnpackV4;
     auto* gif = reinterpret_cast<u64*>(at + 4);
-    gif[1] = 0xE;
-    gif[0] = (*counter - tagPlace - 1) | 0x8000ull << 45 | 0x8000;
+    gif[1] = GifAddressData;
+    gif[0] = AddressDataTag(*counter - tagPlace - 1);
     return reinterpret_cast<u8*>(at + 8);
 }
 
@@ -152,67 +147,85 @@ u8* WriteShaderPacket(const Shader* shader, u8* packet, u32* counter, u32 withRe
 }
 
 // The frame copied at half its width into the buffer at page 0x140 (256 pixels wide, its alpha left), in 16 strips of sprites
-// through the frame as a texture: the screen-copy shaders' packet (types 0x10 and 0x11), sent to the GIF directly
+// through the frame as a texture: the screen-copy shaders' packet (types 0x10 and 0x11), sent to the GIF directly. It draws in
+// the second context with PRIM's attributes, the frame's buffer as a 512 by 512 texture of 32 bit pixels, bilinear, always
+// passing the depth test without writing depth, then gives PRMODE the attributes back
 u8* WriteScreenCopy(u8* packet)
 {
     constexpr u32 Quadwords = 0x51;
-    constexpr u64 GifTag = 0x1003400000008050;
-    constexpr u64 Frame = 0xFF00000001040140;
-    constexpr u64 NoDepthWrite = 1ull << 32;
-    constexpr u64 FrameAsTexture = 0x24020000;
-    constexpr u64 FrameTextureSize = 0xE40000000;
-    constexpr u64 TestAlways = 0x30000;
-    constexpr u64 Alpha1 = 0x80ull << 32;
-    constexpr u64 Bilinear = 0x60;
-    constexpr u64 Scissor = 0x400000004000000;
-    constexpr u64 TexturedSprite = 0x316;
-    constexpr u64 White = 0x3F80000080808080;
-    constexpr u64 Depth = 0x7FFF00000000;
+    constexpr u32 Strips = 0x10;
+    const u64 CopyFrame =
+        std::bit_cast<u64>(GS_FRAME{.fb_addr = 0x140, .fb_width = 4, .psm = GS_PIXMODE_24, .draw_mask = 0xFF000000});
+    // The frame as a texture: its page in blocks of 64 words ORed in whole
+    const u64 FrameTexture = std::bit_cast<u64>(
+        GS_TEX0{.tb_width = 8, .psm = GS_TEX_32, .tex_width = 9, .tex_height = 9, .tex_cc = 1, .tex_funtion = 1});
+    constexpr u32 BlocksPerPage = 32;
+    constexpr u16 Depth = 0x7FFF;
     auto* tag = reinterpret_cast<u32*>(packet);
     tag[0] = CountTag | Quadwords;
     tag[1] = 0;
     tag[2] = VifFlushA;
     tag[3] = VifDirect | Quadwords;
-    auto* at = reinterpret_cast<u64*>(packet + 0x10);
-    auto pair = [&at](u64 data, u64 address)
+    auto* at = reinterpret_cast<GsWrite*>(packet + 0x10);
+    GifTag gif = {};
+    gif.loops = Quadwords - 1;
+    gif.endOfPacket = 1;
+    gif.setsPrim = 1;
+    gif.prim = GS_PRIM_SPRITE;
+    gif.format = GifPacked;
+    gif.registerCount = 1;
+    *at++ = {gif.value, GifAddressData};
+    *at++ = {AttributesFromPrim, GsPrmodeCont};
+    *at++ = {0, SecondContext(GsClamp)};
+    *at++ = {0, SecondContext(GsXyOffset)};
+    *at++ = {CopyFrame, SecondContext(GsFrame)};
+    GS_ZBUF zbuf = {};
+    zbuf.update_mask = 1;
+    *at++ = {std::bit_cast<u64>(zbuf) | g_DepthBufferPage | ZbufZ32Format, SecondContext(GsZbuf)};
+    *at++ = {FrameTexture | g_FrameBufferPage * BlocksPerPage, SecondContext(GsTex0)};
+    *at++ = {0, GsDither};
+    *at++ = {DepthAlways, SecondContext(GsTest)};
+    *at++ = {0, SecondContext(GsFba)};
+    *at++ = {SecondAlpha, GsTexa};
+    *at++ = {Bilinear, SecondContext(GsTex1)};
+    *at++ = {WholeScissor, SecondContext(GsScissor)};
+    *at++ = {TexturedSprite, GsPrim};
+    *at++ = {White, GsRgbaq};
+    *at++ = {0, GsTexFlush};
+    // Each strip (in 16ths of a texel and pixel): 32 texels of the frame from half a texel in, down to the screen's bottom (its
+    // V ORed in whole), drawn 16 pixels wide and 256 high
+    constexpr u32 StripTexels = 0x200;
+    constexpr u32 StripPixels = 0x100;
+    constexpr u16 CopyHeight = 0x1000;
+    u64 bottom = static_cast<u64>(static_cast<u32>((g_ScreenHeight << GsSubpixelShift) + GsHalfTexel)) << GsUvVShift;
+    for (u32 strip = 0; strip < Strips; strip++)
     {
-        at[0] = data;
-        at[1] = address;
-        at += 2;
-    };
-    pair(GifTag, 0xE);
-    pair(1, 0x1A);
-    pair(0, 0x09);
-    pair(0, 0x19);
-    pair(Frame, 0x4D);
-    pair(static_cast<u64>(g_DepthBufferPage | 0x30000000) | NoDepthWrite, 0x4F);
-    pair(static_cast<u64>(g_FrameBufferPage << 5 | FrameAsTexture) | FrameTextureSize, 0x07);
-    pair(0, 0x45);
-    pair(TestAlways, 0x48);
-    pair(0, 0x4B);
-    pair(Alpha1, 0x3B);
-    pair(Bilinear, 0x15);
-    pair(Scissor, 0x41);
-    pair(TexturedSprite, 0x00);
-    pair(White, 0x01);
-    pair(0, 0x3F);
-    u64 bottom = static_cast<u64>(static_cast<u32>((g_ScreenHeight << 4) + 8)) << 16;
-    for (u32 strip = 0; strip < 0x10; strip++)
-    {
-        pair((8 + strip * 0x200) | 0x80000, 0x03);
-        pair(strip << 8 | Depth, 0x05);
-        pair((0x208 + strip * 0x200) | bottom, 0x03);
-        pair((0x100 + strip * 0x100) | 0x10000000 | Depth, 0x05);
+        GS_UV start = {};
+        start.u = GsHalfTexel + strip * StripTexels;
+        start.v = GsHalfTexel;
+        *at++ = {std::bit_cast<u64>(start), GsUv};
+        GS_XYZ corner = {};
+        corner.x = strip * StripPixels;
+        corner.z = Depth;
+        *at++ = {std::bit_cast<u64>(corner), GsXyz2};
+        GS_UV end = {};
+        end.u = GsHalfTexel + (strip + 1) * StripTexels;
+        *at++ = {std::bit_cast<u64>(end) | bottom, GsUv};
+        GS_XYZ farCorner = {};
+        farCorner.x = (strip + 1) * StripPixels;
+        farCorner.y = CopyHeight;
+        farCorner.z = Depth;
+        *at++ = {std::bit_cast<u64>(farCorner), GsXyz2};
     }
 
-    pair(0, 0x1A);
+    *at++ = {AttributesFromPrmode, GsPrmodeCont};
     return reinterpret_cast<u8*>(at);
 }
 
 // The screen copy, then the shader's entry, colour and scroll, where the screen's corner is in the GS's coordinates (with a float
 // of the shader's) and 1 over its size there (the last two quadwords' fourth words, the last one's third, left as the buffer had
 // them). With its registers, those by REF too (their GIF tag is theirs)
-u8* WriteScreenCopyPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters, u32 program, s16 offset)
+u8* WriteScreenCopyPacket(const ScreenCopyShader* shader, u8* packet, u32* counter, u32 withRegisters, u32 program, s16 offset)
 {
     u32* at = Unpack(WriteScreenCopy(packet), counter, 5);
     u32 address = ProgramAddress(program);
@@ -223,11 +236,11 @@ u8* WriteScreenCopyPacket(const Shader* shader, u8* packet, u32* counter, u32 wi
     at = WriteColour(at + 4, shader);
     at = WriteScroll(at, shader, 0.0f);
     auto* values = reinterpret_cast<f32*>(at);
-    values[0] = static_cast<f32>(0x8000 - (g_ScreenWidth << 3));
-    values[1] = static_cast<f32>(0x8000 - (g_ScreenHeight << 3));
-    values[2] = *reinterpret_cast<const f32*>(reinterpret_cast<const u8*>(shader) + 0x70);
-    values[4] = 1.0f / static_cast<f32>(g_ScreenWidth << 4);
-    values[5] = 1.0f / static_cast<f32>(g_ScreenHeight << 4);
+    values[0] = static_cast<f32>(GsCentre - (g_ScreenWidth << (GsSubpixelShift - 1)));
+    values[1] = static_cast<f32>(GsCentre - (g_ScreenHeight << (GsSubpixelShift - 1)));
+    values[2] = shader->cornerValue;
+    values[4] = 1.0f / static_cast<f32>(g_ScreenWidth << GsSubpixelShift);
+    values[5] = 1.0f / static_cast<f32>(g_ScreenHeight << GsSubpixelShift);
     at += 8;
     if (withRegisters == 0)
     {
@@ -237,44 +250,41 @@ u8* WriteScreenCopyPacket(const Shader* shader, u8* packet, u32* counter, u32 wi
     at[0] = shader->registerCount | ReferenceTag;
     at[1] = shader->registers;
     at[2] = 0;
-    at[3] = *counter | shader->registerCount << 16 | VifUnpackV4Count;
+    at[3] = VifUnpackTo(VifUnpackV4Count, *counter, shader->registerCount);
     *counter += 1 + shader->registerCount;
     return reinterpret_cast<u8*>(at + 4);
 }
 
-// The cloth shaders' (0x17 and 0x1A): the same with their 16 quadwords of waves by REF and their amplitude after the scroll
-// (0x1A's three in a quadword of their own, after an entry of four). With their registers the REF is mistyped as a REFE (its ID
-// bits 0), which ends the DMA chain
-u8* WriteClothPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters, u32 program, s16 offset,
+// The cloth shaders' (0x17 and 0x1A): the same with their waves by REF and their amplitude after the scroll (0x1A's three in a
+// quadword of their own, after an entry of four). With their registers the REF is mistyped as a REFE (its ID four bits short of
+// its place, the ID bits 0), which ends the DMA chain
+u8* WriteClothPacket(const ClothShader* shader, u8* packet, u32* counter, u32 withRegisters, u32 program, s16 offset,
                      bool threeAmplitudes)
 {
-    constexpr u32 WaveSize = 0x10;
-    constexpr u32 MistypedReference = 0x03000000;
-    const auto* fields = reinterpret_cast<const u8*>(shader);
-    const auto* amplitudes = reinterpret_cast<const f32*>(fields + 0x27C);
+    constexpr u32 MistypedReference = ReferenceTag >> 4;
     u32* at = Unpack(packet, counter, threeAmplitudes ? EntrySize + 1 : EntrySize);
     u32 address = ProgramAddress(program);
     at[0] = address;
     at[1] = address + offset;
-    at[2] = withRegisters != 0 ? NextAfterRegisters(shader, *counter + WaveSize) : *counter + WaveSize;
+    at[2] = withRegisters != 0 ? NextAfterRegisters(shader, *counter + ShaderWaveRows) : *counter + ShaderWaveRows;
     at[3] = withRegisters != 0 ? 1 : 0;
     at = WriteColour(at + 4, shader);
-    at = WriteScroll(at, shader, threeAmplitudes ? 0.0f : amplitudes[0]);
+    at = WriteScroll(at, shader, threeAmplitudes ? 0.0f : shader->amplitudes[0]);
     if (threeAmplitudes)
     {
         auto* values = reinterpret_cast<f32*>(at);
-        values[0] = amplitudes[0];
-        values[1] = amplitudes[1];
-        values[2] = amplitudes[2];
+        values[0] = shader->amplitudes[0];
+        values[1] = shader->amplitudes[1];
+        values[2] = shader->amplitudes[2];
         at[3] = 0;
         at += 4;
     }
 
-    at[0] = (withRegisters != 0 ? MistypedReference : ReferenceTag) | WaveSize;
-    at[1] = *reinterpret_cast<const u32*>(fields + 0x270);
+    at[0] = (withRegisters != 0 ? MistypedReference : ReferenceTag) | ShaderWaveRows;
+    at[1] = shader->waves;
     at[2] = 0;
-    at[3] = *counter | WaveSize << 16 | VifUnpackV4Count;
-    *counter += WaveSize;
+    at[3] = VifUnpackTo(VifUnpackV4Count, *counter, ShaderWaveRows);
+    *counter += ShaderWaveRows;
     at += 4;
     if (withRegisters == 0)
     {
@@ -431,8 +441,8 @@ extern "C"
 
     u8* ShaderType1FPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
-        const auto* colour = reinterpret_cast<const f32*>(reinterpret_cast<const u8*>(shader) + 0x30);
-        return WriteShaderPacket(shader, packet, counter, withRegisters, g_ShaderType1FProgram, g_ShaderType1FEntry, colour);
+        return WriteShaderPacket(shader, packet, counter, withRegisters, g_ShaderType1FProgram, g_ShaderType1FEntry,
+                                 shader->shaderColour);
     }
 
     // The entry alone, its fourth word left as the buffer had it
@@ -451,32 +461,36 @@ extern "C"
         return reinterpret_cast<u8*>(at + 4);
     }
 
-    // Two entries into the program, each with a colour of its own and a quadword of nothing (the last one's fourth word 1)
+    // Two entries into the program, each with a colour of its own (a dark grey, then a light one) and a quadword of nothing (the
+    // last one's fourth word 1)
     u8* ShaderType0BPacket(const Shader*, u8* packet, u32* counter, u32)
     {
+        constexpr u32 DarkGrey = 8;
+        constexpr u32 LightGrey = 0xF8;
+        constexpr u32 OpaqueAlpha = 0x80;
         u32 start = *counter;
-        u32* at = Unpack(packet, counter, 6);
+        u32* at = Unpack(packet, counter, 2 * EntrySize);
         u32 address = ProgramAddress(g_ShaderType0BProgram);
         at[0] = address;
         at[1] = address + g_ShaderType0BEntries[1];
-        at[2] = start + 3;
+        at[2] = start + EntrySize;
         at[3] = 1;
-        at[4] = 8;
-        at[5] = 8;
-        at[6] = 8;
-        at[7] = 0x80;
+        at[4] = DarkGrey;
+        at[5] = DarkGrey;
+        at[6] = DarkGrey;
+        at[7] = OpaqueAlpha;
         at[8] = 0;
         at[9] = 0;
         at[10] = 0;
         at[11] = 0;
         at[12] = address;
         at[13] = address + g_ShaderType0BEntries[1];
-        at[14] = start + 6;
+        at[14] = start + 2 * EntrySize;
         at[15] = 1;
-        at[16] = 0xF8;
-        at[17] = 0xF8;
-        at[18] = 0xF8;
-        at[19] = 0x80;
+        at[16] = LightGrey;
+        at[17] = LightGrey;
+        at[18] = LightGrey;
+        at[19] = OpaqueAlpha;
         at[20] = 0;
         at[21] = 0;
         at[22] = 0;
@@ -485,12 +499,15 @@ extern "C"
     }
 
     // A 2D shader's data: its entry (its fourth word left as the buffer had it), VU1's two register values, where the screen's
-    // corner is in the GS's coordinates (with a fourth word of the stack's), a GIF tag of a sprite's registers, nothing, and three
-    // quadwords of which the one of the shader's kind (12 bytes in) is 5 and 1 (the rest of it left)
+    // corner is in the GS's coordinates (with a fourth word of the stack's), a GIF tag of a sprite's registers (UV, RGBAQ and
+    // XYZ2 for each corner, VU1 sets the loops), nothing, and a quadword for each of a font's three pages, of which the shader's
+    // page's is 5 and 1 (the rest of it left)
     u8* ShaderType0DPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
-        constexpr u64 SpriteTag = 0x5003400000008000;
-        constexpr u32 SpriteRegisters = 0x53513;
+        constexpr u32 SpriteRegisters = 5;
+        constexpr u64 SpriteDescriptors =
+            GifUv | GifRgbaq << 4 | GifXyz2 << 8 | GifUv << 12 | GifXyz2 << 16;
+        constexpr u8 FontPages = 3;
         if (withRegisters != 0)
         {
             return packet;
@@ -498,8 +515,8 @@ extern "C"
 
         u32* at = Unpack(packet, counter, 9);
         Vector4 corner;
-        corner.x = 32768.0f - static_cast<f32>(g_RendererWidth << 4) * 0.5f;
-        corner.y = 32768.0f - static_cast<f32>(g_RendererHeight << 4) * 0.5f;
+        corner.x = static_cast<f32>(GsCentre) - static_cast<f32>(g_RendererWidth << GsSubpixelShift) * 0.5f;
+        corner.y = static_cast<f32>(GsCentre) - static_cast<f32>(g_RendererHeight << GsSubpixelShift) * 0.5f;
         corner.z = 1.0f;
         u32 address = ProgramAddress(g_ShaderType0DProgram);
         at[0] = address;
@@ -518,8 +535,14 @@ extern "C"
         at += 4;
         *reinterpret_cast<Vector4*>(at) = corner;
         at += 4;
-        *reinterpret_cast<u64*>(at) = SpriteTag;
-        at[2] = SpriteRegisters;
+        GifTag sprite = {};
+        sprite.endOfPacket = 1;
+        sprite.setsPrim = 1;
+        sprite.prim = GS_PRIM_SPRITE;
+        sprite.format = GifPacked;
+        sprite.registerCount = SpriteRegisters;
+        *reinterpret_cast<u64*>(at) = sprite.value;
+        at[2] = SpriteDescriptors;
         at[3] = 0;
         at += 4;
         at[0] = 0;
@@ -527,10 +550,9 @@ extern "C"
         at[2] = 0;
         at[3] = 0;
         at += 4;
-        auto* kind = reinterpret_cast<const u8*>(shader) + 0xC;
-        for (u8 i = 0; i < 3; i++)
+        for (u8 page = 0; page < FontPages; page++)
         {
-            if (*kind == i)
+            if (shader->fontPage == page)
             {
                 at[0] = 5;
                 at[1] = 1;
@@ -559,7 +581,7 @@ extern "C"
         return withRegisters != 0 ? packet : WriteRegisterValues(packet, counter, g_ShaderType13Program, g_ShaderType13Entry);
     }
 
-    // The entry, colour and scroll (with a float of the shader's), and sixteen quadwords of the shader's by REF
+    // The entry, colour and scroll (with the amplitude), and the waves by REF
     u8* ShaderType1CPacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
         if (withRegisters != 0)
@@ -567,20 +589,20 @@ extern "C"
             return packet;
         }
 
-        const auto* fields = reinterpret_cast<const u8*>(shader);
+        const auto* waveShader = static_cast<const WaveShader*>(shader);
         u32* at = Unpack(packet, counter, EntrySize);
         u32 address = ProgramAddress(g_ShaderType1CProgram);
         at[0] = address;
         at[1] = address + g_ShaderType1CEntry;
-        at[2] = *counter + 0x10;
+        at[2] = *counter + ShaderWaveRows;
         at[3] = 0;
         at = WriteColour(at + 4, shader);
-        at = WriteScroll(at, shader, *reinterpret_cast<const f32*>(fields + 0x178));
-        at[0] = ReferenceTag | 0x10;
-        at[1] = *reinterpret_cast<const u32*>(fields + 0x170);
+        at = WriteScroll(at, shader, waveShader->amplitude);
+        at[0] = ReferenceTag | ShaderWaveRows;
+        at[1] = waveShader->waves;
         at[2] = 0;
-        at[3] = *counter | 0x10 << 16 | VifUnpackV4Count;
-        *counter += 0x10;
+        at[3] = VifUnpackTo(VifUnpackV4Count, *counter, ShaderWaveRows);
+        *counter += ShaderWaveRows;
         return reinterpret_cast<u8*>(at + 4);
     }
 
@@ -589,12 +611,14 @@ extern "C"
 
     u8* ShaderType17Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
-        return WriteClothPacket(shader, packet, counter, withRegisters, g_ShaderType17Program, g_ShaderType17Entry, false);
+        return WriteClothPacket(static_cast<const ClothShader*>(shader), packet, counter, withRegisters, g_ShaderType17Program,
+                                g_ShaderType17Entry, false);
     }
 
     u8* ShaderType1APacket(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
-        return WriteClothPacket(shader, packet, counter, withRegisters, g_ShaderType1AProgram, g_ShaderType1AEntry, true);
+        return WriteClothPacket(static_cast<const ClothShader*>(shader), packet, counter, withRegisters, g_ShaderType1AProgram,
+                                g_ShaderType1AEntry, true);
     }
 
     u8* ShaderType10Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters) RETAIL(FUN_001d6130);
@@ -602,13 +626,15 @@ extern "C"
 
     u8* ShaderType10Packet(const Shader* shader, u8* packet, u32* counter, u32 withRegisters)
     {
-        return WriteScreenCopyPacket(shader, packet, counter, withRegisters, g_ShaderType10Program, g_ShaderType10Entries[1]);
+        return WriteScreenCopyPacket(static_cast<const ScreenCopyShader*>(shader), packet, counter, withRegisters,
+                                     g_ShaderType10Program, g_ShaderType10Entries[1]);
     }
 
     // Always with its registers
     u8* ShaderType11Packet(const Shader* shader, u8* packet, u32* counter, u32)
     {
-        return WriteScreenCopyPacket(shader, packet, counter, 1, g_ShaderType11Program, g_ShaderType11Entries[1]);
+        return WriteScreenCopyPacket(static_cast<const ScreenCopyShader*>(shader), packet, counter, 1, g_ShaderType11Program,
+                                     g_ShaderType11Entries[1]);
     }
 
     // The VU1 programs the shader types draw with (their vtables' third function)
@@ -781,9 +807,6 @@ extern "C"
     }
 
     // The classes nothing makes: type 3 draws with its own program, types 5 to 9 name the renderer's resident programs
-    extern u32 g_Resident8Program RETAIL(G_MicroCode_8_Index);
-    extern u32 g_Resident9Program RETAIL(G_MicroCode_9_Index);
-    extern u32 g_ResidentE1CProgram RETAIL(D_00309E1C);
 
     u32 ShaderType03ProgramOf(const Shader* shader) RETAIL(FUN_001d94b0);
     u32 ShaderType05ProgramOf(const Shader* shader) RETAIL(FUN_001d9578);
@@ -809,17 +832,17 @@ extern "C"
 
     u32 ShaderType07ProgramOf(const Shader*)
     {
-        return g_Resident8Program;
+        return g_BlendNoShapesProgram;
     }
 
     u32 ShaderType08ProgramOf(const Shader*)
     {
-        return g_Resident9Program;
+        return g_BlendFirstShapeProgram;
     }
 
     u32 ShaderType09ProgramOf(const Shader*)
     {
-        return g_ResidentE1CProgram;
+        return g_BlendNextShapeProgram;
     }
 
     // Types 5 to 9 add nothing to the packet
@@ -906,15 +929,15 @@ extern "C"
         }
 
         auto* corner = reinterpret_cast<f32*>(at);
-        corner[0] =
-            (static_cast<f32>(g_ScreenWidth) * 8.0f - 32768.0f) / (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * 16.0f);
-        corner[1] =
-            (static_cast<f32>(g_ScreenHeight) * 8.0f - 32768.0f) / (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * 16.0f);
+        corner[0] = (static_cast<f32>(g_ScreenWidth) * GsHalfSubpixels - static_cast<f32>(GsCentre)) /
+                    (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * GsSubpixels);
+        corner[1] = (static_cast<f32>(g_ScreenHeight) * GsHalfSubpixels - static_cast<f32>(GsCentre)) /
+                    (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * GsSubpixels);
         corner[2] = CornerScale;
         at[3] = 0;
         auto* sizes = reinterpret_cast<f32*>(at + 4);
-        sizes[0] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * 16.0f);
-        sizes[1] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * 16.0f);
+        sizes[0] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenWidth)) * GsSubpixels);
+        sizes[1] = 1.0f / (static_cast<f32>(NextPowerOfTwo(g_ScreenHeight)) * GsSubpixels);
         sizes[2] = (static_cast<f32>(g_ScreenWidth) - 1.0f) / static_cast<f32>(NextPowerOfTwo(g_ScreenWidth));
         sizes[3] = (static_cast<f32>(g_ScreenHeight) - 1.0f) / static_cast<f32>(NextPowerOfTwo(g_ScreenHeight));
         return reinterpret_cast<u8*>(at + 8);

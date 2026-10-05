@@ -7,7 +7,7 @@ namespace
 void DestroyIterator(ArrayIterator* iterator, const GccVTableEntry* base, u32 flags)
 {
     iterator->vtable = base;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(iterator);
     }
@@ -71,47 +71,47 @@ ArrayIterator* ArrayIterator::Assign(const ArrayIterator* other)
     return this;
 }
 
-void ArrayIterator::OtherDestroy(u32 flags)
+void ArrayIterator::DrawnItemsDestroy(u32 flags)
 {
-    DestroyIterator(this, g_OtherArrayIteratorBaseVTable, flags);
+    DestroyIterator(this, g_DrawnItemsIteratorBaseVTable, flags);
 }
 
-void ArrayIterator::OtherBaseDestroy(u32 flags)
+void ArrayIterator::DrawnItemsBaseDestroy(u32 flags)
 {
-    DestroyIterator(this, g_OtherArrayIteratorBaseVTable, flags);
+    DestroyIterator(this, g_DrawnItemsIteratorBaseVTable, flags);
 }
 
-void ArrayIterator::OtherFirst()
+void ArrayIterator::DrawnItemsFirst()
 {
     index = 0;
 }
 
-u32 ArrayIterator::OtherIsDone()
+u32 ArrayIterator::DrawnItemsIsDone()
 {
     return IsOutside(this) ? 1 : 0;
 }
 
-void** ArrayIterator::OtherCurrent()
+void** ArrayIterator::DrawnItemsCurrent()
 {
     return &array->data[index];
 }
 
-void ArrayIterator::OtherNext()
+void ArrayIterator::DrawnItemsNext()
 {
     index++;
 }
 
-void ArrayIterator::OtherPrevious()
+void ArrayIterator::DrawnItemsPrevious()
 {
     index--;
 }
 
-void ArrayIterator::OtherLast()
+void ArrayIterator::DrawnItemsLast()
 {
     index = static_cast<s32>(array->count - 1);
 }
 
-ArrayIterator* ArrayIterator::OtherAssign(const ArrayIterator* other)
+ArrayIterator* ArrayIterator::DrawnItemsAssign(const ArrayIterator* other)
 {
     return Assign(other);
 }
@@ -354,7 +354,7 @@ ArrayIterator* ArrayIterator::RendererTextsAssign(const ArrayIterator* other)
 void SizedArrayIterator::Destroy(u32 flags)
 {
     vtable = g_SizedArrayIteratorBaseVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -363,7 +363,7 @@ void SizedArrayIterator::Destroy(u32 flags)
 void SizedArrayIterator::BaseDestroy(u32 flags)
 {
     vtable = g_SizedArrayIteratorBaseVTable;
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }

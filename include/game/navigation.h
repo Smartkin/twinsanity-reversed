@@ -7,32 +7,73 @@
 
 class Stream;
 
-// An AI position of a layout (0x20 bytes): where it is (W its radius, which only the condition of the distance to the nearest
-// point's edge reads), the path finder's stamp of its last search (bits 0-14), how many paths link it (bits 15-19) and its cost
-// for the routes that count it (bits 20-27), those paths, the step a search came to it from (a chunk's index and a position's, 0xFF none) and its flags (the searches can ask for
-// some and rule some out)
-struct AiPosition
+// An AI position's flags (TT Lab's AiPositionFlags; the searches with flags can ask for some and rule some out): no route goes
+// through it, the scripts' NodeIsAirborne condition tests it on a route's step, SetFocusPositionToNearestPoint takes it however
+// far it is or never takes it, it's attached to an instance it moves along with (g_AttachedPositionFlag, which AttachToAiPosition
+// sets), and flags 3 and 6, which only the scripts give a meaning to (the searches with flags they ask for and their conditions
+// read them)
+union AiPositionFlags
 {
-    enum Bits : u32
+    u16 value;
+    struct
     {
-        StampMask = 0x7FFF,
-        LinkCountShift = 15,
-        LinkCountMask = 0x1F,
-        CostShift = 20,
-        CostMask = 0xFF,
-        // Flag 0: no route goes through it
-        FlagBlocked = 0x1,
+        u16 blocked : 1;
+        u16 airborne : 1;
+        u16 alwaysTaken : 1;
+        u16 scriptFlag3 : 1;
+        u16 neverTaken : 1;
+        u16 attached : 1;
+        u16 scriptFlag6 : 1;
+        u16 unused7 : 9;
     };
 
+    // The flags' masks: the searches' required and ruled out flags
+    enum Mask : u16
+    {
+        Blocked = 0x1,
+        Airborne = 0x2,
+        AlwaysTaken = 0x4,
+        ScriptFlag3 = 0x8,
+        NeverTaken = 0x10,
+        Attached = 0x20,
+        ScriptFlag6 = 0x40,
+    };
+};
+CHECK_SIZE(AiPositionFlags, 2);
+
+// An AI position's bits: the path finder's stamp of its last search, how many paths link it and its cost for the routes that
+// count it
+union AiPositionBits
+{
+    u32 value;
+    struct
+    {
+        u32 stamp : 15;
+        u32 linkCount : 5;
+        u32 cost : 8;
+        u32 unused28 : 4;
+    };
+};
+CHECK_SIZE(AiPositionBits, 4);
+
+// An AI position of a layout (0x20 bytes): where it is (W its radius, which only the condition of the distance to the nearest
+// point's edge reads), its bits, the paths linking it, the step a search came to it from (a chunk's index and a position's) and
+// its flags
+struct AiPosition
+{
+    // The cost the routes occupying it raise it to at most, and no step before it
+    static constexpr u32 MostCost = 0xFF;
+    static constexpr u16 NoPrevious = 0xFF;
+
     Vector4 position;
-    u32 bits;
+    AiPositionBits bits;
     struct AiPath** links;
     u16 previousChunk;
     u16 previousPosition;
-    s16 flags;
-    u16 unknown1E;
+    AiPositionFlags flags;
+    u16 unused1E;
 
-    // Made at the default box's corner (w 1) with no stamp, links nor flags, no previous position (0xFF)
+    // Made at the default box's corner (w 1) with no stamp, links nor flags, no previous position
     static AiPosition* Construct(AiPosition* position) RETAIL(FUN_0023ce48);
     // Read from a stream (its position and flags), the stamp the path finder's current one and no links
     void Read(Stream* stream) RETAIL(FUN_0023cf48);
@@ -42,13 +83,54 @@ struct AiPosition
 CHECK_OFFSET(AiPosition, flags, 0x1C);
 CHECK_SIZE(AiPosition, 0x20);
 
-// An AI path of a layout (0xA bytes): the two positions it joins (their indexes), its flags (which kinds of routes may take it),
-// and the chunks the positions are in (the path's own, set when the chunk's navigation is linked)
+// An AI path's flags (TT Lab's AiPathFlags): which routes may take it (a route request rules out the paths with some, and the
+// plain ones, with none of flags 5-8) and what the scripts' conditions find on the path to a route's step: crossing it takes a
+// jump, a long jump, a high jump or flying, and flags 6, 7 and 8, which only the scripts give a meaning to. The tools set bits 0
+// and 1 together, which nothing reads
+union AiPathFlags
+{
+    // The flags a plain path has none of
+    static constexpr u16 NotPlainMask = 0x1E0;
+
+    u16 value;
+    struct
+    {
+        u16 unused0 : 1;
+        u16 unused1 : 1;
+        u16 needsJump : 1;
+        u16 needsLongJump : 1;
+        u16 needsHighJump : 1;
+        u16 needsFlight : 1;
+        u16 scriptFlag6 : 1;
+        u16 scriptFlag7 : 1;
+        u16 scriptFlag8 : 1;
+        u16 unused9 : 7;
+    };
+
+    // The flags' masks (the scripts' conditions test one each)
+    enum Mask : u16
+    {
+        NeedsJump = 0x4,
+        NeedsLongJump = 0x8,
+        NeedsHighJump = 0x10,
+        NeedsFlight = 0x20,
+        ScriptFlag6 = 0x40,
+        ScriptFlag7 = 0x80,
+        ScriptFlag8 = 0x100,
+    };
+};
+CHECK_SIZE(AiPathFlags, 2);
+
+// An AI position's index of none (and a chunk's, an AI path's until its chunk's navigation is linked)
+constexpr u16 NoAiIndex = 0xFFFF;
+
+// An AI path of a layout (0xA bytes): the two positions it joins (their indexes), its flags, and the chunks the positions are in
+// (the path's own, set when the chunk's navigation is linked)
 struct AiPath
 {
     u16 positionA;
     u16 positionB;
-    u16 flags;
+    AiPathFlags flags;
     u16 chunkA;
     u16 chunkB;
 
@@ -57,13 +139,15 @@ struct AiPath
 CHECK_SIZE(AiPath, 0xA);
 
 // A route of AI positions the path finder finds or collects (0x402 bytes): each step's chunk index and position index, and the
-// count of steps
+// count of steps (a search's route has 255 at most)
 struct Route
 {
+    static constexpr u32 MostSearchedSteps = 255;
+
     u16 chunks[256];
     u16 positions[256];
     u8 count;
-    u8 unknown401;
+    u8 unused401;
 
     // A step's position (nullptr when its chunk has no navigation), and the path that led to it (none for the first)
     struct AiPosition* PositionAt(u32 step) RETAIL(FUN_00253de0);
@@ -112,27 +196,58 @@ struct AiNavigation
 };
 CHECK_SIZE(AiNavigation, 0x14);
 
-// What asks the path finder for a route: its flags (bit 2: the steps cost their distance alone; bits 3 and 4: away
-// from and near the path finder's focus; bit 5: the positions' own costs; bit 10: no route was found; bits 17-24 rule out paths
-// with some flags), the positions it starts and ends at and their chunks' indexes
+// A route request's flags: bit 1, which GetShortRoute sets with a weight and nothing reads, the steps costing their distance
+// alone, kept away from and near the path finder's focus, the positions' own costs counted, no route found (the search sets
+// it), and the paths it rules out (GamePathFinder::StepCost): those needing a jump (the high and long jumps' bits only read
+// without it), a high jump, a long jump, flying, those with AI path flags 6, 7 and 8, and the plain ones (none of flags 5-8)
+union RouteRequestFlags
+{
+    u32 value;
+    struct
+    {
+        u32 unused0 : 1;
+        u32 unused1 : 1;
+        u32 distanceOnly : 1;
+        u32 avoidsFocus : 1;
+        u32 nearFocus : 1;
+        u32 positionCosts : 1;
+        u32 unused6 : 4;
+        u32 noRoute : 1;
+        u32 unused11 : 6;
+        u32 rulesOutJumps : 1;
+        u32 rulesOutHighJumps : 1;
+        u32 rulesOutLongJumps : 1;
+        u32 rulesOutFlights : 1;
+        u32 rulesOutScriptFlag6 : 1;
+        u32 rulesOutScriptFlag7 : 1;
+        u32 rulesOutScriptFlag8 : 1;
+        u32 rulesOutPlainPaths : 1;
+        u32 unused25 : 7;
+    };
+};
+CHECK_SIZE(RouteRequestFlags, 4);
+
+// What asks the path finder for a route (GetShortRoute's, on its stack): its flags, what GetShortRoute gives besides (the kind
+// byte its end flags give, a radius (the agent's roll radius), its weight and the weights of keeping away from the path finder's
+// focus, of keeping near it and of the positions' own costs: nothing reads them but GetShortRoute itself the near focus weight,
+// the step costs weigh by 100), the positions it starts and ends at and their chunks' indexes
 struct RouteRequest
 {
-    enum Flags : u32
-    {
-        FlagDistanceOnly = 0x4,
-        FlagAvoidFocus = 0x8,
-        FlagNearFocus = 0x10,
-        FlagPositionCosts = 0x20,
-        FlagNoRoute = 0x400,
-    };
-
-    u32 flags;
-    u8 unknown04[0x1C - 0x4];
+    RouteRequestFlags flags;
+    u8 unused04;
+    u8 unused05[3];
+    f32 unused08;
+    f32 unused0C;
+    f32 unused10;
+    f32 nearFocusWeight;
+    f32 unused18;
     u16 startPosition;
     u16 endPosition;
     u16 startChunk;
     u16 endChunk;
 };
+CHECK_OFFSET(RouteRequest, nearFocusWeight, 0x14);
+CHECK_OFFSET(RouteRequest, startPosition, 0x1C);
 CHECK_OFFSET(RouteRequest, startChunk, 0x20);
 
 // A position the path finder's search reached (16 bytes): it, its chunk's index and its own, the cost of getting there and that
@@ -150,15 +265,22 @@ CHECK_SIZE(SearchEntry, 0x10);
 // The chunk manager's path finder (the base of retail's MiniBigBoi, 0x1240 bytes; vtable 0x1238 bytes in: 1 the destructor, 2 the
 // cost of a step along a path between two positions, 3 the estimate between two positions (both their squared distance here), 4
 // the search): every chunk's AI navigation by the chunk's index, how many of the indexes it goes through, the search's open list
-// (it starts in the middle and grows both ways), which way the last step went along its path, and the request being searched for
+// (it starts in the middle and grows both ways), which way the last step went along its path (1 from its position A to B, which
+// nothing reads), and the request being searched for
 struct PathFinder
 {
-    AiNavigation* navigations[128];
+    // The chunks' indexes it keeps a navigation for, and its vtable's step cost, estimate and search
+    static constexpr u32 MostChunks = 128;
+    static constexpr u32 StepCostSlot = 2;
+    static constexpr u32 EstimateSlot = 3;
+    static constexpr u32 FindRouteSlot = 4;
+
+    AiNavigation* navigations[MostChunks];
     u16 count;
-    u16 unknown202;
+    u16 unused202;
     SearchEntry entries[255];
-    u8 backwards;
-    u8 unknown11F5[0x1200 - 0x11F5];
+    u8 unused11F4;
+    u8 unused11F5[0x1200 - 0x11F5];
     // The ends of the route being searched for (the GetShortRoute command sets them)
     Vector4 routeStart;
     Vector4 routeEnd;
@@ -167,7 +289,7 @@ struct PathFinder
     f32 focusRadius;
     RouteRequest* request;
     const GccVTableEntry* vtable;
-    u32 unknown123C;
+    u32 unused123C;
 
     static PathFinder* Construct(PathFinder* finder) RETAIL(FUN_00252750);
     void Destroy(u32 destroyFlags) RETAIL(FUN_002527b0);

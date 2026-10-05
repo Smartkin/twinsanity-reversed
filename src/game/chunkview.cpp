@@ -8,18 +8,53 @@
 
 namespace
 {
-constexpr u32 OutsideBits = 0x3F;
+// Without a view, the clip vector's x and y: 1 over a guard band of 5 screens
+constexpr f32 DefaultClip = Rounded(0.2);
 
-// A box test's flags: out of view when every corner is out on a side (the unscaled bits they share), partly when any scaled
-// corner is out
+// A point's clip flags (VU0's CLIP's six bits: past w on either side of each axis)
+union ClipFlags
+{
+    u32 value;
+    struct
+    {
+        u32 pastPositiveX : 1;
+        u32 pastNegativeX : 1;
+        u32 pastPositiveY : 1;
+        u32 pastNegativeY : 1;
+        u32 pastPositiveZ : 1;
+        u32 pastNegativeZ : 1;
+        u32 unused6 : 26;
+    };
+};
+CHECK_SIZE(ClipFlags, 4);
+
+// A box test's flags (its corners' clip flags of its two tests together: those of any corner, then those every corner has): the
+// corners scaled by the row after the view's matrix (the last test) and as they are
+union BoxClipFlags
+{
+    u32 value;
+    struct
+    {
+        u32 scaled : 6;
+        u32 unscaled : 6;
+        u32 unused12 : 20;
+    };
+};
+CHECK_SIZE(BoxClipFlags, 4);
+
+// Out of view when every corner is out on a side (the unscaled bits they share), partly when any scaled corner is out
 u32 BoxVisibility(const u32* flags)
 {
-    if ((static_cast<s32>(flags[1]) >> 6 & OutsideBits) != 0)
+    BoxClipFlags any;
+    any.value = flags[0];
+    BoxClipFlags every;
+    every.value = flags[1];
+    if (every.unscaled != 0)
     {
-        return 0;
+        return ChunkView::OutOfView;
     }
 
-    return (flags[0] & OutsideBits) != 0 ? 2 : 1;
+    return any.scaled != 0 ? ChunkView::PartlyInView : ChunkView::InView;
 }
 }
 
@@ -39,10 +74,10 @@ ChunkView* ChunkView::ConstructFor(ChunkView* view, RenderView* renderView)
     return view;
 }
 
-void ChunkView::Destroy(u32 flags)
+void ChunkView::Destroy(u32 destroyFlags)
 {
     vtable = g_ChunkViewVTable;
-    if ((flags & 1) != 0)
+    if ((destroyFlags & 1) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -61,15 +96,15 @@ void ChunkView::Reset()
     }
     else
     {
-        clip.x = Rounded(0.2);
+        clip.x = DefaultClip;
         clip.w = 1.0f;
-        clip.y = Rounded(0.2);
+        clip.y = DefaultClip;
         clip.z = 1.0f;
     }
 
     TakeViewMatrix();
-    visibility = 0;
-    lastVisibility = 0;
+    visibility = OutOfView;
+    lastVisibility = OutOfView;
     distance = 0;
     origin = g_DefaultBox.min;
 }
@@ -102,42 +137,23 @@ void ChunkView::TestPoint(const Vector4* point)
 {
     Vector4 clipped;
     VuTransformPoint(&toClip, point, &clipped);
-    u32 outside = clipped.w < clipped.x;
+    ClipFlags outside = {};
+    outside.pastPositiveX = clipped.w < clipped.x;
     f32 negative = -clipped.w;
-    if (clipped.x < negative)
+    outside.pastNegativeX = clipped.x < negative;
+    outside.pastPositiveY = clipped.w < clipped.y;
+    outside.pastNegativeY = clipped.y < negative;
+    outside.pastPositiveZ = clipped.w < clipped.z;
+    outside.pastNegativeZ = clipped.z < negative;
+    if (outside.value != 0)
     {
-        outside |= 0x2;
-    }
-
-    if (clipped.w < clipped.y)
-    {
-        outside |= 0x4;
-    }
-
-    if (clipped.y < negative)
-    {
-        outside |= 0x8;
-    }
-
-    if (clipped.w < clipped.z)
-    {
-        outside |= 0x10;
-    }
-
-    if (clipped.z < negative)
-    {
-        outside |= 0x20;
-    }
-
-    if (outside != 0)
-    {
-        lastVisibility = 0;
-        visibility = 0;
+        lastVisibility = OutOfView;
+        visibility = OutOfView;
         return;
     }
 
-    lastVisibility = 1;
-    visibility = 1;
+    lastVisibility = InView;
+    visibility = InView;
 }
 
 const Matrix4x4* ChunkView::ChunkMatrix(const Matrix4x4* matrix)
@@ -150,12 +166,12 @@ u32 ChunkView::IsLinked()
     return 0;
 }
 
-u32 ChunkView::Unknown7()
+u32 ChunkView::Unused7()
 {
     return 1;
 }
 
-u32 ChunkView::Unknown8()
+u32 ChunkView::Unused8()
 {
     return 0;
 }
@@ -186,11 +202,11 @@ u32 ChunkView::CellResult()
     Platform::Graphics::CullOutcome outcome = Platform::Graphics::CullResult();
     if (outcome.outside != 0)
     {
-        lastVisibility = 0;
+        lastVisibility = OutOfView;
         return lastVisibility;
     }
 
-    lastVisibility = outcome.clipped != 0 ? 2 : 1;
+    lastVisibility = outcome.clipped != 0 ? PartlyInView : InView;
     return lastVisibility;
 }
 
@@ -201,21 +217,21 @@ u32 ChunkView::MeshResult()
     distance = outcome.distance;
     if (outcome.outside != 0)
     {
-        visibility = 0;
-        lastVisibility = 0;
+        visibility = OutOfView;
+        lastVisibility = OutOfView;
         return visibility;
     }
 
     if (outcome.clipped != 0)
     {
-        lastVisibility = 2;
-        visibility = 2;
+        lastVisibility = PartlyInView;
+        visibility = PartlyInView;
         Platform::Graphics::CullMatrices(&clipped, &toScreen);
     }
     else
     {
-        lastVisibility = 1;
-        visibility = 1;
+        lastVisibility = InView;
+        visibility = InView;
         Platform::Graphics::CullMatrices(nullptr, &toScreen);
     }
 
@@ -228,12 +244,12 @@ u32 ChunkView::InstanceResult()
     distance = outcome.distance;
     if (outcome.outside != 0)
     {
-        visibility = 0;
-        lastVisibility = 0;
+        visibility = OutOfView;
+        lastVisibility = OutOfView;
         return visibility;
     }
 
-    u32 result = outcome.clipped != 0 ? 2 : 1;
+    u32 result = outcome.clipped != 0 ? PartlyInView : InView;
     lastVisibility = result;
     visibility = result;
     return visibility;
@@ -261,10 +277,10 @@ LinkedChunkView* LinkedChunkView::Construct(LinkedChunkView* view, const Matrix4
     return view;
 }
 
-void LinkedChunkView::Destroy(u32 flags)
+void LinkedChunkView::Destroy(u32 destroyFlags)
 {
     vtable = g_ChunkViewVTable;
-    if ((flags & 1) != 0)
+    if ((destroyFlags & 1) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -302,10 +318,9 @@ u32 LinkedChunkView::IsLinked()
 
 u32 LinkedChunkView::Faces(const Vector4* direction)
 {
-    constexpr f32 Epsilon = 0x1.5798ECp-29f;
     Vector4 turned;
     VuRotateVector(&link, direction, &turned);
-    f32 inverse = InverseLength(&turned, Epsilon);
+    f32 inverse = InverseLength(&turned, LengthEpsilon);
     turned.x = turned.x * inverse;
     turned.y = turned.y * inverse;
     turned.z = turned.z * inverse;

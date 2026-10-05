@@ -27,6 +27,44 @@ struct alignas(16) Matrix4x4
 };
 CHECK_SIZE(Matrix4x4, 0x40);
 
+// A float's bits: the fraction past its leading 1, its exponent (biased by FloatExponentBias: the floats of [1, 2) have it) and
+// its sign
+union FloatBits
+{
+    u32 value;
+    struct
+    {
+        u32 mantissa : 23;
+        u32 exponent : 8;
+        u32 sign : 1;
+    };
+};
+CHECK_SIZE(FloatBits, 4);
+constexpr u32 FloatExponentBias = 127;
+
+// The constants the game's maths shares: squared lengths up to LengthEpsilon (2.5e-09) have no direction, values within Epsilon
+// (5e-05) of none are none, lengths up to InverseEpsilon (1e-10, the epsilon InverseLength4 squares) have no inverse, and
+// Infinite (1e30) is beyond any distance
+constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
+constexpr f32 Epsilon = 0x1.a36e2ep-15f;
+constexpr f32 InverseEpsilon = 0x1.b7cdfep-34f;
+constexpr f32 Infinite = 0x1.93e594p+99f;
+// π, its multiples and its inverse
+constexpr f32 Pi = 0x1.921fb6p+1f;
+constexpr f32 TwoPi = 0x1.921fb6p+2f;
+constexpr f32 HalfPi = 0x1.921fb6p+0f;
+constexpr f32 QuarterPi = 0x1.921fb6p-1f;
+constexpr f32 InversePi = 0x1.45f306p-2f;
+// Angles: a quarter, a half and a whole turn; a 65536th of a turn in radians, a radian and a degree in 65536ths of a turn, and a
+// degree in radians (a bit above the float nearest π / 180, as retail has it)
+constexpr s32 QuarterTurnAngle = 0x4000;
+constexpr s32 HalfTurnAngle = 0x8000;
+constexpr s32 FullTurnAngle = 0x10000;
+constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
+constexpr f32 RadiansToAngle = 0x1.45f306p+13f;
+constexpr f32 DegreesToAngle = 0x1.6c16c2p+7f;
+constexpr f32 DegreesToRadians = 0x1.1df46cp-6f;
+
 extern "C"
 {
     // The angle about an axis (0 x, 1 y, 2 z) that turns a direction toward another, in 65536ths of a turn (returned through the
@@ -59,7 +97,11 @@ inline f32 Kept(f32 value)
     return value;
 }
 
-// A row of a matrix (a place's axes and its position)
+// A row of a matrix (a place's axes and its position, PositionRow)
+constexpr u32 PositionRow = 3;
+// Each axis's (or row's) next one, round from z back to x
+inline constexpr s32 NextAxis[3] = {1, 2, 0};
+
 inline const Vector4* RowOf(const Matrix4x4* matrix, u32 row)
 {
     return reinterpret_cast<const Vector4*>(matrix->m[row]);
@@ -70,10 +112,20 @@ inline Vector4* RowOf(Matrix4x4* matrix, u32 row)
     return reinterpret_cast<Vector4*>(matrix->m[row]);
 }
 
+// Abramowitz and Stegun's 4.4.45: the arc cosine of a value from 0 to 1 is about the square root of 1 less it times this cubic
+inline f32 ArcCosineOfPositive(f32 value)
+{
+    constexpr f32 A3 = -0x1.32dc6p-6f;
+    constexpr f32 A2 = 0x1.302c4ep-4f;
+    constexpr f32 A1 = 0x1.b26908p-3f;
+    constexpr f32 A0 = 0x1.921b48p+0f;
+    return ((value * A3 + A2) * value - A1) * value + A0;
+}
+
 // An angle within half a turn either way (the other way round when that's shorter)
 inline s32 WrapAngle(s32 angle)
 {
-    return static_cast<s32>(((static_cast<u32>(angle) + 0x8000) & 0xFFFF) - 0x8000);
+    return static_cast<s32>(((static_cast<u32>(angle) + HalfTurnAngle) & (FullTurnAngle - 1)) - HalfTurnAngle);
 }
 
 // Where PlaneSide finds a point
@@ -209,8 +261,8 @@ extern "C"
     void LookAlong(Matrix4x4* matrix, const Vector4* direction, const Vector4* up) RETAIL(FUN_001860b0);
     // A value kept between two others
     f32 ClampFloat(f32 value, f32 low, f32 high) RETAIL(ClampFloat);
-    // Nothing (the game context's constructor calls it)
-    void UnkDebugFunction3();
+    // Nothing: the maths module's empty function (debug code left out of retail, presumably) the game context's constructor calls
+    void MathsDebugStub() RETAIL(UnkDebugFunction3);
     // The cosine and the sine of the angle, and each alone
     void CosSin16(const s32* angle, f32* cosine, f32* sine) RETAIL(FUN_0018c0a8);
     f32 SinOfAngle(const s32* angle) RETAIL(FUN_0018c050);
@@ -424,3 +476,8 @@ extern "C"
     void VuTransformByRows(const Matrix4x4* rows, const Vector4* point, Vector4* out) RETAIL(FUN_0018ecc0);
     void TransposeQuadwords(void* rows) RETAIL(FUN_0018ee88);
 }
+
+// The steps and the tolerance (the absolute and the relative one) the curves' nearest point searches refine with (a path's,
+// a camera spline's: FindMinimum)
+constexpr s32 CurveRefineSteps = 4;
+constexpr f32 CurveRefineTolerance = Epsilon;

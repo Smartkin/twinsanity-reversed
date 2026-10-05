@@ -10,15 +10,18 @@ EABI_EXPORT(FUN_001fcfa8, SphereInPlanes);
 
 namespace
 {
-constexpr f32 NoExtent = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
 // Points nearer than this are one to the builder, directions one direction (either way), and a plane has points in front or
 // behind beyond this
 constexpr f32 SamePoint = Rounded(0.0001);
 constexpr f32 SameDirection = Rounded(0.001);
 constexpr f32 OffPlane = Rounded(0.001);
 // A point this near a hull's plane is on it
-constexpr f32 OnHullPlane = Rounded(5e-5);
+constexpr f32 OnHullPlane = Epsilon;
+// The counts and offsets that start a hull (and its file's part)
+constexpr u32 HullHeaderSize = offsetof(CollisionHull, surface);
+// An edge's two vertex bytes, and a face's byte of its corner count before its corners
+constexpr s32 EdgeSize = sizeof(g_HullBuilderEdges[0]);
+constexpr s32 FaceCountSize = 1;
 
 f32 Distance(const Vector4* a, const Vector4* b)
 {
@@ -55,10 +58,8 @@ void AddDirection(Vector4* directions, s32* count, const Vector4* direction)
 
 CollisionHull* HullConstruct(CollisionHull* hull)
 {
-    // The counts and offsets
-    constexpr u32 HeaderSize = 0x16;
     hull->blob = nullptr;
-    RetailLibc::MemorySet(hull, 0, HeaderSize);
+    RetailLibc::MemorySet(hull, 0, HullHeaderSize);
     hull->surface = 0;
     hull->blobSize = 0;
     return hull;
@@ -71,7 +72,7 @@ void HullDestroy(CollisionHull* hull, u32 flags)
         MemoryDeallocate_(hull->blob);
     }
 
-    if ((flags & 1) != 0)
+    if ((flags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(hull);
     }
@@ -98,8 +99,7 @@ void* HullCopy(CollisionHull* hull, const CollisionHull* source)
 
 void ReadModelCollisionData(CollisionHull* hull, Stream* stream)
 {
-    constexpr u32 HeaderSize = 0x16;
-    stream->Read(hull, HeaderSize, 1);
+    stream->Read(hull, HullHeaderSize, 1);
     s32 size;
     stream->ReadS32(&size);
     hull->blobSize = size;
@@ -212,10 +212,10 @@ s32 HullSideOfPlane(const CollisionHull* hull, const Matrix4x4* matrix, const Ve
 
 u32 HullsSeparatedAlongAxis(const CollisionHull* hull, const Vector4* axis, const Vector4* points, s32 count, f32* depth)
 {
-    f32 hullMin = NoExtent;
-    f32 hullMax = -NoExtent;
-    f32 pointsMin = NoExtent;
-    f32 pointsMax = -NoExtent;
+    f32 hullMin = Infinite;
+    f32 hullMax = -Infinite;
+    f32 pointsMin = Infinite;
+    f32 pointsMax = -Infinite;
     const Vector4* vertex = reinterpret_cast<const Vector4*>(hull->blob);
     for (u32 left = hull->vertexCount; left != 0; left--, vertex++)
     {
@@ -293,8 +293,7 @@ u32 HullsSeparatedAlongAxis(const CollisionHull* hull, const Vector4* axis, cons
 
 u32 HullsIntersect(const CollisionHull* hull, const CollisionHull* other, const Matrix4x4* matrix)
 {
-    constexpr s32 MostPoints = 64;
-    Vector4 points[MostPoints];
+    Vector4 points[MostHullPoints];
     const Vector4* normals = HullFaceNormals(hull);
     const Vector4* directions = HullEdgeDirections(hull);
     const Vector4* otherNormals = HullFaceNormals(other);
@@ -432,19 +431,19 @@ void AddHullQuadFace(u8 first, u8 second, u8 third, u8 fourth)
 
 void AddHullTriangle(const Vector4* first, const Vector4* second, const Vector4* third)
 {
-    u8 a = AddHullPoint(first);
-    u8 b = AddHullPoint(second);
-    u8 c = AddHullPoint(third);
-    AddHullTriangleFace(a, b, c);
+    u8 firstPoint = AddHullPoint(first);
+    u8 secondPoint = AddHullPoint(second);
+    u8 thirdPoint = AddHullPoint(third);
+    AddHullTriangleFace(firstPoint, secondPoint, thirdPoint);
 }
 
 void AddHullQuad(const Vector4* first, const Vector4* second, const Vector4* third, const Vector4* fourth)
 {
-    u8 a = AddHullPoint(first);
-    u8 b = AddHullPoint(second);
-    u8 c = AddHullPoint(third);
-    u8 d = AddHullPoint(fourth);
-    AddHullQuadFace(a, b, c, d);
+    u8 firstPoint = AddHullPoint(first);
+    u8 secondPoint = AddHullPoint(second);
+    u8 thirdPoint = AddHullPoint(third);
+    u8 fourthPoint = AddHullPoint(fourth);
+    AddHullQuadFace(firstPoint, secondPoint, thirdPoint, fourthPoint);
 }
 
 u32 CollectHullEdges()
@@ -591,14 +590,14 @@ u32 PackBuiltHull(CollisionHull* hull)
     s32 faces = g_HullBuilderCounts.faces;
     for (s32 face = 0; face < faces; face++)
     {
-        faceBytes += 1 + g_HullBuilderFaceSizes[face];
+        faceBytes += FaceCountSize + g_HullBuilderFaceSizes[face];
     }
 
     u32 verticesSize = hull->vertexCount * VectorSize;
     u32 planesSize = hull->planeCount * VectorSize;
     u32 directionsSize = hull->edgeDirectionCount * VectorSize;
     u32 normalsSize = hull->faceNormalCount * VectorSize;
-    u32 edgesSize = hull->edgeCount * 2;
+    u32 edgesSize = hull->edgeCount * EdgeSize;
     u32 planesOffset = verticesSize;
     u32 directionsOffset = planesOffset + planesSize;
     u32 normalsOffset = directionsOffset + directionsSize;
@@ -626,7 +625,7 @@ u32 PackBuiltHull(CollisionHull* hull)
         u32 size = g_HullBuilderFaceSizes[face];
         blob[hull->faceOffsetsOffset + face] = at;
         blob[hull->facesOffset + at] = static_cast<u8>(size);
-        at++;
+        at += FaceCountSize;
         for (u32 corner = 0; corner < size; corner++)
         {
             blob[hull->facesOffset + at] = g_HullBuilderFaces[face][corner];
@@ -640,30 +639,45 @@ u32 PackBuiltHull(CollisionHull* hull)
 
 void BuildBoxHull(CollisionHull* hull, const Vector4* min, const Vector4* max)
 {
-    // Corners from the bottom of the near side around, the planes of the bottom, near, right, far, left and top faces
-    static const u8 FaceOffsets[6] = {0, 5, 10, 15, 20, 25};
-    static const u8 Faces[30] = {4, 0, 1, 2, 3, 4, 0, 4, 5, 1, 4, 1, 5, 6, 2, 4, 3, 2, 6, 7, 4, 3, 7, 4, 0, 4, 5, 4, 7, 6};
-    static const u8 Edges[24] = {0, 1, 1, 2, 2, 3, 3, 0, 0, 4, 4, 5, 5, 1, 5, 6, 6, 2, 6, 7, 7, 3, 7, 4};
-    hull->planeCount = 6;
-    hull->edgeDirectionCount = 3;
-    hull->faceNormalCount = 3;
-    hull->vertexCount = 8;
-    hull->edgeCount = 12;
-    hull->planesOffset = 0x80;
-    hull->faceNormalsOffset = 0x110;
-    hull->faceOffsetsOffset = 0x140;
-    hull->facesOffset = 0x146;
-    hull->edgesOffset = 0x164;
-    hull->blobSize = 0x17C;
-    hull->edgeDirectionsOffset = 0xE0;
-    u8* blob = static_cast<u8*>(MemoryAllocate2(0x17C));
+    // Corners from the bottom of the near side around, the planes of the bottom, near, right, far, left and top faces (their four
+    // corners counter-clockwise from outside), an edge direction and a face normal along each axis, and the edges
+    constexpr u16 CornerCount = 8;
+    constexpr u16 FaceCount = 6;
+    constexpr u16 FaceCorners = 4;
+    constexpr u16 AxisCount = 3;
+    constexpr u16 EdgeCount = 12;
+    static const u8 FaceOffsets[FaceCount] = {0, 5, 10, 15, 20, 25};
+    static const u8 FaceBytes[FaceCount * (FaceCountSize + FaceCorners)] = {4, 0, 1, 2, 3, 4, 0, 4, 5, 1, 4, 1, 5, 6, 2,
+                                                                            4, 3, 2, 6, 7, 4, 3, 7, 4, 0, 4, 5, 4, 7, 6};
+    static const u8 EdgeBytes[EdgeCount * EdgeSize] = {0, 1, 1, 2, 2, 3, 3, 0, 0, 4, 4, 5, 5, 1, 5, 6, 6, 2, 6, 7, 7, 3, 7, 4};
+    // The blob's parts one after the other
+    constexpr u16 PlanesOffset = CornerCount * sizeof(Vector4);
+    constexpr u16 EdgeDirectionsOffset = PlanesOffset + FaceCount * sizeof(Vector4);
+    constexpr u16 FaceNormalsOffset = EdgeDirectionsOffset + AxisCount * sizeof(Vector4);
+    constexpr u16 FaceOffsetsOffset = FaceNormalsOffset + AxisCount * sizeof(Vector4);
+    constexpr u16 FacesOffset = FaceOffsetsOffset + sizeof(FaceOffsets);
+    constexpr u16 EdgesOffset = FacesOffset + sizeof(FaceBytes);
+    constexpr u32 BlobSize = EdgesOffset + sizeof(EdgeBytes);
+    hull->planeCount = FaceCount;
+    hull->edgeDirectionCount = AxisCount;
+    hull->faceNormalCount = AxisCount;
+    hull->vertexCount = CornerCount;
+    hull->edgeCount = EdgeCount;
+    hull->planesOffset = PlanesOffset;
+    hull->faceNormalsOffset = FaceNormalsOffset;
+    hull->faceOffsetsOffset = FaceOffsetsOffset;
+    hull->facesOffset = FacesOffset;
+    hull->edgesOffset = EdgesOffset;
+    hull->blobSize = BlobSize;
+    hull->edgeDirectionsOffset = EdgeDirectionsOffset;
+    u8* blob = static_cast<u8*>(MemoryAllocate2(BlobSize));
     hull->blob = blob;
     auto* vertices = reinterpret_cast<Vector4*>(blob);
-    const Vector4* corners[8][3] = {
+    const Vector4* corners[CornerCount][3] = {
         {min, min, min}, {max, min, min}, {max, min, max}, {min, min, max},
         {min, max, min}, {max, max, min}, {max, max, max}, {min, max, max},
     };
-    for (u32 index = 0; index < 8; index++)
+    for (u32 index = 0; index < CornerCount; index++)
     {
         vertices[index].x = corners[index][0]->x;
         vertices[index].y = corners[index][1]->y;
@@ -691,14 +705,14 @@ void BuildBoxHull(CollisionHull* hull, const Vector4* min, const Vector4* max)
         blob[hull->faceOffsetsOffset + index] = FaceOffsets[index];
     }
 
-    for (u32 index = 0; index < sizeof(Faces); index++)
+    for (u32 index = 0; index < sizeof(FaceBytes); index++)
     {
-        blob[hull->facesOffset + index] = Faces[index];
+        blob[hull->facesOffset + index] = FaceBytes[index];
     }
 
-    for (u32 index = 0; index < sizeof(Edges); index++)
+    for (u32 index = 0; index < sizeof(EdgeBytes); index++)
     {
-        blob[hull->edgesOffset + index] = Edges[index];
+        blob[hull->edgesOffset + index] = EdgeBytes[index];
     }
 }
 
@@ -728,7 +742,9 @@ u32 BuildPyramidHull(CollisionHull* hull, const Vector4* points)
     g_HullBuilderCounts.faces = 0;
     g_HullBuilderCounts.edgeDirections = 0;
     g_HullBuilderCounts.faceNormals = 0;
-    for (u32 index = 0; index < 5; index++)
+    // The apex, then the base's four corners
+    constexpr u32 PyramidPoints = 5;
+    for (u32 index = 0; index < PyramidPoints; index++)
     {
         AddHullPoint(&points[index]);
     }
@@ -763,7 +779,7 @@ void TransformHull(CollisionHull* hull, const Matrix4x4* matrix)
 
 void HullSupportPoint(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* direction, Vector4* out)
 {
-    f32 furthest = -0x1.93e594p+99f;
+    f32 furthest = -Infinite;
     const Vector4* vertex = HullVertex(hull, 0);
     for (s32 index = 0; index < hull->vertexCount; index++, vertex++)
     {
@@ -780,10 +796,10 @@ void HullSupportPoint(const CollisionHull* hull, const Matrix4x4* matrix, const 
 
 void HullSupportEdge(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* direction, Vector4* start, Vector4* end)
 {
-    f32 furthest = -0x1.93e594p+99f;
+    f32 furthest = -Infinite;
     const Vector4* vertices = HullVertex(hull, 0);
     const u8* edge = hull->blob + hull->edgesOffset;
-    for (s32 index = 0; index < hull->edgeCount; index++, edge += 2)
+    for (s32 index = 0; index < hull->edgeCount; index++, edge += EdgeSize)
     {
         Vector4 first;
         VuTransformPoint(matrix, &vertices[edge[0]], &first);
@@ -817,8 +833,7 @@ f32 Dot3(const Vector4* first, const Vector4* second)
 u32 SphereInPlanes(f32 radius, const CollisionHull* hull, const Vector4* centre, const Vector4* planes, const Vector4* vertices,
                    Vector4* push)
 {
-    constexpr s32 MostPlanes = 64;
-    f32 distances[MostPlanes];
+    f32 distances[MostHullFaces];
     s32 planeCount = hull->planeCount;
     for (s32 index = 0; index < planeCount; index++)
     {
@@ -832,7 +847,7 @@ u32 SphereInPlanes(f32 radius, const CollisionHull* hull, const Vector4* centre,
 
     // Behind the planes up to the first it's in front of: the nearest of them
     s32 nearest = -1;
-    f32 largest = -0x1.93e594p+99f;
+    f32 largest = -Infinite;
     s32 behind = 0;
     if (planeCount != 0 && !(0.0f < distances[0]))
     {
@@ -910,8 +925,8 @@ u32 SphereInPlanes(f32 radius, const CollisionHull* hull, const Vector4* centre,
     const u8* edges = hull->blob + hull->edgesOffset;
     for (s32 index = 0; index < hull->edgeCount; index++)
     {
-        const Vector4* from = &vertices[edges[index * 2]];
-        const Vector4* to = &vertices[edges[index * 2 + 1]];
+        const Vector4* from = &vertices[edges[index * EdgeSize]];
+        const Vector4* to = &vertices[edges[index * EdgeSize + 1]];
         Vector4 direction = {to->x - from->x, to->y - from->y, to->z - from->z, 1.0f};
         f32 inverse = InverseLength(&direction, LengthEpsilon);
         direction.x = direction.x * inverse;
@@ -940,8 +955,8 @@ u32 SphereInPlanes(f32 radius, const CollisionHull* hull, const Vector4* centre,
     if (nearest != -1)
     {
         // Out of the edge: away from its nearest point
-        const Vector4* from = &vertices[edges[nearest * 2]];
-        const Vector4* to = &vertices[edges[nearest * 2 + 1]];
+        const Vector4* from = &vertices[edges[nearest * EdgeSize]];
+        const Vector4* to = &vertices[edges[nearest * EdgeSize + 1]];
         Vector4 direction = {to->x - from->x, to->y - from->y, to->z - from->z, 1.0f};
         f32 inverse = InverseLength(&direction, LengthEpsilon);
         direction.x = direction.x * inverse;
@@ -996,7 +1011,6 @@ u32 SphereInHull(f32 radius, const CollisionHull* hull, const Vector4* centre, V
 u32 EllipsoidTouchesHull(const CollisionHull* hull, const Matrix4x4* matrix, const Vector4* radii, const Matrix4x4* hullMatrix,
                          Vector4* push, Vector4* normal)
 {
-    constexpr s32 MostPoints = 64;
     // The hull in the ellipsoid's space, scaled into its unit sphere
     Matrix4x4 inverse = *matrix;
     VuInvertRigidInPlace(&inverse);
@@ -1009,8 +1023,8 @@ u32 EllipsoidTouchesHull(const CollisionHull* hull, const Matrix4x4* matrix, con
     unscale.m[2][2] = 1.0f / radii->z;
     Matrix4x4 unit;
     VuMultiplyMatrices(&local, &unscale, &unit);
-    Vector4 vertices[MostPoints];
-    Vector4 planes[MostPoints];
+    Vector4 vertices[MostHullPoints];
+    Vector4 planes[MostHullFaces];
     const Vector4* vertex = HullVertex(hull, 0);
     for (s32 index = 0; index < hull->vertexCount; index++)
     {
@@ -1041,9 +1055,9 @@ u32 EllipsoidTouchesHull(const CollisionHull* hull, const Matrix4x4* matrix, con
     normal->z = normal->z / radii->z;
     VuRotateVector(matrix, push, push);
     VuRotateVector(matrix, normal, normal);
-    f32 length = InverseLength(normal, LengthEpsilon);
-    normal->x = normal->x * length;
-    normal->y = normal->y * length;
-    normal->z = normal->z * length;
+    f32 inverseLength = InverseLength(normal, LengthEpsilon);
+    normal->x = normal->x * inverseLength;
+    normal->y = normal->y * inverseLength;
+    normal->z = normal->z * inverseLength;
     return touches;
 }

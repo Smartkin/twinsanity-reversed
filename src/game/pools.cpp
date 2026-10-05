@@ -8,8 +8,8 @@
 
 namespace
 {
-constexpr s16 UsedLink = -1;
-constexpr s16 LastLink = -2;
+// The walks' vtable slots
+constexpr u32 SlotDestroy = 1;
 constexpr u32 SlotFirst = 2;
 constexpr u32 SlotAtEnd = 3;
 constexpr u32 SlotItem = 4;
@@ -19,8 +19,8 @@ template <typename T>
 ItemPool<T>* ConstructPool(ItemPool<T>* pool, const GccVTableEntry* vtable)
 {
     pool->vtable = vtable;
-    pool->growth = 10;
-    pool->freeHead = -1;
+    pool->growth = PoolGrowth;
+    pool->freeHead = PoolNoFreeSlot;
     pool->capacity = 0;
     pool->count = 0;
     pool->links = nullptr;
@@ -42,7 +42,7 @@ void DestroyPool(ItemPool<T>* pool, const GccVTableEntry* vtable, u32 destroyFla
         MemoryDeallocate_(pool->items);
     }
 
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(pool);
     }
@@ -70,12 +70,13 @@ void GrowPool(ItemPool<T>* pool)
         pool->items = items;
         for (s32 slot = 0; slot < pool->capacity; slot++)
         {
-            if (pool->links[slot] == UsedLink)
+            if (pool->links[slot] == PoolSlotUsed)
             {
                 pool->items[slot] = old[slot];
             }
         }
 
+        // The old slots are all used: every byte of their links 0xFF makes them PoolSlotUsed
         memset(links, 0xFF, pool->capacity * sizeof(s16));
         if (old != nullptr)
         {
@@ -96,7 +97,7 @@ void GrowPool(ItemPool<T>* pool)
 
     s16 first = pool->capacity;
     pool->links = links;
-    links[slot - 1] = LastLink;
+    links[slot - 1] = PoolFreeListEnd;
     pool->items = items;
     pool->capacity = first + pool->growth;
     pool->freeHead = first;
@@ -113,7 +114,7 @@ s32 AllocateSlot(ItemPool<T>* pool)
 
     s32 slot = pool->freeHead;
     pool->freeHead = pool->links[slot];
-    pool->links[slot] = UsedLink;
+    pool->links[slot] = PoolSlotUsed;
     pool->count++;
     return slot;
 }
@@ -143,7 +144,7 @@ void ClearPools(ItemPools<T>* pools)
             pool->links[slot] = static_cast<s16>(slot + 1);
         }
 
-        pool->links[slot] = LastLink;
+        pool->links[slot] = PoolFreeListEnd;
         pool->freeHead = 0;
         pool->count = 0;
     }
@@ -153,7 +154,7 @@ template <typename T>
 void DestroyWalkBase(PoolWalkBase<T>* walk, const GccVTableEntry* baseVTable, u32 destroyFlags)
 {
     walk->vtable = baseVTable;
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(walk);
     }
@@ -164,7 +165,7 @@ void FirstSlot(PoolWalk<T>* walk)
 {
     walk->slot = 0;
     walk->position = 0;
-    while (walk->slot < walk->pool->capacity - 1 && walk->pool->links[walk->slot] != UsedLink)
+    while (walk->slot < walk->pool->capacity - 1 && walk->pool->links[walk->slot] != PoolSlotUsed)
     {
         walk->slot++;
     }
@@ -182,7 +183,7 @@ void NextSlot(PoolWalk<T>* walk)
     while (walk->position < walk->pool->count)
     {
         walk->slot++;
-        if (walk->pool->links[walk->slot] == UsedLink)
+        if (walk->pool->links[walk->slot] == PoolSlotUsed)
         {
             walk->position++;
             return;
@@ -208,7 +209,7 @@ void DestroyPoolsWalk(PoolsWalk<T>* walk, const GccVTableEntry* vtable, const Gc
         PoolWalk<T>* poolWalk = walk->walks[index];
         if (poolWalk != nullptr)
         {
-            CallVirtual<void>(poolWalk, poolWalk->vtable, 1, 3);
+            CallVirtual<void>(poolWalk, poolWalk->vtable, SlotDestroy, u32{DestroyAndFree});
         }
     }
 

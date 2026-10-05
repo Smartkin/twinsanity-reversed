@@ -11,6 +11,13 @@ namespace Platform::Audio
 constexpr s32 Voices = 48;
 constexpr s32 VoicesPerCore = 24;
 constexpr s32 Cores = 2;
+// A voice's group goes with its number in the top half of a word (voice | group << GroupShift)
+constexpr u32 GroupShift = 16;
+// A voice's full volume (past it the other phase: InvertedVolumeBase less the volume's size), and a group's volume of 1 (4.12
+// fixed point)
+constexpr s32 MaxVolume = 0x3FFF;
+constexpr s32 InvertedVolumeBase = 0x7FFF;
+constexpr s16 FullGroupVolume = 0x1000;
 
 // Every voice and setting as when the sound processor started
 void Reset();
@@ -19,10 +26,11 @@ void ResumeAll();
 // A movie plays its own sound, the platform lends it what it needs (the PS2's sound DMA channel) and takes it back
 s32 LendToMovie();
 s32 ReclaimFromMovie();
-// Sent every 36 frames
-void KeepAlive();
+// A step of moving the sounds in the sound processor's memory together, over the gaps released sounds left (the game's own
+// addition to the PS2's sound module, which the game asks for every 36 frames)
+void CompactSoundMemory();
 
-// The volume groups 1 to 4 (4.12 fixed point, given as group << 16) the voices' volumes are scaled by
+// The volume groups 1 to 4 (4.12 fixed point, a group given as its number << GroupShift) the voices' volumes are scaled by
 void SetGroupVolume(s32 group, u32 left, u32 right);
 
 // Return 0, -1 for no such voice
@@ -45,22 +53,25 @@ void SoundBankLoaded(u16 bank);
 // The sound processor's memory keeps so many sounds (a table of them on the PS2's I/O processor)
 void ReserveSounds(u16 count);
 void ReleaseSound(u32 sound);
-// Plays a sound of a bank on a voice (its group in the top half). Returns 0, -1 for no such voice, -2 for a bad last value
-s32 PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 unknown, u32 lowByte, u32 highByte, u32 last);
+// Plays a sound of a bank on a voice (its group in the top half) at the pitch, with the envelope's attack and release rates,
+// so many times (0 until it's let go). Returns 0, -1 for no such voice, -2 for more than 0xFFFF times
+s32 PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 pitch, u32 attack, u32 release, u32 loops);
 
 // Music: a channel streams a file's samples into a voice. Interleaved music has a second channel on a second voice
 // The rate's pitch
 s32 PitchOfRate(s32 rate);
-// The channel's value the music keeps (the reply's list of values)
-u32 ChannelValue(s32 channel);
+// Where the channel's buffer is in the I/O processor's memory (the music keeps it)
+u32 ChannelBufferAddress(s32 channel);
 // Reads size bytes of the file from offset for the next music started
 void ReadMusic(s32 file, u32 offset, u32 size);
 // Starts streaming it on the channel into the voice, at the pitch, looping or not
 s32 StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once);
-// The channel's music is interleaved in blocks of blockSize bytes, the second channel plays the next of them on its voice
+// The channel's music is interleaved in blocks of blockSize bytes, the second channel (the child, which reads nothing itself)
+// plays the next of them on its voice from the sound processor's memory at soundAddress. Its end is where the music's data
+// ends in the last block (the I/O processor looks for it otherwise)
 void InterleaveMusic(s32 channel, u32 blockSize);
-void AddMusicChannel(s32 second, s32 channel, u32 voiceAndGroup, u32 location);
-void SetMusicValue(s32 channel, u32 value);
+void AddMusicChannel(s32 child, s32 parent, u32 voiceAndGroup, u32 soundAddress);
+void SetMusicEnd(s32 channel, u32 end);
 // Gets the channel's music ready, then plays it
 void PrepareMusic(s32 channel);
 bool IsMusicReady(s32 channel);

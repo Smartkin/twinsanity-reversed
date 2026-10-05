@@ -45,11 +45,11 @@ extern "C"
     void ConstructCutsceneModule() RETAIL(FUN_0029f600);
 
     // The cutscene of a number queued for an object's instance (the object's slots the tracks name, the instance's place the
-    // tracks' space, its chunk the one the cutscene's instances are made in): its first part read, and the cutscene music slot's
+    // tracks' space, its chunk the one the cutscene's instances are made in): its first part read, and the context music slot's
     // music asked for. Returns 1
     u32 QueueObjectMovie(VideoController* controller, GameObject* object, InstanceContext* instance, s32 number)
         RETAIL(FUN_0029e5f8);
-    // A music-only cutscene queued: a track asked for in the cutscene music slot (looped with the flag), queued with the clock
+    // A music-only cutscene queued: a track asked for in the context music slot (looped with the flag), queued with the clock
     // when it was taken. Returns whether it was
     u32 QueueMovie(VideoController* controller, s32 track, TimeClock* clock, u32 loops) RETAIL(FUN_0029e790);
     // Whether a music-only cutscene's music is prepared

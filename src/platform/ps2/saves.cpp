@@ -15,32 +15,32 @@ using Platform::Saves::Result;
 using Platform::Saves::StorageInfo;
 namespace MemoryCard = Platform::MemoryCard;
 
-// What the operation was given, made anew from the template when one ends (port and slot -1, the rest 0)
+// What the operation was given, made anew from the template when one ends (port and slot -1, the rest 0). The retail
+// manager's other operations used the fields nothing uses
 struct Context
 {
     s32 port;
     s32 slot;
-    u32 unknown08;
+    u32 unused08;
     FileEntry* entry;
-    u32 unknown10;
-    u32 unknown14;
+    u32 unused10;
+    u32 unused14;
     s32* kilobytes;
-    u32 unknown1C;
-    u32 unknown20;
+    u32 unused1C;
+    u32 unused20;
     void* data;
     s32* size;
-    u32 unknown2C;
-    u32 unknown30;
-    u32 unknown34;
+    u32 unused2C;
+    u32 unused30;
+    u32 unused34;
     s32 dataSize;
     char save[32];
     char file[32];
-    char unknown7C[32];
+    char unused7C[32];
 };
 CHECK_SIZE(Context, 0x9C);
 
-// What libmc's non-blocking sync found: status 1 when a call finished (its function and result given), 0 while one runs, -1 when
-// none was started
+// What libmc's non-blocking sync found (MemoryCard::SyncStatus): when a call finished, its function and result
 struct Sync
 {
     s32 function;
@@ -49,16 +49,36 @@ struct Sync
 };
 
 constexpr Context ContextTemplate = {-1, -1};
+// A save's directory holds at most 20 entries, "." and ".." among them
 constexpr s32 MaxEntries = 20;
-constexpr s32 OpenRead = 1;
-constexpr s32 OpenCreateWrite = 0x202;
+constexpr s32 DotEntries = 2;
+// The longest save and file names it takes are a character shorter
+constexpr u32 SaveNameLimit = 10;
+constexpr u32 FileNameLimit = 0x21;
+// The memory card's clusters are a kilobyte: a directory takes two of them and one more for every two entries
+constexpr u32 ClusterSize = 0x400;
+constexpr u32 ClusterShift = 10;
+constexpr s32 DirectoryClusters = 2;
+
+// The writing's steps, each waiting for its call to finish: the save's directory looked for, its entries listed, the file
+// opened, written and closed
+enum WriteSteps : s32
+{
+    WriteFindingSave = 1,
+    WriteListing = 2,
+    WriteOpening = 3,
+    WriteWriting = 4,
+    WriteClosing = 5,
+};
+
+constexpr s32 NoNextOperation = -1;
 
 bool g_Initialised;
-s32 g_Operation;
-// The operation the last one to end was
-s32 g_LastOperation;
-// The operation the check goes on to, -1 for none
-s32 g_Next = -1;
+Operation g_Operation = Operation::None;
+// The operation the last one to end was (nothing reads it)
+Operation g_LastOperation = Operation::None;
+// The operation the check goes on to
+s32 g_Next = NoNextOperation;
 s32 g_Step;
 s32 g_LastResult;
 s32 g_File = -1;
@@ -83,9 +103,9 @@ void ForgetResults()
 void Finish(s32 succeeded, s32 step, s32 error)
 {
     g_LastOperation = g_Operation;
-    g_Results[g_Operation] = {succeeded, step, error};
-    g_Next = -1;
-    g_Operation = 0;
+    g_Results[static_cast<s32>(g_Operation)] = {succeeded, step, error};
+    g_Next = NoNextOperation;
+    g_Operation = Operation::None;
     g_Step = 0;
     g_Context = ContextTemplate;
 }
@@ -95,19 +115,19 @@ void Finish(s32 succeeded, s32 step, s32 error)
 bool Begin(s32 operation, s32 port, s32 slot)
 {
     ForgetResults();
-    if (g_Operation == 0 && g_Info.type == Platform::Saves::StorageMemoryCard)
+    if (g_Operation == Operation::None && g_Info.type == Platform::Saves::StorageMemoryCard)
     {
         g_Context.port = port;
         g_Context.slot = slot;
-        g_Operation = static_cast<s32>(Operation::Checking);
+        g_Operation = Operation::Checking;
         g_Next = operation;
         g_Step = 0;
         return true;
     }
 
     g_LastOperation = g_Operation;
-    g_Next = -1;
-    g_Operation = 0;
+    g_Next = NoNextOperation;
+    g_Operation = Operation::None;
     g_Step = 0;
     g_Context = ContextTemplate;
     return false;
@@ -139,7 +159,7 @@ void FormatStep(const Sync& sync)
 
         g_Step++;
     }
-    else if (g_Step == 1 && sync.status == 1)
+    else if (g_Step == 1 && sync.status == MemoryCard::SyncFinished)
     {
         if (sync.result < 0)
         {
@@ -158,7 +178,7 @@ void CreateSaveStep(const Sync& sync)
 {
     if (g_Step == 0)
     {
-        if (g_Info.freeKilobytes < 2)
+        if (g_Info.freeKilobytes < DirectoryClusters)
         {
             Finish(0, 0, Platform::Saves::ErrorNotEnoughSpace);
             return;
@@ -169,7 +189,7 @@ void CreateSaveStep(const Sync& sync)
         MemoryCard::MakeDirectory(g_Context.port, g_Context.slot, path);
         g_Step++;
     }
-    else if (g_Step == 1 && sync.status == 1)
+    else if (g_Step == 1 && sync.status == MemoryCard::SyncFinished)
     {
         if (sync.result < 0)
         {
@@ -213,7 +233,7 @@ void MeasureSaveStep(const Sync& sync)
         return;
     }
 
-    if (g_Step != 1 || sync.status != 1)
+    if (g_Step != 1 || sync.status != MemoryCard::SyncFinished)
     {
         return;
     }
@@ -224,7 +244,7 @@ void MeasureSaveStep(const Sync& sync)
         *g_Context.kilobytes = -1;
         g_LastResult = entries;
     }
-    else if (entries - 2 >= MaxEntries - 1)
+    else if (entries - DotEntries >= MaxEntries - 1)
     {
         Finish(0, sync.status, g_LastResult);
         return;
@@ -234,10 +254,10 @@ void MeasureSaveStep(const Sync& sync)
         s32 kilobytes = 0;
         for (s32 i = 0; i < entries; i++)
         {
-            kilobytes += (g_Entries[i].size + 0x3FF) >> 10;
+            kilobytes += (g_Entries[i].size + ClusterSize - 1) >> ClusterShift;
         }
 
-        *g_Context.kilobytes = kilobytes + (entries - 1) / 2 + 2;
+        *g_Context.kilobytes = kilobytes + (entries - 1) / 2 + DirectoryClusters;
     }
 
     Finish(1, g_Step, 0);
@@ -261,7 +281,7 @@ void FindFileStep(const Sync& sync)
         return;
     }
 
-    if (g_Step != 1 || sync.status != 1)
+    if (g_Step != 1 || sync.status != MemoryCard::SyncFinished)
     {
         return;
     }
@@ -274,7 +294,7 @@ void FindFileStep(const Sync& sync)
         return;
     }
 
-    if (entries - 2 >= MaxEntries - 1)
+    if (entries - DotEntries >= MaxEntries - 1)
     {
         Finish(0, sync.status, g_LastResult);
         return;
@@ -322,7 +342,7 @@ void ReadStep(const Sync&)
             return;
         }
 
-        started = MemoryCard::Open(g_Context.port, g_Context.slot, g_Context.file, OpenRead);
+        started = MemoryCard::Open(g_Context.port, g_Context.slot, g_Context.file, Platform::Files::OpenRead);
         MemoryCard::Sync(MemoryCard::SyncWait, nullptr, &g_File);
         if (started < 0 || g_File < 0 || MemoryCard::Read(g_File, g_Context.data, g_Context.dataSize) < 0)
         {
@@ -353,7 +373,8 @@ void WriteStep(const Sync& sync)
 {
     if (g_Step == 0)
     {
-        if (RetailLibc::StringLength(g_Context.save) >= 10 || RetailLibc::StringLength(g_Context.file) >= 0x21)
+        if (RetailLibc::StringLength(g_Context.save) >= SaveNameLimit ||
+            RetailLibc::StringLength(g_Context.file) >= FileNameLimit)
         {
             Finish(0, g_Step, g_LastResult);
             return;
@@ -369,11 +390,11 @@ void WriteStep(const Sync& sync)
             return;
         }
 
-        g_Step = 1;
+        g_Step = WriteFindingSave;
         return;
     }
 
-    if (g_Step > 5 || sync.status != 1)
+    if (g_Step > WriteClosing || sync.status != MemoryCard::SyncFinished)
     {
         return;
     }
@@ -386,20 +407,20 @@ void WriteStep(const Sync& sync)
 
     switch (g_Step)
     {
-    case 1:
+    case WriteFindingSave:
         if (sync.result == 0)
         {
             Fail(Platform::Saves::ErrorNoSave);
         }
         else if (ListSave())
         {
-            g_Step = 2;
+            g_Step = WriteListing;
         }
 
         break;
-    case 2:
+    case WriteListing:
     {
-        if (sync.result - 2 >= MaxEntries - 1)
+        if (sync.result - DotEntries >= MaxEntries - 1)
         {
             Finish(0, g_Step, g_LastResult);
             break;
@@ -421,17 +442,18 @@ void WriteStep(const Sync& sync)
             break;
         }
 
-        started = MemoryCard::Open(g_Context.port, g_Context.slot, g_Context.file, OpenCreateWrite);
+        started = MemoryCard::Open(g_Context.port, g_Context.slot, g_Context.file,
+                                   Platform::Files::OpenCreate | Platform::Files::OpenWrite);
         if (started < 0)
         {
             Fail(started);
             break;
         }
 
-        g_Step = 3;
+        g_Step = WriteOpening;
         break;
     }
-    case 3:
+    case WriteOpening:
     {
         g_File = sync.result;
         s32 started = MemoryCard::Write(g_File, g_Context.data, g_Context.dataSize);
@@ -441,14 +463,14 @@ void WriteStep(const Sync& sync)
             break;
         }
 
-        g_Step = 4;
+        g_Step = WriteWriting;
         break;
     }
-    case 4:
+    case WriteWriting:
         MemoryCard::Close(g_File);
-        g_Step = 5;
+        g_Step = WriteClosing;
         break;
-    case 5:
+    case WriteClosing:
         Finish(sync.status, g_Step, 0);
         g_File = -1;
         break;
@@ -488,15 +510,15 @@ Platform::Saves::Operation Platform::Saves::Update(s32 port, s32 slot, StorageIn
 {
     Sync sync = {-1, -1, 0};
     sync.status = MemoryCard::Sync(MemoryCard::SyncNoWait, &sync.function, &sync.result);
-    if (sync.status == 1)
+    if (sync.status == MemoryCard::SyncFinished)
     {
         g_LastResult = sync.result;
     }
 
-    switch (static_cast<Operation>(g_Operation))
+    switch (g_Operation)
     {
     case Operation::None:
-        if (g_Next == -1)
+        if (g_Next == NoNextOperation)
         {
             MemoryCard::GetInfo(port, slot, &g_Info.type, &g_Info.freeKilobytes, &g_Info.formatted);
         }
@@ -504,21 +526,21 @@ Platform::Saves::Operation Platform::Saves::Update(s32 port, s32 slot, StorageIn
         break;
     case Operation::Checking:
         // Once the info asked for last is in: the operation goes on, or ends without a memory card
-        if (sync.status != -1)
+        if (sync.status != MemoryCard::SyncNothing)
         {
             break;
         }
 
         if (g_Info.type == StorageMemoryCard)
         {
-            g_Operation = g_Next;
+            g_Operation = static_cast<Operation>(g_Next);
             g_Next = sync.status;
             break;
         }
 
         g_LastOperation = g_Operation;
-        g_Next = -1;
-        g_Operation = 0;
+        g_Next = NoNextOperation;
+        g_Operation = Operation::None;
         g_Step = 0;
         g_Context = ContextTemplate;
         return Operation::NoStorage;
@@ -549,7 +571,7 @@ Platform::Saves::Operation Platform::Saves::Update(s32 port, s32 slot, StorageIn
         *info = g_Info;
     }
 
-    return static_cast<Operation>(g_Operation);
+    return g_Operation;
 }
 
 Platform::Saves::Result Platform::Saves::GetResult(Operation operation)
@@ -607,13 +629,12 @@ bool Platform::Saves::Read(s32 port, s32 slot, const char* save, const char* fil
     return started;
 }
 
-// The memory card's clusters are a kilobyte, and a directory takes two of them and one more for every two entries
 u32 Platform::Saves::FileKilobytes(u32 size)
 {
-    return (size + 0x3FF) >> 10;
+    return (size + ClusterSize - 1) >> ClusterShift;
 }
 
 u32 Platform::Saves::SaveBytes(u32 kilobytes, u32 files)
 {
-    return (kilobytes + (files + 1) / 2 + 2) << 10;
+    return (kilobytes + (files + 1) / 2 + DirectoryClusters) << ClusterShift;
 }

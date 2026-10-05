@@ -1,4 +1,5 @@
 #include "game/bindings.h"
+#include "game/colour.h"
 #include "game/controllers.h"
 #include "game/memory.h"
 #include "game/overlay.h"
@@ -30,46 +31,20 @@ extern "C"
 
 namespace
 {
-// The screens' texts: a large title in the middle, the choices below it a line apart, the selected one in the text colour
-constexpr s32 TextColour = 0xF;
-constexpr s32 UnselectedColour = 0x13;
-constexpr u32 TextFlags = 0x22;
+// The screens' texts: a large title in the middle, the choices below it a line apart, the selected one white, the others grey
 constexpr f32 TitleScale = 0.75f;
 constexpr f32 ChoiceScale = 0.5f;
 constexpr f32 TextX = 0.5f;
 constexpr f32 TitleY = Rounded(0.4);
 constexpr f32 ChoicesY = Rounded(0.7);
 constexpr f32 ChoiceSpacing = Rounded(0.05);
-// The save slots' choices: an empty slot's text, and the way back last
-constexpr s32 EmptyMessage = 0x1D;
-constexpr s32 CancelMessage = 0x1E;
-// The screens: the message's, those of save slots, and one the pad code draws nothing of (cancel the save?)
-constexpr u32 MessageScreen = 0;
-constexpr u32 CancelSaveScreen = 10;
-constexpr u32 Screens = 16;
-// The operations whose messages it draws (the checks, the saves and the load) and the device's with a message
-constexpr u32 OperationMessages = 10;
-// The answers (bits 16-19 of the bits) and the slot chosen with the first (20-23)
-constexpr u32 AnswerFirst = 1;
-constexpr u32 AnswerBack = 2;
-constexpr u32 AnswerThird = 3;
-constexpr u32 AnswerMask = 0xF0000;
-constexpr u32 ChosenMask = 0xF00000;
-// The bindings' destructor without freeing them
-constexpr u32 BindingsDestroyFlags = 2;
 }
 
-// The screen it shows (bits 8-15 of its bits), the choice selected and how many there are (the card's saves and the way back,
+// The screen it shows (its bits' screen), the choice selected and how many there are (the card's saves and the way back,
 // last), its pad and its actions (0 the next choice, 1 the previous one, 2 the choice taken, 3 the way back)
 class PadSaveCode : public SaveCode
 {
 public:
-    enum ScreenBits : u32
-    {
-        ScreenShift = 8,
-        ScreenMask = 0xFF00,
-    };
-
     enum Action : u32
     {
         ActionNext = 0,
@@ -77,12 +52,6 @@ public:
         ActionTake = 2,
         ActionBack = 3,
     };
-
-    // The screens listing the card's saves
-    static constexpr s32 FirstSavesScreen = 11;
-    static constexpr s32 LastSavesScreen = 12;
-    // While loading only the saves that hold one (and the way back) can be chosen
-    static constexpr u32 OperationLoad = 5;
 
     u16 selection;
     u16 choices;
@@ -108,25 +77,27 @@ public:
     void DrawMessage(s32 operation, Renderer* renderer) RETAIL(FUN_0029f9e8);
     void DrawChoices(s32 screen, Renderer* renderer) RETAIL(FUN_0029fae8);
 
+    // While loading only the saves that hold one (and the way back) can be chosen
     bool CanChoose(u32 choice) const
     {
-        if ((bits & OperationMask) != OperationLoad || choice + 1 == choices)
+        if (bits.operation != SaveOperationLoad || choice + 1 == choices)
         {
             return true;
         }
 
-        return static_cast<FolderFile*>(device->mainFile)->summaries[choice]->HasSave();
+        return device->folder->summaries[choice]->HasSave();
     }
 
     void SetAnswer(u32 answer)
     {
-        bits = (bits & ~AnswerMask) | answer << AnswerShift;
+        bits.answer = answer;
     }
 
     // The first choice's answer, with the slot chosen
     void SetChosen(u32 slot)
     {
-        bits = (((bits & ~AnswerMask) | AnswerFirst << AnswerShift) & ~ChosenMask) | (slot & 0xF) << ChosenShift;
+        bits.answer = AnswerFirst;
+        bits.chosen = slot;
     }
 };
 CHECK_OFFSET(PadSaveCode, selection, 0x1C);
@@ -135,14 +106,15 @@ CHECK_OFFSET(PadSaveCode, font, 0x30);
 
 s32 PadSaveCode::Show(s32 screen)
 {
-    bits = (bits & ~ScreenMask) | (static_cast<u32>(screen) << ScreenShift & ScreenMask);
+    bits.screen = static_cast<u32>(screen);
     selection = 0;
-    if (screen > LastSavesScreen || screen < FirstSavesScreen)
+    if (screen > static_cast<s32>(SaveScreenLoadSlots) || screen < static_cast<s32>(SaveScreenSaveSlots))
     {
         return screen;
     }
 
-    choices = static_cast<FolderFile*>(device->mainFile)->count + 1;
+    // The slots and the way back
+    choices = device->folder->count + 1;
     while (!CanChoose(selection))
     {
         selection++;
@@ -154,14 +126,14 @@ s32 PadSaveCode::Show(s32 screen)
 u32 PadSaveCode::Choose()
 {
     u32 last = static_cast<u32>(choices) - 1;
-    if (bindings.Has(pad, ActionNext, 1) != 0)
+    if (bindings.Has(pad, ActionNext, ButtonBindings::OnPress) != 0)
     {
         do
         {
             selection = selection < last ? selection + 1 : 0;
         } while (!CanChoose(selection));
     }
-    else if (bindings.Has(pad, ActionPrevious, 1) != 0)
+    else if (bindings.Has(pad, ActionPrevious, ButtonBindings::OnPress) != 0)
     {
         do
         {
@@ -169,12 +141,12 @@ u32 PadSaveCode::Choose()
         } while (!CanChoose(selection));
     }
 
-    if (bindings.Has(pad, ActionTake, 1) != 0)
+    if (bindings.Has(pad, ActionTake, ButtonBindings::OnPress) != 0)
     {
         return 0;
     }
 
-    if (bindings.Has(pad, ActionBack, 1) != 0)
+    if (bindings.Has(pad, ActionBack, ButtonBindings::OnPress) != 0)
     {
         selection = last;
         return 0;
@@ -185,33 +157,33 @@ u32 PadSaveCode::Choose()
 
 u32 PadSaveCode::Ask(u32 operation, u32 file)
 {
-    SetScreen(MessageScreen);
+    bits.screen = SaveScreenMessage;
     return device->Ask(operation, file);
 }
 
 u32 PadSaveCode::ShowChoices(u32 screen)
 {
-    SetScreen(screen);
+    bits.screen = screen;
     selection = 0;
     switch (screen)
     {
-    case 1:
-    case 2:
-    case 3:
-    case 6:
-    case 9:
-    case 10:
+    case SaveScreenNoCard:
+    case SaveScreenNoRoom:
+    case SaveScreenCreate:
+    case SaveScreenConfirmFormat:
+    case SaveScreenOverwrite:
+    case SaveScreenCancelSave:
         choices = 2;
         break;
-    case 5:
+    case SaveScreenUnformatted:
         choices = 3;
         break;
-    case 4:
-    case 7:
-    case 8:
-    case 13:
-    case 14:
-    case 15:
+    case SaveScreenInsertCard:
+    case SaveScreenInsertSave:
+    case SaveScreenInsertRoom:
+    case SaveScreenFormatFailed:
+    case SaveScreenSaveFailed:
+    case SaveScreenLoadFailed:
         choices = 1;
         break;
     default:
@@ -228,7 +200,7 @@ u32 PadSaveCode::Waiting(u32 screen)
         return 1;
     }
 
-    if (screen - 1 >= Screens - 1)
+    if (screen == SaveScreenMessage || screen >= SaveScreenCount)
     {
         return 0;
     }
@@ -244,10 +216,10 @@ u32 PadSaveCode::Waiting(u32 screen)
 
 void PadSaveCode::Destroy(u32 destroyFlags)
 {
-    bindings.Destroy(BindingsDestroyFlags);
+    bindings.Destroy(DestroyOnly);
     vtable = g_SaveCodeVTable;
     StringDestroy(&name);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -255,17 +227,18 @@ void PadSaveCode::Destroy(u32 destroyFlags)
 
 void PadSaveCode::Draw(Renderer* renderer)
 {
-    if (device->State() != 0)
+    if (device->flags.state != SaveDevice::StateOk)
     {
         return;
     }
 
-    u32 screen = Screen();
-    if (screen == MessageScreen)
+    u32 screen = bits.screen;
+    if (screen == SaveScreenMessage)
     {
-        DrawMessage(static_cast<s32>(device->Running()), renderer);
+        DrawMessage(static_cast<s32>(device->flags.running), renderer);
     }
-    else if (screen != CancelSaveScreen && screen < Screens)
+    // Nothing of the screen asking to cancel the save
+    else if (screen != SaveScreenCancelSave && screen < SaveScreenCount)
     {
         DrawChoices(static_cast<s32>(screen), renderer);
     }
@@ -275,8 +248,8 @@ void PadSaveCode::Answer(u32 screen)
 {
     switch (screen)
     {
-    case 1:
-    case 2:
+    case SaveScreenNoCard:
+    case SaveScreenNoRoom:
         // "Continue wihout saving", "Retry"
         if (selection == 0)
         {
@@ -288,10 +261,10 @@ void PadSaveCode::Answer(u32 screen)
         }
 
         return;
-    case 3:
-    case 6:
-    case 9:
-    case 10:
+    case SaveScreenCreate:
+    case SaveScreenConfirmFormat:
+    case SaveScreenOverwrite:
+    case SaveScreenCancelSave:
         // "Yes", "No"
         if (selection == 0)
         {
@@ -303,7 +276,7 @@ void PadSaveCode::Answer(u32 screen)
         }
 
         return;
-    case 5:
+    case SaveScreenUnformatted:
         // "Format", "Continue wihout saving", "Cancel"
         if (selection == 0)
         {
@@ -319,16 +292,16 @@ void PadSaveCode::Answer(u32 screen)
         }
 
         return;
-    case 4:
-    case 7:
-    case 8:
-    case 13:
-    case 14:
-    case 15:
+    case SaveScreenInsertCard:
+    case SaveScreenInsertSave:
+    case SaveScreenInsertRoom:
+    case SaveScreenFormatFailed:
+    case SaveScreenSaveFailed:
+    case SaveScreenLoadFailed:
         SetAnswer(AnswerBack);
         return;
-    case FirstSavesScreen:
-    case LastSavesScreen:
+    case SaveScreenSaveSlots:
+    case SaveScreenLoadSlots:
         if (selection + 1 == choices)
         {
             SetAnswer(AnswerBack);
@@ -347,13 +320,15 @@ void PadSaveCode::Answer(u32 screen)
 void PadSaveCode::DrawMessage(s32 operation, Renderer* renderer)
 {
     String text = {nullptr, 0, 0};
-    switch (Operation())
+    switch (bits.operation)
     {
-    case 1:
-    case 3:
-    case 4:
-    case 5:
-        if (operation != 0 && operation >= 0 && operation < static_cast<s32>(OperationMessages))
+    case SaveOperationCheckRoom:
+    case SaveOperationNewGameSave:
+    case SaveOperationPauseSave:
+    case SaveOperationLoad:
+        // Not the waits' outcomes
+        if (operation != SaveDevice::OperationNone && operation >= 0 &&
+            operation < static_cast<s32>(SaveDevice::OperationWaitFormatted))
         {
             MessageText(g_OperationMessages[operation], &text);
         }
@@ -366,11 +341,11 @@ void PadSaveCode::DrawMessage(s32 operation, Renderer* renderer)
     if (text.length != 0)
     {
         u32 colour;
-        GetColor(&colour, TextColour);
+        GetColor(&colour, ColourWhite);
         renderer->colour = colour;
         renderer->font = font;
         renderer->textScale.y = TitleScale;
-        renderer->textFlags = TextFlags;
+        renderer->textAlignment.value = TextAlignment::Centred;
         renderer->textScale.x = TitleScale;
         QueueText(renderer, text.string, TextX, TitleY);
     }
@@ -382,13 +357,13 @@ void PadSaveCode::DrawChoices(s32 screen, Renderer* renderer)
 {
     String title = {nullptr, 0, 0};
     u32 colour;
-    GetColor(&colour, TextColour);
+    GetColor(&colour, ColourWhite);
     renderer->colour = colour;
     renderer->textScale.y = TitleScale;
     renderer->font = font;
-    renderer->textFlags = TextFlags;
+    renderer->textAlignment.value = TextAlignment::Centred;
     renderer->textScale.x = TitleScale;
-    if (screen != 0 && screen >= 0 && screen < static_cast<s32>(Screens))
+    if (screen != SaveScreenMessage && screen >= 0 && screen < static_cast<s32>(SaveScreenCount))
     {
         MessageText(g_ScreenMessages[screen], &title);
     }
@@ -401,66 +376,66 @@ void PadSaveCode::DrawChoices(s32 screen, Renderer* renderer)
     for (u32 choice = 0; choice < choices; choice++)
     {
         u32 choiceColour;
-        GetColor(&choiceColour, choice != selection ? UnselectedColour : TextColour);
+        GetColor(&choiceColour, choice != selection ? ColourGrey : ColourWhite);
         String text = {nullptr, 0, 0};
         const s32* messages = nullptr;
         switch (screen)
         {
-        case 1:
-        case 2:
+        case SaveScreenNoCard:
+        case SaveScreenNoRoom:
             messages = g_RetryChoices;
             break;
-        case 3:
+        case SaveScreenCreate:
             messages = g_CreateChoices;
             break;
-        case 4:
+        case SaveScreenInsertCard:
             messages = g_InsertCardChoices;
             break;
-        case 5:
+        case SaveScreenUnformatted:
             messages = g_UnformattedChoices;
             break;
-        case 6:
+        case SaveScreenConfirmFormat:
             messages = g_FormatChoices;
             break;
-        case 7:
+        case SaveScreenInsertSave:
             messages = g_InsertSaveChoices;
             break;
-        case 8:
+        case SaveScreenInsertRoom:
             messages = g_InsertRoomChoices;
             break;
-        case 9:
+        case SaveScreenOverwrite:
             messages = g_OverwriteChoices;
             break;
-        case 10:
+        case SaveScreenCancelSave:
             messages = g_CancelSaveChoices;
             break;
-        case FirstSavesScreen:
-        case LastSavesScreen:
+        case SaveScreenSaveSlots:
+        case SaveScreenLoadSlots:
             if (choice + 1 == choices)
             {
-                MessageText(CancelMessage, &text);
+                MessageText(SaveMessageCancel, &text);
             }
             else
             {
-                FolderSummary* summary = static_cast<FolderFile*>(device->mainFile)->summaries[choice];
+                FolderSummary* summary = device->folder->summaries[choice];
                 if (summary->HasSave())
                 {
                     CallVirtual<void>(summary, summary->vtable, FolderSummary::DescribeSlot, &text);
                 }
                 else
                 {
-                    MessageText(EmptyMessage, &text);
+                    MessageText(SaveMessageEmpty, &text);
                 }
             }
 
             break;
-        case 13:
+        case SaveScreenFormatFailed:
             messages = g_FormatFailedChoices;
             break;
-        case 14:
+        case SaveScreenSaveFailed:
             messages = g_SaveFailedChoices;
             break;
-        case 15:
+        case SaveScreenLoadFailed:
             messages = g_LoadFailedChoices;
             break;
         default:

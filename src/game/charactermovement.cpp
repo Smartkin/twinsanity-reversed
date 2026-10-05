@@ -26,27 +26,6 @@ EABI_EXPORT(FUN_00134780, &CharacterAgent::PushBodies);
 
 namespace
 {
-// The nodes these functions use: the movement node, the object node, the model node and the rigid body
-constexpr u32 MovementNodeKind = 0;
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 ModelNodeKind = 3;
-constexpr u32 RigidBodyKind = 5;
-// The agents' vtable function told of an instance touched, and the bodies' telling whether they're spheres
-constexpr u32 AgentTouchedSlot = 19;
-constexpr u32 IsSphereSlot = 15;
-// The part's attack kinds (its low byte) of the spin and the slide, each with its second kind, and of being thrown
-constexpr u32 AttackSpin = 6;
-constexpr u32 AttackSpin2 = 10;
-constexpr u32 AttackSlide = 8;
-constexpr u32 AttackSlide2 = 12;
-constexpr u32 AttackThrown = 13;
-constexpr u32 AttackThrown2 = 14;
-// The character (its first int property) without the box of exit points
-constexpr s32 MechaBandicoot = 5;
-// The body flags a script sets to let the characters push the body
-constexpr u32 PushableFlags = 0x60;
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-constexpr f32 AngleToRadians = 0x1.921fb6p-14f;
 // The pushed body's spin when a spin kicks it, the kick's cooldown and the height its point is above the character's position
 constexpr Vector4 KickSpin = {0.0f, -1.0f, 0.0f, 1.0f};
 constexpr f32 KickSeconds = Rounded(0.8);
@@ -75,12 +54,12 @@ NodeList* NodesOf(InstanceContext* instance)
 
 DynamicBody* BodyOf(InstanceContext* instance)
 {
-    return static_cast<DynamicBody*>(GetGameNode(NodesOf(instance), RigidBodyKind));
+    return static_cast<DynamicBody*>(GetGameNode(NodesOf(instance), NodeRigidBody));
 }
 
 OgiAnimator* AnimatorOf(InstanceContext* instance)
 {
-    return static_cast<ModelNode*>(GetGameNode(&instance->nodes, ModelNodeKind))->animator;
+    return static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel))->animator;
 }
 
 // An animator's exit point (none without its array)
@@ -98,7 +77,7 @@ void* PlaceOf(const ExitPointAnimation* exitPoint)
 
 bool IsSphere(DynamicBody* body)
 {
-    return CallVirtual<u32>(body, body->vtable, IsSphereSlot) != 0;
+    return CallVirtual<u32>(body, body->vtable, DynamicBody::IsSphereSlot) != 0;
 }
 
 f32 Length(const Vector4* vector)
@@ -115,29 +94,29 @@ void AddTo(Vector4* vector, const Vector4* add)
 
 bool Spinning(const CharacterPart* part)
 {
-    u32 kind = part->bits & CharacterPart::AttackKindMask;
-    return kind == AttackSpin || kind == AttackSpin2;
+    u32 kind = part->bits.attackKind;
+    return kind == AttackSpin || kind == AttackSpinVariant;
 }
 
 bool Sliding(const CharacterPart* part)
 {
-    u32 kind = part->bits & CharacterPart::AttackKindMask;
-    return kind == AttackSlide || kind == AttackSlide2;
+    u32 kind = part->bits.attackKind;
+    return kind == AttackSlide || kind == AttackSlideVariant;
 }
 }
 
 void CharacterAgent::SetHeightState(s32 newState)
 {
-    if (heightState == 0)
+    if (heightState == HeightOnGround)
     {
-        if (newState == 1)
+        if (newState == HeightJumping)
         {
             ChangeHeight(-keptHeightOffset);
             keptHeightOffset = 0.0f;
             heightStateTime = 0.0f;
         }
     }
-    else if (heightState == 1 && newState == 0)
+    else if (heightState == HeightJumping && newState == HeightOnGround)
     {
         keptHeightOffset = heightOffset;
     }
@@ -148,12 +127,12 @@ void CharacterAgent::SetHeightState(s32 newState)
 void CharacterAgent::ApplyGravity(f32 seconds)
 {
     auto* character = static_cast<CharacterPart*>(part);
-    if ((character->flags & CreaturePart::FlagOnGround) != 0 || (character->flags & CreaturePart::FlagResting) == 0)
+    if (character->flags.onGround != 0 || character->flags.resting == 0)
     {
         return;
     }
 
-    f32 pull = character->Gravity() * seconds;
+    f32 pull = character->gravity * seconds;
     velocity.x += g_AgentDown.x * pull;
     velocity.y += g_AgentDown.y * pull;
     velocity.z += g_AgentDown.z * pull;
@@ -161,7 +140,7 @@ void CharacterAgent::ApplyGravity(f32 seconds)
 
 CollisionSurface* CharacterAgent::StandingSurface()
 {
-    u32 standing = state >> StandingShift & StandingMask;
+    u32 standing = state.standing;
     if (standing == StandingGround)
     {
         return GetTriangleSurface(&groundHit);
@@ -172,7 +151,7 @@ CollisionSurface* CharacterAgent::StandingSurface()
         InstanceContext* other = ObjectOf(standingOn);
         if (other == nullptr)
         {
-            StateBits() &= ~u64{StandingMask << StandingShift};
+            state.standing = StandingNothing;
             return nullptr;
         }
 
@@ -185,7 +164,7 @@ CollisionSurface* CharacterAgent::StandingSurface()
         return &g_CollisionSurfaces.surfaces[HullSurfaceIndex(&other->collision, static_cast<u8>(standingHull))];
     }
 
-    if ((static_cast<CharacterPart*>(part)->flags & CreaturePart::FlagOnGround) != 0)
+    if (static_cast<CharacterPart*>(part)->flags.onGround != 0)
     {
         return &g_CollisionSurfaces.surfaces[0];
     }
@@ -195,18 +174,18 @@ CollisionSurface* CharacterAgent::StandingSurface()
 
 void CharacterAgent::LetGoOfStanding()
 {
-    u32 standing = state >> StandingShift & StandingMask;
+    u32 standing = state.standing;
     if (standing != StandingHull && standing != StandingRidden)
     {
         return;
     }
 
-    StateBits() &= ~u64{StandingMask << StandingShift};
+    state.standing = StandingNothing;
     AssignReference(&standingOn, nullptr);
     standingStamp = 0;
     floorSurface = nullptr;
-    static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind))->surface = -1;
-    if ((static_cast<CharacterPart*>(part)->moveBits & CharacterPart::LinkedFirst) != 0)
+    static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject))->surface = -1;
+    if (static_cast<CharacterPart*>(part)->moveBits.linkedFirst != 0)
     {
         link->Second()->SetFloorSurface(nullptr);
     }
@@ -216,7 +195,7 @@ void CharacterAgent::MeasureVelocity(f32 vertical, u32 measured)
 {
     if (measured != 0)
     {
-        auto* movement = static_cast<MovementNode*>(GetGameNode(&instance->nodes, MovementNodeKind));
+        auto* movement = static_cast<MovementNode*>(GetGameNode(&instance->nodes, NodeMovement));
         Vector4 last = lastPosition;
         Vector4 position;
         Position(&position);
@@ -225,10 +204,10 @@ void CharacterAgent::MeasureVelocity(f32 vertical, u32 measured)
         velocity.x = moved.x * inverse;
         velocity.z = moved.z * inverse;
         InstanceContext* standing = ObjectOf(standingOn);
-        if (standing != nullptr && (state >> StandingShift & StandingMask) == StandingRidden)
+        if (standing != nullptr && state.standing == StandingRidden)
         {
             // Retail fetches the ridden instance's move and does nothing with it
-            auto* ridden = static_cast<MovementNode*>(GetGameNode(&standing->nodes, MovementNodeKind));
+            auto* ridden = static_cast<MovementNode*>(GetGameNode(&standing->nodes, NodeMovement));
             if (ridden != nullptr)
             {
                 MovementVelocity(ridden, &moved);
@@ -250,15 +229,15 @@ void CharacterAgent::EaseVelocity(f32 seconds, const Vector4* wanted)
     constexpr f32 FrictionRate = 40.0f;
     constexpr f32 FastSpeed = 30.0f;
     constexpr f32 FastRate = 1500.0f;
-    constexpr f32 Unbounded = Rounded(1e30);
+    constexpr f32 Unbounded = Infinite;
     constexpr f32 GroundFall = Rounded(-0.01);
 
     CollisionSurface* surface = StandingSurface();
     if (surface != nullptr)
     {
         floorSurface = surface;
-        static_cast<ObjectNode*>(GetGameNode(&instance->nodes, ObjectNodeKind))->surface = surface->surfaceId;
-        if ((static_cast<CharacterPart*>(part)->moveBits & CharacterPart::LinkedFirst) != 0)
+        static_cast<ObjectNode*>(GetGameNode(&instance->nodes, NodeObject))->surface = surface->surfaceId;
+        if (static_cast<CharacterPart*>(part)->moveBits.linkedFirst != 0)
         {
             link->Second()->SetFloorSurface(surface);
         }
@@ -289,11 +268,11 @@ void CharacterAgent::EaseVelocity(f32 seconds, const Vector4* wanted)
     {
         rate = 0.0f;
     }
-    else if ((walk->bits & WalkController::StateMask) == WalkController::StatePushed)
+    else if (walk->bits.state == WalkController::StatePushed)
     {
         rate = Unbounded;
     }
-    else if ((character->moveBits & CharacterPart::ScaleRequested) != 0)
+    else if (character->moveBits.scaleRequested != 0)
     {
         rate *= character->speedScale;
     }
@@ -314,28 +293,30 @@ void CharacterAgent::EaseVelocity(f32 seconds, const Vector4* wanted)
 
 f32 CharacterAgent::ExitPointsHeight()
 {
-    // Exit points 7 and 6 count 0.45 along their z axes
+    // The lowest of the feet (counted 0.45 along their z axes), exit point 5 (where the invincibility's trails come from) and the
+    // hand
     constexpr f32 Reach = 0.45f;
+    constexpr u32 TrailExitPoint = 5;
 
     OgiAnimator* animator = AnimatorOf(instance);
-    ExitPointAnimation* exitPoint = UpdateExitPointMatrix(ExitPointOf(animator, 7));
-    ExitPointAnimation* turned = UpdateExitPointMatrix(ExitPointOf(animator, 7));
+    ExitPointAnimation* exitPoint = UpdateExitPointMatrix(ExitPointOf(animator, ExitPointLeftFoot));
+    ExitPointAnimation* turned = UpdateExitPointMatrix(ExitPointOf(animator, ExitPointLeftFoot));
     f32 lowest = exitPoint->matrix.m[3][1] + turned->matrix.m[2][1] * Reach;
-    exitPoint = UpdateExitPointMatrix(ExitPointOf(animator, 6));
-    turned = UpdateExitPointMatrix(ExitPointOf(animator, 6));
+    exitPoint = UpdateExitPointMatrix(ExitPointOf(animator, ExitPointRightFoot));
+    turned = UpdateExitPointMatrix(ExitPointOf(animator, ExitPointRightFoot));
     f32 height = exitPoint->matrix.m[3][1] + turned->matrix.m[2][1] * Reach;
     if (height < lowest)
     {
         lowest = height;
     }
 
-    height = UpdateExitPointMatrix(ExitPointOf(animator, 5))->matrix.m[3][1];
+    height = UpdateExitPointMatrix(ExitPointOf(animator, TrailExitPoint))->matrix.m[3][1];
     if (height < lowest)
     {
         lowest = height;
     }
 
-    height = UpdateExitPointMatrix(ExitPointOf(animator, 0))->matrix.m[3][1];
+    height = UpdateExitPointMatrix(ExitPointOf(animator, ExitPointHand))->matrix.m[3][1];
     if (height < lowest)
     {
         lowest = height;
@@ -349,9 +330,10 @@ f32 CharacterAgent::ExitPointsHeight()
 
 void CharacterAgent::MakeBoxOfExitPoints()
 {
+    // Its exit points 0 to 10 (none for the Mecha-Bandicoot)
     constexpr u32 BoxExitPoints = 11;
 
-    if (properties->GetInt(0) == MechaBandicoot)
+    if (properties->GetInt(CharacterKindProperty) == CharacterMecha)
     {
         return;
     }
@@ -392,11 +374,10 @@ void CharacterAgent::MakeBoxOfExitPoints()
 
 u32 CharacterAgent::FitsAt(u32 kind, u32 push, const Vector4* normal, const Vector4* position)
 {
-    constexpr u32 SolidInstances = 0x15B010;
     constexpr s32 MostTouched = 16;
 
-    // Kinds 3, 4 and 7 take the crouched hull, kind 0 tells the instances touched
-    bool crouched = kind == 3 || kind == 4 || kind == 7;
+    // Crouching, crawling and the knee drop take the crouched hull, standing tells the instances touched
+    bool crouched = kind == FitCrouching || kind == FitCrawling || kind == FitKneeDrop;
     Vector4 at;
     if (position != nullptr)
     {
@@ -413,12 +394,12 @@ u32 CharacterAgent::FitsAt(u32 kind, u32 push, const Vector4* normal, const Vect
     ReferencedObject* leftOut[3] = {instance, ObjectOf(standingOn), nullptr};
     s32 leftOutCount = 2;
     auto* character = static_cast<CharacterPart*>(part);
-    if ((character->moveBits & CharacterPart::LinkedFirst) != 0)
+    if (character->moveBits.linkedFirst != 0)
     {
         leftOut[2] = link->Second()->instance;
         leftOutCount = 3;
     }
-    else if ((character->moveBits & CharacterPart::LinkedSecond) != 0)
+    else if (character->moveBits.linkedSecond != 0)
     {
         leftOut[2] = link->Leader()->instance;
         leftOutCount = 3;
@@ -428,18 +409,18 @@ u32 CharacterAgent::FitsAt(u32 kind, u32 push, const Vector4* normal, const Vect
     s32 touchedCount;
     Vector4 away;
     u32 overlaps = HullOverlaps(instance->chunk, crouched ? &body->crouchHull : &body->standingHull, &at, MostTouched,
-                                SolidInstances, leftOut, leftOutCount, touched, MostTouched, &touchedCount,
+                                SolidOrProjectileNodeKinds, leftOut, leftOutCount, touched, MostTouched, &touchedCount,
                                 push != 0 ? &away : nullptr);
     if (push != 0 && overlaps != 0)
     {
         AddTo(&character->push, &away);
     }
 
-    if (normal != nullptr && kind == 0)
+    if (normal != nullptr && kind == FitStanding)
     {
         for (s32 i = 0; i < touchedCount; i++)
         {
-            CallVirtual<void>(this, vtable, AgentTouchedSlot, touched[i], normal);
+            CallVirtual<void>(this, vtable, TouchedSlot, touched[i], normal);
         }
     }
 
@@ -525,10 +506,13 @@ void CharacterAgent::MoveBy(f32 seconds, f32 turn, CharacterPart* part, const Ve
     constexpr f32 SlideFloor = 3.5f;
     constexpr f32 LeastSlope = Rounded(0.001);
     constexpr f32 SlideSlope = -4.0f;
+    // The steps the tied characters' move is solved in
+    constexpr u32 LinkedSteps = 2;
 
-    bool wasOnGround = (part->flags & CreaturePart::FlagOnGround) != 0;
-    u32 attack = part->bits & CharacterPart::AttackKindMask;
-    bool rising = attack != AttackThrown && attack != AttackThrown2 && heightState == 1 && RiseStart < heightStateTime;
+    bool wasOnGround = part->flags.onGround != 0;
+    u32 attack = part->bits.attackKind;
+    bool rising = attack != AttackThrownFromSpin && attack != AttackThrownFromJump && heightState == HeightJumping
+                  && RiseStart < heightStateTime;
     MakeBoxOfExitPoints();
     Vector4 before;
     PlacePosition(&before);
@@ -543,12 +527,12 @@ void CharacterAgent::MoveBy(f32 seconds, f32 turn, CharacterPart* part, const Ve
 
     if (Linked() != 0)
     {
-        SolveLinked(seconds, &step, &turn, turnOut, mode, 2);
+        SolveLinked(seconds, &step, &turn, turnOut, mode, LinkedSteps);
     }
     else
     {
         f32 lift = 0.0f;
-        if (heightState == 1)
+        if (heightState == HeightJumping)
         {
             lift = ExitPointsHeight();
         }
@@ -564,12 +548,12 @@ void CharacterAgent::MoveBy(f32 seconds, f32 turn, CharacterPart* part, const Ve
         velocity.y -= seconds * RiseSlowing;
     }
 
-    if ((part->flags & CreaturePart::FlagOnGround) != 0 && !wasOnGround)
+    if (part->flags.onGround != 0 && !wasOnGround)
     {
-        SetHeightState(0);
+        SetHeightState(HeightOnGround);
     }
 
-    if (heightState == 0 && keptHeightOffset != 0.0f)
+    if (heightState == HeightOnGround && keptHeightOffset != 0.0f)
     {
         // Back on the ground, the offset kept from the jump comes down to what its exit points allow, and never below 0
         f32 height = ExitPointsHeight();
@@ -608,13 +592,13 @@ void CharacterAgent::MoveBy(f32 seconds, f32 turn, CharacterPart* part, const Ve
     }
 
     f32 slope = 0.0f;
-    u32 crouchState = crouch->bits & CrouchController::StateMask;
+    u32 crouchState = crouch->bits.state;
     if ((crouchState == CrouchController::StateSliding || crouchState == CrouchController::StateSlideEnd)
         && 0.0f < buttons.circle)
     {
         if (floorSurface != nullptr)
         {
-            slope = SlideFloor / floorSurface->physics5;
+            slope = SlideFloor / floorSurface->acceleration;
         }
 
         f32 across = __builtin_sqrtf(moved.x * moved.x + moved.z * moved.z);
@@ -647,14 +631,14 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
     f32 vertical = part->wantedVertical;
     Vector4 forward = *RowOf(&place->matrix, 2);
     s32 turn = 0;
-    if ((part->moveBits & CharacterPart::TurnRequested) != 0)
+    if (part->moveBits.turnRequested != 0)
     {
         turn = static_cast<s32>(static_cast<f32>(part->wantedTurn) * seconds);
     }
 
     // The speeds asked for along its axes (none when they aren't); one past 1 sets the part's moving flag
     bool withinSpeeds = true;
-    if ((part->moveBits & CharacterPart::ForwardRequested) != 0)
+    if (part->moveBits.forwardRequested != 0)
     {
         f32 speed = part->wantedForward;
         forward.x *= speed;
@@ -671,7 +655,7 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
         forward.w = 1.0f;
     }
 
-    if ((part->moveBits & CharacterPart::SidewaysRequested) != 0)
+    if (part->moveBits.sidewaysRequested != 0)
     {
         f32 speed = part->wantedSideways;
         side.x *= speed;
@@ -690,7 +674,7 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
 
     Vector4 wanted = {forward.x + side.x, forward.y + side.y, forward.z + side.z, 1.0f};
     EaseVelocity(seconds, &wanted);
-    if ((part->moveBits & CharacterPart::VerticalRequested) != 0)
+    if (part->moveBits.verticalRequested != 0)
     {
         MeasureVelocity(vertical, controlled);
     }
@@ -703,12 +687,12 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
     step.z *= seconds;
     u32 mode = MoveModeOf();
     f32 turnOut;
-    if ((part->moveBits & CharacterPart::LinkedFirst) != 0)
+    if (part->moveBits.linkedFirst != 0)
     {
         turn = static_cast<s32>(static_cast<f32>(turn) * LinkedTurn);
         MoveBy(seconds, static_cast<f32>(turn) * AngleToRadians, part, &step, &turnOut, mode);
     }
-    else if ((part->moveBits & CharacterPart::LinkedSecond) != 0)
+    else if (part->moveBits.linkedSecond != 0)
     {
         // The second of two tied characters is put where the link swings it, the leader's place first, and the link given the
         // velocity that took it there
@@ -737,7 +721,7 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
     else
     {
         MoveBy(seconds, static_cast<f32>(turn) * AngleToRadians, part, &step, &turnOut, mode);
-        if ((part->moveBits & CharacterPart::Clawing) == 0)
+        if (part->moveBits.clawing == 0)
         {
             s32 angle;
             AngleFrom(&angle, turnOut, AngleRadians);
@@ -746,7 +730,7 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
             if (angle != 0)
             {
                 place->SyncRotation();
-                place->bits = (place->bits | ObjectPlace::BitTurned) & ~u64{ObjectPlace::BitMatrixTurned};
+                place->MarkTurned();
                 s32 yaw = angle;
                 Vector4 rotation;
                 RotationFromYaw(&rotation, &yaw);
@@ -757,7 +741,7 @@ void CharacterAgent::Move(f32 seconds, CharacterPart* part, u32 controlled)
         }
     }
 
-    part->flags = (part->flags & ~CreaturePart::FlagMoving) | (withinSpeeds ? 0 : CreaturePart::FlagMoving);
+    part->flags.moving = !withinSpeeds;
 }
 
 void CharacterAgent::SlideIntoBody(DynamicBody* body)
@@ -821,7 +805,7 @@ void CharacterAgent::WalkIntoBody(DynamicBody* body, const Vector4* point)
     position.y += KickHeight;
     Vector4 local;
     VuTransformPoint(&body->inverseMatrix, &position, &local);
-    auto* movement = static_cast<MovementNode*>(GetGameNode(&instance->nodes, MovementNodeKind));
+    auto* movement = static_cast<MovementNode*>(GetGameNode(&instance->nodes, NodeMovement));
     if (movement != nullptr)
     {
         // Retail works out its velocity from its movement node and does nothing with it
@@ -901,7 +885,7 @@ void CharacterAgent::WalkIntoBody(DynamicBody* body, const Vector4* point)
             AddTo(&body->angularMomentum, &KickSpin);
             Vector4 kick = push;
             kick.y = 0.0f;
-            body->bodyFlags |= RigidBody::FlagMoved;
+            body->bodyFlags.velocityStale = 1;
             kick.x *= KickShare;
             kick.z *= KickShare;
             body->ApplyImpulse(&kick, &local);
@@ -944,13 +928,13 @@ void CharacterAgent::StandOnBody(DynamicBody* body)
 
     Vector4 press = Press;
     body->AddLocalForce(&press, &local);
-    if ((jump->bits & JumpController::Jumped) != 0)
+    if (jump->bits.jumped != 0)
     {
         Vector4 kick = velocity;
         kick.x *= JumpKick;
         kick.z *= JumpKick;
         body->ApplyImpulse(&kick, &local);
-        jump->bits &= ~JumpController::Jumped;
+        jump->bits.jumped = 0;
     }
 }
 
@@ -963,7 +947,7 @@ void CharacterAgent::KickPushedBody()
 
     DynamicBody* body = BodyOf(ObjectOf(pushedBody));
     AddTo(&body->angularMomentum, &KickSpin);
-    body->bodyFlags |= RigidBody::FlagMoved;
+    body->bodyFlags.velocityStale = 1;
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     Vector4 forward = *RowOf(&place->matrix, 2);
@@ -991,7 +975,7 @@ void CharacterAgent::KeepPushedBody()
 
     DynamicBody* body = BodyOf(ObjectOf(pushedBody));
     if (body != nullptr && !(Length(&body->velocity) < Still && Length(&velocity) < Still)
-        && (static_cast<CharacterPart*>(part)->flags & CreaturePart::FlagOnGround) != 0)
+        && static_cast<CharacterPart*>(part)->flags.onGround != 0)
     {
         Vector4 position;
         Position(&position);
@@ -1040,8 +1024,8 @@ void CharacterAgent::PickPushedBody(InstanceContext** touched, s32 count)
         }
 
         DynamicBody* body = BodyOf(other);
-        if ((body->bodyFlags & PushableFlags) == 0
-            || (static_cast<CharacterPart*>(part)->flags & CreaturePart::FlagOnGround) == 0)
+        if (body->bodyFlags.pushable == 0
+            || static_cast<CharacterPart*>(part)->flags.onGround == 0)
         {
             continue;
         }
@@ -1117,7 +1101,7 @@ void CharacterAgent::HoldPushedBody()
     Position(&target);
     ObjectPlace* place = instance->place;
     Vector4 ahead;
-    if ((static_cast<CharacterPart*>(part)->moveBits & CharacterPart::Crouching) != 0)
+    if (static_cast<CharacterPart*>(part)->moveBits.crouching != 0)
     {
         f32 reach = radius + CrouchedReach;
         RotateAndTranslate(place);
@@ -1176,27 +1160,29 @@ void CharacterAgent::HoldPushedBody()
 void CharacterAgent::PushBodies(f32 seconds, ContactSet* contacts)
 {
     // The pushed body is held 0.1 further than where it's touched; out of touch, with the stick pushed, it's held a unit a
-    // second closer
+    // second closer. A slide knocks a body once a second. Room for 32 bodies touched (retail doesn't check)
     constexpr f32 HoldGap = Rounded(0.1);
     constexpr f32 LeastStick = Rounded(0.1);
+    constexpr f32 SlideHitSeconds = 1.0f;
+    constexpr s32 MostTouched = 32;
 
     f32 cooldown = slideHitCooldown - seconds;
     slideHitCooldown = cooldown < 0.0f ? 0.0f : cooldown;
     cooldown = kickCooldown - seconds;
     kickCooldown = cooldown < 0.0f ? 0.0f : cooldown;
-    InstanceContext* touched[32];
+    InstanceContext* touched[MostTouched];
     s32 touchedCount = 0;
     for (s32 i = 0; i < contacts->solid.count; i++)
     {
         const ::Contact* entry = &contacts->solid.contacts[i];
-        u32 kind = entry->kind;
-        if ((kind & ::Contact::KindHull) == 0)
+        ContactKind kind = entry->kind;
+        if (kind.hull == 0)
         {
             continue;
         }
 
         InstanceContext* other = entry->instance;
-        if (BodyOf(other) != nullptr && (kind & ::Contact::PushShared) != 0)
+        if (BodyOf(other) != nullptr && kind.pushShared != 0)
         {
             touched[touchedCount] = other;
             touchedCount++;
@@ -1271,8 +1257,8 @@ void CharacterAgent::PushBodies(f32 seconds, ContactSet* contacts)
     for (s32 i = 0; i < contacts->solid.count; i++)
     {
         ::Contact* entry = &contacts->solid.contacts[i];
-        u32 kind = entry->kind;
-        if ((kind & ::Contact::KindHull) == 0)
+        ContactKind kind = entry->kind;
+        if (kind.hull == 0)
         {
             continue;
         }
@@ -1283,23 +1269,23 @@ void CharacterAgent::PushBodies(f32 seconds, ContactSet* contacts)
             continue;
         }
 
-        if ((kind & ::Contact::Marked) != 0 && velocity.y < 0.0f)
+        if (kind.marked != 0 && velocity.y < 0.0f)
         {
             StandOnBody(body);
         }
 
-        if ((kind & ::Contact::PushShared) == 0)
+        if (kind.pushShared == 0)
         {
             continue;
         }
 
         const Vector4* point = &entry->point;
         f32 across = __builtin_sqrtf(point->x * point->x + point->z * point->z);
-        if (Sliding(character) && slideHitCooldown == 0.0f && (character->flags & CreaturePart::FlagOnGround) != 0
+        if (Sliding(character) && slideHitCooldown == 0.0f && character->flags.onGround != 0
             && __builtin_fabsf(point->y) < across + across)
         {
             SlideIntoBody(body);
-            slideHitCooldown = 1.0f;
+            slideHitCooldown = SlideHitSeconds;
         }
         else
         {

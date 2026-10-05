@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "platform/files.h"
 
 // The PS2's memory cards, by port and slot, for Platform::Saves and the start-up: libmc's interface, on PS2SDK's libmc. Every call
 // but Initialise starts an operation Sync finishes, which gives its result
@@ -26,9 +27,18 @@ enum SyncMode : s32
     SyncNoWait = 1,
 };
 
+// What Sync returns: nothing was started, a call is running, one finished
+enum SyncStatus : s32
+{
+    SyncNothing = -1,
+    SyncRunning = 0,
+    SyncFinished = 1,
+};
+
 // Returns 0 when it's ready. Starting it again does nothing
 s32 Initialise();
 s32 GetInfo(s32 port, s32 slot, s32* type, s32* freeClusters, s32* format);
+// The flags: the I/O processor's file flags (Files::OpenFlags)
 s32 Open(s32 port, s32 slot, const char* name, s32 flags);
 s32 Close(s32 file);
 s32 Read(s32 file, void* buffer, s32 size);
@@ -39,6 +49,6 @@ s32 ChangeDirectory(s32 port, s32 slot, const char* directory, char* currentDire
 s32 GetDirectory(s32 port, s32 slot, const char* name, u32 mode, s32 maxEntries, DirectoryEntry* table);
 s32 Delete(s32 port, s32 slot, const char* name);
 s32 Format(s32 port, s32 slot);
-// Returns -1 when nothing's running, 0 while something is, 1 when it finished: then function is what it was and result its result
+// Returns a SyncStatus: when a call finished, function is what it was and result its result
 s32 Sync(SyncMode mode, s32* function, s32* result);
 }

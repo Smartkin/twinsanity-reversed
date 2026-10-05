@@ -10,8 +10,6 @@
 
 extern "C"
 {
-    // An AI position made: at the origin (w 1), no links, its previous position none (0xFF) and no flags
-    AiPosition* ConstructAiPosition(AiPosition* position) RETAIL(FUN_0023ce48);
     // Settings 0x60 bytes before the states' jump table the game context's constructor sets, which nothing reads
     extern u32 g_UnusedAgentLabSettings[0x18] RETAIL(D_003D9A00);
     // A word the module's static initialisation clears, which nothing reads
@@ -23,25 +21,8 @@ extern "C"
 
 namespace
 {
-// The builder's class IDs (the items' ItemType)
-enum ClassId : u32
-{
-    GraphStateId = 0x1800,
-    GraphDataId = 0x1801,
-    StarterId = 0x1803,
-    GraphId = 0x1804,
-    StateBodyId = 0x1805,
-    ControlPacketId = 0x1808,
-    CallConventionId = 0x1809,
-    // Two words of -1, two words of 0 and 16 bytes left as the heap had them (unknown items)
-    Unknown180CId = 0x180C,
-    Unknown180EId = 0x180E,
-    AiPositionId = 0x180F,
-    AiPathId = 0x1810,
-    Unknown1811Id = 0x1811,
-};
-
-constexpr u16 None = 0xFFFF;
+// The size of the block made for UnusedBlockClassId
+constexpr u32 UnusedBlockSize = 0x10;
 
 template <typename T>
 T* Allocate(u32 size = sizeof(T))
@@ -52,8 +33,9 @@ T* Allocate(u32 size = sizeof(T))
 
 GraphState* GraphState::Construct(GraphState* state)
 {
-    // No index (the high half)
-    state->bits = static_cast<u32>(None) << 16;
+    GraphStateBits made = {};
+    made.child = NoScriptId;
+    state->bits = made;
     state->packet = nullptr;
     state->bodies = nullptr;
     state->next = nullptr;
@@ -66,29 +48,31 @@ StateBody* StateBody::Construct(StateBody* body)
     body->jumpIndex = 0;
     body->commands = nullptr;
     body->next = nullptr;
-    body->bits = 0;
+    body->bits.value = 0;
     return body;
 }
 
-GraphData* GraphData::Construct(GraphData* data)
+GraphData* GraphData::Construct(GraphData* graph)
 {
-    data->name.string = nullptr;
-    data->name.capacity = 0;
-    data->name.length = 0;
-    data->ClearHead();
-    data->states = nullptr;
-    return data;
+    graph->name.string = nullptr;
+    graph->name.capacity = 0;
+    graph->name.length = 0;
+    graph->ClearHead();
+    graph->states = nullptr;
+    return graph;
 }
 
 void GraphData::ClearHead()
 {
-    bits = None;
+    GraphDataBits cleared = {};
+    cleared.id = NoScriptId;
+    bits = cleared;
     start = nullptr;
 }
 
 void ScriptResource::Write(Stream* stream)
 {
-    stream->WriteS32(static_cast<s32>(bits));
+    stream->WriteS32(static_cast<s32>(bits.value));
 }
 
 void TaggedValue::Destroy(u32 destroyFlags)
@@ -104,13 +88,13 @@ void* MakeAgentLabItem(void*, u32 classId)
 {
     switch (classId)
     {
-    case GraphStateId:
+    case GraphStateClassId:
         return GraphState::Construct(Allocate<GraphState>());
-    case GraphDataId:
+    case GraphDataClassId:
         return GraphData::Construct(Allocate<GraphData>());
-    case StarterId:
+    case StarterClassId:
         return ScriptStarter::Construct(Allocate<ScriptStarter>());
-    case GraphId:
+    case GraphClassId:
     {
         auto* graph = Allocate<ScriptGraph>();
         ScriptResource::Construct(graph);
@@ -118,48 +102,48 @@ void* MakeAgentLabItem(void*, u32 classId)
         graph->vtable = g_GraphVTable;
         return graph;
     }
-    case StateBodyId:
+    case StateBodyClassId:
         return StateBody::Construct(Allocate<StateBody>());
-    case ControlPacketId:
+    case ControlPacketClassId:
         return ControlPacket::Construct(Allocate<ControlPacket>());
-    case CallConventionId:
+    case CallConventionClassId:
     {
         auto* convention = Allocate<CallConvention>();
         convention->SetDefaults();
         return convention;
     }
-    case Unknown180CId:
+    case UnusedNonesClassId:
     {
         auto* words = Allocate<s32>(2 * sizeof(s32));
         words[1] = -1;
         words[0] = -1;
         return words;
     }
-    case Unknown180EId:
+    case UnusedZerosClassId:
     {
         auto* words = Allocate<u32>(2 * sizeof(u32));
         words[0] = 0;
         words[1] = 0;
         return words;
     }
-    case AiPositionId:
+    case AiPositionClassId:
     {
         auto* position = Allocate<AiPosition>();
-        ConstructAiPosition(position);
+        AiPosition::Construct(position);
         return position;
     }
-    case AiPathId:
+    case AiPathClassId:
     {
         auto* path = Allocate<AiPath>();
-        path->chunkB = None;
-        path->positionA = None;
-        path->positionB = None;
-        path->flags = 0;
-        path->chunkA = None;
+        path->chunkB = NoAiIndex;
+        path->positionA = NoAiIndex;
+        path->positionB = NoAiIndex;
+        path->flags.value = 0;
+        path->chunkA = NoAiIndex;
         return path;
     }
-    case Unknown1811Id:
-        return MemoryAllocate(0x10);
+    case UnusedBlockClassId:
+        return MemoryAllocate(UnusedBlockSize);
     default:
         return nullptr;
     }
@@ -196,8 +180,7 @@ void InitUnusedAgentLabSettings()
 
 void InitAgentLabStatics(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -207,5 +190,5 @@ void InitAgentLabStatics(u32 initialise, u32 priority)
 
 void ConstructAgentLabModule()
 {
-    InitAgentLabStatics(1, 0xFFFF);
+    InitAgentLabStatics(1, DefaultInitPriority);
 }

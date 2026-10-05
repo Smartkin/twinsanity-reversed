@@ -2,6 +2,7 @@
 
 #include "game/agentparts.h"
 #include "game/agents.h"
+#include "game/attachments.h"
 #include "game/characters.h"
 #include "game/chunkdata.h"
 #include "game/chunkloading.h"
@@ -19,6 +20,7 @@
 #include "game/nodecontrollers.h"
 #include "game/objectcollision.h"
 #include "game/objectnode.h"
+#include "game/objects.h"
 #include "game/place.h"
 #include "game/player.h"
 #include "game/progress.h"
@@ -58,12 +60,12 @@ extern "C"
     // constructors' table
     void InitCharacterCommandsModule(u32 initialize, u32 priority) RETAIL(FUN_0011bdb8);
     void ConstructCharacterCommandsModule() RETAIL(FUN_001230c8);
-    // The header's constants the start-up sets, which nothing reads: up (0, 1, 0, 1), 0.01 twice, a black of half alpha, 0 and 45
+    // The header's constants the start-up sets, which nothing reads: up (0, 1, 0, 1), the UI's shadow offset and colour, 0 and 45
     // degrees (65536ths); and the thin pyramid's hull (game/projectiles.cpp)
     extern Vector4 g_CommandsUp RETAIL(D_0030AE90);
-    extern f32 g_CommandsSmall RETAIL(D_0030A4AC);
-    extern f32 g_CommandsSmall2 RETAIL(D_0030A4A8);
-    extern u32 g_CommandsShade RETAIL(D_0030A4B0);
+    extern f32 g_CommandsShadowY RETAIL(D_0030A4AC);
+    extern f32 g_CommandsShadowX RETAIL(D_0030A4A8);
+    extern u32 g_CommandsShadowColour RETAIL(D_0030A4B0);
     extern u32 g_CommandsZero RETAIL(D_0030A4A0);
     extern s32 g_CommandsAngle45 RETAIL(D_0030A4B8);
     extern CollisionHull g_PyramidHull RETAIL(PyramidHull);
@@ -81,25 +83,29 @@ EABI_EXPORT(FUN_001221c8, PlayCharacterSound);
 class UnusedOffsetCommand : public ScriptCommand
 {
 public:
-    // Its bits: the mode (bits 0-3: 1 or 2), the designators (4-11 and 12-19), the offset given (21), the second designator
-    // past the receivers (22), the keyword 0x1B (23)
-    enum Bits : u32
+    // The mode (1 or 2), the designators, the offset given, the second designator past the receivers, the keyword 0x1B
+    union Bits
     {
-        ModeMask = 0xF,
-        FirstShift = 4,
-        SecondShift = 12,
-        DesignatorMask = 0xFF,
-        OffsetGiven = 0x200000,
-        SecondNotReceiver = 0x400000,
-        Keyword1B = 0x800000,
+        u32 value;
+        struct
+        {
+            u32 mode : 4;
+            u32 first : 8;
+            u32 second : 8;
+            u32 unused20 : 1;
+            u32 offsetGiven : 1;
+            u32 secondNotReceiver : 1;
+            u32 keyword1B : 1;
+            u32 unused24 : 8;
+        };
     };
 
-    u32 unknown0C;
+    u32 unused0C;
     Vector4 offset;
-    u32 unknown20;
+    u32 unused20;
     f32 value;
-    u32 unknown28;
-    u32 bits;
+    u32 unused28;
+    Bits bits;
 
     void Destroy(u32 destroyFlags) RETAIL(FUN_0011d7a8);
     void ParseTokens(const ScriptTokenList* tokens) RETAIL(FUN_0010d740);
@@ -111,8 +117,8 @@ CHECK_OFFSET(UnusedOffsetCommand, bits, 0x2C);
 CHECK_SIZE(UnusedOffsetCommand, 0x30);
 
 // A command class nothing makes (retail's vtable 0x40 bytes past vt_Cmd636_AddAmmo): AddAmmo's code, the amount going to the
-// player's gun's bits 9-12 instead (Gun::AddValue9)
-class AddToGunValueCommand : public ScriptCommand
+// player's gun's second count instead (Gun::AddSecondCount)
+class AddToGunSecondCountCommand : public ScriptCommand
 {
 public:
     s32 amount;
@@ -123,45 +129,32 @@ public:
     void ExecuteOn(GameNode* node) RETAIL(FUN_00129dd0);
     u32 Size() RETAIL(FUN_00129ce0);
 };
-CHECK_SIZE(AddToGunValueCommand, 0x10);
+CHECK_SIZE(AddToGunSecondCountCommand, 0x10);
 
 namespace
 {
-constexpr u32 ObjectNodeKind = 1;
-constexpr u32 AttachmentsKind = 6;
-constexpr u32 CharacterNodeKind = 0xC;
-constexpr u32 CrateNodeKind = 0xD;
-constexpr u32 CreatureNodeKind = 0xF;
-// The agents' vtable functions: a contact message, whether it's a playable character, a launch
-constexpr u32 AgentContactSlot = 9;
-constexpr u32 AgentIsCharacterSlot = 12;
-constexpr u32 AgentLaunchSlot = 21;
-// The instances' vtable functions woken and put to sleep
-constexpr u32 WakeSlot = 2;
-constexpr u32 SleepSlot = 3;
-// The object nodes' vtable functions: 11 (before its instance is put to sleep), a velocity set (the float first), a designator's
-// instance, its sound stopped
-constexpr u32 NodeSlot11 = 11;
-constexpr u32 SetVelocitySlot = 26;
-constexpr u32 GetDesignatorSlot = 36;
-constexpr u32 StopSoundSlot = 44;
-// A command's execution on a node, and an event's destructor
-constexpr u32 ExecuteOnSlot = 4;
-constexpr u32 EventDestroySlot = 1;
-constexpr u8 NoDesignator = 0xFF;
-constexpr u32 NoSlot = 0xFFFF;
-constexpr u16 NoSound = 0xFFFF;
-constexpr u8 NoInstanceSound = 0xFF;
-constexpr f32 Far = Rounded(1e30);
-constexpr f32 LengthEpsilon = 0x1.5798ecp-29f;
-// A gun's bits 9-12 (game/characters.h's Gun::AddValue9)
+// A skate controller's sound of none
+constexpr u32 NoSkateSound = 0xFFFF;
+// A gun's second count (game/characters.h's Gun::AddSecondCount)
 constexpr u32 AmountToken = 0x200;
-// The agents' counters a byte each (their bytes 0x18 on), at most 255
-constexpr s32 CounterMax = 0xFF;
-// A counter command's word: the counter (bits 0-15) and whether it's the agent's own (bit 16) rather than the game's
-constexpr u32 CounterMask = 0xFFFF;
-constexpr u32 OwnCounter = 0x10000;
-constexpr u32 AllPriorities = 0xFFFF;
+// The board's sounds by slot: sliding (on water or ice, on wood), grinding, leaning and landing (on metal, on wood)
+enum BoardSound : u32
+{
+    SoundSlide = 0,
+    SoundSlideSlippery = 1,
+    SoundSlideWood = 2,
+    SoundGrind = 3,
+    SoundLean = 4,
+    SoundLeanMetal = 5,
+    SoundLeanWood = 6,
+    SoundLand = 7,
+    SoundLandMetal = 8,
+    SoundLandWood = 9,
+};
+// The instances the queries take, by the kinds of nodes they have: the playable characters and the other agents a hit or a throw
+// reaches
+constexpr u32 CharacterKinds = 1u << NodeCharacter;
+constexpr u32 ObjectKinds = 1u << NodeCrate | 1u << NodeCreature | 1u << NodeGenericObject;
 
 ObjectNode* NodeOf(BehaviourRunner* runner)
 {
@@ -199,14 +192,14 @@ PropertyHolder* PropertiesOf(ObjectNode* node)
 }
 
 // A query of up to so many instances with the flags (all of them) and without the others
-void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted, u32 unwanted)
+void StartQuery(InstanceQuery* query, void** results, u16 most, u32 wanted, u32 unwanted)
 {
     query->results = results;
     query->count = 0;
     query->most = most;
-    query->distance = Far;
+    query->distance = Infinite;
     // Retail keeps the stack's other bits (nothing reads them)
-    query->bits = InstanceRayHit::BitAllWanted;
+    query->bits.value = InstanceQueryBits::AllWanted;
     query->wantedFlags = wanted;
     query->unwantedFlags = unwanted;
     query->skipped[0] = nullptr;
@@ -217,7 +210,7 @@ void StartQuery(InstanceRayHit* query, void** results, u16 most, u32 wanted, u32
 // A counter of an agent's (its bytes 0x18 on)
 u8* CounterOf(Agent* agent, u32 counter)
 {
-    return reinterpret_cast<u8*>(agent) + offsetof(Agent, unknown18) + counter;
+    return reinterpret_cast<u8*>(agent) + offsetof(Agent, counters) + counter;
 }
 
 // The velocity the player's character moves with: its vehicle's, else its own
@@ -242,23 +235,18 @@ Vector4 PositionOf(InstanceContext* instance)
     return place->position;
 }
 
-// A setting of two bits for a mask: 1 sets it, 2 clears it, 0 and 3 leave it
-void ApplySetting(u32* bits, u32 setting, u32 mask)
+// A setting of two bits applied: on sets the bits, off clears them, 0 and 3 leave them
+template <typename Set>
+void ApplySetting(u32 setting, Set set)
 {
-    if (setting == 1)
+    if (setting == SetAttacksTakenCommand::SettingOn)
     {
-        *bits |= mask;
+        set(1);
     }
-    else if (setting == 2)
+    else if (setting == SetAttacksTakenCommand::SettingOff)
     {
-        *bits &= ~mask;
+        set(0);
     }
-}
-
-// A bit of a word set to a value (0 or 1)
-u32 WithBit(u32 word, u32 mask, u32 shift, u32 on)
-{
-    return (word & ~mask) | on << shift;
 }
 
 // The bits of a mask set or cleared
@@ -267,29 +255,10 @@ void SetBit(u32* word, u32 mask, u32 on)
     *word = on != 0 ? *word | mask : *word & ~mask;
 }
 
-// A field of the progress's bits (4 bits) written
-void SetProgressField(GameProgress* progress, u32 shift, u32 value)
-{
-    progress->bits = (progress->bits & ~(GameProgress::FieldMask << shift)) | (value & GameProgress::FieldMask) << shift;
-}
-
-// An instance's attachments node (kind 6): the instances it links (16 at most)
-struct AttachmentsNode
-{
-    u8 unknown00[0x20];
-    InstanceContext* linked[16];
-};
-
-// The wait start (clock units) of a pickup's node (game/pickups.cpp's PickupObjectNode, 0xC0 bytes in)
-s32& PickupWaitStart(GameNode* node)
-{
-    return *reinterpret_cast<s32*>(reinterpret_cast<u8*>(node) + 0xC0);
-}
-
 // The byte of an object node that keeps the instance sound it plays (0xFF none)
 u8& InstanceSoundOf(ObjectNode* node)
 {
-    return node->unknown155[0x158 - offsetof(ObjectNode, unknown155)];
+    return node->playingSound;
 }
 
 // The game controller's chooser of a crate's contents (nothing reads it)
@@ -301,19 +270,18 @@ void* CrateChooser()
 
 void ApplyVelocity(const ApplyVelocityToSelfCommand* command, InstanceContext* target, InstanceContext* source)
 {
-    constexpr f32 Epsilon = 0x1.a36e2ep-15f;
     PropertyHolder* properties = AgentNodeOf(target)->agent->properties;
     Agent* launched = AgentNodeOf(source)->agent;
-    f32 gravity = command->radius.FloatWith(properties);
-    f32 x = command->value5.FloatWith(properties);
-    f32 y = command->value6.FloatWith(properties);
-    f32 z = command->value7.FloatWith(properties);
+    f32 gravity = command->gravity.FloatWith(properties);
+    f32 x = command->pointX.FloatWith(properties);
+    f32 y = command->pointY.FloatWith(properties);
+    f32 z = command->pointZ.FloatWith(properties);
     Vector4 velocity;
     if (__builtin_fabsf(x) <= Epsilon && __builtin_fabsf(y) <= Epsilon && __builtin_fabsf(z) <= Epsilon)
     {
-        velocity.x = command->velX.FloatWith(properties);
-        velocity.y = command->velY.FloatWith(properties);
-        velocity.z = command->velZ.FloatWith(properties);
+        velocity.x = command->velocityX.FloatWith(properties);
+        velocity.y = command->velocityY.FloatWith(properties);
+        velocity.z = command->velocityZ.FloatWith(properties);
         velocity.w = 1.0f;
     }
     else
@@ -328,50 +296,47 @@ void ApplyVelocity(const ApplyVelocityToSelfCommand* command, InstanceContext* t
         velocity.w = 1.0f;
     }
 
-    CallVirtual<void>(launched, launched->vtable, AgentLaunchSlot, gravity, &velocity, target);
+    CallVirtual<void>(launched, launched->vtable, Agent::LaunchSlot, gravity, &velocity, target);
 }
 
 u32 ApplyVelocityToSelfCommand::ParseToken(const ScriptToken* token)
 {
-    constexpr u32 VelocityGiven = 0x1;
-    constexpr u32 PointGiven = 0x2;
-    constexpr u32 Keyword = 0x8;
-    switch (token->kind)
+    switch (token->tag)
     {
     case 0x6A:
-        ParseTaggedValueRecord(token, &radius);
+        ParseTaggedValueRecord(token, &gravity);
         return 1;
     case 0x49:
-        ParseTaggedValueRecord(token, &velX);
-        value8.raw |= VelocityGiven;
+        ParseTaggedValueRecord(token, &velocityX);
+        given.unused0 = 1;
         return 1;
     case 0x4A:
-        ParseTaggedValueRecord(token, &velY);
-        value8.raw |= VelocityGiven;
+        ParseTaggedValueRecord(token, &velocityY);
+        given.unused0 = 1;
         return 1;
     case 0x4B:
-        ParseTaggedValueRecord(token, &velZ);
-        value8.raw |= VelocityGiven;
+        ParseTaggedValueRecord(token, &velocityZ);
+        given.unused0 = 1;
         return 1;
     case 0x4C:
-        ParseTaggedValueRecord(token, &value5);
-        value8.raw |= PointGiven;
+        ParseTaggedValueRecord(token, &pointX);
+        given.unused1 = 1;
         return 1;
     case 0x4D:
-        ParseTaggedValueRecord(token, &value6);
-        value8.raw |= PointGiven;
+        ParseTaggedValueRecord(token, &pointY);
+        given.unused1 = 1;
         return 1;
     case 0x4E:
-        ParseTaggedValueRecord(token, &value7);
-        value8.raw |= PointGiven;
+        ParseTaggedValueRecord(token, &pointZ);
+        given.unused1 = 1;
         return 1;
-    case 0xFFFF:
+    case TagNone:
         if (token->value != 0xAC)
         {
             return 0;
         }
 
-        value8.raw |= Keyword;
+        given.castsRay = 1;
         return 1;
     default:
         return 0;
@@ -380,44 +345,42 @@ u32 ApplyVelocityToSelfCommand::ParseToken(const ScriptToken* token)
 
 u32 ApplyVelocityCommand::ParseToken(const ScriptToken* token)
 {
-    constexpr u32 ValuesGiven = 0x4;
-    switch (token->kind)
+    switch (token->tag)
     {
     case 6:
-        target = static_cast<s32>(token->value);
+        receiver = static_cast<s32>(token->value);
         return 1;
     case 0x46:
-        ParseTaggedValueRecord(token, &value9);
-        value8.raw |= ValuesGiven;
+        ParseTaggedValueRecord(token, &unused2C);
+        given.rayValues = 1;
         return 1;
     case 0x47:
-        ParseTaggedValueRecord(token, &value10);
-        value8.raw |= ValuesGiven;
+        ParseTaggedValueRecord(token, &unused30);
+        given.rayValues = 1;
         return 1;
     case 0x48:
-        ParseTaggedValueRecord(token, &value11);
-        value8.raw |= ValuesGiven;
+        ParseTaggedValueRecord(token, &unused34);
+        given.rayValues = 1;
         return 1;
     default:
         return reinterpret_cast<ApplyVelocityToSelfCommand*>(this)->ParseToken(token);
     }
 }
 
-// Without bits 2 and 3 of value8 the velocity goes to the target's instance; with them, to every instance a ray from the agent's
-// instance to the point (velX2, velY2, velZ2) away hits (none when the ray starts inside one)
+// Without the ray the velocity goes to the receiver's instance; with it, to every instance a ray from the agent's instance to the
+// point away hits (none when the ray starts inside one)
 void ApplyVelocityCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 CastsRay = 0x4 | 0x8;
     constexpr u16 MostHit = 0x20;
-    constexpr u32 HitKinds = 0x10B000;
+    constexpr u32 HitKinds = CharacterKinds | 1u << NodeCrate | 1u << NodeCreature | 1u << NodeProjectile;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
     PropertyHolder* properties = PropertiesOf(node);
     // ApplyVelocityToSelf's values lead its own (retail's base class)
     auto* base = reinterpret_cast<const ApplyVelocityToSelfCommand*>(this);
-    if ((value8.raw & CastsRay) == 0)
+    if (!given.rayValues && !given.castsRay)
     {
-        InstanceContext* other = runner->InstanceOf(target);
+        InstanceContext* other = runner->InstanceOf(receiver);
         if (other != nullptr)
         {
             ApplyVelocity(base, instance, other);
@@ -428,14 +391,14 @@ void ApplyVelocityCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
 
     ChunkData* chunk = instance->chunk;
     void* results[MostHit];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostHit, 0, ReferencedObject::FlagAsleep);
+    InstanceQuery query;
+    StartQuery(&query, results, MostHit, 0, ReferencedObjectFlags::Asleep);
     Vector4 point = PositionOf(instance);
     Vector4 segment[2];
     segment[0] = point;
-    f32 x = velX2.FloatWith(properties);
-    f32 y = velY2.FloatWith(properties);
-    f32 z = velZ2.FloatWith(properties);
+    f32 x = pointX.FloatWith(properties);
+    f32 y = pointY.FloatWith(properties);
+    f32 z = pointZ.FloatWith(properties);
     point.x = point.x + x;
     point.y = point.y + y;
     point.z = point.z + z;
@@ -452,53 +415,54 @@ void ApplyVelocityCommand::Execute(TimeClock*, BehaviourRunner* runner, Behaviou
     }
 }
 
-// Settings of the attacks that reach the agent (a setting of two bits each: 1 on, 2 off): bits 0-1 the spin's (kind 6), 4-5 the
-// body slam's (7 or 9), 10-11 walking into it and landing on it (3 and 5, and bit 14 of its part)
-void SetObjectFlags587Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// Settings of the attacks that reach the agent: the spin's, the body slam's (and the tied characters'), walking into it and hitting
+// it from below (and bit 14 of its part)
+void SetAttacksTakenCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 WalkedIntoMask = BasicAgentPart::HitByKind3 | 0x4000 | BasicAgentPart::HitByKind5;
     auto* part = static_cast<BasicAgentPart*>(NodeOf(runner)->agent->part);
-    u32 settings = static_cast<u32>(flags.raw);
-    ApplySetting(&part->bits, settings & 3, BasicAgentPart::HitByKind6);
-    ApplySetting(&part->bits, settings >> 4 & 3, BasicAgentPart::HitByKind7Or9);
-    ApplySetting(&part->bits, settings >> 10 & 3, WalkedIntoMask);
+    Settings given = settings;
+    ApplySetting(given.spin, [part](u32 on) { part->bits.hitBySpin = on; });
+    ApplySetting(given.slam, [part](u32 on) { part->bits.hitBySlamOrTied = on; });
+    ApplySetting(given.walkInto, [part](u32 on) {
+        part->bits.hitByWalkInto = on;
+        part->bits.unused14 = on;
+        part->bits.hitFromBelow = on;
+    });
 }
 
-// The first contents (the low half of value1, 0xFFFF none) come out as many as value2's range says (its bits 0-3 and 4-7), spread
-// around above the crate and staggered by 0.05 seconds; the second contents (the high half) instead when there are no first ones
+// The first contents come out as many as the count's range says, spread around above the crate and staggered by 0.05 seconds; the
+// second contents instead when there are no first ones
 void CreateCrateContents(const CreateCrateContentsCommand* command, Agent*, InstanceContext* instance, BehaviourRunner*)
 {
-    constexpr u16 NoObject = 0xFFFF;
-    constexpr u32 ObjectMask = 0x7FFF;
     constexpr f32 Above = 0.5f;
     constexpr f32 Spread = Rounded(0.8);
     constexpr f32 Drop = Rounded(-0.15);
     constexpr f32 Stagger = Rounded(0.05);
     ChunkEntry* chunk = ChunkOfInstance(G_ChunkManager, instance);
-    u16 first = static_cast<u16>(command->value1);
-    u16 second = static_cast<u16>(command->value1 >> 16);
+    u16 first = command->contents.first;
+    u16 second = command->contents.second;
     InstanceFactory* factory = g_InstanceFactory;
     void* chooser = CrateChooser();
-    factory->SetFlag2();
-    factory->ClearFlag1();
-    factory->SetFlag0();
-    factory->ClearFlag3();
+    factory->SetInstanceProperties();
+    factory->ClearUnused1();
+    factory->SetGivesIds();
+    factory->ClearGivesFlagSlots();
     factory->creationFlags = 0;
     Vector4 position = PositionOf(instance);
     s32 angles[3] = {0, 0, 0};
-    if (second != NoObject && (first == NoObject || CrateGivesSecondContents(chooser) != 0))
+    if (second != NoObjectId && (first == NoObjectId || CrateGivesSecondContents(chooser) != 0))
     {
         position.y = position.y + Above;
-        CreateInstance(factory, chunk, second & ObjectMask, &position, angles);
+        CreateInstance(factory, chunk, second & ResourceIndexMask, &position, angles);
         return;
     }
 
-    if (first == NoObject)
+    if (first == NoObjectId)
     {
         return;
     }
 
-    s32 count = CrateContentsCount(chooser, command->value2 & 0xF, command->value2 >> 4 & 0xF);
+    s32 count = CrateContentsCount(chooser, command->count.least, command->count.most);
     f32 delay = 0.0f;
     for (s32 i = 0; i < count; i++)
     {
@@ -513,13 +477,13 @@ void CreateCrateContents(const CreateCrateContentsCommand* command, Agent*, Inst
         spot.x = spot.x + velocity.x;
         spot.y = spot.y + velocity.y;
         spot.z = spot.z + velocity.z;
-        InstanceContext* made = CreateInstance(factory, chunk, first & ObjectMask, &spot, angles);
-        auto* node = static_cast<GameNode*>(GetGameNode(&made->nodes, ObjectNodeKind));
+        InstanceContext* made = CreateInstance(factory, chunk, first & ResourceIndexMask, &spot, angles);
+        auto* node = static_cast<GameNode*>(GetGameNode(&made->nodes, NodeObject));
         velocity.x = velocity.x + velocity.x;
         velocity.y = velocity.y + velocity.y;
         velocity.z = velocity.z + velocity.z;
-        CallVirtual<void>(node, node->vtable, SetVelocitySlot, -1.0f, &velocity);
-        PickupWaitStart(node) -= static_cast<s32>(delay * g_ClockUnitsPerSecond);
+        CallVirtual<void>(node, node->vtable, ObjectNode::LaunchSlot, -1.0f, &velocity);
+        static_cast<PickupObjectNode*>(node)->waitStart -= static_cast<s32>(delay * g_ClockUnitsPerSecond);
     }
 }
 
@@ -532,8 +496,6 @@ void UnusedOffsetCommand::Destroy(u32 destroyFlags)
 // 3 and 4 the mode, 0x1B its bit
 void UnusedOffsetCommand::ParseTokens(const ScriptTokenList* tokens)
 {
-    constexpr u8 KeywordType = 4;
-    constexpr u32 FirstReserved = 0xDE;
     f32 x = 0.0f;
     f32 y = 0.0f;
     f32 z = 0.0f;
@@ -543,7 +505,7 @@ void UnusedOffsetCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        switch (token->kind)
+        switch (token->tag)
         {
         case 0:
             x = token->Float();
@@ -555,36 +517,36 @@ void UnusedOffsetCommand::ParseTokens(const ScriptTokenList* tokens)
             z = token->Float();
             break;
         case 6:
-            bits = (bits & ~(DesignatorMask << FirstShift)) | (token->value & DesignatorMask) << FirstShift;
+            bits.first = token->value;
             break;
         case 7:
-            bits = (bits & ~(DesignatorMask << SecondShift)) | (token->value & DesignatorMask) << SecondShift;
-            if (FirstReserved <= (bits >> SecondShift & DesignatorMask))
+            bits.second = token->value;
+            if (FirstDesignator <= bits.second)
             {
-                bits |= SecondNotReceiver;
+                bits.secondNotReceiver = 1;
             }
 
             break;
         case 0x38:
             value = token->Float();
             break;
-        case 0xFFFF:
-            if (token->type != KeywordType)
+        case TagNone:
+            if (token->type != TokenKeyword)
             {
                 break;
             }
 
             if (token->value == 3)
             {
-                bits = (bits & ~ModeMask) | 1;
+                bits.mode = 1;
             }
             else if (token->value == 4)
             {
-                bits = (bits & ~ModeMask) | 2;
+                bits.mode = 2;
             }
             else if (token->value == 0x1B)
             {
-                bits |= Keyword1B;
+                bits.keyword1B = 1;
             }
 
             break;
@@ -601,7 +563,7 @@ void UnusedOffsetCommand::ParseTokens(const ScriptTokenList* tokens)
         offset.w = 1.0f;
         offset.y = y;
         offset.z = z;
-        bits |= OffsetGiven;
+        bits.offsetGiven = 1;
     }
 }
 
@@ -614,10 +576,10 @@ u32 UnusedOffsetCommand::Size()
     return sizeof(UnusedOffsetCommand);
 }
 
-// A counter (the game's, or the agent's own: CounterMask, OwnCounter) moved by how fast the player closes in: the squared distance
-// from the agent's instance to the player less that to where the player's velocity takes it in a second (80 or more: up by it,
-// faster the higher the counter is; less: down by what it lacks of 80; moving away: down by it), kept within 0 and 255
-void CounterPositionOp579Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// A counter (the game's, or the agent's own) moved by how fast the player closes in: the squared distance from the agent's instance
+// to the player less that to where the player's velocity takes it in a second (80 or more: up by it, faster the higher the
+// counter is; less: down by what it lacks of 80; moving away: down by it), kept within 0 and 255
+void CountPlayerApproachCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr f32 Low = 128.0f;
     constexpr f32 Middle = 192.0f;
@@ -625,24 +587,25 @@ void CounterPositionOp579Command::Execute(TimeClock*, BehaviourRunner* runner, B
     constexpr f32 Slowly = Rounded(0.0125);
     constexpr f32 Faster = Rounded(0.02);
     constexpr f32 Fastest = Rounded(0.04);
-    u32 index = counter & CounterMask;
-    f32 value;
-    if ((counter & OwnCounter) != 0)
+    constexpr f32 Most = 255.0f;
+    u32 index = counter.counter;
+    f32 count;
+    if (counter.agentCounter)
     {
-        value = static_cast<f32>(*CounterOf(NodeOf(runner)->agent, index));
+        count = static_cast<f32>(*CounterOf(NodeOf(runner)->agent, index));
     }
     else
     {
-        value = static_cast<f32>(GameCounter(G_ChunkManager, index));
+        count = static_cast<f32>(GameCounter(G_ChunkManager, index));
     }
 
     f32 closing = 0.0f;
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* player = progress->Instance(progress->Field(GameProgress::CharacterShift));
+    InstanceContext* player = progress->Instance(progress->play.character);
     InstanceContext* instance = NodeOf(runner)->owner;
     if (player != nullptr)
     {
-        auto* character = static_cast<CharacterAgent*>(AgentOfKind(player, CharacterNodeKind));
+        auto* character = static_cast<CharacterAgent*>(AgentOfKind(player, NodeCharacter));
         Vector4 velocity;
         CharacterVelocity(character, &velocity);
         Vector4 from = PositionOf(player);
@@ -662,12 +625,12 @@ void CounterPositionOp579Command::Execute(TimeClock*, BehaviourRunner* runner, B
 
     f32 gain;
     f32 loss;
-    if (value <= Low)
+    if (count <= Low)
     {
         gain = Slowly;
         loss = Slowly;
     }
-    else if (value <= Middle)
+    else if (count <= Middle)
     {
         gain = Faster;
         loss = Slowly;
@@ -680,66 +643,61 @@ void CounterPositionOp579Command::Execute(TimeClock*, BehaviourRunner* runner, B
 
     if (Fast < closing)
     {
-        value = value + closing * gain;
+        count = count + closing * gain;
     }
     else if (0.0f <= closing)
     {
-        value = value - (Fast - closing) * loss;
+        count = count - (Fast - closing) * loss;
     }
     else
     {
-        value = value + closing * Slowly;
+        count = count + closing * Slowly;
     }
 
-    value = ClampFloat(value, 0.0f, 255.0f);
-    if ((counter & OwnCounter) != 0)
+    count = ClampFloat(count, 0.0f, Most);
+    if (counter.agentCounter)
     {
-        *CounterOf(NodeOf(runner)->agent, index) = static_cast<u8>(static_cast<s32>(value));
+        *CounterOf(NodeOf(runner)->agent, index) = static_cast<u8>(static_cast<s32>(count));
     }
     else
     {
-        SetGameCounter(G_ChunkManager, index, static_cast<s32>(value) & 0xFF);
+        SetGameCounter(G_ChunkManager, index, static_cast<s32>(count) & 0xFF);
     }
 }
 
-// value1's bit 0: the instances searched for are those of 0x1000 (with bit 1) or 0x1A000 (else 0x1B000) awake and taking
-// triggers' signals in each of the agent's instance's hulls, which get a contact message of the kinds what commands.h has as the
-// radius gives and 1 damage; with bit 2 they're sent the trigger message (event) instead
+// The instances awake and taking triggers' signals in each of the agent's instance's hulls (the playable characters, the others or
+// both) get a contact message of the kinds of hit and 1 damage, or are sent the trigger message instead
 void HitInstancesInBoxesCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u16 MostHit = 20;
-    constexpr u32 SearchesAll = 0x1;
-    constexpr u32 SearchesCharacters = 0x2;
-    constexpr u32 SendsMessage = 0x4;
-    constexpr u32 EventKinds = 0x2;
     constexpr u8 Damage = 1;
     InstanceContext* instance = NodeOf(runner)->owner;
     s32 hulls = GetHullCount(&instance->collision);
     void* results[MostHit];
-    InstanceRayHit query;
-    StartQuery(&query, results, MostHit, ReferencedObject::FlagTriggerSignals, ReferencedObject::FlagAsleep);
+    InstanceQuery query;
+    StartQuery(&query, results, MostHit, ReferencedObjectFlags::ReceivesTriggerSignals, ReferencedObjectFlags::Asleep);
     u32 kinds;
-    if ((flags & SearchesCharacters) != 0)
+    if (flags.onlyCharacters)
     {
-        kinds = 0x1000;
+        kinds = CharacterKinds;
     }
-    else if ((flags & SearchesAll) != 0)
+    else if (flags.skipsCharacters)
     {
-        kinds = 0x1A000;
+        kinds = ObjectKinds;
     }
     else
     {
-        kinds = 0x1B000;
+        kinds = CharacterKinds | ObjectKinds;
     }
 
-    ContactMessage message;
-    ContactMessage::Construct(&message);
-    message.word = __builtin_bit_cast(u32, radius);
-    message.byte = Damage;
+    ContactMessage contact;
+    ContactMessage::Construct(&contact);
+    contact.hitKinds = hitKinds;
+    contact.damage = Damage;
     InstanceContext* sender = NodeOf(runner)->owner;
     Reference* handle = sender != nullptr ? AddReference(sender) : nullptr;
     GameEvent* trigger = GameEvent::Construct(static_cast<GameEvent*>(MemoryAllocate(sizeof(GameEvent))),
-                                              static_cast<u16>(event), &handle, EventKinds);
+                                              static_cast<u16>(message.id), &handle, ObjectNodeKinds);
     bool sent = false;
     for (s32 hull = 0; hull < hulls; hull++)
     {
@@ -750,7 +708,7 @@ void HitInstancesInBoxesCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
         for (s32 i = 0; i < query.count; i++)
         {
             auto* hit = static_cast<InstanceContext*>(results[i]);
-            if ((flags & SendsMessage) != 0)
+            if (flags.sendsMessage)
             {
                 Reference* eventHandle = trigger != nullptr ? AddEventReference(trigger) : nullptr;
                 QueueEvent(hit, &eventHandle);
@@ -758,20 +716,20 @@ void HitInstancesInBoxesCommand::Execute(TimeClock*, BehaviourRunner* runner, Be
             }
             else
             {
-                Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&hit->nodes, ObjectNodeKind))->agent;
-                CallVirtual<void>(agent, agent->vtable, AgentContactSlot, &message, instance, 1);
+                Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&hit->nodes, NodeObject))->agent;
+                CallVirtual<void>(agent, agent->vtable, Agent::ContactSlot, &contact, instance, 1);
             }
         }
 
-        query.bits &= ~InstanceRayHit::BitFull;
+        query.bits.unused0 = 0;
         query.count = 0;
-        query.distance = Far;
+        query.distance = Infinite;
         query.instance = nullptr;
     }
 
     if (!sent && trigger != nullptr)
     {
-        CallVirtual<void>(trigger, trigger->vtable, EventDestroySlot, DestroyAndFree);
+        CallVirtual<void>(trigger, trigger->vtable, GameEvent::DestroySlot, DestroyAndFree);
     }
 }
 
@@ -782,13 +740,13 @@ u32 SlideSlot(const CollisionSurface* surface)
 {
     switch (surface->surfaceId)
     {
-    case 8:
-        return 2;
-    case 12:
-    case 17:
-        return 1;
+    case SurfaceWood:
+        return SoundSlideWood;
+    case SurfaceWater:
+    case SurfaceIce:
+        return SoundSlideSlippery;
     default:
-        return 0;
+        return SoundSlide;
     }
 }
 }
@@ -797,26 +755,28 @@ u32 SlideSlot(const CollisionSurface* surface)
 // or kept playing on the board character's node at a volume and a pitch that grow with the speed
 void SetCharacterSurface(SkateController* skate, CollisionSurface* surface, const Vector4* velocity)
 {
-    constexpr u32 GrindingSlot = 3;
     constexpr f32 VolumePerSpeed = Rounded(0.01);
     constexpr f32 Volume = Rounded(0.1);
     constexpr f32 PitchPerSpeed = Rounded(0.06);
     constexpr f32 Pitch = Rounded(0.4);
     constexpr f32 GrindingVolume = 0.75f;
+    constexpr f32 LeastPitch = 0.5f;
+    constexpr f32 MostPitch = 3.0f;
+    constexpr f32 LeastVolume = Rounded(0.05);
+    constexpr f32 MostVolume = 1.5f;
     CollisionSurface* last = skate->surface;
     skate->surface = surface;
-    if (surface != last
-        || (skate->flags & (SkateController::FlagGrinding | SkateController::FlagWasGrinding)) == SkateController::FlagGrinding)
+    if (surface != last || (skate->flags.grinding && !skate->flags.wasGrinding))
     {
         ObjectNode* node = skate->node;
-        CallVirtual<void>(node, node->vtable, StopSoundSlot);
+        CallVirtual<void>(node, node->vtable, ObjectNode::StopSoundSlot);
     }
 
-    bool grinding = (skate->flags & SkateController::FlagGrinding) != 0;
+    bool grinding = skate->flags.grinding;
     u32 slot;
     if (grinding)
     {
-        slot = GrindingSlot;
+        slot = SoundGrind;
     }
     else if (skate->surface != nullptr)
     {
@@ -836,10 +796,10 @@ void SetCharacterSurface(SkateController* skate, CollisionSurface* surface, cons
         volume = volume + GrindingVolume;
     }
 
-    pitch = ClampFloat(pitch, 0.5f, 3.0f);
-    volume = ClampFloat(volume, Rounded(0.05), 1.5f);
+    pitch = ClampFloat(pitch, LeastPitch, MostPitch);
+    volume = ClampFloat(volume, LeastVolume, MostVolume);
     u16 id = skate->sounds[slot];
-    if (id == NoSound)
+    if (id == NoSoundId)
     {
         return;
     }
@@ -865,33 +825,36 @@ void PlayCharacterSurfaceSound(SkateController* skate, f32 fall)
     constexpr f32 PitchPerFall = Rounded(0.05);
     constexpr f32 VolumePerFall = Rounded(0.045);
     constexpr f32 Volume = Rounded(0.2);
-    u32 slot = NoSlot;
+    constexpr f32 LeastPitch = 0.5f;
+    constexpr f32 MostPitch = 2.0f;
+    constexpr f32 MostVolume = Rounded(1.3);
+    u32 slot = NoSkateSound;
     if (skate->surface != nullptr)
     {
         switch (skate->surface->surfaceId)
         {
-        case 7:
-        case 9:
-            slot = 8;
+        case SurfaceSlippyMetal:
+        case SurfaceMetal:
+            slot = SoundLandMetal;
             break;
-        case 8:
-            slot = 9;
+        case SurfaceWood:
+            slot = SoundLandWood;
             break;
         default:
-            slot = 7;
+            slot = SoundLand;
             break;
         }
     }
 
-    f32 pitch = ClampFloat(fall * PitchPerFall + 1.0f, 0.5f, 2.0f);
-    f32 volume = ClampFloat(fall * VolumePerFall + Volume, Volume, Rounded(1.3));
-    if (slot == NoSlot)
+    f32 pitch = ClampFloat(fall * PitchPerFall + 1.0f, LeastPitch, MostPitch);
+    f32 volume = ClampFloat(fall * VolumePerFall + Volume, Volume, MostVolume);
+    if (slot == NoSkateSound)
     {
         return;
     }
 
     u16 id = skate->sounds[slot];
-    if (id == NoSound)
+    if (id == NoSoundId)
     {
         return;
     }
@@ -909,40 +872,44 @@ void PlayCharacterSurfaceSound2(SkateController* skate, f32 lean)
     constexpr f32 Pitch = Rounded(0.8);
     constexpr f32 VolumePerLean = 0.25f;
     constexpr f32 Volume = Rounded(0.3);
-    u32 slot = NoSlot;
+    constexpr f32 LeastPitch = 0.5f;
+    constexpr f32 MostPitch = 2.0f;
+    constexpr f32 LeastVolume = Rounded(0.2);
+    constexpr f32 MostVolume = 2.0f;
+    u32 slot = NoSkateSound;
     if (skate->surface != nullptr)
     {
         switch (skate->surface->surfaceId)
         {
-        case 7:
-        case 9:
-            slot = 5;
+        case SurfaceSlippyMetal:
+        case SurfaceMetal:
+            slot = SoundLeanMetal;
             break;
-        case 8:
-            slot = 6;
+        case SurfaceWood:
+            slot = SoundLeanWood;
             break;
         default:
-            slot = 4;
+            slot = SoundLean;
             break;
         }
     }
 
     f32 across = __builtin_fabsf(lean);
-    f32 pitch = ClampFloat(across * PitchPerLean + Pitch, 0.5f, 2.0f);
-    f32 volume = ClampFloat(across * VolumePerLean + Volume, Rounded(0.2), 2.0f);
+    f32 pitch = ClampFloat(across * PitchPerLean + Pitch, LeastPitch, MostPitch);
+    f32 volume = ClampFloat(across * VolumePerLean + Volume, LeastVolume, MostVolume);
     PlayCharacterSound(skate, slot, pitch, volume);
 }
 
 void PlayCharacterSound(SkateController* skate, u32 slot, f32 pitch, f32 volume)
 {
     slot &= 0xFFFF;
-    if (slot == NoSlot)
+    if (slot == NoSkateSound)
     {
         return;
     }
 
     u16 id = skate->sounds[slot];
-    if (id == NoSound)
+    if (id == NoSoundId)
     {
         return;
     }
@@ -953,77 +920,71 @@ void PlayCharacterSound(SkateController* skate, u32 slot, f32 pitch, f32 volume)
     PlaySoundByIdAt(volume, pitch, id, 0, instance->chunk, &position, kind, -1);
 }
 
-// The player's character (the agent's own, else the player's) given settings: inputFlags' low half says which of the 9 are given,
-// its high half their values. 0-5 the turn, the moves and the buttons it may use (locked when not), 6 all of them (when not,
-// locked unless unknown2's bit 0), 7 its part's resting flag, 8 its being invincible (when not). unknown2's bit 0 makes its
-// controls' node driven by its motion, bit 1 its state's bit 15
+// The player's character (the agent's own, else the player's) given the settings given: the inputs it may use (locked when not),
+// all of them (when not, locked unless its controls' node is driven by its motion), its part's resting flag, its being
+// vulnerable; then its controls' node driven by its motion or not, its state's boxOnly
 void SetPlayerInputCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Settings = 9;
-    constexpr u32 LockSettings = 6;
-    constexpr u32 AllInputs = 6;
-    constexpr u32 Resting = 7;
-    constexpr u32 MotionDriven = 0x1;
-    constexpr u32 BoxOnly = 0x2;
     InstanceContext* instance = NodeOf(runner)->owner;
-    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (node == nullptr)
     {
         // Retail bug: neither the player nor its character node (nor its controls' node below) is checked for none
         instance = PlayerInstance();
-        node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+        node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     }
 
     auto* character = static_cast<CharacterAgent*>(node->agent);
-    u32* locked = &character->buttons.locked;
-    for (u32 setting = 0; setting < Settings; setting++)
+    u32* locked = &character->buttons.locked.value;
+    for (u32 setting = 0; setting < SettingCount; setting++)
     {
         u32 bit = (1u << setting) & 0xFFFF;
-        if ((inputFlags & bit) == 0)
+        if ((settings.given & bit) == 0)
         {
             continue;
         }
 
-        u32 on = (inputFlags >> 16 & bit) != 0;
-        if (setting < LockSettings)
+        u32 on = (settings.values & bit) != 0;
+        if (setting < SettingAllInputs)
         {
             SetBit(locked, bit, on ^ 1);
         }
-        else if (setting == AllInputs)
+        else if (setting == SettingAllInputs)
         {
             if (on != 0)
             {
                 *locked = 0;
             }
-            else if ((unknown2 & MotionDriven) == 0)
+            else if (!controls.motionDriven)
             {
                 *locked = CharacterButtons::LockAll;
             }
         }
-        else if (setting == Resting)
+        else if (setting == SettingResting)
         {
             auto* part = static_cast<CharacterPart*>(character->part);
-            part->flags = WithBit(part->flags, CreaturePart::FlagResting, 1, on);
+            part->flags.resting = on;
         }
         else
         {
             auto* part = static_cast<CharacterPart*>(character->part);
-            part->bits = WithBit(part->bits, CharacterPart::Invincible, 10, on ^ 1);
+            part->bits.invulnerable = on ^ 1;
         }
     }
 
-    auto* controls = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-    SetBit(&controls->bits, ControlsNode::BitMotionDriven, (unknown2 & MotionDriven) != 0);
-    SetBit(&character->state, CharacterAgent::StateBoxOnly, (unknown2 & BoxOnly) != 0);
+    auto* controlsNode = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
+    controlsNode->bits.motionDriven = controls.motionDriven;
+    character->state.boxOnly = controls.boxOnly;
 }
 
 // A playable character's instance in another chunk than the player's is put half a unit in front of the load wall of its chunk's
 // link to the player's chunk (when that chunk's RM2 is loaded)
 void WarpToChunkLinkTowardsPlayerCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
+    constexpr f32 InFrontOfWall = 0.5f;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
-    if (GetGameNode(&instance->nodes, CharacterNodeKind) == nullptr)
+    if (GetGameNode(&instance->nodes, NodeCharacter) == nullptr)
     {
         return;
     }
@@ -1039,7 +1000,7 @@ void WarpToChunkLinkTowardsPlayerCommand::Execute(TimeClock*, BehaviourRunner* r
     }
 
     ChunkLinkData* link = FindLinkTo(chunk, playerChunk);
-    if (link == nullptr || (link->flags & ChunkLinkData::LinkedRm2Loaded) == 0)
+    if (link == nullptr || link->flags.linkedRm2Loaded == 0)
     {
         return;
     }
@@ -1049,9 +1010,9 @@ void WarpToChunkLinkTowardsPlayerCommand::Execute(TimeClock*, BehaviourRunner* r
     Vector4 middle;
     WallMiddle(wall->corners, &middle);
     Vector4 position;
-    position.x = normal.x * 0.5f + middle.x;
-    position.y = normal.y * 0.5f + middle.y;
-    position.z = normal.z * 0.5f + middle.z;
+    position.x = normal.x * InFrontOfWall + middle.x;
+    position.y = normal.y * InFrontOfWall + middle.y;
+    position.z = normal.z * InFrontOfWall + middle.z;
     position.w = 1.0f;
     ObjectPlace* place = instance->place;
     place->SyncPosition();
@@ -1060,50 +1021,48 @@ void WarpToChunkLinkTowardsPlayerCommand::Execute(TimeClock*, BehaviourRunner* r
         QueueObject(instance);
     }
 
-    node->unknownB0 = position;
+    node->frameStart = position;
 }
 
-// The agent's instance made a checkpoint for the progress's pairing and characters: the start's checkpoint (the last one let go
-// unless it's this instance) or, with value1's second byte, the last one (the start's let go and forgotten unless it's this
-// instance), saving the game when it's set
+// The agent's instance made a checkpoint for the progress's pairing and characters: the respawn checkpoint (the saved one let go
+// unless it's this instance) or the saved one (the respawn one let go and forgotten unless it's this instance), saving the game
+// when it's set
 void SetPlayerRespawnPositionCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Start = 0;
-    constexpr u32 Last = 2;
     GameController* controller = G_GameController;
     GameProgress* progress = &controller->progress;
     ChunkManager* chunks = controller->chunkManager;
     InstanceContext* instance = NodeOf(runner)->owner;
-    u32 pairing = progress->Field(GameProgress::PairingShift);
-    bool saves = (value1 >> 8 & 0xFF) != 0;
+    u32 pairing = progress->play.pairing;
+    bool saves = respawn.saves != 0;
     Checkpoint* checkpoint;
     if (saves)
     {
-        progress->checkpoints[Start]->Release(1, chunks, instance);
-        checkpoint = progress->checkpoints[Last];
+        progress->checkpoints[GameProgress::CheckpointRespawn]->Release(1, chunks, instance);
+        checkpoint = progress->checkpoints[GameProgress::CheckpointSaved];
     }
     else
     {
-        progress->checkpoints[Last]->Release(0, chunks, instance);
-        checkpoint = progress->checkpoints[Start];
+        progress->checkpoints[GameProgress::CheckpointSaved]->Release(0, chunks, instance);
+        checkpoint = progress->checkpoints[GameProgress::CheckpointRespawn];
     }
 
-    // Pairings 1 and 6 have one character, 2 to 5 two; the others set nothing (the hoverboard's pairing 7 among them)
+    // The pairings of one character and of two (5 as well); the others set nothing (the hoverboard's with its controls among them)
     bool set = false;
     GameProgress* now = &G_GameController->progress;
     switch (pairing)
     {
-    case 1:
-    case 6:
-        set = checkpoint->Set(pairing, chunks, instance, now->Instance(now->Field(GameProgress::CharacterShift)), nullptr);
+    case PairingAlone:
+    case PairingHoverboard:
+        set = checkpoint->Set(pairing, chunks, instance, now->Instance(now->play.character), nullptr);
         break;
-    case 2:
-    case 3:
-    case 4:
-    case 5:
+    case PairingHumiliskate:
+    case PairingRollerbrawl:
+    case PairingTied:
+    case Pairing5:
     {
-        InstanceContext* character = now->Instance(now->Field(GameProgress::CharacterShift));
-        InstanceContext* second = now->Instance(now->Field(GameProgress::SecondShift));
+        InstanceContext* character = now->Instance(now->play.character);
+        InstanceContext* second = now->Instance(now->play.second);
         set = checkpoint->Set(pairing, chunks, instance, character, second);
         break;
     }
@@ -1117,10 +1076,9 @@ void SetPlayerRespawnPositionCommand::Execute(TimeClock*, BehaviourRunner* runne
     }
 }
 
-// The agent's character tied to the character of its focus instance (awake): the focus's leading with value1's bit 0
+// The agent's character tied to the character of its focus instance (awake), the focus's leading when the command says so
 void LinkToFocusCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 FocusLeads = 0x1;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* focus = node->AwakeFocus();
     if (focus == nullptr)
@@ -1128,21 +1086,21 @@ void LinkToFocusCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, B
         return;
     }
 
-    auto* own = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, CharacterNodeKind));
+    auto* own = static_cast<AgentNode*>(GetGameNode(&node->owner->nodes, NodeCharacter));
     if (own == nullptr)
     {
         return;
     }
 
     auto* character = static_cast<CharacterAgent*>(own->agent);
-    auto* other = static_cast<AgentNode*>(GetGameNode(&focus->nodes, CharacterNodeKind));
+    auto* other = static_cast<AgentNode*>(GetGameNode(&focus->nodes, NodeCharacter));
     if (other == nullptr)
     {
         return;
     }
 
     auto* focusCharacter = static_cast<CharacterAgent*>(other->agent);
-    if ((value1 & FocusLeads) != 0)
+    if (link.focusLeads)
     {
         focusCharacter->Link(character);
     }
@@ -1152,22 +1110,21 @@ void LinkToFocusCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, B
     }
 }
 
-// A counter (value's CounterMask, OwnCounter) up by 1 when the player's velocity goes across the way from it to the agent's
-// instance (to its side: to the left, or to the right with bit 17) faster than 5, down by 1 below 1, kept within 0 and 255 when it's
-// the agent's own
-void CharacterOp578Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// A counter (the game's, or the agent's own) up by 1 when the player's velocity goes across the way from it to the agent's instance
+// (to its side: to the left, or to the right) faster than 5, down by 1 below 1, kept within 0 and 255 when it's the agent's own
+void CountPlayerCirclingCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 ToTheRight = 0x20000;
     constexpr f32 Fast = 5.0f;
+    constexpr f32 Slow = 1.0f;
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* player = progress->Instance(progress->Field(GameProgress::CharacterShift));
+    InstanceContext* player = progress->Instance(progress->play.character);
     InstanceContext* instance = NodeOf(runner)->owner;
     if (player == nullptr)
     {
         return;
     }
 
-    auto* character = static_cast<CharacterAgent*>(AgentOfKind(player, CharacterNodeKind));
+    auto* character = static_cast<CharacterAgent*>(AgentOfKind(player, NodeCharacter));
     Vector4 velocity;
     CharacterVelocity(character, &velocity);
     Vector4 from = PositionOf(player);
@@ -1181,7 +1138,7 @@ void CharacterOp578Command::Execute(TimeClock*, BehaviourRunner* runner, Behavio
     way.z = way.z * inverse;
     const Vector4* up = &g_YAxis;
     Vector4 side;
-    if ((value & ToTheRight) != 0)
+    if (counter.toTheRight)
     {
         side.y = way.z * up->x - way.x * up->z;
         side.z = way.x * up->y - way.y * up->x;
@@ -1200,124 +1157,116 @@ void CharacterOp578Command::Execute(TimeClock*, BehaviourRunner* runner, Behavio
     {
         change = 1;
     }
-    else if (across < 1.0f)
+    else if (across < Slow)
     {
         change = -1;
     }
 
-    if ((value & OwnCounter) != 0)
+    if (counter.agentCounter)
     {
-        u8* counter = CounterOf(NodeOf(runner)->agent, value & CounterMask);
-        s32 total = *counter + change;
-        if (total > CounterMax)
+        u8* agentCounter = CounterOf(NodeOf(runner)->agent, counter.counter);
+        s32 total = *agentCounter + change;
+        if (total > Agent::CounterMax)
         {
-            *counter = CounterMax;
+            *agentCounter = Agent::CounterMax;
         }
         else if (total >= 0)
         {
-            *counter = static_cast<u8>(total);
+            *agentCounter = static_cast<u8>(total);
         }
         else
         {
-            *counter = 0;
+            *agentCounter = 0;
         }
     }
     else
     {
-        AddToGameCounter(G_ChunkManager, value & CounterMask, change);
+        AddToGameCounter(G_ChunkManager, counter.counter, change);
     }
 }
 
-void TriggerCharacterEvent12Command::TriggerOn(InstanceContext* instance, BehaviourLevel*)
+void MakeCharactersIdleCommand::MakeIdle(InstanceContext* instance, BehaviourLevel*)
 {
-    constexpr u32 Event12 = 12;
     if (instance == nullptr)
     {
         return;
     }
 
-    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (node != nullptr)
     {
-        RunAgentEvent(node->agent, Event12, reinterpret_cast<u32>(instance), 1, 0);
+        RunAgentEvent(node->agent, EventIdle, reinterpret_cast<u32>(instance), 1, 0);
     }
 }
 
-// Event 12 run on the characters: every one the progress has (bit 0; not character 4's), Crash's (bit 1), Cortex's (bit 2) and
-// Mecha-Bandicoot's (bit 3), else the agent's own
-void TriggerCharacterEvent12Command::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel* level)
+// The idle behaviour started on the characters: every one the progress has (not CharacterNone's), Crash's, Cortex's and the
+// Mecha-Bandicoot's, else the agent's own
+void MakeCharactersIdleCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel* level)
 {
-    constexpr s32 Every = 0x1;
-    constexpr s32 Crash = 0x2;
-    constexpr s32 Cortex = 0x4;
-    constexpr s32 Mecha = 0x8;
-    if ((characters & Every) != 0)
+    if (characters.every)
     {
-        TriggerOn(G_GameController->progress.Instance(0), level);
-        TriggerOn(G_GameController->progress.Instance(1), level);
-        TriggerOn(G_GameController->progress.Instance(2), level);
-        TriggerOn(G_GameController->progress.Instance(3), level);
-        TriggerOn(G_GameController->progress.Instance(5), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterCrash), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterCortex), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterTallCrash), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterNina), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterMecha), level);
         return;
     }
 
-    if ((characters & (Crash | Cortex | Mecha)) == 0)
+    if (!characters.crash && !characters.cortex && !characters.mecha)
     {
-        TriggerOn(NodeOf(runner)->owner, level);
+        MakeIdle(NodeOf(runner)->owner, level);
         return;
     }
 
-    if ((characters & Crash) != 0)
+    if (characters.crash)
     {
-        TriggerOn(G_GameController->progress.Instance(0), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterCrash), level);
     }
 
-    if ((characters & Cortex) != 0)
+    if (characters.cortex)
     {
-        TriggerOn(G_GameController->progress.Instance(1), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterCortex), level);
     }
 
-    if ((characters & Mecha) != 0)
+    if (characters.mecha)
     {
-        TriggerOn(G_GameController->progress.Instance(5), level);
+        MakeIdle(G_GameController->progress.Instance(CharacterMecha), level);
     }
 }
 
-// The player switched to a character (value2, 6 none), else to the character of an instance: a designator's (value1's bits 5-12,
-// 0xFF none) or, with bit 4, an instance the agent's attachments link (bits 0-3), when its agent is a playable character's
+// The player switched to a character, else to the character of an instance (a designator's, else one the agent's attachments
+// link) when its agent is a playable character's
 void SwitchCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 DesignatorShift = 5;
-    constexpr u32 ByLinked = 0x10;
-    constexpr u32 LinkedMask = 0xF;
-    if (value2 != static_cast<s32>(GameProgress::NoCharacter))
+    if (character != static_cast<s32>(GameProgress::NoCharacter))
     {
-        G_GameController->SwitchCharacter(value2, 1, 1);
+        G_GameController->SwitchCharacter(character, 1, 1);
         return;
     }
 
-    InstanceContext* target = nullptr;
-    u32 designator = value1 >> DesignatorShift & 0xFF;
-    if (designator != NoDesignator)
+    InstanceContext* switched = nullptr;
+    u32 designator = target.designator;
+    if (designator != DesignatesNone)
     {
         GameNode* node = runner->agentNode;
-        target = CallVirtual<InstanceContext*>(node, node->vtable, GetDesignatorSlot, designator);
+        switched = CallVirtual<InstanceContext*>(node, node->vtable, ObjectNode::GetDesignatorSlot, designator);
     }
-    else if ((value1 & ByLinked) != 0)
+    else if (target.byLinked)
     {
-        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&NodeOf(runner)->owner->nodes, AttachmentsKind));
+        auto* attachments = static_cast<AttachmentsNode*>(GetGameNode(&NodeOf(runner)->owner->nodes, NodeAttachments));
         if (attachments != nullptr)
         {
-            target = attachments->linked[value1 & LinkedMask];
+            switched = attachments->linked[target.linked];
         }
     }
 
-    if (target == nullptr)
+    if (switched == nullptr)
     {
         return;
     }
 
-    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&target->nodes, ObjectNodeKind));
+    auto* node = static_cast<ObjectNodeBase*>(GetGameNode(&switched->nodes, NodeObject));
     if (node == nullptr)
     {
         return;
@@ -1325,7 +1274,7 @@ void SwitchCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
 
     // Retail bug: the agent is checked for none only after its vtable is called
     Agent* agent = node->agent;
-    if (CallVirtual<u32>(agent, agent->vtable, AgentIsCharacterSlot) == 0)
+    if (CallVirtual<u32>(agent, agent->vtable, Agent::IsCharacterSlot) == 0)
     {
         return;
     }
@@ -1336,87 +1285,85 @@ void SwitchCharacterCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavi
         return;
     }
 
-    G_GameController->SwitchCharacter(agent->properties->GetInt(0), 1, 1);
+    G_GameController->SwitchCharacter(agent->properties->GetInt(CharacterKindProperty), 1, 1);
 }
 
-// The agent's settings: agentFlags' low half says which of the 10 are given, its high half their values. 0 its instance awake
-// (asleep when not, its node's slot 11 told first), 1-4 its instance's flags (visible, the sphere contact, triggers' signals, the
-// shadow), 5 its creature part's snapping to the ground, 6-9 its part's bits (it may damage the character, it may always (when
-// not), bullets bounce back, it's targettable)
-void SetAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The agent's settings given: its instance awake (asleep when not, its node's parts let go first), its instance's flags, its
+// creature part's snapping to the ground, its part's bits
+void SetAgentCommand::Execute(TimeClock* clock, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 Settings = 10;
     ObjectNode* node = NodeOf(runner);
     InstanceContext* instance = node->owner;
-    for (u32 setting = 0; setting < Settings; setting++)
+    for (u32 setting = 0; setting < SettingCount; setting++)
     {
         u32 bit = (1u << setting) & 0xFFFF;
-        if ((agentFlags & bit) == 0)
+        if ((settings.given & bit) == 0)
         {
             continue;
         }
 
-        u32 on = (agentFlags >> 16 & bit) != 0;
+        u32 on = (settings.values & bit) != 0;
         switch (setting)
         {
-        case 0:
+        case SettingAwake:
             if (on != 0)
             {
-                CallVirtual<u32>(instance, instance->vtable, WakeSlot);
+                CallVirtual<u32>(instance, instance->vtable, InstanceContext::WakeSlot);
             }
             else
             {
-                CallVirtual<void>(node, node->vtable, NodeSlot11);
-                CallVirtual<u32>(instance, instance->vtable, SleepSlot);
+                // Retail leaves the clock it was given in the argument register the slot reads
+                CallVirtual<void>(node, node->vtable, ObjectNode::ReleasePartsUnlessUnloadingSlot, clock);
+                CallVirtual<u32>(instance, instance->vtable, InstanceContext::SleepSlot);
             }
 
             break;
-        case 1:
-            SetBit(&instance->flags, ReferencedObject::FlagVisible, on);
+        case SettingVisible:
+            instance->flags.visible = on;
             break;
-        case 2:
-            SetBit(&instance->flags, ReferencedObject::FlagSphereContact, on);
+        case SettingCollision:
+            instance->flags.collisionActive = on;
             break;
-        case 3:
-            SetBit(&instance->flags, ReferencedObject::FlagTriggerSignals, on);
+        case SettingTriggerSignals:
+            instance->flags.receivesTriggerSignals = on;
             break;
-        case 4:
-            SetBit(&instance->flags, ReferencedObject::FlagShadow, on);
+        case SettingShadow:
+            instance->flags.shadowActive = on;
             break;
-        case 5:
+        case SettingSnapsToGround:
         {
-            auto* creature = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CreatureNodeKind));
+            auto* creature = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCreature));
             if (creature == nullptr)
             {
                 break;
             }
 
             auto* part = static_cast<CreaturePart*>(creature->agent->part);
-            SetBit(&part->flags, CreaturePart::FlagSnapsToGround, on);
+            part->flags.snapsToGround = on;
             break;
         }
-        case 6:
+        case SettingCanDamageCharacter:
         {
             auto* part = static_cast<BasicAgentPart*>(AgentNodeOf(instance)->agent->part);
-            part->bits = WithBit(part->bits, BasicAgentPart::CanDamageCharacter, 8, on);
+            part->bits.canDamageCharacter = on;
             break;
         }
-        case 7:
+        case SettingVulnerable:
         {
             auto* part = static_cast<BasicAgentPart*>(AgentNodeOf(instance)->agent->part);
-            part->bits = WithBit(part->bits, BasicAgentPart::CanAlwaysDamageCharacter, 10, on ^ 1);
+            part->bits.invulnerable = on ^ 1;
             break;
         }
-        case 8:
+        case SettingBulletsBounceBack:
         {
             auto* part = static_cast<BasicAgentPart*>(AgentNodeOf(instance)->agent->part);
-            part->bits = WithBit(part->bits, BasicAgentPart::BulletsBounceBack, 12, on);
+            part->bits.bulletsBounceBack = on;
             break;
         }
-        case 9:
+        case SettingTargettable:
         {
             auto* part = static_cast<BasicAgentPart*>(AgentNodeOf(instance)->agent->part);
-            part->bits = WithBit(part->bits, BasicAgentPart::Targettable, 9, on);
+            part->bits.targettable = on;
             break;
         }
         default:
@@ -1425,30 +1372,27 @@ void SetAgentCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLeve
     }
 }
 
-// The area play is in set (value1, -1: the tagged value's), the last area open raised to it (areas past 24 none)
-void SetGlobalProgressionCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+// The area play is in set (or the tagged value's), the last area open raised to it (areas past 24 none)
+void SetPlayAreaCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr s32 FromValue = -1;
     constexpr s32 Areas = 25;
     GameProgress* progress = &G_GameController->progress;
-    s32 area = static_cast<s32>(value1);
-    if (area == FromValue)
+    s32 played = area;
+    if (played == FromValue)
     {
-        area = value.IntWith(PropertiesOf(NodeOf(runner)));
+        played = areaValue.IntWith(PropertiesOf(NodeOf(runner)));
     }
 
     // Retail bug: only areas past 24 are refused, the others below -1 are written as their low 5 bits
-    if (area >= Areas)
+    if (played >= Areas)
     {
         return;
     }
 
-    progress->bits = (progress->bits & ~(GameProgress::AreaMask << GameProgress::AreaShift))
-                     | (static_cast<u32>(area) & GameProgress::AreaMask) << GameProgress::AreaShift;
-    if (static_cast<s32>(progress->bits >> GameProgress::OpenShift & GameProgress::AreaMask) < area)
+    progress->play.area = static_cast<u32>(played);
+    if (static_cast<s32>(progress->play.open) < played)
     {
-        progress->bits = (progress->bits & ~(GameProgress::AreaMask << GameProgress::OpenShift))
-                         | (static_cast<u32>(area) & GameProgress::AreaMask) << GameProgress::OpenShift;
+        progress->play.open = static_cast<u32>(played);
     }
 }
 
@@ -1457,9 +1401,9 @@ void SetGlobalProgressionCommand::Execute(TimeClock*, BehaviourRunner* runner, B
 void TriggerBalancedCrateFallingCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     constexpr u16 MostFound = 0x20;
-    constexpr u32 CrateKinds = 0x2000;
-    constexpr u32 Wanted = 0x10;
-    constexpr u32 Unwanted = 0x41;
+    // The crates found have their collision active, and are neither asleep nor attached to an agent
+    constexpr u32 Wanted = ReferencedObjectFlags::CollisionActive;
+    constexpr u32 Unwanted = ReferencedObjectFlags::Asleep | ReferencedObjectFlags::Attached;
     constexpr f32 Start = Rounded(0.1);
     constexpr f32 Reach = Rounded(3.8);
     constexpr f32 Margin = 0.5f;
@@ -1467,9 +1411,9 @@ void TriggerBalancedCrateFallingCommand::Execute(TimeClock*, BehaviourRunner* ru
     InstanceContext* instance = node->owner;
     ChunkData* chunk = instance->chunk;
     void* results[MostFound];
-    InstanceRayHit query;
+    InstanceQuery query;
     StartQuery(&query, results, MostFound, Wanted, Unwanted);
-    f32 lowest = Far;
+    f32 lowest = Infinite;
     Vector4 point = PositionOf(instance);
     point.y = point.y + Start;
     Vector4 segment[2];
@@ -1477,7 +1421,7 @@ void TriggerBalancedCrateFallingCommand::Execute(TimeClock*, BehaviourRunner* ru
     point.y = point.y + Reach;
     segment[1] = point;
     SkipInQuery(&query, instance);
-    f32 share = ChunkInstancesRayCast(chunk, segment, CrateKinds, &query, 0);
+    f32 share = ChunkInstancesRayCast(chunk, segment, 1u << NodeCrate, &query, 0);
     if (0.0f <= share && share <= 1.0f)
     {
         u32 count = query.count;
@@ -1494,11 +1438,11 @@ void TriggerBalancedCrateFallingCommand::Execute(TimeClock*, BehaviourRunner* ru
         for (u32 i = 0; i < count; i++)
         {
             auto* crate = static_cast<InstanceContext*>(results[i]);
-            auto* agent = static_cast<CrateAgent*>(AgentOfKind(crate, CrateNodeKind));
+            auto* agent = static_cast<CrateAgent*>(AgentOfKind(crate, NodeCrate));
             if (PositionOf(crate).y - point.y < lowest)
             {
                 agent->StartFalling();
-                crate->flags |= ReferencedObject::FlagInDrawnCell;
+                crate->flags.inDrawnCell = 1;
             }
         }
     }
@@ -1508,19 +1452,19 @@ void TriggerBalancedCrateFallingCommand::Execute(TimeClock*, BehaviourRunner* ru
 
 namespace
 {
-// The characters of two of the progress's characters (value1's first and second bytes), when both have one
-bool CharactersOf(u32 value, CharacterAgent** first, CharacterAgent** second)
+// The characters of two of the progress's characters, when both have one
+bool CharactersOf(CharacterPairArgument pair, CharacterAgent** first, CharacterAgent** second)
 {
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* firstInstance = progress->Instance(value & 0xFF);
-    InstanceContext* secondInstance = progress->Instance(value >> 8 & 0xFF);
+    InstanceContext* firstInstance = progress->Instance(pair.first);
+    InstanceContext* secondInstance = progress->Instance(pair.second);
     if (firstInstance == nullptr || secondInstance == nullptr)
     {
         return false;
     }
 
-    auto* firstNode = static_cast<AgentNode*>(GetGameNode(&firstInstance->nodes, CharacterNodeKind));
-    auto* secondNode = static_cast<AgentNode*>(GetGameNode(&secondInstance->nodes, CharacterNodeKind));
+    auto* firstNode = static_cast<AgentNode*>(GetGameNode(&firstInstance->nodes, NodeCharacter));
+    auto* secondNode = static_cast<AgentNode*>(GetGameNode(&secondInstance->nodes, NodeCharacter));
     if (firstNode == nullptr || secondNode == nullptr)
     {
         return false;
@@ -1531,45 +1475,42 @@ bool CharactersOf(u32 value, CharacterAgent** first, CharacterAgent** second)
     return true;
 }
 
-// The progress's pairing and its characters (by their first integer properties) set
+// The progress's pairing and its characters set
 void SetPairing(u32 pairing, CharacterAgent* first, CharacterAgent* second)
 {
     GameProgress* progress = &G_GameController->progress;
-    SetProgressField(progress, GameProgress::PairingShift, pairing);
-    SetProgressField(progress, GameProgress::CharacterShift, static_cast<u32>(first->properties->GetInt(0)));
-    SetProgressField(progress, GameProgress::SecondShift, static_cast<u32>(second->properties->GetInt(0)));
+    progress->play.pairing = pairing;
+    progress->play.character = static_cast<u32>(first->properties->GetInt(CharacterKindProperty));
+    progress->play.second = static_cast<u32>(second->properties->GetInt(CharacterKindProperty));
 }
 }
 
-// Two of the progress's characters (value1's bytes) on the Rollerbrawl, the first driving
+// Two of the progress's characters on the Rollerbrawl, the first driving
 void SetVehicleRollerbrawlCommand::Execute(TimeClock*, BehaviourRunner*, BehaviourLevel*)
 {
-    constexpr u32 RollerbrawlPairing = 3;
     CharacterAgent* first;
     CharacterAgent* second;
-    if (!CharactersOf(value1, &first, &second))
+    if (!CharactersOf(characters, &first, &second))
     {
         return;
     }
 
     first->SetVehicle(Vehicle::KindRollerbrawl, second, 0);
-    SetPairing(RollerbrawlPairing, first, second);
+    SetPairing(PairingRollerbrawl, first, second);
 }
 
-// Two of the progress's characters (value1's bytes) on the Humiliskate, the first skating on the second, its top speed value2 and
-// its crouched speed value3
+// Two of the progress's characters on the Humiliskate, the first skating on the second, with its top and crouched speeds
 void SetVehicleHumiliskateCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 HumiliskatePairing = 2;
     GameProgress* progress = &G_GameController->progress;
-    InstanceContext* firstInstance = progress->Instance(value1 & 0xFF);
-    InstanceContext* secondInstance = progress->Instance(value1 >> 8 & 0xFF);
+    InstanceContext* firstInstance = progress->Instance(characters.first);
+    InstanceContext* secondInstance = progress->Instance(characters.second);
     PropertyHolder* properties = PropertiesOf(NodeOf(runner));
-    f32 topSpeed = value2.FloatWith(properties);
-    f32 crouchedSpeed = value3.FloatWith(properties);
+    f32 top = topSpeed.FloatWith(properties);
+    f32 crouched = crouchedSpeed.FloatWith(properties);
     // Retail bug: unlike the Rollerbrawl's, the characters' instances aren't checked for none
-    auto* firstNode = static_cast<AgentNode*>(GetGameNode(&firstInstance->nodes, CharacterNodeKind));
-    auto* secondNode = static_cast<AgentNode*>(GetGameNode(&secondInstance->nodes, CharacterNodeKind));
+    auto* firstNode = static_cast<AgentNode*>(GetGameNode(&firstInstance->nodes, NodeCharacter));
+    auto* secondNode = static_cast<AgentNode*>(GetGameNode(&secondInstance->nodes, NodeCharacter));
     if (firstNode == nullptr || secondNode == nullptr)
     {
         return;
@@ -1578,25 +1519,24 @@ void SetVehicleHumiliskateCommand::Execute(TimeClock*, BehaviourRunner* runner, 
     auto* first = static_cast<CharacterAgent*>(firstNode->agent);
     auto* second = static_cast<CharacterAgent*>(secondNode->agent);
     first->SetVehicle(Vehicle::KindHumiliskate, second, 0);
-    SetPairing(HumiliskatePairing, first, second);
+    SetPairing(PairingHumiliskate, first, second);
     auto* board = static_cast<HumiliskateVehicle*>(first->vehicle);
-    board->crouchedSpeed = crouchedSpeed;
-    board->topSpeed = topSpeed;
+    board->crouchedSpeed = crouched;
+    board->topSpeed = top;
 }
 
-// The character of a designator's instance (value1's low byte) on the hoverboard that is the agent's instance (value1's bit 8 the
-// hoverboard's controls, and pairing 7 rather than 6), alone
+// The character of a receiver's instance on the hoverboard that is the agent's instance (with the hoverboard's controls or not:
+// pairing 7 or 6), alone
 void SetVehicleHoverboardCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
-    constexpr u32 OwnControls = 0x100;
     InstanceContext* board = NodeOf(runner)->owner;
-    InstanceContext* rider = runner->InstanceOf(value1 & 0xFF);
-    if (rider == nullptr || board == nullptr)
+    InstanceContext* riding = runner->InstanceOf(rider.receiver);
+    if (riding == nullptr || board == nullptr)
     {
         return;
     }
 
-    auto* riderNode = static_cast<AgentNode*>(GetGameNode(&rider->nodes, CharacterNodeKind));
+    auto* riderNode = static_cast<AgentNode*>(GetGameNode(&riding->nodes, NodeCharacter));
     AgentNode* boardNode = AgentNodeOf(board);
     if (riderNode == nullptr || boardNode == nullptr)
     {
@@ -1605,33 +1545,30 @@ void SetVehicleHoverboardCommand::Execute(TimeClock*, BehaviourRunner* runner, B
 
     auto* character = static_cast<CharacterAgent*>(riderNode->agent);
     GameProgress* progress = &G_GameController->progress;
-    character->SetVehicle(Vehicle::KindHoverboard, boardNode->agent, value1 >> 8 & 1);
-    SetProgressField(progress, GameProgress::PairingShift, (value1 & OwnControls) != 0 ? 7 : 6);
-    u32 played = static_cast<u32>(character->properties->GetInt(0));
-    progress->bits = (progress->bits & ~(GameProgress::FieldMask << GameProgress::CharacterShift)
-                      & ~(GameProgress::FieldMask << GameProgress::SecondShift))
-                     | (played & GameProgress::FieldMask) << GameProgress::CharacterShift
-                     | GameProgress::NoCharacter << GameProgress::SecondShift;
+    character->SetVehicle(Vehicle::KindHoverboard, boardNode->agent, rider.boardControls);
+    progress->play.pairing = rider.boardControls ? PairingHoverboardControls : PairingHoverboard;
+    u32 played = static_cast<u32>(character->properties->GetInt(CharacterKindProperty));
+    PlayState play = progress->play;
+    play.character = played;
+    play.second = GameProgress::NoCharacter;
+    progress->play = play;
 }
 
 void CreateDamageCommand::ParseToken(const ScriptToken* token)
 {
-    constexpr u32 ShapeMask = 0xF;
-    constexpr u32 Cylinder = 3;
-    constexpr u32 HullMask = 0xF0;
-    switch (token->kind)
+    switch (token->tag)
     {
-    case 0xCD:
+    case TagSize:
         ParseTaggedValueRecord(token, &reach);
         break;
-    case 0xA9:
-        shape = (shape & ~ShapeMask) | Cylinder;
+    case TagCylinderHeight:
+        shape.kind = ShapeCylinder;
         ParseTaggedValueRecord(token, &height);
         break;
-    case 0x236:
-        if (token->value == 0x216)
+    case TagDamageHull:
+        if (token->value == KeywordFirstHull)
         {
-            shape &= ~HullMask;
+            shape.hull = 0;
         }
 
         break;
@@ -1643,111 +1580,110 @@ void CreateDamageCommand::ParseToken(const ScriptToken* token)
 
 void CreateDamageCommand::ParseBaseToken(const ScriptToken* token)
 {
-    constexpr u32 JointMask = 0xFF;
-    switch (token->kind)
+    switch (token->tag)
     {
-    case 0x82:
-        flags |= Offset;
-        x = token->Float();
+    case TagXShift:
+        flags.offsetGiven = 1;
+        offsetX = token->Float();
         break;
-    case 0x83:
-        flags |= Offset;
-        y = token->Float();
+    case TagYShift:
+        flags.offsetGiven = 1;
+        offsetY = token->Float();
         break;
-    case 0x84:
-        flags |= Offset;
-        z = token->Float();
+    case TagZShift:
+        flags.offsetGiven = 1;
+        offsetZ = token->Float();
         break;
-    case 0x12:
-        flags = (flags & ~(JointMask << JointShift)) | (token->value & JointMask) << JointShift;
+    case TagExitPoint:
+        flags.joint = token->value;
         break;
-    case 0x204:
+    case TagHitPoints:
         ParseTaggedValueRecord(token, &damage);
         break;
-    case 0x94:
-        flags |= GivesW;
+    case TagRepelForce:
+        flags.givesMessageW = 1;
         ParseTaggedValueRecord(token, &messageW);
         break;
-    case 0x217:
-        flags = (flags & ~Bit10Kind) | static_cast<u32>(token->value == 0) << 1;
+    case TagInstantDeath:
+        flags.instantDeath = token->value == 0;
         break;
-    case 0xFFFF:
+    case TagNone:
         switch (token->value)
         {
-        case 0xDF:
-            flags |= NearestOnly;
+        case KeywordNearestOnly:
+            flags.nearestOnly = 1;
             break;
-        case 0x206:
-            flags |= SearchKinds5E;
+        case KeywordNoCharacters:
+            flags.skipsCharacters = 1;
             break;
-        case 0x245:
-            flags |= SearchKinds1000;
+        case KeywordOnlyCharacters:
+            flags.onlyCharacters = 1;
             break;
-        case 0x21B:
-            hitKinds |= 0x2;
+        case KeywordHitExplosion:
+            hitKinds |= HitExplosion;
             break;
-        case 0x21C:
-            hitKinds |= 0x4;
+        case KeywordHitFallingThrough:
+            hitKinds |= HitFallingThrough;
             break;
-        case 0x21D:
-            hitKinds |= 0x8;
+        case KeywordHitBurning:
+            hitKinds |= HitBurning;
             break;
-        case 0x21E:
-            hitKinds |= 0x10;
+        case KeywordHitIceteroid:
+            hitKinds |= HitIceteroid;
             break;
-        case 0x21F:
-            hitKinds |= 0x20;
+        case KeywordHitProjectile:
+            hitKinds |= HitProjectile;
             break;
-        case 0x220:
-            hitKinds |= 0x40;
+        case KeywordHitKind6:
+            hitKinds |= HitKind6;
             break;
-        case 0x221:
-            hitKinds |= 0x80;
+        case KeywordHitElectric:
+            hitKinds |= HitElectric;
             break;
-        case 0x222:
-            hitKinds |= 0x100;
+        case KeywordHitKind8:
+            hitKinds |= HitKind8;
             break;
-        case 0x223:
-            hitKinds |= 0x400;
+        case KeywordHitGeneric:
+            hitKinds |= HitGeneric;
             break;
-        case 0x224:
-            hitKinds |= 0x800;
+        case KeywordHitCrush:
+            hitKinds |= HitCrush;
             break;
-        case 0x225:
-            hitKinds |= 0x1000;
+        case KeywordHitKind12:
+            hitKinds |= HitKind12;
             break;
-        case 0x226:
-            hitKinds |= 0x2000;
+        case KeywordHitKind13:
+            hitKinds |= HitKind13;
             break;
-        case 0x227:
-            hitKinds |= 0x4000;
+        case KeywordHitKind14:
+            hitKinds |= HitKind14;
             break;
-        case 0x228:
-            hitKinds |= 0x8000;
+        case KeywordHitBite:
+            hitKinds |= HitBite;
             break;
-        case 0x229:
-            hitKinds |= 0x10000;
+        case KeywordHitSpin:
+            hitKinds |= HitSpin;
             break;
-        case 0x22A:
-            hitKinds |= 0x20000;
+        case KeywordHitKick:
+            hitKinds |= HitKick;
             break;
-        case 0x22B:
-            hitKinds |= 0x40000;
+        case KeywordHitKind18:
+            hitKinds |= HitKind18;
             break;
-        case 0x22C:
-            hitKinds |= 0x80000;
+        case KeywordHitHeavy:
+            hitKinds |= HitHeavy;
             break;
-        case 0x22D:
-            hitKinds |= 0x200000;
+        case KeywordHitKind21:
+            hitKinds |= HitKind21;
             break;
-        case 0x22E:
-            hitKinds |= 0x400000;
+        case KeywordHitKind22:
+            hitKinds |= HitKind22;
             break;
-        case 0x22F:
-            hitKinds |= 0x800000;
+        case KeywordHitSinking:
+            hitKinds |= HitSinking;
             break;
-        case 0x236:
-            hitKinds |= 0x1000000;
+        case KeywordHitKneeDrop:
+            hitKinds |= HitKneeDrop;
             break;
         default:
             break;
@@ -1770,12 +1706,12 @@ u32 CreateDamageCommand::BaseSize()
     return offsetof(CreateDamageCommand, shape);
 }
 
-void AddToGunValueCommand::Destroy(u32 destroyFlags)
+void AddToGunSecondCountCommand::Destroy(u32 destroyFlags)
 {
     ScriptCommand::Destroy(destroyFlags);
 }
 
-void AddToGunValueCommand::ParseTokens(const ScriptTokenList* tokens)
+void AddToGunSecondCountCommand::ParseTokens(const ScriptTokenList* tokens)
 {
     ScriptTokenReader reader;
     ScriptTokenReader::Construct(&reader, tokens);
@@ -1783,7 +1719,7 @@ void AddToGunValueCommand::ParseTokens(const ScriptTokenList* tokens)
     while (!reader.AtEnd())
     {
         const ScriptToken* token = reader.Current();
-        if (token->kind == AmountToken)
+        if (token->tag == AmountToken)
         {
             amount = static_cast<s32>(token->value);
         }
@@ -1792,28 +1728,28 @@ void AddToGunValueCommand::ParseTokens(const ScriptTokenList* tokens)
     }
 }
 
-void AddToGunValueCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
+void AddToGunSecondCountCommand::Execute(TimeClock*, BehaviourRunner* runner, BehaviourLevel*)
 {
     CallVirtual<void>(this, vtable, ExecuteOnSlot, runner->agentNode);
 }
 
-void AddToGunValueCommand::ExecuteOn(GameNode*)
+void AddToGunSecondCountCommand::ExecuteOn(GameNode*)
 {
     Gun* gun = reinterpret_cast<CharacterAgent*>(g_PlayerCharacter)->gun;
     if (gun != nullptr)
     {
-        gun->AddValue9(amount);
+        gun->AddSecondCount(amount);
     }
 }
 
-u32 AddToGunValueCommand::Size()
+u32 AddToGunSecondCountCommand::Size()
 {
-    return sizeof(AddToGunValueCommand);
+    return sizeof(AddToGunSecondCountCommand);
 }
 
 f32 RidesRollerbrawl(InstanceContext* instance)
 {
-    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, CharacterNodeKind));
+    auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
     if (node == nullptr)
     {
         return 0.0f;
@@ -1829,7 +1765,7 @@ f32 RidesRollerbrawl(InstanceContext* instance)
         }
         else if (vehicle->Kind() == Vehicle::KindPassenger)
         {
-            auto* driverNode = static_cast<AgentNode*>(GetGameNode(&vehicle->other->instance->nodes, CharacterNodeKind));
+            auto* driverNode = static_cast<AgentNode*>(GetGameNode(&vehicle->other->instance->nodes, NodeCharacter));
             if (driverNode != nullptr)
             {
                 Vehicle* driven = static_cast<CharacterAgent*>(driverNode->agent)->vehicle;
@@ -1846,26 +1782,25 @@ f32 RidesRollerbrawl(InstanceContext* instance)
 
 void InitCharacterCommandsModule(u32 initialize, u32 priority)
 {
-    constexpr f32 Small = Rounded(0.01);
-    if (priority != AllPriorities || initialize == 0)
+    if (priority != DefaultInitPriority || initialize == 0)
     {
         return;
     }
 
     g_CommandsUp.w = 1.0f;
     g_CommandsUp.x = 0.0f;
-    g_CommandsSmall = Small;
+    g_CommandsShadowY = UiShadowOffset;
     g_CommandsZero = 0;
     g_CommandsUp.y = 1.0f;
     g_CommandsUp.z = 0.0f;
-    g_CommandsSmall2 = Small;
-    ColourSet(&g_CommandsShade, 0.0f, 0.0f, 0.0f, 0.5f);
-    AngleFrom(&g_CommandsAngle45, 0x1.921fb6p-1f, AngleRadians);
+    g_CommandsShadowX = UiShadowOffset;
+    ColourSet(&g_CommandsShadowColour, 0.0f, 0.0f, 0.0f, UiShadowAlpha);
+    AngleFrom(&g_CommandsAngle45, QuarterPi, AngleRadians);
     // (48 objects of a header with nothing to construct follow in retail: an empty loop)
     HullConstruct(&g_PyramidHull);
 }
 
 void ConstructCharacterCommandsModule()
 {
-    InitCharacterCommandsModule(1, AllPriorities);
+    InitCharacterCommandsModule(1, DefaultInitPriority);
 }

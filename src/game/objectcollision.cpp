@@ -2,6 +2,7 @@
 
 #include "game/animation.h"
 #include "game/collision.h"
+#include "game/dynamicscenery.h"
 #include "game/hull.h"
 #include "game/instances.h"
 #include "game/layout.h"
@@ -11,29 +12,15 @@
 
 namespace
 {
-// The node kind with hulls of its own, and what it keeps them in: how many, the hulls
-constexpr u32 HullsNodeKind = 4;
-
-struct HullsHolder
+// The dynamic scenery node of the collision's instance, whose model has hulls of its own
+DynamicSceneryNode* DynamicSceneryOf(ObjectCollision* collision)
 {
-    u32 unknown00;
-    s32 count;
-    CollisionHull* hulls;
-};
-
-struct HullsNode : GameNode
-{
-    HullsHolder* holder;
-};
-
-HullsNode* HullsNodeOf(ObjectCollision* collision)
-{
-    return static_cast<HullsNode*>(GetGameNode(&static_cast<InstanceContext*>(collision->owner)->nodes, HullsNodeKind));
+    auto* instance = static_cast<InstanceContext*>(collision->owner);
+    return static_cast<DynamicSceneryNode*>(GetGameNode(&instance->nodes, NodeDynamicScenery));
 }
 
 void FreeHull(CollisionHull* hull)
 {
-    constexpr u32 DestroyAndFree = 3;
     HullDestroy(hull, DestroyAndFree);
 }
 
@@ -63,9 +50,11 @@ void SetBoxes(ObjectCollision* collision, const Vector4* min, const Vector4* max
 
 ObjectCollision* ConstructObjectCollision(ObjectCollision* collision, ReferencedObject* owner)
 {
-    // Bit 0 cleared, the rest of the bits are what the memory had
-    collision->bits = ((collision->bits & ~u64{1}) | ObjectCollision::BitKeepsJointMatrices) & ~u64{ObjectCollision::BitThin};
-    collision->cell = -1;
+    // The rest of the bits are what the memory had
+    collision->bits.stopsBodies = 0;
+    collision->bits.keepsJointMatrices = 1;
+    collision->bits.thin = 0;
+    collision->cell = ObjectCollision::NoCell;
     collision->owner = owner;
     collision->hull = nullptr;
     collision->givenHull = nullptr;
@@ -118,12 +107,12 @@ s32 GetHullCount(ObjectCollision* collision)
         return collision->ogi->hullCount;
     }
 
-    if (HullsNodeOf(collision) == nullptr)
+    if (DynamicSceneryOf(collision) == nullptr)
     {
         return 0;
     }
 
-    return HullsNodeOf(collision)->holder->count;
+    return static_cast<s32>(DynamicSceneryOf(collision)->model->hullCount);
 }
 
 CollisionHull* GetCollisionModel(ObjectCollision* collision, u32 index)
@@ -143,12 +132,12 @@ CollisionHull* GetCollisionModel(ObjectCollision* collision, u32 index)
         return &collision->ogi->hulls[index];
     }
 
-    if (HullsNodeOf(collision) == nullptr)
+    if (DynamicSceneryOf(collision) == nullptr)
     {
         return nullptr;
     }
 
-    return &HullsNodeOf(collision)->holder->hulls[index];
+    return &DynamicSceneryOf(collision)->model->hulls[index];
 }
 
 u16 HullOwnSurface(ObjectCollision* collision, u32 index)
@@ -163,7 +152,7 @@ u16 HullOwnSurface(ObjectCollision* collision, u32 index)
     {
         if (collision->ogi == nullptr)
         {
-            return 0xFFFF;
+            return NoSurfaceId;
         }
 
         hull = &collision->ogi->hulls[index];
@@ -190,7 +179,7 @@ void AllocateHullSurfaces(ObjectCollision* collision, s32 count)
         MemoryDeallocate_(collision->surfaces);
     }
 
-    collision->surfaces = static_cast<u16*>(MemoryAllocate2(count << 1));
+    collision->surfaces = static_cast<u16*>(MemoryAllocate2(count * sizeof(u16)));
 }
 
 void CopyHullSurfaces(ObjectCollision* collision)
@@ -232,9 +221,9 @@ void SetHullOwnSurface(ObjectCollision* collision, u8 index, u16 surface)
         {
             hull = &collision->ogi->hulls[index];
         }
-        else if (HullsNodeOf(collision) != nullptr)
+        else if (DynamicSceneryOf(collision) != nullptr)
         {
-            hull = &HullsNodeOf(collision)->holder->hulls[index];
+            hull = &DynamicSceneryOf(collision)->model->hulls[index];
         }
     }
 
@@ -287,13 +276,13 @@ void GetHullAndMatrix(ObjectCollision* collision, const Matrix4x4* matrix, s32 i
         return;
     }
 
-    if (HullsNodeOf(collision) == nullptr)
+    if (DynamicSceneryOf(collision) == nullptr)
     {
         *hull = nullptr;
         return;
     }
 
-    *hull = &HullsNodeOf(collision)->holder->hulls[index];
+    *hull = &DynamicSceneryOf(collision)->model->hulls[index];
     *out = *matrix;
 }
 
@@ -341,7 +330,7 @@ void HullJointMatrix(ObjectCollision* collision, u32 joint, s32 hull, Matrix4x4*
     OgiAnimator* animator = model->animator;
     if (animator != nullptr && CopyJointTransform(animator, joint, out) != 0)
     {
-        if ((collision->bits & ObjectCollision::BitKeepsJointMatrices) == 0)
+        if (!collision->bits.keepsJointMatrices)
         {
             return;
         }
@@ -375,7 +364,7 @@ void MakeJointMatrices(ObjectCollision* collision)
     collision->jointMatricesOgi = ogi;
     s32 count = ogi->hullCount;
     collision->jointMatrixCount = count;
-    collision->jointMatrices = static_cast<Matrix4x4*>(MemoryAllocate2(count << 6));
+    collision->jointMatrices = static_cast<Matrix4x4*>(MemoryAllocate2(count * sizeof(Matrix4x4)));
     for (s32 index = 0; index < collision->jointMatrixCount; index++)
     {
         InitIdentityMatrix(&collision->jointMatrices[index]);
@@ -430,11 +419,11 @@ void SetCollisionSolid(ObjectCollision* collision, u32 solid)
     ReferencedObject* owner = collision->owner;
     if (solid == 0)
     {
-        owner->flags &= ~ReferencedObject::FlagSolidModel;
+        owner->flags.solidModel = 0;
     }
     else
     {
-        owner->flags |= ReferencedObject::FlagSolidModel;
+        owner->flags.solidModel = 1;
     }
 
     QueueObject(collision->owner);
@@ -468,7 +457,7 @@ void MarkThinAndCopySurfaces(ObjectCollision* collision)
     f32 thinnest = x <= y ? __builtin_fminf(x, z) : __builtin_fminf(y, z);
     if (thinnest < Thin)
     {
-        collision->bits |= ObjectCollision::BitThin;
+        collision->bits.thin = 1;
     }
 
     CopyHullSurfaces(collision);
@@ -491,7 +480,7 @@ void* StepObjectCollision(ObjectCollision* collision)
 
     if (collision->sceneryCell == nullptr)
     {
-        return ChunkNoticeInstance(owner);
+        return UpdateInstanceChunk(owner);
     }
 
     if (collision->hullMatrix != nullptr)
@@ -502,21 +491,21 @@ void* StepObjectCollision(ObjectCollision* collision)
     return UpdateCollisionCell(collision, owner);
 }
 
-void SkipInQuery(InstanceRayHit* query, ReferencedObject* object)
+void SkipInQuery(InstanceQuery* query, ReferencedObject* object)
 {
     query->skipped[0] = object;
     query->skipped[1] = object->collision.leftOut;
 }
 
-u32 QueryTakes(const InstanceRayHit* query, const InstanceContext* instance, u32 kinds)
+u32 QueryTakes(const InstanceQuery* query, const InstanceContext* instance, u32 kinds)
 {
-    u32 flags = instance->flags;
+    u32 flags = instance->flags.value;
     if ((flags & query->unwantedFlags) != 0 || (instance->nodes.mask & kinds) == 0)
     {
         return 0;
     }
 
-    if ((query->bits & InstanceRayHit::BitAllWanted) != 0)
+    if (query->bits.allWanted != 0)
     {
         return (flags & query->wantedFlags) == query->wantedFlags;
     }
@@ -524,12 +513,12 @@ u32 QueryTakes(const InstanceRayHit* query, const InstanceContext* instance, u32
     return (flags & query->wantedFlags) != 0;
 }
 
-u32 QueryAdd(InstanceRayHit* query, InstanceContext* instance)
+u32 QueryAdd(InstanceQuery* query, InstanceContext* instance)
 {
     u16 count = query->count;
     if (!(count < query->most))
     {
-        query->bits |= InstanceRayHit::BitFull;
+        query->bits.unused0 = 1;
         return 0;
     }
 
@@ -538,7 +527,7 @@ u32 QueryAdd(InstanceRayHit* query, InstanceContext* instance)
     return 1;
 }
 
-u16 QueryCellList(InstanceRayHit* query, InstanceContext* first, u32 kinds)
+u16 QueryCellList(InstanceQuery* query, InstanceContext* first, u32 kinds)
 {
     u16 before = query->count;
     for (InstanceContext* instance = first; instance != nullptr; instance = instance->cellNext)

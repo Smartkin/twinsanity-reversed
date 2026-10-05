@@ -21,15 +21,8 @@ EABI_EXPORT(FUN_0029a068, PlayCameraTrackFrame);
 
 namespace
 {
-constexpr u16 EndFrame = 0xFFFF;
-constexpr s32 NoEmitter = -1;
-// Above it an instance is shown and an emitter kept, below it an instance is hidden and an emitter let go of
-constexpr f32 ShownAbove = 0.5f;
 // The cuts' values are in 4096ths
 constexpr f32 CutUnit = 0x1p-12f;
-// The bytes the static float values take (the count of bits 11-21, times 4)
-constexpr u32 StaticBytesShift = 9;
-constexpr u32 StaticBytesMask = 0x1FFC;
 
 DynamicAnimationData* NewValues(const AnimationDataInformation* information)
 {
@@ -43,7 +36,7 @@ DynamicAnimationData* NewValues(const AnimationDataInformation* information)
 template <typename Played, typename Track>
 void TakeValues(Played* played, const Track* track, u16 frame)
 {
-    if (frame == EndFrame)
+    if (frame == Cutscene::EndFrame)
     {
         if (played->values != nullptr)
         {
@@ -70,18 +63,15 @@ void TakeValues(Played* played, const Track* track, u16 frame)
 }
 
 // Where a frame's float values start: past the static values, as many values in as a frame has times the frame
-const f32* FrameValues(const f32* statics, u32 sections, u32 frame)
+const f32* FrameValues(const f32* statics, AnimationLayout layout, u32 frame)
 {
-    const u8* values = reinterpret_cast<const u8*>(statics) + (sections >> StaticBytesShift & StaticBytesMask);
-    return reinterpret_cast<const f32*>(values + (sections >> AnimationDataInformation::FrameValuesShift) * frame * sizeof(f32));
+    return statics + layout.staticValues + layout.frameValues * frame;
 }
 
 // Where a frame's 16 bit values start
-const s16* ShortFrameValues(const s16* statics, u32 sections, u32 frame)
+const s16* ShortFrameValues(const s16* statics, AnimationLayout layout, u32 frame)
 {
-    const u8* values = reinterpret_cast<const u8*>(statics) +
-                       (sections >> AnimationDataInformation::StaticBytesShift & AnimationDataInformation::StaticBytesMask);
-    return reinterpret_cast<const s16*>(values + (sections >> AnimationDataInformation::FrameValuesShift) * frame * sizeof(s16));
+    return statics + layout.staticValues + layout.frameValues * frame;
 }
 
 // The values found in the disk manager for a frame (the end frame's values are the first frame's)
@@ -90,18 +80,17 @@ void FindFrameValues(DynamicAnimationData* values, u16 frame)
     AnimationDataInformation* information = values->information;
     u8* memory = DiskLoadedMemory(GetDiskManager(), &information->diskHandle);
     values->settings = reinterpret_cast<const JointTrackSettings*>(memory);
-    const f32* statics = reinterpret_cast<const f32*>(
-        memory + (information->sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings));
+    const f32* statics = reinterpret_cast<const f32*>(memory + information->layout.joints * sizeof(JointTrackSettings));
     values->statics = statics;
-    if (frame == EndFrame)
+    if (frame == Cutscene::EndFrame)
     {
-        values->current = FrameValues(statics, information->sections, 0);
-        values->next = FrameValues(statics, values->information->sections, 0);
+        values->current = FrameValues(statics, information->layout, 0);
+        values->next = FrameValues(statics, values->information->layout, 0);
         return;
     }
 
-    values->current = FrameValues(statics, information->sections, frame);
-    values->next = FrameValues(statics, values->information->sections, frame + 1);
+    values->current = FrameValues(statics, information->layout, frame);
+    values->next = FrameValues(statics, values->information->layout, frame + 1);
 }
 
 // The reader of the values' first joint's channels
@@ -110,7 +99,7 @@ DynamicTrackReader ReaderOf(const DynamicAnimationData* values)
     const JointTrackSettings* joint = values->settings;
     DynamicTrackReader reader;
     reader.statics = joint->statics;
-    u32 channelCount = joint->flags >> JointTrackSettings::ChannelsShift & JointTrackSettings::ChannelsMask;
+    u32 channelCount = joint->flags.channels;
     reader.channels = static_cast<u16>((1 << channelCount) - 1);
     reader.staticValues = values->statics + joint->staticIndex;
     reader.current = values->current + joint->frameIndex;
@@ -163,11 +152,10 @@ f32 CutValue(AnimationData* cuts, u32 frame, f32 share)
     AnimationDataInformation* information = cuts->information;
     u8* memory = DiskLoadedMemory(GetDiskManager(), &information->diskHandle);
     cuts->settings = reinterpret_cast<const JointTrackSettings*>(memory);
-    const s16* statics = reinterpret_cast<const s16*>(
-        memory + (information->sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings));
+    const s16* statics = reinterpret_cast<const s16*>(memory + information->layout.joints * sizeof(JointTrackSettings));
     cuts->statics = statics;
-    cuts->current = ShortFrameValues(statics, information->sections, frame);
-    cuts->next = ShortFrameValues(statics, cuts->information->sections, frame + 1);
+    cuts->current = ShortFrameValues(statics, information->layout, frame);
+    cuts->next = ShortFrameValues(statics, cuts->information->layout, frame + 1);
     const JointTrackSettings* joint = cuts->settings;
     if ((joint->statics & 1) != 0)
     {
@@ -179,16 +167,16 @@ f32 CutValue(AnimationData* cuts, u32 frame, f32 share)
 }
 }
 
-void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* track, const CutsceneInstanceTrack* data, u16 frame,
+void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* played, const CutsceneInstanceTrack* track, u16 frame,
                             const Matrix4x4* origin)
 {
-    TakeValues(track, data, frame);
-    FindFrameValues(track->values, frame);
-    DynamicTrackReader reader = ReaderOf(track->values);
-    track->position.x = ReadTrackValue(&reader, share);
-    track->position.y = ReadTrackValue(&reader, share);
-    track->position.z = ReadTrackValue(&reader, share);
-    track->position.w = 1.0f;
+    TakeValues(played, track, frame);
+    FindFrameValues(played->values, frame);
+    DynamicTrackReader reader = ReaderOf(played->values);
+    played->position.x = ReadTrackValue(&reader, share);
+    played->position.y = ReadTrackValue(&reader, share);
+    played->position.z = ReadTrackValue(&reader, share);
+    played->position.w = 1.0f;
     s32 x;
     s32 y;
     s32 z;
@@ -196,31 +184,31 @@ void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* track, const Cutscen
     ReadTrackAngle(&y, &reader, share);
     ReadTrackAngle(&z, &reader, share);
     f32 shown = ReadTrackValue(&reader, share);
-    InstanceContext* instance = track->instance;
-    if (ShownAbove < shown && (instance->flags & ReferencedObject::FlagVisible) == 0)
+    InstanceContext* instance = played->instance;
+    if (ShownAbove < shown && !instance->flags.visible)
     {
-        instance->flags |= ReferencedObject::FlagVisible;
+        instance->flags.visible = 1;
     }
-    else if (shown < ShownAbove && (instance->flags & ReferencedObject::FlagVisible) != 0)
+    else if (shown < ShownAbove && instance->flags.visible)
     {
-        instance->flags &= ~ReferencedObject::FlagVisible;
+        instance->flags.visible = 0;
     }
 
-    GetRotationXYZ(&track->rotation, &x, &y, &z);
+    GetRotationXYZ(&played->rotation, &x, &y, &z);
     if (origin == nullptr)
     {
-        instance = track->instance;
+        instance = played->instance;
         ObjectPlace* place = instance->place;
         place->SyncPosition();
-        if (place->MoveTo(&track->position))
+        if (place->MoveTo(&played->position))
         {
             QueueObject(instance);
         }
 
-        instance = track->instance;
+        instance = played->instance;
         place = instance->place;
         place->SyncRotation();
-        if (place->TurnTo(&track->rotation))
+        if (place->TurnTo(&played->rotation))
         {
             QueueObject(instance);
         }
@@ -228,21 +216,21 @@ void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* track, const Cutscen
         return;
     }
 
-    // In the origin's space: the instance placed, and the track given the instance's place
+    // In the origin's space: the instance placed, and the played track given the instance's place
     Matrix4x4 matrix;
     InitIdentityMatrix(&matrix);
-    MatrixFromRotation(&matrix, &track->rotation);
-    *RowOf(&matrix, 3) = track->position;
+    MatrixFromRotation(&matrix, &played->rotation);
+    *RowOf(&matrix, PositionRow) = played->position;
     MultiplyInPlace(&matrix, origin);
-    instance = track->instance;
+    instance = played->instance;
     ObjectPlace* place = instance->place;
     place->SyncPosition();
-    if (place->MoveTo(RowOf(&matrix, 3)))
+    if (place->MoveTo(RowOf(&matrix, PositionRow)))
     {
         QueueObject(instance);
     }
 
-    instance = track->instance;
+    instance = played->instance;
     place = instance->place;
     place->SyncRotation();
     Vector4 rotation;
@@ -252,128 +240,128 @@ void PlayInstanceTrackFrame(f32 share, PlayedInstanceTrack* track, const Cutscen
         QueueObject(instance);
     }
 
-    place = track->instance->place;
+    place = played->instance->place;
     place->SyncPosition();
-    track->position = place->position;
-    place = track->instance->place;
+    played->position = place->position;
+    place = played->instance->place;
     place->SyncRotation();
-    track->rotation = place->rotation;
+    played->rotation = place->rotation;
 }
 
-void PlayEmitterTrackFrame(f32 share, PlayedEmitterTrack* track, const CutsceneEmitterTrack* data, u16 frame,
+void PlayEmitterTrackFrame(f32 share, PlayedEmitterTrack* played, const CutsceneEmitterTrack* track, u16 frame,
                            const Matrix4x4* origin)
 {
-    TakeValues(track, data, frame);
-    FindFrameValues(track->values, frame);
-    DynamicTrackReader reader = ReaderOf(track->values);
-    track->position.x = ReadTrackValue(&reader, share);
-    track->position.y = ReadTrackValue(&reader, share);
-    track->position.z = ReadTrackValue(&reader, share);
-    track->position.w = 1.0f;
+    TakeValues(played, track, frame);
+    FindFrameValues(played->values, frame);
+    DynamicTrackReader reader = ReaderOf(played->values);
+    played->position.x = ReadTrackValue(&reader, share);
+    played->position.y = ReadTrackValue(&reader, share);
+    played->position.z = ReadTrackValue(&reader, share);
+    played->position.w = 1.0f;
     s32 angle;
     ReadTrackAngle(&angle, &reader, share);
-    track->angles[0] = angle;
+    played->angles[0] = angle;
     ReadTrackAngle(&angle, &reader, share);
-    track->angles[1] = angle;
+    played->angles[1] = angle;
     ReadTrackAngle(&angle, &reader, share);
-    track->angles[2] = angle;
+    played->angles[2] = angle;
     f32 on = ReadTrackValue(&reader, share);
     Matrix4x4 matrix;
     InitIdentityMatrix(&matrix);
-    s32 x = track->angles[0];
-    s32 y = track->angles[1];
-    s32 z = track->angles[2];
+    s32 x = played->angles[0];
+    s32 y = played->angles[1];
+    s32 z = played->angles[2];
     MatrixFromAngles(&matrix, &x, &y, &z);
-    *RowOf(&matrix, 3) = track->position;
+    *RowOf(&matrix, PositionRow) = played->position;
     if (origin != nullptr)
     {
         MultiplyInPlace(&matrix, origin);
-        track->position = *RowOf(&matrix, 3);
-        AnglesOfMatrix(&matrix, track->angles);
+        played->position = *RowOf(&matrix, PositionRow);
+        AnglesOfMatrix(&matrix, played->angles);
     }
 
-    SetEmitterFrame(track->emitter, &matrix);
-    if (on < ShownAbove && track->emitter != NoEmitter)
+    SetEmitterFrame(played->emitter, &matrix);
+    if (on < ShownAbove && played->emitter != NoEmitter)
     {
-        track->emitter = NoEmitter;
+        played->emitter = NoEmitter;
     }
 }
 
-void PlaySoundTrackFrame(f32 share, PlayedSoundTrack* track, const CutsceneSoundTrack* data, u16 frame,
+void PlaySoundTrackFrame(f32 share, PlayedSoundTrack* played, const CutsceneSoundTrack* track, u16 frame,
                          const Matrix4x4* origin)
 {
-    TakeValues(track, data, frame);
-    FindFrameValues(track->values, frame);
-    DynamicTrackReader reader = ReaderOf(track->values);
-    track->position.x = ReadTrackValue(&reader, share);
-    track->position.y = ReadTrackValue(&reader, share);
-    track->position.z = ReadTrackValue(&reader, share);
-    track->position.w = 1.0f;
+    TakeValues(played, track, frame);
+    FindFrameValues(played->values, frame);
+    DynamicTrackReader reader = ReaderOf(played->values);
+    played->position.x = ReadTrackValue(&reader, share);
+    played->position.y = ReadTrackValue(&reader, share);
+    played->position.z = ReadTrackValue(&reader, share);
+    played->position.w = 1.0f;
     SkipTrackValue(&reader);
-    track->volume = ReadTrackValue(&reader, share);
+    played->volume = ReadTrackValue(&reader, share);
     if (origin != nullptr)
     {
-        VuTransformPoint(origin, &track->position, &track->position);
+        VuTransformPoint(origin, &played->position, &played->position);
     }
 }
 
-void PlayCameraTrackFrame(f32 share, PlayedCameraTrack* track, const CutsceneCameraTrack* data, u16 frame,
+void PlayCameraTrackFrame(f32 share, PlayedCameraTrack* played, const CutsceneCameraTrack* track, u16 frame,
                           const Matrix4x4* origin)
 {
     // The shot's values as the other tracks' (the end's at the end frame); the cuts kept while it plays the same track
-    if (frame == EndFrame)
+    if (frame == Cutscene::EndFrame)
     {
-        if (track->values != nullptr)
+        if (played->values != nullptr)
         {
-            MemoryDeallocate2_(track->values);
+            MemoryDeallocate2_(played->values);
         }
 
-        track->values = NewValues(&data->endValues);
+        played->values = NewValues(&track->endValues);
     }
-    else if (track->track != nullptr && track->track != data)
+    else if (played->track != nullptr && played->track != track)
     {
-        if (track->values != nullptr)
+        if (played->values != nullptr)
         {
-            MemoryDeallocate2_(track->values);
+            MemoryDeallocate2_(played->values);
         }
 
-        if (track->cuts != nullptr)
+        if (played->cuts != nullptr)
         {
-            MemoryDeallocate2_(track->cuts);
+            MemoryDeallocate2_(played->cuts);
         }
 
-        track->values = nullptr;
-        track->cuts = nullptr;
+        played->values = nullptr;
+        played->cuts = nullptr;
     }
 
-    track->track = data;
-    if (track->cuts == nullptr)
+    played->track = track;
+    if (played->cuts == nullptr)
     {
         auto* cuts = static_cast<AnimationData*>(MemoryAllocate(sizeof(AnimationData)));
-        cuts->information = const_cast<AnimationDataInformation*>(&data->cuts);
-        track->cuts = cuts;
+        cuts->information = const_cast<AnimationDataInformation*>(&track->cuts);
+        played->cuts = cuts;
     }
 
-    if (0.0f < CutValue(track->cuts, frame, share))
+    if (0.0f < CutValue(played->cuts, frame, share))
     {
-        if (track->cutting == 0)
+        if (played->cutting == 0)
         {
-            NextShot(track);
-            track->cutting = 1;
+            NextShot(played);
+            played->cutting = 1;
         }
     }
     else
     {
-        track->cutting = 0;
+        played->cutting = 0;
     }
 
-    if (track->values == nullptr)
+    if (played->values == nullptr)
     {
-        track->values = NewValues(&data->shots[track->shot]);
+        played->values = NewValues(&track->shots[played->shot]);
     }
 
-    FindFrameValues(track->values, frame);
-    DynamicTrackReader reader = ReaderOf(track->values);
+    FindFrameValues(played->values, frame);
+    DynamicTrackReader reader = ReaderOf(played->values);
     Vector4 position;
     position.x = ReadTrackValue(&reader, share);
     position.y = ReadTrackValue(&reader, share);
@@ -394,18 +382,18 @@ void PlayCameraTrackFrame(f32 share, PlayedCameraTrack* track, const CutsceneCam
         Matrix4x4 matrix;
         InitIdentityMatrix(&matrix);
         MatrixFromRotation(&matrix, &rotation);
-        *RowOf(&matrix, 3) = position;
+        *RowOf(&matrix, PositionRow) = position;
         MultiplyInPlace(&matrix, origin);
-        position = *RowOf(&matrix, 3);
+        position = *RowOf(&matrix, PositionRow);
         GetRotationVec(&rotation, &matrix);
         AnglesOfRotation(&rotation, &x, &y, &z);
     }
 
-    CutsceneCameraRig* camera = track->camera;
+    CutsceneCameraRig* camera = played->camera;
     camera->ownPositioner.position = position;
-    camera = track->camera;
+    camera = played->camera;
     camera->ownPositioner.rotation = rotation;
     s32 angle;
     AngleFrom(&angle, fieldOfView, AngleRadians);
-    track->camera->ownPositioner.fov = angle;
+    played->camera->ownPositioner.fov = angle;
 }

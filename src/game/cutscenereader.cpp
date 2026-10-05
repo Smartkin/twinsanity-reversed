@@ -3,8 +3,10 @@
 #include "game/archive.h"
 #include "game/controllers.h"
 #include "game/disk.h"
+#include "game/layout.h"
 #include "game/memory.h"
 #include "game/objects.h"
+#include "game/sound.h"
 #include "game/stream.h"
 
 // A cutscene's part read from its file (CutScene\_<number>_<part>.cts) into a cutscene, and destroyed. Its values are animations'
@@ -19,37 +21,33 @@ extern "C"
 
 namespace
 {
-constexpr u16 NoId = 0xFFFF;
-constexpr u16 IdMask = 0x7FFF;
 
-// The size of an animation's data of floats: bits 9-21 of its sections the static values' bytes, bits 22-31 the values a frame
-u32 FloatDataSize(const AnimationDataInformation* data)
+// The size of an animation's data of floats: its joints' settings, its static values and the values a frame of every frame,
+// 4 bytes each
+u32 FloatDataSize(const AnimationDataInformation* information)
 {
-    constexpr u32 StaticBytesShift = 9;
-    constexpr u32 StaticBytesMask = 0x1FFC;
-    if (data->frames == 0)
+    if (information->frames == 0)
     {
         return 0;
     }
 
-    u32 sections = data->sections;
-    u32 perFrame = sections >> AnimationDataInformation::FrameValuesShift;
-    return (sections & AnimationDataInformation::JointsMask) * sizeof(JointTrackSettings) +
-           (sections >> StaticBytesShift & StaticBytesMask) + perFrame * data->frames * sizeof(f32);
+    AnimationLayout layout = information->layout;
+    return layout.joints * sizeof(JointTrackSettings) + layout.staticValues * sizeof(f32) +
+           layout.frameValues * information->frames * sizeof(f32);
 }
 
-// An animation's data of floats read: its sections and frames, then its bytes into a disk manager node of its own (the one it had
+// An animation's data of floats read: its layout and frames, then its bytes into a disk manager node of its own (the one it had
 // let go first)
-void ReadFloatData(AnimationDataInformation* data, Stream* stream)
+void ReadFloatData(AnimationDataInformation* information, Stream* stream)
 {
-    stream->ReadS32(reinterpret_cast<s32*>(&data->sections));
-    stream->ReadS16(reinterpret_cast<s16*>(&data->frames));
-    if (data->diskHandle >= 0)
+    stream->ReadS32(reinterpret_cast<s32*>(&information->layout.value));
+    stream->ReadS16(reinterpret_cast<s16*>(&information->frames));
+    if (information->diskHandle >= 0)
     {
-        DiskRelease(GetDiskManager(), &data->diskHandle);
+        DiskRelease(GetDiskManager(), &information->diskHandle);
     }
 
-    u32 size = FloatDataSize(data);
+    u32 size = FloatDataSize(information);
     if (size == 0)
     {
         return;
@@ -57,77 +55,77 @@ void ReadFloatData(AnimationDataInformation* data, Stream* stream)
 
     s32 handle;
     DiskAllocate(&handle, GetDiskManager(), size, false, 0);
-    data->diskHandle = handle;
-    stream->Read(DiskLoadedMemory(GetDiskManager(), &data->diskHandle), size, 1);
+    information->diskHandle = handle;
+    stream->Read(DiskLoadedMemory(GetDiskManager(), &information->diskHandle), size, 1);
 }
 
 // The instances' joints and blend shapes are animations' data of 16 bit values
-void ReadShortData(AnimationDataSource* data, Stream* stream)
+void ReadShortData(AnimationDataSource* source, Stream* stream)
 {
-    ReadAnimationData(reinterpret_cast<AnimationDataInformation*>(data), stream);
+    ReadAnimationData(reinterpret_cast<AnimationDataInformation*>(source), stream);
 }
 
-void ConstructData(AnimationDataInformation* data)
+void ConstructData(AnimationDataInformation* information)
 {
-    data->diskHandle = -1;
-    data->sections = 0;
-    data->frames = 0;
+    information->diskHandle = -1;
+    information->layout.value = 0;
+    information->frames = 0;
 }
 
-void ConstructData(AnimationDataSource* data)
+void ConstructData(AnimationDataSource* source)
 {
-    data->diskHandle = -1;
-    data->layout = 0;
-    data->frames = 0;
+    source->diskHandle = -1;
+    source->layout.value = 0;
+    source->frames = 0;
 }
 
-void ReleaseData(AnimationDataInformation* data)
+void ReleaseData(AnimationDataInformation* information)
 {
-    if (data->diskHandle >= 0)
+    if (information->diskHandle >= 0)
     {
-        DiskRelease(GetDiskManager(), &data->diskHandle);
+        DiskRelease(GetDiskManager(), &information->diskHandle);
     }
 }
 
-void ReleaseData(AnimationDataSource* data)
+void ReleaseData(AnimationDataSource* source)
 {
-    if (data->diskHandle >= 0)
+    if (source->diskHandle >= 0)
     {
-        DiskRelease(GetDiskManager(), &data->diskHandle);
+        DiskRelease(GetDiskManager(), &source->diskHandle);
     }
 }
 
 // The ID of the queuing object's slot a track names: 0xFFFF for none, else the slot's ID
 u16 SlotId(u16 id)
 {
-    return id == NoId ? NoId : id & IdMask;
+    return id == UndefinedId ? UndefinedId : id & ResourceIndexMask;
 }
 }
 
 Cutscene* ConstructCutscene(Cutscene* cutscene)
 {
     cutscene->partFrames = Cutscene::PartFrames;
-    cutscene->part = NoId;
+    cutscene->part = Cutscene::NoNumber;
     cutscene->camera.cuts.diskHandle = -1;
     cutscene->frames = 0;
-    cutscene->number = NoId;
+    cutscene->number = Cutscene::NoNumber;
     cutscene->instanceTrackCount = 0;
     cutscene->soundTrackCount = 0;
     cutscene->emitterTrackCount = 0;
     cutscene->camera.shotCount = 0;
     cutscene->camera.shots = nullptr;
     cutscene->camera.endValues.diskHandle = -1;
-    cutscene->camera.endValues.sections = 0;
+    cutscene->camera.endValues.layout.value = 0;
     cutscene->camera.endValues.frames = 0;
-    cutscene->camera.cuts.sections = 0;
+    cutscene->camera.cuts.layout.value = 0;
     cutscene->camera.cuts.frames = 0;
     cutscene->instanceTracks = nullptr;
     cutscene->soundTracks = nullptr;
     cutscene->emitterTracks = nullptr;
-    cutscene->unknown10[3] = 0;
-    cutscene->unknown10[2] = 0;
-    cutscene->unknown10[1] = 0;
-    cutscene->unknown10[0] = 0;
+    cutscene->unused10[3] = 0;
+    cutscene->unused10[2] = 0;
+    cutscene->unused10[1] = 0;
+    cutscene->unused10[0] = 0;
     return cutscene;
 }
 
@@ -172,7 +170,7 @@ void DestroyCutscene(Cutscene* cutscene, u32 destroyFlags)
     }
 
     DestroyCameraTrack(&cutscene->camera, DestroyOnly);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(cutscene);
     }
@@ -194,7 +192,7 @@ void DestroyCameraTrack(CutsceneCameraTrack* track, u32 destroyFlags)
 
     ReleaseData(&track->cuts);
     ReleaseData(&track->endValues);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(track);
     }
@@ -202,13 +200,13 @@ void DestroyCameraTrack(CutsceneCameraTrack* track, u32 destroyFlags)
 
 void DestroyInstanceTrack(CutsceneInstanceTrack* track, u32 destroyFlags)
 {
-    ReleaseData(&track->unknown40);
-    ReleaseData(&track->unknown34);
+    ReleaseData(&track->unused40);
+    ReleaseData(&track->unused34);
     ReleaseData(&track->endValues);
     ReleaseData(&track->blendShapes);
     ReleaseData(&track->joints);
     ReleaseData(&track->values);
-    if ((destroyFlags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(track);
     }
@@ -225,8 +223,8 @@ void ReadCutscene(Cutscene* cutscene, Stream* stream)
     stream->ReadS8(reinterpret_cast<s8*>(&cutscene->instanceTrackCount));
     stream->ReadS8(reinterpret_cast<s8*>(&cutscene->soundTrackCount));
     stream->ReadS8(reinterpret_cast<s8*>(&cutscene->emitterTrackCount));
-    stream->ReadS16(reinterpret_cast<s16*>(&cutscene->unknown08));
-    for (u32& word : cutscene->unknown10)
+    stream->ReadS16(reinterpret_cast<s16*>(&cutscene->unused08));
+    for (u32& word : cutscene->unused10)
     {
         stream->ReadS32(reinterpret_cast<s32*>(&word));
     }
@@ -259,14 +257,14 @@ void MakeCutsceneTracks(Cutscene* cutscene, u8 instanceTracks, u8 soundTracks, u
         for (u32 index = 0; index < instanceTracks; index++)
         {
             CutsceneInstanceTrack* track = &tracks[index];
-            track->model = NoId;
+            track->model = NoModelId;
             track->hasBlendShapes = false;
             ConstructData(&track->values);
             ConstructData(&track->joints);
             ConstructData(&track->blendShapes);
             ConstructData(&track->endValues);
-            ConstructData(&track->unknown34);
-            ConstructData(&track->unknown40);
+            ConstructData(&track->unused34);
+            ConstructData(&track->unused40);
         }
 
         cutscene->instanceTracks = tracks;
@@ -278,8 +276,8 @@ void MakeCutsceneTracks(Cutscene* cutscene, u8 instanceTracks, u8 soundTracks, u
         for (u32 index = 0; index < soundTracks; index++)
         {
             CutsceneSoundTrack* track = &tracks[index];
-            track->sound = NoId;
-            track->unknown02 = SoundTrackMade;
+            track->sound = NoSoundId;
+            track->unused02 = SoundTrackMade;
             ConstructData(&track->values);
             ConstructData(&track->endValues);
         }
@@ -293,8 +291,8 @@ void MakeCutsceneTracks(Cutscene* cutscene, u8 instanceTracks, u8 soundTracks, u
         for (u32 index = 0; index < emitterTracks; index++)
         {
             CutsceneEmitterTrack* track = &tracks[index];
-            track->unknown00 = NoId;
-            track->unknown02 = false;
+            track->unused00 = UndefinedId;
+            track->unused02 = false;
             ConstructData(&track->values);
             ConstructData(&track->endValues);
         }
@@ -342,11 +340,11 @@ void ReadInstanceTrack(CutsceneInstanceTrack* track, Stream* stream)
     ReadFloatData(&track->values, stream);
     ReadFloatData(&track->endValues, stream);
     ReadShortData(&track->joints, stream);
-    ReadShortData(&track->unknown34, stream);
+    ReadShortData(&track->unused34, stream);
     if (track->hasBlendShapes)
     {
         ReadShortData(&track->blendShapes, stream);
-        ReadShortData(&track->unknown40, stream);
+        ReadShortData(&track->unused40, stream);
     }
 }
 
@@ -354,8 +352,8 @@ void ReadEmitterTrack(CutsceneEmitterTrack* track, Stream* stream)
 {
     u32 unread;
     stream->ReadU32(&unread);
-    stream->ReadS16(reinterpret_cast<s16*>(&track->unknown00));
-    stream->ReadBool(&track->unknown02);
+    stream->ReadS16(reinterpret_cast<s16*>(&track->unused00));
+    stream->ReadBool(&track->unused02);
     ReadFloatData(&track->values, stream);
     ReadFloatData(&track->endValues, stream);
 }
@@ -372,10 +370,10 @@ void ReadSoundTrack(CutsceneSoundTrack* track, Stream* stream)
     ReadFloatData(&track->endValues, stream);
 }
 
-void CutsceneReader::Destroy(u32 flags)
+void CutsceneReader::Destroy(u32 destroyFlags)
 {
     vtable = g_SectionReaderVTable;
-    if ((flags & 1) != 0)
+    if ((destroyFlags & FreeAfterDestroy) != 0)
     {
         MemoryDeallocate2_(this);
     }
@@ -387,7 +385,7 @@ void CutsceneReader::Read(u8* data, u32 size, ReaderStack*)
     MemoryStream::Construct(&stream, data, size, 0, 1);
     ReadCutscene(cutscene, &stream);
     CutscenePartRead(controller, cutscene);
-    stream.Destroy(2);
+    stream.Destroy(DestroyOnly);
 }
 
 void CutsceneReader::Missing(u8*, u32, ReaderStack*)
@@ -396,8 +394,7 @@ void CutsceneReader::Missing(u8*, u32, ReaderStack*)
 
 void InitCutsceneModule(u32 initialise, u32 priority)
 {
-    constexpr u32 AllPriorities = 0xFFFF;
-    if (priority != AllPriorities || initialise == 0)
+    if (priority != DefaultInitPriority || initialise == 0)
     {
         return;
     }
@@ -407,5 +404,5 @@ void InitCutsceneModule(u32 initialise, u32 priority)
 
 void ConstructCutsceneModule()
 {
-    InitCutsceneModule(1, 0xFFFF);
+    InitCutsceneModule(1, DefaultInitPriority);
 }

@@ -7,23 +7,30 @@
 
 class Stream;
 
-// A shader's animation (0x40 bytes, TT Lab's TwinShaderAnimation): its header (bits 0-15 its frames, 16-20 its frames a second,
-// 21 it has started), its data (one joint's settings: six channels, the UV offset's U and V and the colour's R, G, B and A, in
-// 4096ths), its frames' places in the data, the time its loop started at, the time it was played at, a loop's length, the time
-// into the loop, the share between this frame and the next, and what it comes to: the UV offset and the colour
+// A shader animation's header: its frames, its frames a second and whether it has started (set the first time it's played)
+union ShaderAnimationHeader
+{
+    // What two animations' headers have to agree in
+    static constexpr u32 FramesAndRate = 0x1FFFFF;
+
+    u32 value;
+    struct
+    {
+        u32 frames : 16;
+        u32 rate : 5;
+        u32 started : 1;
+        u32 unused22 : 10;
+    };
+};
+CHECK_SIZE(ShaderAnimationHeader, 4);
+
+// A shader's animation (0x40 bytes, TT Lab's TwinShaderAnimation): its header, its data (one joint's settings: six channels, the
+// UV offset's U and V and the colour's R, G, B and A, in 4096ths), its frames' places in the data, the time its loop started at,
+// the time it was played at, a loop's length, the time into the loop, the share between this frame and the next, and what it
+// comes to: the UV offset and the colour
 struct ShaderAnimation
 {
-    enum Header : u32
-    {
-        FramesMask = 0xFFFF,
-        RateShift = 16,
-        RateMask = 0x1F,
-        Started = 0x200000,
-        // What two animations' headers have to agree in
-        Compared = 0x1FFFFF,
-    };
-
-    u32 header;
+    ShaderAnimationHeader header;
     AnimationDataInformation data;
     AnimationData* frames;
     s32 loopStart;
@@ -40,7 +47,7 @@ CHECK_SIZE(ShaderAnimation, 0x40);
 
 extern "C"
 {
-    // Without a header (its rate cleared, not started) or data
+    // Without frames, a rate (the header's other bits as they were) or data
     ShaderAnimation* ConstructShaderAnimation(ShaderAnimation* animation) RETAIL(FUN_002995e0);
     void DestroyShaderAnimation(ShaderAnimation* animation, u32 destroyFlags) RETAIL(FUN_00299628);
     // Read from a shader's data: the header, the data, and a loop's length in clock units
