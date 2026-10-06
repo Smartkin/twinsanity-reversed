@@ -2169,6 +2169,7 @@ u32 CastHullDown(f32 distance, ChunkData* chunk, const CollisionHull* hull, cons
 
 // The EABI's call of CastHullDown (its integers in $a0-$a7, the distance in $f12) made n32's: the ninth argument (the count of the
 // instances left out) goes on the stack, which Abi::Thunk doesn't do
+#if defined(_EE)
 asm(R"(
     .pushsection .text.FUN_002816f8, "ax", @progbits
     .globl FUN_002816f8
@@ -2194,3 +2195,4 @@ FUN_002816f8:
     .size FUN_002816f8, . - FUN_002816f8
     .popsection
 )");
+#endif

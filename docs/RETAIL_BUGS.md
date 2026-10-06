@@ -6,8 +6,8 @@ Crash Twinsanity PAL (SLES_525.68).
 
 The C++ keeps every one of these as retail has it, with a comment where it happens: this is the list, not a fix list.
 
-- Every candidate the conversion turned up was read again in the retail asm (`asm/text`), not in the C++. Each entry gives the
-  instruction address of the faulty spot.
+- Every candidate the conversion turned up was read again in the retail asm (master's split, `asm/text`), not in the C++. Each
+  entry gives the instruction address of the faulty spot.
 - **Reached in normal play** comes from the retail data where it could be checked: the 1,846 behaviour scripts of a TT Lab project
   made from the PAL disc (commands and conditions named by TT Lab's AgentLab definitions), the trigger and camera files and the
   language files. "Unknown" means the data or the state at run time decides it.

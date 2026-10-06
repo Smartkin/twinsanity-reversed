@@ -93,7 +93,9 @@ enum AngleUnit : u32
 // A value GCC mustn't fold into what follows: 1 / sqrt(x) made one RSQRT.S rounds unlike the retail SQRT.S and DIV.S
 inline f32 Kept(f32 value)
 {
+#if defined(_EE)
     asm("" : "+f"(value));
+#endif
     return value;
 }
 

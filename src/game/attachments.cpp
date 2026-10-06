@@ -21,6 +21,7 @@ EABI_EXPORT(FUN_00196958, HoldInPlace);
 
 // AttachSpring has more arguments than n32 passes in registers: the asm hands it the eight integers in $a0-$a7 and the three
 // floats in $f12-$f14, the C++ function takes the floats there, the first five integers in $a3-$a7 and the rest on the stack
+#if defined(_EE)
 asm(R"(
     .pushsection .text.FUN_001966b0, "ax", @progbits
     .globl FUN_001966b0
@@ -46,6 +47,7 @@ FUN_001966b0:
     .size FUN_001966b0, . - FUN_001966b0
     .popsection
 )");
+#endif
 
 namespace
 {
@@ -688,7 +690,7 @@ Attachment* AttachmentOn(AttachmentsPath* path, InstanceContext* instance)
 }
 
 // Without the loops made into calls of memmove and memset, which the game doesn't have and doesn't make
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void RemoveFromPath(AttachmentsPath* path, u32 index, u32 update)
+KEEP_LOOPS void RemoveFromPath(AttachmentsPath* path, u32 index, u32 update)
 {
     if (update != 0)
     {
@@ -917,7 +919,7 @@ void AttachmentsNode::Step(TimeClock*, u32)
     }
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void AttachmentsNode::Reset()
+KEEP_LOOPS void AttachmentsNode::Reset()
 {
     bits.linkedCount = 0;
     bits.noPath = 0;

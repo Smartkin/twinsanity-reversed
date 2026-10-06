@@ -49,4 +49,4 @@ extern "C" void RunStaticConstructors() RETAIL(FUN_002d6dc8);
 // The priority of the static constructors that don't give one (GCC's DEFAULT_INIT_PRIORITY): a file's static initialisation
 // (__static_initialization_and_destruction_0) runs its constructors when it's called with it and its first argument set, its
 // destructors with that argument clear
-constexpr u32 DefaultInitPriority = 0xFFFF;
+inline constexpr u32 DefaultInitPriority = 0xFFFF;

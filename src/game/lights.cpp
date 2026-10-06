@@ -525,7 +525,7 @@ void AddAmbient(ChunkLights* lights, const Light* light, f32 strength, Vector4* 
 
 // A light put among the strongest: before the first weaker one, the ones after it moved down (the last one dropped). Without the
 // loop made into calls of memmove, which the game doesn't have
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void InsertStrongest(ChunkLights* lights, u32 slots, f32 strength, const Vector4* direction, const Light* light)
+KEEP_LOOPS void InsertStrongest(ChunkLights* lights, u32 slots, f32 strength, const Vector4* direction, const Light* light)
 {
     for (u32 slot = 0; slot < slots; slot++)
     {

@@ -414,8 +414,7 @@ extern "C"
         if (epsilon < squared)
         {
             // A square root and a division: GCC makes them one RSQRT.S otherwise, which rounds differently
-            f32 root = __builtin_sqrtf(squared);
-            asm("" : "+f"(root));
+            f32 root = Kept(__builtin_sqrtf(squared));
             return 1.0f / root;
         }
 

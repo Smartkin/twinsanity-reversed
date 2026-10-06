@@ -124,11 +124,15 @@ void NodeController::Stop()
 // One LQ and one SQ, which leave out an address's low 4 bits (a struct copy is LDs and SDs)
 Vector4* CopyQuadword(Vector4* to, const Vector4* from)
 {
+#if defined(_EE)
     asm volatile("lq $8, 0(%1)\n\t"
                  "sq $8, 0(%0)"
                  :
                  : "r"(to), "r"(from)
                  : "$8", "memory");
+#else
+    *to = *from;
+#endif
     return to;
 }
 

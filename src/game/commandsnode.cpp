@@ -429,9 +429,6 @@ void ClearCountedValueCommand::Execute(TimeClock*, BehaviourRunner* runner, Beha
 
 namespace
 {
-// The instance flag that makes it move backwards along its attachments' path
-constexpr u32 BackwardsFlag = 0x80;
-
 bool TakesPackets(GameNode* node)
 {
     return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0;

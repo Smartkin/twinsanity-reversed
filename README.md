@@ -5,23 +5,22 @@ PS2SDK's and the toolchain's where they do what Sony's SDK did, and the build bo
 the same heap and disk state at boot, the same pictures frame for frame, the same saves. The C++ is built with the open source
 PS2SDK toolchain, and the game's C++ reaches the hardware through a platform layer so it can be ported.
 
-The retail executable is still split, into one asm file per function and its data: the build links the data (`.data`, `.rodata`,
-`.bss`, the VU microcode) from the split, and the functions' asm builds the matching executable (`tools/build.py --matching`) that
-the C++ was checked against. The repository has none of the game's code or data. You need your own copy of the PAL game: building
-splits its executable on your machine.
+This branch (`elfree`) builds from the repository alone: the retail executable's data (its tables, texts, vtables and the VU
+microcode) is C++ in `src/data/` and the PS2 side's renderer, in the retail order, so nothing is split from the game's executable
+and the build is the same program as one made from the split (`tools/compare_builds.py` checks it). Playing the build still needs
+your own copy of the PAL game, an image of its disc. The branch also has the start of a desktop port: a 32 bit x86 build of the
+same C++ with a desktop side of the platform layer (see [The desktop](#the-desktop)).
 
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains how the decomp is put together, the tools that test builds and what replacing
 the game's code had to look out for. [docs/RETAIL_BUGS.md](docs/RETAIL_BUGS.md) lists the bugs of the retail code the C++ keeps.
 
 ## What you need
 
-- **The game**: the PAL disc (SLES-52568). Building needs its executable, `SLES_525.68` from the disc's root folder, and playing
-  the build needs an image of the disc.
 - **The PS2SDK toolchain** from [ps2dev](https://github.com/ps2dev/ps2dev) (GCC 15.2). Its prebuilt releases have one for Linux
   and one for Windows.
-- **Python 3.10 or later**, for splat (which splits the executable), ninja and the build's scripts.
+- **Python 3.10 or later**, for ninja and the build's scripts.
 - **Git**, to clone this repository: `git clone https://github.com/Smartkin/twinsanity-reversed.git`
-- **[PCSX2](https://pcsx2.net/)**, to play the build.
+- **[PCSX2](https://pcsx2.net/)** and an image of the PAL disc (SLES-52568), to play the build.
 
 ## Building on Linux
 
@@ -42,18 +41,9 @@ the game's code had to look out for. [docs/RETAIL_BUGS.md](docs/RETAIL_BUGS.md) 
    .venv/bin/python -m pip install -r requirements.txt
    ```
 
-3. Take `SLES_525.68` out of your disc image into the repository's folder and check that it's the right one. `bsdtar` is
-   libarchive's tar, which reads disc images (GNU tar doesn't); `7z e` works too, and so does a symlink to a copy you have.
+3. Build:
 
    ```sh
-   bsdtar -xf "/path/to/Crash Twinsanity (Europe).iso" SLES_525.68
-   sha1sum SLES_525.68    # d41b8d53f733f930cf03d8ea944bec24429fe57c
-   ```
-
-4. Split it into `asm/` (once) and build:
-
-   ```sh
-   .venv/bin/python tools/split.py
    .venv/bin/python tools/build.py
    ```
 
@@ -89,18 +79,9 @@ Run these in PowerShell, in the repository's folder.
    .venv\Scripts\python.exe tools\toolchain_dlls.py
    ```
 
-4. Take `SLES_525.68` out of your disc image into the repository's folder and check that it's the right one. Windows' `tar` reads
-   disc images, or open the image in Explorer, which mounts it as a drive, and copy the file.
+4. Build:
 
    ```powershell
-   tar -xf "C:\path\to\Crash Twinsanity (Europe).iso" SLES_525.68
-   Get-FileHash -Algorithm SHA1 SLES_525.68    # D41B8D53F733F930CF03D8EA944BEC24429FE57C
-   ```
-
-5. Split it into `asm\` (once) and build:
-
-   ```powershell
-   .venv\Scripts\python.exe tools\split.py
    .venv\Scripts\python.exe tools\build.py
    ```
 
@@ -117,6 +98,7 @@ An environment variable wins over it, and without either the default is used:
 | `ps2sdk` | `PS2SDK` | PS2SDK's folder | `ps2sdk` in the toolchain's folder |
 | `disc_image` | `TWINSANITY_ISO` | The PAL disc image to play the build with | none |
 | `pcsx2` | `PCSX2` | PCSX2's executable, or `flatpak` for PCSX2's Flatpak | the Flatpak, `pcsx2-qt` on the `PATH`, PCSX2's install folder on Windows |
+| `sdl2` | `SDL2` | A 32 bit x86 SDL2 for the desktop build's window (its `include/SDL2` and `lib`) | pkg-config's 32 bit `sdl2` |
 
 Write Windows paths in it with forward slashes (`C:/Games/Twinsanity.iso`) or with doubled backslashes.
 
@@ -129,22 +111,37 @@ repository's folder:
 |---|---|
 | `tools/build.py` | Builds `build/SLES_525.68.elf`, writing `build.ninja` first when there's none for this system. Other arguments go to ninja (`-j8`, `-v`) |
 | `tools/build.py --clean` | Deletes what the build made |
-| `tools/build.py --matching` | Builds the asm alone and checks that it gives the retail executable's load image back, byte for byte |
+| `tools/build.py --platform desktop` | Builds the desktop's `build/desktop/twinsanity` (see [The desktop](#the-desktop)) |
 | `tools/play.py` | Boots the build in PCSX2 with your disc image; stopping it (Ctrl+C) closes PCSX2. `--elf`, `--iso` and `--pcsx2` pick others |
-| `tools/split.py` | Splits `SLES_525.68` into `asm/` and `assets/` again |
-| `configure.py` | Writes `build.ninja` and `build/compile_commands.json` again |
+| `configure.py` | Writes `build.ninja` and `build/compile_commands.json` again (`--platform desktop`: `build/desktop/build.ninja`, `--cxx` and `--sdl2` pick the compiler and SDL2) |
 
-Run `configure.py` again when C++ files were added or removed (a pull can bring new ones), and `tools/split.py` when
-`symbol_addrs.txt` changed, since the asm takes its names from it.
+Run `configure.py` again when C++ files were added or removed (a pull can bring new ones).
 
 On Linux, `tools/run_pcsx2.py` and `tools/render_check.py` test builds in PCSX2's Flatpak: see
 [Testing in PCSX2](docs/DEVELOPMENT.md#testing-in-pcsx2).
 
+## The desktop
+
+`tools/build.py --platform desktop` builds the same C++ with the host's compiler (`g++` by default; `clang++` works too) for 32
+bit x86, with the desktop's side of the platform layer (`src/platform/desktop/`) in place of the PS2's. On 32 bit x86 with
+`-malign-double` every struct is laid out as on the PS2 (4 byte pointers, 64 bit values aligned to 8), so the size checks hold and
+the retail data is the same. It needs the host compiler's 32 bit support (GCC's or Clang's multilib) and, for its window, SDL2 for
+32 bit x86 (Arch: `lib32-sdl2-compat`; Debian and Ubuntu: `libsdl2-dev:i386`; or a folder of one, the `sdl2` setting). Another
+compiler or SDL2 is picked once, before the first build:
+
+    python configure.py --platform desktop --cxx clang++ --sdl2 /path/to/SDL2
+
+It runs with the PAL disc's files in a folder (`TWINSANITY_DISC=/path/to/disc build/desktop/twinsanity`, the folder with
+`Crash6`). The desktop side is stubs for now, the parts the game's results depend on aside: the maths the PS2 does on its vector
+unit 0 (its microprograms and macro mode: the sines and cosines, the joints' animations, the matrix and collision helpers, the ray
+tests, the culling, the decals) is C++. It opens its window and runs the game's loop at 60 frames a second, but nothing is drawn,
+played or streamed yet: the game waits on its legal screen. See [the porting notes](docs/DEVELOPMENT.md#the-desktop-port).
+
 ## Editor setup
 
 [clangd](https://clangd.llvm.org/) gives the C++ its completion and errors: `.clangd` points it at
-`build/compile_commands.json`, which `configure.py` writes, and gives clang a MIPS target in place of the R5900, which it doesn't
-know. The structs come out the same, so the size checks hold in the editor too. In VS Code that's the clangd extension
+`build/compile_commands.json`, which `configure.py` writes, gives clang a MIPS target in place of the R5900, which it doesn't
+know, and leaves out the GCC options clang doesn't take (the retail data's `-fno-toplevel-reorder` among them). The structs come out the same, so the size checks hold in the editor too. In VS Code that's the clangd extension
 (`llvm-vs-code-extensions.vscode-clangd`, also on Open VSX).
 
 Microsoft's C/C++ extension works with the same file (`"compileCommands"` in `c_cpp_properties.json`) but lays structs out for
@@ -154,19 +151,24 @@ of the two extensions, not both.
 A VS Code build task only needs to run `tools/build.py` with the `$gcc` problem matcher and file locations relative to the
 folder.
 
+The desktop build runs under gdb from a `cppdbg` launch configuration (Microsoft's C/C++ extension in VS Code; in Code - OSS and
+VSCodium the C/C++ Debug extension, `kylinideteam.cppdebug` on Open VSX): `"program"` is `build/desktop/twinsanity`, its
+`"environment"` has `TWINSANITY_DISC` (the extracted PAL disc's folder) and its `"preLaunchTask"` runs `configure.py --platform
+desktop`, then `tools/build.py --platform desktop` (configuring each time picks up an SDL2 installed since).
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `src/game/` | The game's C++ |
-| `src/platform/` | The platform layer's side for each platform (`ps2/` on PS2SDK) |
-| `src/abi.cpp` | The calls between the retail code's convention and the C++'s |
-| `include/` | The game's types, the platform layer's interfaces and the asm's macros |
-| `tools/` | The split, the build, the checks and the PCSX2 runners |
-| `symbol_addrs.txt` | The executable's symbols, which name the asm, made from the Ghidra project |
-| `splat.yaml` | The split's settings |
-| `ps2sdk.txt`, `retired.txt`, `fragments.txt` | Sony's and the game's functions left out of the link, and the bytes between functions nothing reaches |
+| `src/data/` | The retail executable's data, in its order and under its names |
+| `src/retail/` | The game's C library as Sony's newlib had it (its heap, qsort, rand, expf) |
+| `src/platform/` | The platform layer's side for each platform (`ps2/` on PS2SDK, `desktop/` for 32 bit x86) |
+| `src/abi.cpp` | The calls between the retail code's convention and the C++'s (the PS2's) |
+| `include/` | The game's types and the platform layer's interfaces |
+| `tools/` | The build, the checks and the PCSX2 runners |
+| `symbol_addrs.txt` | The retail executable's names and their addresses in it (the C++ links by them; the build doesn't read it) |
 | `docs/DEVELOPMENT.md` | How it all works |
 | `docs/RETAIL_BUGS.md` | The retail code's bugs, verified in its asm and kept by the C++ |
 
-`asm/`, `assets/` and `build/` are made by the split and the build, and aren't committed.
+`build/` is made by the build, and isn't committed.

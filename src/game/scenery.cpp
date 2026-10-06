@@ -42,7 +42,11 @@ constexpr s32 LeafDepth = 2;
 // A cache line pulled in ahead of its use
 inline void Touch(const void* address)
 {
+#if defined(_EE)
     asm volatile("lb $0, 0(%0)" : : "r"(address));
+#else
+    static_cast<void>(*static_cast<const volatile u8*>(address));
+#endif
 }
 
 void SetSeen(InstanceContext* instance, u32 seen)

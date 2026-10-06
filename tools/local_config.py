@@ -5,6 +5,7 @@ local.json next to configure.py (not shared, local.example.json shows its keys),
     PS2SDK / "ps2sdk"         PS2SDK, $PS2DEV/ps2sdk
     TWINSANITY_ISO / "disc_image"   the PAL disc image the game reads its files from
     PCSX2 / "pcsx2"           PCSX2's executable (or "flatpak" for the Flatpak), found when not given
+    SDL2 / "sdl2"             a 32 bit x86 SDL2 for the desktop build (its include/SDL2 and lib), else pkg-config's
 """
 import json
 import os
@@ -46,6 +47,11 @@ def ee_tool(name):
 def disc_image():
     value = _setting("TWINSANITY_ISO", "disc_image")
     return str(Path(value)) if value else None
+
+
+def sdl2():
+    value = _setting("SDL2", "sdl2")
+    return Path(value).as_posix() if value else None
 
 
 def pcsx2():

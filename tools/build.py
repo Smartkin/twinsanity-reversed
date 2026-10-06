@@ -3,9 +3,8 @@
 written on another system, then ninja (the one on the path, else the virtual environment's from requirements.txt).
 
     python tools/build.py [ninja arguments...]     build (the default target, or the ones given)
-    python tools/build.py --matching               the asm alone must give the retail load image back (ninja check), then the
-                                                   usual configuration again
     python tools/build.py --clean                  ninja -t clean
+    python tools/build.py --platform desktop ...   the same for the desktop's build/desktop/twinsanity (build/desktop/build.ninja)
 """
 import os
 import shutil
@@ -35,44 +34,44 @@ def ninja():
         raise SystemExit("No ninja: install it (pip install -r requirements.txt puts one in .venv) or put it on the path")
 
 
-def configured_for(matching):
-    path = HERE / "build.ninja"
+PLATFORM = "ps2"
+NINJA_FILE = "build.ninja"
+
+
+def configured():
+    path = HERE / NINJA_FILE
     if not path.exists():
         return False
 
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if not text.startswith(f"# host: {os.name}\n"):
-        return False
-
-    return ("configure.py --matching" in text) == matching
+    return path.read_text(encoding="utf-8", errors="replace").startswith(f"# host: {os.name}\n")
 
 
-def configure(matching):
-    subprocess.run(PYTHON + ["configure.py"] + (["--matching"] if matching else []), cwd=HERE, check=True)
+def configure():
+    subprocess.run(PYTHON + ["configure.py", "--platform", PLATFORM], cwd=HERE, check=True)
 
 
 def run_ninja(arguments):
-    return subprocess.run(ninja() + arguments, cwd=HERE).returncode
+    return subprocess.run(ninja() + ["-f", NINJA_FILE] + arguments, cwd=HERE).returncode
 
 
 def main():
+    global PLATFORM, NINJA_FILE
     arguments = sys.argv[1:]
+    if arguments[:1] == ["--platform"]:
+        PLATFORM = arguments[1]
+        arguments = arguments[2:]
+        if PLATFORM == "desktop":
+            NINJA_FILE = "build/desktop/build.ninja"
+
     if arguments[:1] == ["--clean"]:
-        if not configured_for(False):
-            configure(False)
+        if not configured():
+            configure()
         sys.exit(run_ninja(["-t", "clean"]))
 
-    toolchain_dlls.check()
-    if arguments[:1] == ["--matching"]:
-        configure(True)
-        try:
-            code = run_ninja(["check"] + arguments[1:])
-        finally:
-            configure(False)
-        sys.exit(code)
-
-    if not configured_for(False):
-        configure(False)
+    if PLATFORM == "ps2":
+        toolchain_dlls.check()
+    if not configured():
+        configure()
 
     sys.exit(run_ninja(arguments))
 

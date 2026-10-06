@@ -1396,10 +1396,9 @@ void ConstructAgentsModule()
     InitAgentsModule(1, DefaultInitPriority);
 }
 
-// The cases splat split off a switch of a function nothing calls (func_001412B0, fragments.txt), which its jump table
-// (jtbl_002F2E20) still points at: a word of 4 to 14 at 0x14 into its second argument made 5, 4, 6, 7, 8, 7, 6, 7, 8, 10 or 10,
-// any other 3. The other cases' labels (func_001412EC, func_00141304, the default .L0014130C) were jump labels inside these, which
-// the link script defines as 0 now that their files are left out
+// The cases splat split off a switch of a function nothing calls (func_001412B0), which its jump table (jtbl_002F2E20) still
+// points at: a word of 4 to 14 at 0x14 into its second argument made 5, 4, 6, 7, 8, 7, 6, 7, 8, 10 or 10, any other 3. The other
+// cases' labels (func_001412EC, func_00141304, the default .L0014130C) were jump labels inside these, 0 in the retail data now
 extern "C"
 {
     u32 UnreachedCase4() RETAIL(FUN_001412fc);

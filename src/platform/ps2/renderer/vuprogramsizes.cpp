@@ -1,0 +1,321 @@
+// The retail executable's .data from 0x2EC348 to 0x2EC3D2, converted from the split
+// once, in the retail order: the game's code may go from one object into the next, so they stay where the retail
+// executable had them, each under its retail name
+#include "common.h"
+#include "gcc2.h"
+#include "retaildata.h"
+
+namespace RetailData
+{
+extern s16 D_002EC348[1] RETAIL(D_002EC348);
+extern s16 D_002EC34A[1] RETAIL(D_002EC34A);
+extern s16 G_MicroCode_2_InstructionAmt[1] RETAIL(G_MicroCode_2_InstructionAmt);
+extern u16 D_002EC34E[1] RETAIL(D_002EC34E);
+extern s16 D_002EC350[1] RETAIL(D_002EC350);
+extern s16 D_002EC352[1] RETAIL(D_002EC352);
+extern s16 D_002EC354[1] RETAIL(D_002EC354);
+extern s16 D_002EC356[1] RETAIL(D_002EC356);
+extern s16 G_MicroCode_1_InstructionAmt[1] RETAIL(G_MicroCode_1_InstructionAmt);
+extern u16 D_002EC35A[1] RETAIL(D_002EC35A);
+extern s16 D_002EC35C[1] RETAIL(D_002EC35C);
+extern s16 D_002EC35E[1] RETAIL(D_002EC35E);
+extern s16 D_002EC360[1] RETAIL(D_002EC360);
+extern s16 D_002EC362[1] RETAIL(D_002EC362);
+extern s16 D_002EC364[1] RETAIL(D_002EC364);
+extern s16 D_002EC366[1] RETAIL(D_002EC366);
+extern s16 D_002EC368[1] RETAIL(D_002EC368);
+extern s16 D_002EC36A[1] RETAIL(D_002EC36A);
+extern s16 D_002EC36C[1] RETAIL(D_002EC36C);
+extern s16 D_002EC36E[1] RETAIL(D_002EC36E);
+extern s16 D_002EC370[1] RETAIL(D_002EC370);
+extern s16 D_002EC372[1] RETAIL(D_002EC372);
+extern s16 D_002EC374[1] RETAIL(D_002EC374);
+extern s16 D_002EC376[1] RETAIL(D_002EC376);
+extern s16 D_002EC378[1] RETAIL(D_002EC378);
+extern s16 D_002EC37A[1] RETAIL(D_002EC37A);
+extern s16 D_002EC37C[1] RETAIL(D_002EC37C);
+extern s16 D_002EC37E[1] RETAIL(D_002EC37E);
+extern s16 D_002EC380[1] RETAIL(D_002EC380);
+extern s16 D_002EC382[1] RETAIL(D_002EC382);
+extern s16 D_002EC384[1] RETAIL(D_002EC384);
+extern s16 D_002EC386[1] RETAIL(D_002EC386);
+extern s16 D_002EC388[1] RETAIL(D_002EC388);
+extern s16 D_002EC38A[2] RETAIL(D_002EC38A);
+extern s16 D_002EC38E[2] RETAIL(D_002EC38E);
+extern s16 D_002EC392[1] RETAIL(D_002EC392);
+extern s16 D_002EC394[1] RETAIL(D_002EC394);
+extern s16 D_002EC396[1] RETAIL(D_002EC396);
+extern u32 D_002EC398[1] RETAIL(D_002EC398);
+extern u32 D_002EC39C[1] RETAIL(D_002EC39C);
+extern s16 D_002EC3A0[1] RETAIL(D_002EC3A0);
+extern u16 D_002EC3A2[1] RETAIL(D_002EC3A2);
+extern u32 D_002EC3A4[1] RETAIL(D_002EC3A4);
+extern u32 D_002EC3A8[1] RETAIL(D_002EC3A8);
+extern u32 D_002EC3AC[1] RETAIL(D_002EC3AC);
+extern s16 D_002EC3B0[1] RETAIL(D_002EC3B0);
+extern u16 D_002EC3B2[1] RETAIL(D_002EC3B2);
+extern s16 G_MicroCode_5_InstructionAmt[1] RETAIL(G_MicroCode_5_InstructionAmt);
+extern u16 D_002EC3B6[1] RETAIL(D_002EC3B6);
+extern s16 D_002EC3B8[1] RETAIL(D_002EC3B8);
+extern s16 D_002EC3BA[1] RETAIL(D_002EC3BA);
+extern s16 D_002EC3BC[1] RETAIL(D_002EC3BC);
+extern s16 D_002EC3BE[1] RETAIL(D_002EC3BE);
+extern u32 D_002EC3C0[1] RETAIL(D_002EC3C0);
+extern s16 D_002EC3C4[1] RETAIL(D_002EC3C4);
+extern s16 D_002EC3C6[1] RETAIL(D_002EC3C6);
+extern s16 D_002EC3C8[1] RETAIL(D_002EC3C8);
+extern s16 D_002EC3CA[1] RETAIL(D_002EC3CA);
+extern s16 G_MicroCode_3_InstructionAmt[1] RETAIL(G_MicroCode_3_InstructionAmt);
+extern u16 D_002EC3CE[1] RETAIL(D_002EC3CE);
+extern s16 G_MicroCode_4_InstructionAmt[1] RETAIL(G_MicroCode_4_InstructionAmt);
+extern u16 D_002EC3D2[23] RETAIL(D_002EC3D2);
+
+// 0x2EC348
+RETAIL_DATA(".data", 8) s16 D_002EC348[1] RETAIL(D_002EC348) = {
+    90,
+};
+// 0x2EC34A
+RETAIL_DATA(".data", 2) s16 D_002EC34A[1] RETAIL(D_002EC34A) = {
+    88,
+};
+// 0x2EC34C
+RETAIL_DATA(".data", 4) s16 G_MicroCode_2_InstructionAmt[1] RETAIL(G_MicroCode_2_InstructionAmt) = {
+    4,
+};
+// 0x2EC34E: nothing uses it
+RETAIL_DATA(".data", 2) u16 D_002EC34E[1] RETAIL(D_002EC34E) = {
+    0x0,
+};
+// 0x2EC350
+RETAIL_DATA(".data", 8) s16 D_002EC350[1] RETAIL(D_002EC350) = {
+    446,
+};
+// 0x2EC352
+RETAIL_DATA(".data", 2) s16 D_002EC352[1] RETAIL(D_002EC352) = {
+    272,
+};
+// 0x2EC354
+RETAIL_DATA(".data", 4) s16 D_002EC354[1] RETAIL(D_002EC354) = {
+    78,
+};
+// 0x2EC356
+RETAIL_DATA(".data", 2) s16 D_002EC356[1] RETAIL(D_002EC356) = {
+    0,
+};
+// 0x2EC358
+RETAIL_DATA(".data", 8) s16 G_MicroCode_1_InstructionAmt[1] RETAIL(G_MicroCode_1_InstructionAmt) = {
+    18,
+};
+// 0x2EC35A: nothing uses it
+RETAIL_DATA(".data", 2) u16 D_002EC35A[1] RETAIL(D_002EC35A) = {
+    0x0,
+};
+// 0x2EC35C
+RETAIL_DATA(".data", 4) s16 D_002EC35C[1] RETAIL(D_002EC35C) = {
+    78,
+};
+// 0x2EC35E
+RETAIL_DATA(".data", 2) s16 D_002EC35E[1] RETAIL(D_002EC35E) = {
+    75,
+};
+// 0x2EC360
+RETAIL_DATA(".data", 8) s16 D_002EC360[1] RETAIL(D_002EC360) = {
+    86,
+};
+// 0x2EC362
+RETAIL_DATA(".data", 2) s16 D_002EC362[1] RETAIL(D_002EC362) = {
+    84,
+};
+// 0x2EC364
+RETAIL_DATA(".data", 4) s16 D_002EC364[1] RETAIL(D_002EC364) = {
+    260,
+};
+// 0x2EC366
+RETAIL_DATA(".data", 2) s16 D_002EC366[1] RETAIL(D_002EC366) = {
+    151,
+};
+// 0x2EC368
+RETAIL_DATA(".data", 8) s16 D_002EC368[1] RETAIL(D_002EC368) = {
+    228,
+};
+// 0x2EC36A
+RETAIL_DATA(".data", 2) s16 D_002EC36A[1] RETAIL(D_002EC36A) = {
+    143,
+};
+// 0x2EC36C
+RETAIL_DATA(".data", 4) s16 D_002EC36C[1] RETAIL(D_002EC36C) = {
+    192,
+};
+// 0x2EC36E
+RETAIL_DATA(".data", 2) s16 D_002EC36E[1] RETAIL(D_002EC36E) = {
+    97,
+};
+// 0x2EC370
+RETAIL_DATA(".data", 8) s16 D_002EC370[1] RETAIL(D_002EC370) = {
+    124,
+};
+// 0x2EC372
+RETAIL_DATA(".data", 2) s16 D_002EC372[1] RETAIL(D_002EC372) = {
+    120,
+};
+// 0x2EC374
+RETAIL_DATA(".data", 4) s16 D_002EC374[1] RETAIL(D_002EC374) = {
+    250,
+};
+// 0x2EC376
+RETAIL_DATA(".data", 2) s16 D_002EC376[1] RETAIL(D_002EC376) = {
+    154,
+};
+// 0x2EC378
+RETAIL_DATA(".data", 8) s16 D_002EC378[1] RETAIL(D_002EC378) = {
+    248,
+};
+// 0x2EC37A
+RETAIL_DATA(".data", 2) s16 D_002EC37A[1] RETAIL(D_002EC37A) = {
+    153,
+};
+// 0x2EC37C
+RETAIL_DATA(".data", 4) s16 D_002EC37C[1] RETAIL(D_002EC37C) = {
+    202,
+};
+// 0x2EC37E
+RETAIL_DATA(".data", 2) s16 D_002EC37E[1] RETAIL(D_002EC37E) = {
+    144,
+};
+// 0x2EC380
+RETAIL_DATA(".data", 8) s16 D_002EC380[1] RETAIL(D_002EC380) = {
+    404,
+};
+// 0x2EC382
+RETAIL_DATA(".data", 2) s16 D_002EC382[1] RETAIL(D_002EC382) = {
+    229,
+};
+// 0x2EC384
+RETAIL_DATA(".data", 4) s16 D_002EC384[1] RETAIL(D_002EC384) = {
+    154,
+};
+// 0x2EC386
+RETAIL_DATA(".data", 2) s16 D_002EC386[1] RETAIL(D_002EC386) = {
+    94,
+};
+// 0x2EC388
+RETAIL_DATA(".data", 8) s16 D_002EC388[1] RETAIL(D_002EC388) = {
+    238,
+};
+// 0x2EC38A
+RETAIL_DATA(".data", 2) s16 D_002EC38A[2] RETAIL(D_002EC38A) = {
+    142, 4,
+};
+// 0x2EC38E
+RETAIL_DATA(".data", 2) s16 D_002EC38E[2] RETAIL(D_002EC38E) = {
+    2, 346,
+};
+// 0x2EC392
+RETAIL_DATA(".data", 2) s16 D_002EC392[1] RETAIL(D_002EC392) = {
+    249,
+};
+// 0x2EC394
+RETAIL_DATA(".data", 4) s16 D_002EC394[1] RETAIL(D_002EC394) = {
+    212,
+};
+// 0x2EC396
+RETAIL_DATA(".data", 2) s16 D_002EC396[1] RETAIL(D_002EC396) = {
+    208,
+};
+// 0x2EC398
+RETAIL_DATA(".data", 8) u32 D_002EC398[1] RETAIL(D_002EC398) = {
+    0xBE0152,
+};
+// 0x2EC39C
+RETAIL_DATA(".data", 4) u32 D_002EC39C[1] RETAIL(D_002EC39C) = {
+    0x7400EC,
+};
+// 0x2EC3A0
+RETAIL_DATA(".data", 8) s16 D_002EC3A0[1] RETAIL(D_002EC3A0) = {
+    76,
+};
+// 0x2EC3A2
+RETAIL_DATA(".data", 2) u16 D_002EC3A2[1] RETAIL(D_002EC3A2) = {
+    0x4C,
+};
+// 0x2EC3A4
+RETAIL_DATA(".data", 4) u32 D_002EC3A4[1] RETAIL(D_002EC3A4) = {
+    0x2B002C,
+};
+// 0x2EC3A8
+RETAIL_DATA(".data", 8) u32 D_002EC3A8[1] RETAIL(D_002EC3A8) = {
+    0x330034,
+};
+// 0x2EC3AC
+RETAIL_DATA(".data", 4) u32 D_002EC3AC[1] RETAIL(D_002EC3AC) = {
+    0x300030,
+};
+// 0x2EC3B0
+RETAIL_DATA(".data", 8) s16 D_002EC3B0[1] RETAIL(D_002EC3B0) = {
+    114,
+};
+// 0x2EC3B2
+RETAIL_DATA(".data", 2) u16 D_002EC3B2[1] RETAIL(D_002EC3B2) = {
+    0x72,
+};
+// 0x2EC3B4
+RETAIL_DATA(".data", 4) s16 G_MicroCode_5_InstructionAmt[1] RETAIL(G_MicroCode_5_InstructionAmt) = {
+    48,
+};
+// 0x2EC3B6: nothing uses it
+RETAIL_DATA(".data", 2) u16 D_002EC3B6[1] RETAIL(D_002EC3B6) = {
+    0x0,
+};
+// 0x2EC3B8
+RETAIL_DATA(".data", 8) s16 D_002EC3B8[1] RETAIL(D_002EC3B8) = {
+    196,
+};
+// 0x2EC3BA
+RETAIL_DATA(".data", 2) s16 D_002EC3BA[1] RETAIL(D_002EC3BA) = {
+    195,
+};
+// 0x2EC3BC
+RETAIL_DATA(".data", 4) s16 D_002EC3BC[1] RETAIL(D_002EC3BC) = {
+    100,
+};
+// 0x2EC3BE
+RETAIL_DATA(".data", 2) s16 D_002EC3BE[1] RETAIL(D_002EC3BE) = {
+    99,
+};
+// 0x2EC3C0
+RETAIL_DATA(".data", 8) u32 D_002EC3C0[1] RETAIL(D_002EC3C0) = {
+    0x830084,
+};
+// 0x2EC3C4
+RETAIL_DATA(".data", 4) s16 D_002EC3C4[1] RETAIL(D_002EC3C4) = {
+    112,
+};
+// 0x2EC3C6
+RETAIL_DATA(".data", 2) s16 D_002EC3C6[1] RETAIL(D_002EC3C6) = {
+    112,
+};
+// 0x2EC3C8
+RETAIL_DATA(".data", 8) s16 D_002EC3C8[1] RETAIL(D_002EC3C8) = {
+    174,
+};
+// 0x2EC3CA
+RETAIL_DATA(".data", 2) s16 D_002EC3CA[1] RETAIL(D_002EC3CA) = {
+    83,
+};
+// 0x2EC3CC
+RETAIL_DATA(".data", 4) s16 G_MicroCode_3_InstructionAmt[1] RETAIL(G_MicroCode_3_InstructionAmt) = {
+    114,
+};
+// 0x2EC3CE: nothing uses it
+RETAIL_DATA(".data", 2) u16 D_002EC3CE[1] RETAIL(D_002EC3CE) = {
+    0x71,
+};
+// 0x2EC3D0
+RETAIL_DATA(".data", 8) s16 G_MicroCode_4_InstructionAmt[1] RETAIL(G_MicroCode_4_InstructionAmt) = {
+    222,
+};
+// 0x2EC3D2: nothing uses it
+RETAIL_DATA(".data", 2) u16 D_002EC3D2[23] RETAIL(D_002EC3D2) = {
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+};
+} // namespace RetailData

@@ -1156,7 +1156,7 @@ void InitStepKinds()
 }
 
 // Without the loops made into calls of memmove, which the game doesn't have
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) u32 InsertStepKindBefore(u32 kind, u32 before)
+KEEP_LOOPS u32 InsertStepKindBefore(u32 kind, u32 before)
 {
     s32 index = StepIndexOf(before & 0xFF);
     for (s32 at = static_cast<s32>(g_StepKindCount); index < at; at--)
@@ -1169,7 +1169,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) u32 InsertStepKind
     return index >= 0;
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) u32 InsertStepKindAfter(u32 kind, u32 after)
+KEEP_LOOPS u32 InsertStepKindAfter(u32 kind, u32 after)
 {
     s32 index = StepIndexOf(after & 0xFF);
     for (s32 at = static_cast<s32>(g_StepKindCount); index + 1 < at; at--)

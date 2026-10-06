@@ -1,8 +1,5 @@
-# The split (tools/split.py) and the build's tools: splat and the disassembler it uses, at the versions asm/ was made with, and
-# ninja (Windows has none of its own)
-splat64[mips]==0.50.0
-spimdisasm==1.42.4
-rabbitizer==1.16.2
+# The build's tools: ninja (Windows has none of its own), and pyelftools for tools/compare_builds.py
 ninja
+pyelftools
 # Reading MSYS2's packages for tools/toolchain_dlls.py on Windows (Python 3.14 has zstd itself)
 zstandard; sys_platform == "win32" and python_version < "3.14"

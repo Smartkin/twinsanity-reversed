@@ -11,6 +11,7 @@
 
 // RouteStepPosition has more arguments than n32 passes in registers: the asm hands it four integers in $a0-$a3 and five floats in
 // $f12-$f16, the C++ function takes the floats in $f16-$f19 and the last one on the stack
+#if defined(_EE)
 asm(R"(
     .pushsection .text.FUN_0020b6e8, "ax", @progbits
     .globl FUN_0020b6e8
@@ -33,6 +34,7 @@ FUN_0020b6e8:
     .size FUN_0020b6e8, . - FUN_0020b6e8
     .popsection
 )");
+#endif
 
 namespace
 {

@@ -14,6 +14,10 @@
 // - EABI_IMPORT(name, function): an asm function, for the C++ that calls it through its declaration.
 //
 // Calls through the retail vtables and function pointers use the EABI's registers whatever is behind them (CallEabi).
+//
+// Only the PS2 has the retail convention: elsewhere every function is the C++ one under its retail name, and calls through the
+// retail vtables and function pointers are plain calls.
+#if defined(_EE)
 #define RETAIL_N32(name) asm(#name "_n32")
 #ifdef __INTELLISENSE__
 // VS Code's C/C++ extension doesn't take asm made of constant expressions
@@ -23,13 +27,18 @@
 #define EABI_EXPORT(name, function) asm((Abi::Thunk<decltype(function)>(Abi::Direction::Export, #name)))
 #define EABI_IMPORT(name, function) asm((Abi::Thunk<decltype(function)>(Abi::Direction::Import, #name)))
 #endif
+#else
+#define RETAIL_N32(name) asm(#name)
+#define EABI_EXPORT(name, function)
+#define EABI_IMPORT(name, function)
+#endif
 
 namespace Abi
 {
-constexpr u32 ArgumentRegisters = 8;
+inline constexpr u32 ArgumentRegisters = 8;
 // The registers of the first argument of each kind: $a0 ($4) and $f12
-constexpr u32 FirstIntegerArgumentRegister = 4;
-constexpr u32 FirstFloatArgumentRegister = 12;
+inline constexpr u32 FirstIntegerArgumentRegister = 4;
+inline constexpr u32 FirstFloatArgumentRegister = 12;
 
 enum class Direction
 {
@@ -244,6 +253,9 @@ inline void Pack(T value, u64* integers, u32& integerCount, f32* floats, u32& fl
 template <typename Result, typename... Args>
 inline Result CallEabi(const void* function, Args... args)
 {
+#if !defined(_EE)
+    return reinterpret_cast<Result (*)(Args...)>(const_cast<void*>(function))(args...);
+#else
     static_assert(sizeof...(Args) <= ArgumentRegisters, "arguments on the stack aren't passed");
     u64 integers[ArgumentRegisters]{};
     f32 floats[ArgumentRegisters]{};
@@ -266,5 +278,6 @@ inline Result CallEabi(const void* function, Args... args)
     {
         return static_cast<Result>(CallEabiInteger(function, integers, floats));
     }
+#endif
 }
 }

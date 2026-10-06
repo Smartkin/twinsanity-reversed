@@ -3,25 +3,43 @@
 How the decomp is put together, how builds get tested and what replacing the game's code has to look out for. Setting up and
 building are in the [README](../README.md).
 
-## Symbols and the split
+## The retail data
 
-The asm's names come from the Ghidra project: `tools/ghidra/ExportProgramInfo.java`, run on the project's program, exports it
-into `ghidra/` (not committed), and `tools/make_symbols.py` makes `symbol_addrs.txt` of it. `tools/split.py` splits the
-executable with splat twice, so that every function spimdisasm finds gets a file of its own (see "A file is linked whole or not
-at all" below), and `tools/fix_asm.py` fixes what splat gets wrong about the layout. After the names changed in Ghidra:
+The retail executable's data is C++: `src/data/data.cpp`, `rodata.cpp`, `sdata.cpp`, `sbss.cpp` and `bss.cpp` (its `.data`,
+`.rodata`, `.sdata`, `.sbss` and `.bss`), and on the PS2 side `src/platform/ps2/renderer/vumicrocode.cpp` (`.vutext`, the VU
+microcode: DMA chains of MPG VIF codes and their programs, its entries the arrays the renderer names) and `vuprogramsizes.cpp`
+(the VU programs' sizes, the end of `.data`). They were converted once from master's split (one object per label, the labels'
+retail names as their link names, `RETAIL(...)`), and the C++ that uses an object declares it under that name with its own type,
+as it did when the split had it. Each object has its retail address in a comment, and the ones the C++ doesn't use say so (the
+retail functions' jump tables among them, which point at nothing now).
 
-```sh
-python tools/make_symbols.py       # ghidra/ -> symbol_addrs.txt
-python tools/split.py              # symbol_addrs.txt -> asm/, then configure.py
-python tools/build.py --matching   # the asm alone must still give the retail load image back
-```
+The objects stay in the retail order, one after the other, because the game's code reads past an object it names into the next
+ones (`G_NullParticlePtr` is the start of 1200 bytes of particle slots under several labels, the fog tables are eight objects of
+1 KB read as one, the static constructors' count `G_UnkFunTableSize` is followed by the constructors): `include/retaildata.h`'s
+`RETAIL_DATA` gives each object its section and alignment and keeps it when nothing names it (`used`), the files are compiled with
+GCC's `-fno-toplevel-reorder` (their objects in the order they're written; Clang keeps that order without it) and the assembler's
+`-no-pad-sections`, and `tools/make_ld.py` puts them first in their output sections. Typed by their shape: vtables are
+`GccVTableEntry` arrays (a vtable's label that runs on past its last entry has what follows as an object of its own right after
+it), texts are `char` arrays, numbers `u32`, `s32`, `f32` (inexact values through `Rounded`, as everywhere), `u16` and `u8`
+arrays, and the rest structs of those and pointers (tables of rows where they repeat). The objects that point at the PS2 side's own
+functions (the renderer's shader classes' vtables, libmpeg's tables) are inside `#if defined(_EE)`: elsewhere they're left out.
+The static constructors' list names three of the PS2 renderer's modules too, which each platform's side defines under their retail
+names. The headers' namespace-scope constants are `inline constexpr`, because `-fno-toplevel-reorder` keeps unused ones and they'd
+go into `.rodata` ahead of the data.
 
-The tree can be copied to another folder or system as it is, `asm/` and `assets/` included (nothing in them has an absolute
-path, `fix_asm.py` makes splat's `.incbin` paths relative), or split there again. Leave `build/` and `.venv/` behind.
+On the desktop the retail data is one block in the host's `.data` (`RETAIL_DATA` names its sections `.data.retail.rodata` and so
+on, and `configure.py` links its files first in the PS2's order of the sections), because the game's code also reads across
+sections (the copy protection reads a word up to 33 KB past its countdown in `.sbss`, into `.bss`, every frame) and writes to its
+read-only data (`ParseArguments` cuts the built-in launch arguments up in place), which the PS2's memory lets it do. The retail
+`.bss` takes room in the executable there (about 900 KB of zeros).
 
-`configure.py` writes `build.ninja` for the system it runs on (ninja runs the commands through `/bin/sh` on Linux and straight on
-Windows, so their quoting differs) and `build/compile_commands.json` for editors. `tools/split.sh` and plain `ninja` still work
-on Linux.
+A change that should leave the program as it was is checked with `tools/compare_builds.py`: the PS2 link keeps its relocations
+(`--emit-relocs`), and the tool compares two builds function by function and object by object, each pointer read as what it
+points at, so code moved between files still compares the same; `--bytes` compares what they load, byte for byte. Master builds
+the same program from the split.
+
+`symbol_addrs.txt` has every retail name with its address in the retail executable (the build doesn't read it): the C++'s link
+names are those names, so it's how a symbol of the build is found in the retail executable and the Ghidra project.
 
 ## Testing in PCSX2
 
@@ -44,10 +62,11 @@ slot is `--press 80:start:0.3 --press 85:cross:0.3 --press 93:up:0.3 --press 95:
 96:up --press 99:cross` (then `--press 140:cross` past the autosave notice), and `--goto 66:10 --goto 125:6` unloads and reloads
 everything from the beach. `--card` plays with a card image of one's own, which `tools/mcread.py` lists and dumps files of;
 `--loaders`, `--chunks` and `--watch` chains follow the loading, `--keep-state` and `--backtrace` look at a hang (the docstring
-has the rest). Comparing a run with one of the asm alone (`build/matching`, a `--matching` build kept aside) is the test of a
-replaced subsystem: the heap manager's counts and the disk manager's blocks come out the same. The heap starts at `_end`, so its
-addresses and free space move with the executable's size (the C++ build ended 0xAE00 bytes past retail's 0x3DB200 on
-2026-10-01, with 0x9AADB bytes of heap free at the beach): compare the counts, and keep an eye on the free space.
+has the rest). Comparing a run with one of an earlier build (master's, which also builds the retail code's asm alone with
+`--matching`, or the build before a change) is the test of a replaced subsystem: the heap manager's counts and the disk manager's
+blocks come out the same. The heap starts at `_end`, so its addresses and free space move with the executable's size (the C++
+build ended 0xAE00 bytes past retail's 0x3DB200 on 2026-10-01, with 0x9AADB bytes of heap free at the beach): compare the counts,
+and keep an eye on the free space.
 
 `tools/render_check.py` compares what a build draws with what the build before it drew, byte for byte: eight cases (a logo movie,
 the title's cutscene, the main, options and load game menus, the beach standing, running into the water and paused) each stop
@@ -64,8 +83,8 @@ makes them, so the gameplay cases start playing past the intro movie.
 
 | Path | What |
 |---|---|
-| `asm/text/<function>.s` | Every retail function's asm, one file each, named as in the Ghidra project: the matching build links them all, the C++ build none (every one is C++, PS2SDK's, or left out through `ps2sdk.txt`, `retired.txt` and `fragments.txt`) |
-| `asm/data/` | `.data`, `.rodata`, `.sdata`, `.sbss`, `.bss` and the VU programs (`.vutext`), whole |
+| `src/data/` | The retail executable's `.data`, `.rodata`, `.sdata`, `.sbss` and `.bss` in its order (see "The retail data") |
+| `src/retail/` | The game's C library as Sony's newlib had it, on every platform: `libc.cpp` (`rand`, its state in the old library's reentrancy block, `qsort`'s order of comparisons, `toupper`, `tolower` and `strncasecmp` by the game's casing table, `atexit`, `memmove`), `malloc.cpp` (Sony's malloc, where the pools come from, on the platform's `RetailLibc::Sbrk`) and `libm.cpp` (`expf`) |
 | `src/main.cpp` | Main and ParseArguments |
 | `src/game/` | The rest of the game's C++: `memory.cpp` (the heap manager and the pools), `string.cpp`, `stream.cpp` (streams, files and memory streams), `filestream.cpp` (the file streams read on Platform::Stream's channels), `archive.cpp` (the BD/BH archives' tables: read from the BH by its section reader, sorted, searched; every path looked up is kept in a list for good), `readers.cpp` (the readers: the two storages of readers waiting on the two file streams, stepped a frame at a time or all at once, and the item reader classes that read a part of a file into the heap or the disk manager and hand it to a section reader), `gamecontext.cpp` (GameContext's start-up of the game's systems), `chunkloading.cpp` (the chunk loading manager: a loader per chunk with a state machine for each of its two files, RM2 and SM2, that loads what's wanted and unloads what isn't, the links followed from the focus chunk at the depths that decide what's wanted, through link hulls while the focus object is inside them; the SM2's loader makes the chunk's data and reads the SM2 into it, the RM2's adds the chunk to the chunk manager and reads the RM2), `chunkdata.cpp` (a chunk's data: made by the SM2's loader, its parts (scenery, the instances' contexts, lights, collision, particles, dynamic scenery) made as they're read, its frame while it's shown (`UpdateChunks` steps every chunk's), and its release, a part at a time through the readers or at once; the list of every chunk's data and the links each keeps a list of), `chunkfiles.cpp` (the items the SM2 and RM2 are read by: the SM2's scenery, dynamic scenery and links into the chunk's data and its graphics queued, the RM2's sections handed to the code, graphics and instances' readers), `reference.cpp` (the objects' reference counts), `math.cpp` (the game's maths library: matrixes, vectors, sines and cosines (`Platform::Math`: VU0's microprogram on the PS2), the curves of points, the random number generators), `save.cpp` (the save's date), `savedevice.cpp` (the save code's memory card device: the save's files and the requests on them, asked for and polled by the save code, on Platform::Saves; the space a save of its files needs), `shapes.cpp` (the UI's 2D shapes, their vtables the retail ones: sprites (a texture's area on the unit square a matrix places, turned or not), strips of coloured vertexes and rings (strips between two ellipses of segments, shaped and coloured by curves, inside each other), drawn through `Platform::Graphics`, read from a stream with their resources), `particles2d.cpp` (the UI's 2D particles: a pool of 16 byte slots with a free list, the emitters that make particles between a widget's places and age them, drawn as a sprite sized, turned and coloured by curves of their age, and the radial ones thrown out of the middle), `bindings.cpp` (the button bindings: up to four buttons an action, a modifier action held or not, pressed this frame or held, and how hard), `resources.cpp` (a texture's and a material's resource from their tables or read from a stream), `graphicstables.cpp` (the tables of the graphics resources the chunks share by ID (textures, materials, models, rigid models, skins, blend skins, meshes, LODs, skies): one template for the retail tables' shared code (sorted by ID, searched by halves, grown by 0x40, references counted, released resources queued for ResourcesStep to delete), each kind's three vtables' functions under their retail names, the references a chunk being read takes and lets go of once it's read; the graphics section's readers, a kind's subsection at a time, and the skies' own files; each kind's representation is `Platform::Graphics`'), `array.cpp` (the pointer arrays' retail iterators), `font.cpp` (a font read from its PSF file, and a text laid out in lines of its glyphs), `overlay.cpp` (a renderer's 2D overlay for the frame: shapes queued in six layers, placed by a matrix or not, in a colour or their own, texts queued per font, all drawn at the end of the renderer's frame and dropped), `colour.cpp` (the game's colours as fractions: red, green and blue 1 at 192, alpha at 128), `widgets.cpp` (the UI's widgets, their vtables the retail ones: a state machine of hidden, appearing, shown and disappearing over timed durations and holds, chained so that what one is told passes on down the chain; animated widgets lerp colour, place and scale between hidden and shown values, labels draw a text of the text table or a string of their own, tiled pictures eight sprites, sprite widgets a sprite with a drop shadow, a pulse, a bob and a wobble, and their 2D particles; menu widgets step and draw a menu, ring widgets rings; the UI controllers' base keeps 64 widgets that 64 bit masks show and hide), `menus.cpp` (the UI's menus: pages of items with a selection per player, the pages next to each (left and right in rings, above, below, the parent), entered and left with their items told, a frame of a page that moves the selection or goes to another page from the menu input (seven actions of the button bindings, pressed and held) with the menu's sounds), `widgeteffects.cpp` (the effects widgets play: a curve's scale, sparkles of 2D particles, rocking, sliding, spinning), `oleg.cpp` (OLEG, the in-game UI manager, a member of the game controller: its widgets (the HUD, the pause menu and the game's progress round it, the front end's menus, the save manager's screens, the loading and legal screens) made and set up in the retail order and destroyed, its start-up (the menus' pages, the menu input's buttons, the drawers' styles, the front end's sounds), its frame (the wumpa fruit added one at a time, a hundred making a life, the pickups' effects), the pictures it reads from files (the Crash title, the levels' titles, the legal, loading, game over and credits screens), the health bar, the slider and the widgets of the levels' and the save slots' pages, the HUD's values each frame and the particles' material), `olegpages.cpp` (OLEG's menu pages: the main menu, the options and their three pages, the screen position, the pause menu, the quit and autosave questions, the notices, the game over, the levels pages and the extras with their galleries and movies, the actions they ask the game controller for; the save slots and save choices pages are `savepages.cpp`), `gamecontroller.cpp` (the game controller: the game's flow as 23 states stepped every frame (the start-up, the logos, the title, the menus, loading a level, playing, watching, movies, pausing, the gallery, the game over, the credits, restarting), the saving's steps around the save code, the characters' roles, the frame's drawing, and the scripts' requests (the bottom text, cutscenes, boss mode, whack-a-worm, autosaves at checkpoints, game over, credits)), `progress.cpp` (the game's progress: the counts, the play's state (mode, pairing, characters, areas), the time played, the levels' gems and crystals, the checkpoints play starts from again (an instance, its chunk's persistent flag and where the characters come back to) and the ways into the game that reset them; the save controller that a save's file is read into and written from, and what it takes of the game and gives back), `language.cpp` (the languages' text files, their lines and the texts in use), `instances.cpp` (the game's object model: the objects references point at (asleep, queued to be stepped, released; their place and collision), the instances' contexts with their nodes (one of each of 24 kinds, each a class of the game with its vtable), the events queued for an instance and handed to its nodes of the kinds each goes to, each chunk's instances (the sleeping ones, and a list of the nodes of each kind, stepped kind by kind in the game's order with the nodes taken out meanwhile taken out after), the instances of no chunk, the objects queued for a step, what's freed a thing at a time, the instances' IDs), `properties.cpp` (the instances' properties: the lists an RM2 has of tagged values, floats and integers, the holders each class keeps them in and the extras beyond them), `objects.cpp` (the game's objects as the RM2's code section has them: header, name, properties, the resources they name, the script pack and the slots), `resourcetables.cpp` (the tables of the game's resources by ID, one per kind and a voices' table per language, the code section's readers that fill them and the unloading of what the chunks no longer use), `instancesection.cpp` (the RM2's instance sections: each layout's item and its nine kinds' items and section readers (a layout's sections go templates, AI positions, AI paths, positions, paths, surfaces, instances, triggers, cameras), every element read from its section and registered with the layout: templates to the instance factory, object instances given contexts and their waypoints, AI positions and paths to the chunk's AI navigation, positions and paths to the chunk's lists, triggers and cameras given contexts that tell their instances, plain boxes for the sound code, collision surfaces copied into the game's table; once read, the instances linked to the ones they name), `layout.cpp` (a layout's elements: object instances, instance templates, triggers (message triggers and cameras), the sound boxes, positions, paths and collision surfaces), `navigation.cpp` (a chunk's AI navigation: its layouts' AI positions and paths, their searches and links, the path finder's A*-like search over them and the routes it makes), `instancefactory.cpp` (the instance factory: an instance's context made from its object instance (its place, its model's, object's and type's nodes; an agent of its object's type with its class's property holder and part), and the contexts of triggers and cameras), `agentnodes.cpp` (the agent nodes, kinds 0xC to 0x14: the node an instance's agent is reached by, which hands it events, frames and chunk changes), `agentparts.cpp` (the part of its type an agent keeps (retail's InstanceCreationHelper classes): the last attack that reached it and when, and the bits of what the agent's state gives it and of the attacks that reach it), `agents.cpp` (the agents (retail's ObjectInstanceContext classes) of the object types: the base made with its object's resources taken and let go of, the basic agent's state applied to its instance, its contact messages, attacks and launches; each type's constructor, destructor and small functions; the playable characters', the crates', creatures' and generic objects' larger functions are in their own files), `objectresources.cpp` (the resources an object's references list taken by an agent: a reference each, made empty in their table when it has none yet, and let go of into the tables' deletion queues), `commands.cpp` and `conditions.cpp` (the script commands and conditions the object builder makes, a class each (`include/game/commands.h`, `conditions.h`, made once by a script from the retail builders and TT Lab's AgentLabDefsPS2.json, whose names and arguments they have, and edited by hand since): the builders, the destructors and sizes, and the commands' executions that only run their execution on the agent's node), `commandsnode.cpp`, `commandsagents.cpp` and `commandsgame.cpp` (the commands' executions that are no subject's of their own (see "The rest of `src/`"): what works on the agent's object node, its runner, levels, focus, keys and routes, perceptions, head tracking, motion block, rigid body, linked objects, crates and creatures; the agents' parts, the characters, the linked objects' events and the follow camera; and what asks the game controller (lives, boss mode, whack-a-worm, the bottom text), the video controller, the music and the playable character), `conditionchecks.cpp` (the conditions' checks), `agentlab.cpp` (the behaviour scripts as the RM2 has them: starters and their assigners, graphs of states, bodies, conditions, commands and control packets, and what a packet's values read), `behaviours.cpp` (the behaviour scripts at work: an agent's runner, its stack of levels each running a graph's states (the best body by its condition's score, the completion body once the packet or child behaviour ends, the interrupting states), the starters' receivers and the call conventions that find them), `motion.cpp` (an object instance's motion from its control packets: the packet's start (its time, what it goes to, its translation (straight, accelerated, a spring, a throw, a chase), its rotation and turn), its frame (the target followed, the steps, facing the way it moves or rolling, the end by both parts done, the delay or the sync), the waypoints (keys, paths and routes), the motion's parts and the steps: straight and accelerated moves and turns, the
 interpolations, springs, throws and the four chases (on the ground, in the air, riding a body of the physics, climbing what it
@@ -111,23 +130,19 @@ colliding with the chunk's triangles, the instances around them and each other, 
 the world of 200 slots that steps every awake body a frame), `objectcollision.cpp` (an object's collision: its hulls (a box hull
 of its own, its OGI's at their joints or its kind 4 node's), their surfaces and placed matrices, its boxes, its frame, and the
 instance queries' filters), `place.cpp` (an object's place: its matrix and its position and rotation, each made again from the other side once that changed), `view.cpp` (the render view: the camera's projection from its lens, the matrices to camera, clip and screen space), `cameras.cpp` (the camera triggers' cameras: the main camera's values and its two subtypes (points, lines, paths, splines, zones, the boss camera's arena), where each puts the camera for a target or at a parameter, read from the RM2; the camera triggers' nodes, which send what enters their box and the instances they tell the camera's event; the keyed camera's play along its spline), `camerablender.cpp` (the follow camera's blenders: an angle's or a distance's value eased toward a goal (a value, a range's ends blended by a share, a second range) at a speed or by an input, held, pushed and kept within ends), `camerarig.cpp` (the camera rigs: a lens's rig and the blend to the next, a rig's target, positioner and the point followers that smooth them, the shake, the cutscenes' rig and the game's (the frame its commands' two places make, the scripted target and positioner the cutscenes' commands move from a place to another, along a path or arcing round the target, eased in and out)), `followcamera.cpp` (the player's camera: the positioner behind the target at a pitch, yaw, field of view and distance taken from the camera triggers (blended over their time, or the second subtype's place), four probes around the view that turn it and pull it in from walls, pushed off the collision and out of the instances' hulls, moved to a clear place once the view stays blocked, tilted toward the target's facing; the target that follows the player's place with its height eased, a box's point above it and the trigger's first subtype's point), `movie.cpp` (the movies' controller: the game's requests to play and stop taken on once a frame, the start with the screen, the sound and a music stream's buffer handed to the player and the end that gives them back and restarts the renderer, where the picture goes on screen for the movie's and the TV's shapes, the file's name from the platform's conventions; the playing is Platform::Movie's), `renderer.cpp` (the renderer's frames: the render buckets sent to be drawn and started again, which Platform::Graphics does), `particles.cpp` (the particles: the systems and emitters read from a chunk's particle section (the old versions' values made the current ones), the emitters' runtimes (their blocks of 32 particles or 12 distorting hexagons, a wheel of 32 frames they're due in, their on and off cycles and the camera's distance that switches them), the twelve generators and six velocity rules that make a particle (its start, velocity and spawn time, its ghosts), the events of the blocks on another wheel of 32 frames (bounces off the emitter's plane and vertical plane, blocks let go of, chains ended and blocks made free), the collision spheres objects test against, the start-up (system 0 the "null" system, the wave shader and the distortion's material through `Platform::Graphics`) and killing every particle the game started, a system's render table of 64 steps of its life, and the draw lists' blocks drawn in their chunk's view (the views' VU0 microprograms through `Platform::Math`); the three texture pages loaded from their startup files or read from the default chunk's RM2 (made by `Platform::Graphics`), and an RM2's particle section), `decals.cpp` (the decals of the default particle data: a pool of 32 blocks of 32 decals by type and key, the decals added (their frames made orthonormal, their places taken into the camera's chunk), read from the default chunk's section, aged every frame by `Platform::Graphics::AgeDecal` (VU0's microprograms on the PS2, a block's decals by its first decal's variant as retail has it), dropped once their life is over and put in their keys' draw lists; their texture page and the two default types' UV rectangles), `sound.cpp` (the sound code's side of Platform::Audio), `disk.cpp` (the disk manager), `clock.cpp`, `context.cpp` (the frame loop's engine side), `pads.cpp` (the controllers) |
-| `src/abi.cpp`, `include/abi.h` | The calls between the retail convention and the C++'s |
+| `src/abi.cpp`, `include/abi.h` | The calls between the retail convention and the C++'s (the PS2's: elsewhere there's only the C++'s) |
 | `src/platform/<platform>/` | The platform layer's side for one platform (`ps2/`: PS2SDK, the entry point; `ps2/renderer/` the renderer's PS2 side: `buckets.cpp` the DMA chains and the 28 render buckets written into them, linked into one chain for VIF1 every frame, `frame.cpp` the frame's set-up packet, `vuprograms.cpp` the VU1 programs' uploads, `textures.cpp` the GS memory's texture slots and the textures' registers, `materials.cpp` a material's set-up (its programs, the VU1 buffers taking turns, its shaders) and the frame's materials put into their buckets, `shaders.cpp` the shader types' VU1 data, `models.cpp` the instance blocks VU1 reads several instances of a model from, rigid models and placed ones (dynamic scenery, billboards), `skins.cpp` skins and blend skins with their shapes, `resources.cpp` the graphics resources as the PS2 has them (textures' and models' packets in the disk manager's blocks, materials' shaders, skins' and blend skins' packets and shapes, rigid models and the scenery's meshes, LODs and skies taking their materials, models and meshes from the tables): each kind made, deleted and read, `sky.cpp` the sky drawn first in its half size buffer, `particles.cpp` the particles' and decals' VU1 blocks, the texture pages' four blend modes' materials (shader types 0x12, and 0x13 with STQ coordinates for the decals) made from the page material's first shader, the systems' render tables, the chunks' views loaded into VU0 for the frame's particles and the decals' view, types and aging on VU0, `shadows.cpp` the shadows' half size buffer, `effects.cpp` the screen effects (the depth copied into a buffer the colour filter's palette reads), `text.cpp` the fonts' glyphs for VU1 to expand, `draw2d.cpp` the UI's 2D shapes as GS primitives) |
 | `include/platform/` | The platform layer's interfaces |
-| `include/game/` | The game's types and the asm functions C++ calls |
-| `include/retail/` | The game's C library calls by the retail names (`src/platform/ps2/libc.cpp`, malloc.cpp, libm.cpp and the toolchain's newlib, see "The C library") |
+| `include/game/` | The game's types and functions |
+| `include/retail/` | The game's C library calls by the retail names (`src/retail/` and the toolchain's newlib, see "The C library") |
 | `include/gcc2.h` | GCC 2.9x's C++ ABI: vtables, virtual calls, destructor flags |
-| `ps2sdk.txt` | The Sony SDK functions left out of the link (PS2SDK or the platform layer have them) |
-| `retired.txt` | The game's functions left out of the link whose work the C++ does under other names (the PS2 start-up, the timer, the disk manager's list helpers) |
-| `fragments.txt` | Bytes between functions that splat split off as functions but nothing reaches (stray epilogues, dead stores, padding after a function's last jump), left out of the link |
-| `tools/` | The split, the linker script, the checks and the PCSX2 runner |
+| `tools/` | The build, the linker script, the comparison of builds (`compare_builds.py`) and the PCSX2 runners and checks |
 | `.clangd` | clangd's flags for the C++ (the README's editor setup) |
 | `local.json` | This machine's paths (git-ignored, `tools/local_config.py` reads it; `local.example.json` shows it) |
 
-`configure.py` compiles `src/**/*.cpp` (the platform side picked by `PLATFORM`, `ps2` by default). A function a C++ file defines
-(by its asm name) isn't linked from asm: `tools/make_ld.py` leaves its file out and lays the rest out in the retail order,
-followed by the C++ and PS2SDK. The layout moves wherever code is replaced, so everything has to be symbolic: `make_symbols.py`
-makes symbols of every pointer it can find (Ghidra's typed pointers, jump tables, vtables and callbacks in data).
+`configure.py` compiles `src/**/*.cpp` (the platform side picked by `--platform`, `ps2` by default) and `tools/make_ld.py` lays
+out the code of src/ and PS2SDK's libraries, then each data section with the retail data first. Nothing has a fixed address: the
+code's and the data's places move with every change, and everything refers to everything by name.
 
 ### The rest of `src/`
 
@@ -170,10 +185,11 @@ The files the table doesn't name, by what they hold (each file's own comment at 
   segments and hulls tested against each other).
 - **The PS2 side** (`src/platform/ps2/`, besides what "The platform layer" below describes): `entry.cpp`, `system.cpp`, `io.cpp`,
   `disc.cpp`, `stack.cpp` (running a call on a stack in main memory), `time.cpp`, `audio.cpp`, `memorycard.cpp`, `bounds.cpp` and
-  `matrices.cpp` (VU0's macro mode maths), `collisionmaths.cpp`, `sdr.cpp`, `libc.cpp`, `malloc.cpp`, `libm.cpp`, `multistream/`,
-  `movie/` (`decoder.cpp`, `player.cpp` and libmpeg's and libipu's files), and in `renderer/`: `culling.cpp`, `dma.cpp`,
-  `screenmodels.cpp`, `shaderclasses.cpp`, `shadersettings.cpp`, `shadertypes.cpp`, `vu0programs.cpp`. `src/debug.cpp` has the
-  test hooks the PCSX2 tools read and write. `src/gcc2.cpp` is GCC 2.9x's runtime the game has (`__main`, `__pure_virtual`, the
+  `matrices.cpp` (VU0's macro mode maths), `collisionmaths.cpp`, `sdr.cpp`, `libc.cpp` (the C library's console output and
+  exit), `heap.cpp` (the heap's break), `multistream/`, `movie/` (`decoder.cpp`, `player.cpp` and libmpeg's and libipu's files),
+  and in `renderer/`: `culling.cpp`, `dma.cpp`, `screenmodels.cpp`, `shaderclasses.cpp`, `shadersettings.cpp`, `shadertypes.cpp`,
+  `vu0programs.cpp`, `vumicrocode.cpp` and `vuprogramsizes.cpp` (the retail VU microcode and its programs' sizes). `src/debug.cpp`
+  has the test hooks the PCSX2 tools read and write. `src/gcc2.cpp` is GCC 2.9x's runtime the game has (`__main`, `__pure_virtual`, the
   unwinder's call frame interpreter).
 
 ## The platform layer
@@ -188,28 +204,93 @@ skins and blend skins, lit by the three strongest lights) and presents the rende
 against triangle tests). `Stream` reads the disc's files in the background on numbered channels (opened by path, read into memory or into the sound processor's as a sound bank's samples, polled or waited for) and follows the disc's state once a frame (an open tray holds reading until a file of the disc opens again); the PS2 side is SCEE's MultiStream, the EE client of the disc's STREAM.IRX (`src/platform/ps2/multistream/`: commands batched for the IOP's RPC server 0x12345 and sent once a frame, the module's status parsed out of every reply, the EE's own server 0x12344321 for the module's calls back). The game's file streams (`src/game/filestream.cpp`, a pool of streams whose slots are the channels, each with a reader buffering what's read in parts, a disc file or the files of a BD/BH archive) are on it. `Audio` is the sound processor in the SPU2's terms (48 voices numbered core * 24 + voice, 14 bit volumes, pitches of 0x1000, the 10 reverb modes, volume groups, music streamed on `Stream`'s channels into one voice or two interleaved); `src/game/sound.cpp` has every function of the game's sound code that called MultiStream (voices, reverbs, groups, the music players, the movie's hand-over), so no asm left calls it. `Saves` is the storage of the game's saves by port and slot, a save a directory of files named by the game's region and product codes: one operation at a time (format, make a save's directory, measure a save, find a file, read and write one), started and moved on by an Update a frame, its result asked for after. The PS2 side (`src/platform/ps2/saves.cpp`) is the retail memory card manager, a function of steps an operation each starting a libmc call the non-blocking sync finds done, on libmc (`src/platform/ps2/memorycard.h`, the PS2 side's own now). `Movie` plays a movie file for the game's controller (`src/platform/ps2/movie/`: Sony's movie sample code the game built its player on, in C++: the PSS file streamed from the disc with `sceCdSt*`, demultiplexed by libmpeg into a video ring for the IPU and a sound ring, pictures decoded with the IPU (libmpeg, or the IPU's own formats 0 and 1) while the main thread's stack moves out of the scratchpad libmpeg works in, uploaded to the GS's Z buffer memory by a DMA chain sent from the vertical blank's interrupt every second blank, drawn as 32 pixel strips into render bucket 27, and the sound sent by SIF DMA into a ring in the IOP's memory that the SPU2's block transfer plays in a loop; libmpeg and libipu are the platform's own C++ of Sony's libraries, `mpeg.h`, libsdr's EE side is `src/platform/ps2/sdr.cpp`). What the IOP does with MultiStream's commands was read off STREAM.IRX (its command switch at 0x8DD0, the table at 0x12BFC, libsd's imports from 0x12A8C). A platform implements them in
 `src/platform/<platform>/` along with its entry point, which sets the machine up and calls `Main`. Values the game goes by (pad
 states, the save operations' numbers, open flags) are the PS2's, and the PS2's peculiarities stay in `src/platform/ps2/`.
-Another platform needs its side of the layer, and the game's C++ that still builds PS2 hardware packets itself (the
-renderer's VIF and GIF packets and DMA chains, VU0 and VU1 code) moved behind it.
+## The desktop port
+
+`tools/build.py --platform desktop` (`configure.py --platform desktop`, `build/desktop/build.ninja`) builds
+`build/desktop/twinsanity`: every file of src/ but the PS2 side, with `src/platform/desktop/`, by the host's compiler (`--cxx`,
+else `$CXX`, else `g++`; `clang++` works too) for 32 bit x86 (`configure.py`'s `DESKTOP_CXXFLAGS`). 32 bit because the game's data has its pointers in 32 bits (the files' items the
+readers fix up in place, the retail data's pointer tables, `reinterpret_cast<u32>` of pointers here and there): with `-m32
+-malign-double` every struct comes out as on the PS2, every `CHECK_SIZE` and `CHECK_OFFSET` holds and the retail data is the same.
+A 64 bit port needs the files' pointers made offsets or handles first. Floats are SSE's single precision (`-mfpmath=sse`), which
+rounds to the nearest where the R5900's FPU and VU0 round towards zero and have no denormals, infinities or NaNs: the desktop's
+results differ in their last bits, which the game takes in its stride but a replay recorded on the PS2 wouldn't.
+
+What the shared C++ does only on the PS2 is inside `#if defined(_EE)`: PS2SDK's types (`common.h` has its own elsewhere), the
+calls in the retail convention (elsewhere `RETAIL_N32` gives the C++ function its retail name, `EABI_EXPORT` and `EABI_IMPORT`
+are nothing and `Abi::CallEabi` is a plain call), the four hand-written adapters of calls with arguments on the stack, the few
+instructions the game's C++ has (`CopyQuadword`'s `lq`/`sq`, `Touch`'s `lb`, `Kept`'s register), and the retail data's objects
+that point at the PS2 side's functions. Besides `include/platform/`'s interfaces, a platform's side defines these, which the
+game's headers declare under their retail names:
+
+- the vector maths the PS2 does in VU0's macro mode: `include/game/math.h`'s `InitIdentityMatrix`, `Vu*` functions,
+  `MultiplyRotations`, `MatrixFromRotation`, `collision.h`'s `PlaneThroughTriangle`, `TriangleBounds` and the triangle edge
+  tests, `physics.h`'s contact helpers (`MakeVertexDifferences`, `GroupPoints`, the ranges), `hull.h`'s `GetBbox` and
+  `PointsBox`, `platform/graphics.h`'s `ClipBox` and `ClipBoxAt`;
+- `Font::Begin`, `Draw` and `End` (the font's vtable's drawing), and the shadows' model and mesh constructors and readers
+  (`shadows.cpp`'s `InitGameModel`, `ReadGameModel`, `FUN_001c1e70`, `ReadRigidModel2`);
+- the C library's: `RetailLibc::Sbrk` (the heap's break, `include/retail/libc.h`), `RetailExit` and `Abort`;
+- `debug.h`'s `g_TestPadButtons`;
+- the static constructors of the PS2 renderer's modules, which the retail list of static constructors names: `FUN_001a6678` (the
+  renderer's, which also sets the game's statics it holds: no particle section's file, the screens' offsets none, the models'
+  update rate), `FUN_001dd4d0` and `FUN_002b2230` (the VU programs').
+
+The desktop's side is stubs for now (`audio`, `disc`, `io`, `movie`, `pads`, `saves`, `sound`, `stream` and most of `graphics`:
+each function of `include/platform/` doing nothing and giving 0, false or null), the work of the vector units aside, which the
+game's results depend on: `math.cpp` (`Platform::Math`: the sines and cosines as the PS2's microprogram's polynomial, the joints'
+microprograms, the ray tests, the particles' views), `vu0maths.cpp` (the macro mode maths above), `culling.cpp` (the renderer's
+culling) and `decals.cpp` (the decals' view, types and aging). VU1 only turns the scene into the GS's packets, which a desktop
+renderer does its own way. Real too: `entry.cpp` (`main` runs `Main`), `system.cpp` (exit, the window closed first, English, the
+local time), `time.cpp` (the steady clock in the PS2 timer's ticks), `memory.cpp` (the heap's break in an arena of the PS2's
+32 MB, the pools from it like on the PS2), `files.cpp` (the disc's files in a folder, `$TWINSANITY_DISC` or `disc`, their names
+matched in any case), `libc.cpp` (exit), and `window.cpp` with `graphics.cpp`'s frames: an SDL2 window opened when the renderer
+starts, every frame presented in it (so far as the frame's clear color) at 60 a second (`WaitVSync`, which `Present` waits for like
+the PS2's), its events handled at every vertical blank, closing it ending `Main`'s loop.
+
+The window needs SDL2 for 32 bit x86: Arch's `lib32-sdl2-compat` (multilib), Debian's and Ubuntu's `libsdl2-dev:i386`, found
+through pkg-config's 32 bit folders, or a folder of one (`configure.py --sdl2`, `local.json`'s `"sdl2"` or `$SDL2`: its
+`include/SDL2` and `lib`, like the MinGW development release's `i686-w64-mingw32`; on Windows `SDL2.dll` goes next to the
+executable). Without one the build has no window. `window.cpp` is built for the host's own struct layouts, without
+`-malign-double` (SDL's structs as the SDL library has them; Clang also refuses libstdc++'s tables of `long double`s with it), so
+it uses none of the game's headers. `build/desktop/build.ninja` runs `configure.py` again with the same `--cxx` and `--sdl2`. GCC
+builds with debug information, Clang with line tables only: its whole debug information gives the explicit specializations of a
+class template's members after the first one defined their C++ names instead of their retail ones (`pools.h`'s `PoolWalk`), which
+then don't link. libgcc is linked in (`-static-libgcc`: nothing throws, and Clang doesn't find the 32 bit shared one on Arch).
+Clang warns that `collision.cpp`'s `SegmentHitsAnything` passes its `distance` on unset when there's no collision, which the retail
+code does too (it's only read when the collision was hit).
+
+On the PAL disc's files (`TWINSANITY_DISC=<the disc's folder, with Crash6> build/desktop/twinsanity`) it runs the static
+constructors, the heap, the game's start-up and its loop, and stays on the legal screen, waiting for its picture: it comes through
+`Stream`, a stub.
+
+What a port needs next, by the interfaces: `Stream` (MultiStream's channels: reads of the disc's files, the legal screen's picture
+the first), `Graphics`, since a chunk's items are read one after the other from its files and each graphics resource's reader has
+to take its bytes (even headless), then a renderer of the render buckets as command lists in place of the PS2's DMA chains, VU1
+programs and GS packets, `Audio` (the SPU2's voices, ADPCM, reverb, the music streams), `Pads` (a DualShock 2 made of the host's
+controllers), `Saves` (the memory card's operations on files) and `Movie` (PSS files: MPEG-2 video and ADPCM sound).
 
 ## Calling conventions
 
-The retail code is GCC 2.9x's EABI with 64 bit registers; the C++ is PS2SDK's n32. The asm is assembled as n32 (the linker takes one
-ABI; splat writes n32's register names, `$a4`-`$a7` for `$8`-`$11`) and keeps its own conventions inside. Across the two:
+The retail code was GCC 2.9x's EABI with 64 bit registers; the C++ is PS2SDK's n32. All of the code is C++ now, but the retail
+data's vtables and function pointers point at the functions' retail names, and the calls through them pass their arguments the
+EABI's way, so on the PS2 the two conventions stay apart where they differ:
 
 - integer and pointer arguments and results are passed alike (`$4`-`$11`, `$2`);
 - floats aren't: EABI puts the Nth float argument in `$f12+N`, n32 an argument in the register of its position. A function
   taking both goes through a thunk that `include/abi.h` makes from its C++ declaration at compile time (C++26's asm statements of
-  constant expressions): the C++ function is named `<retail name>_n32` (`RETAIL_N32`), `EABI_EXPORT` gives the asm the retail name
-  and `EABI_IMPORT` gives the C++ an asm function. Calls through the retail vtables and function pointers go through
-  `Abi::CallEabi` (`CallVirtual` does it by itself for such arguments);
-- the retail code expects `$f20`-`$f31` kept across calls, n32 only the even ones: the C++ is built with `-ffixed-$f21` ...
-  (GCC 15 takes `-fcall-saved-$f21` ... and still uses the odd ones without saving them);
-- structs passed or returned by value differ too, and about 45 retail functions keep 128 bit values in saved registers, of which
-  GCC only saves 64 bits: check the callers before replacing a function they call;
-- the stack stays 16 byte aligned (n32's), which the retail code's `lq`/`sq` need; GCC's EABI only keeps 8;
+  constant expressions): the C++ function is named `<retail name>_n32` (`RETAIL_N32`) and `EABI_EXPORT` gives the retail name its
+  EABI entry (`EABI_IMPORT` made a C++ declaration call an asm function, which nothing needs any more). Calls through the retail
+  vtables and function pointers go through `Abi::CallEabi` (`CallVirtual` does it by itself for such arguments). Four functions
+  with arguments on the stack have hand-written entries (`attachments.cpp`, `collision.cpp`, `proceduraljoints.cpp`,
+  `waypointroutes.cpp`);
+- the retail code expected `$f20`-`$f31` kept across calls, n32 only the even ones: the C++ is still built with `-ffixed-$f21`
+  ... (GCC 15 takes `-fcall-saved-$f21` ... and still uses the odd ones without saving them);
+- the stack stays 16 byte aligned (n32's), which `lq`/`sq` need; GCC's EABI only keeps 8;
 - divisions don't trap on 0 (`-mno-check-zero-division`), the retail ones don't.
 
-Classes with a vtable (a GCC 2.9x one, still in the retail data) are C++ classes whose methods carry the asm's names
+Elsewhere there's only the C++'s convention: `RETAIL_N32` gives the C++ function the retail name itself, `EABI_EXPORT` and
+`EABI_IMPORT` are nothing, `CallEabi` is a plain call and the hand-written entries are left out (`#if defined(_EE)`).
+
+Classes with a vtable (a GCC 2.9x one, still in the retail data) are C++ classes whose methods carry the retail names
 (`RETAIL(FUN_...)`); their vtable pointer stays where GCC 2.9x put it and virtual calls go through `CallVirtual`. The base class
 has the virtual calls (inline, by slot) and a derived class's methods of the same names are its versions, which its vtable points
 at: `Stream::Read` calls through the vtable, `File::Read` is the file's. Types without one are structs with free functions.
@@ -267,55 +348,47 @@ files, the retail data or the retail code lay out has its `CHECK_OFFSET`s and `C
 - **The stack is in the scratchpad**: the retail entry runs the main thread on the scratchpad's 16 KB, and the game needs it there.
   PS2SDK's loadfile, iopheap and fileio calls build what they send the IOP on their stack, which DMA doesn't reach there: the PS2
   side runs them on a stack in main memory (`src/platform/ps2/stack.h`).
-- **Addresses that mean two things**: 0x3DB200 is the end of the last `.bss` array to `FUN_002941b0` and the heap's start to sbrk
-  and the entry (`tools/fix_asm.py`). Data of a replaced function stays (its jump tables): its cases' labels become 0.
-- **A file is linked whole or not at all**: splat put the functions spimdisasm found itself (`func_<address>`) into the file of
-  the function before them, and replacing that function made them 0 too, vtable methods and a qsort comparator among them (loading
-  a save sorted with a call to address 0). `tools/split.py` gives them files of their own, and `make_ld.py` stops when a replaced file
-  has a label other than its cases'.
-- **Arguments the asm passes on**: a function hands its callees the argument registers it got without setting them again, and a
-  virtual call's slot may read them: `ReleaseChunkScenery` (FUN_001ecc60) gives the scenery's release its own `destroy`, which
-  queues the scenery's destruction, and the C++ that left it out destroyed sceneries their chunks still had (on the first unload).
-  `CallVirtual` and calls of asm need every argument the asm leaves in place written out.
+- **The data's order**: the retail data stays in the retail order (see "The retail data"); the retail functions' jump tables are
+  still in it, their cases 0.
+- **Arguments the retail code passed on**: a retail function handed its callees the argument registers it got without setting them
+  again, and a virtual call's slot may read them: `ReleaseChunkScenery` (FUN_001ecc60) gives the scenery's release its own
+  `destroy`, which queues the scenery's destruction, and the C++ that left it out destroyed sceneries their chunks still had (on
+  the first unload). `CallVirtual` needs every argument the retail code left in place written out.
 - **What an argument points at**: AllocDmaTags reads the chain 0x18 past its argument: every caller hands it the whole set of
   buckets, not a bucket, and the translation that took it for a bucket moved a "next" pointer somewhere at random (Crash gone, a
-  huge polygon over the beach). Read the offsets the asm uses from an argument (and what its callers pass) before typing it.
-- **PS2SDK isn't Sony's SDK**: what the asm passes Sony's functions can mean something else to PS2SDK's. libmc's `mcChdir` always
-  copies the current directory where it's told, Sony's skipped a null pointer, which the retail code passes (`Platform::MemoryCard`
-  gives it a buffer).
+  huge polygon over the beach). Read the offsets the retail code uses from an argument (and what its callers pass) before typing it.
+- **PS2SDK isn't Sony's SDK**: what the retail code passed Sony's functions can mean something else to PS2SDK's. libmc's `mcChdir`
+  always copies the current directory where it's told, Sony's skipped a null pointer, which the retail code passes
+  (`Platform::MemoryCard` gives it a buffer).
 - **The C library**: the link has the toolchain's newlib (`libc_nano`: `sprintf`, `snprintf` and string functions, which do
   what the game's did with every format and argument the program passes) and libgcc after PS2SDK's libkernel, whose `memcpy`,
-  `memset`, `strlen` and `strncpy` are the game's own code; `ps2sdk.txt` gives the asm their retail names. Where newlib does
-  otherwise, the game's are C++ under the retail names: `src/platform/ps2/libc.cpp` (`rand`, its state still in the old
-  library's reentrancy block, `qsort`'s order of comparisons, `toupper`, `tolower` and `strncasecmp` by the game's casing table,
-  `atexit`; `memmove` on PS2SDK's `memcpy`, as fast as the game's; `printf` on deci2's `kputs`, `puts` and `strlcpy` for
-  PS2SDK), `malloc.cpp` (Sony's malloc, where the pools come from) and `libm.cpp` (`expf`). Newlib's `%ld` and `%p` take 32
-  bits where Sony's took 64, and libc_nano prints no floats.
-- **Functions that fall through**: splat splits hand-written code where it embeds data, so a "function" can be the tail
-  of the one before it: libmpeg's FUN_002bf508 has no `jr ra` and runs through its lq mask (`D_002BF5B0`, whose words decode
-  as harmless `dsra32 $zero`) into the `jr ra; nop` of FUN_002bf5c0. Nothing refers to that stub, and leaving it out of the
-  link made FUN_002bf508 run on into `dmaRefImage`, which wrote DMA tags over all of memory at the logos. Before leaving a
-  function out (`ps2sdk.txt`, `retired.txt`) or converting one alone, check that the one before it ends with a jump and its
-  delay slot.
-- **Alignment in `.text`**: libmpeg reads a mask in `.text` with `lq` (`D_002BF5B0`, aligned to 16 by `fix_asm.py`; the movies
-  came out striped). `.vutext` is placed on its own, not with the code.
+  `memset`, `strlen` and `strncpy` are the game's own code. Where newlib does otherwise, the game's are C++ under the retail names
+  in `src/retail/` (on every platform: `rand`, its state still in the old library's reentrancy block, `qsort`'s order of
+  comparisons, `toupper`, `tolower` and `strncasecmp` by the game's casing table, `atexit`, `memmove` on `memcpy`, as fast as the
+  game's, Sony's malloc and `expf`), and the PS2 side has `printf` on deci2's `kputs`, `puts` and `strlcpy` for PS2SDK
+  (`src/platform/ps2/libc.cpp`) and the heap's break (`heap.cpp`). Newlib's `%ld` and `%p` take 32 bits where Sony's took 64,
+  and libc_nano prints no floats.
+- **Alignment in `.text`**: libmpeg reads a mask in `.text` with `lq` (`D_002BF5B0`, `alignas(16)` in `mpegmotion.cpp`; the
+  movies came out striped). `.vutext` is placed on its own, not with the code.
 - **The R5900's floats**: GCC makes `1.0f / sqrt(x)` one `rsqrt.s`, which rounds unlike the retail `sqrt.s` and `div.s` (an
   empty asm statement keeps them apart, `InverseLength`), and fuses multiplies and adds into `madd.s` unless told not to
-  (`-ffp-contract=off`). Matrix maths the asm does on VU0 stays VU0's (`include/game/math.h`'s `Vu*`): VU0 rounds otherwise.
+  (`-ffp-contract=off`). Matrix maths the retail code did on VU0 stays VU0's (`include/game/math.h`'s `Vu*`): VU0 rounds otherwise.
 - **Float literals**: GCC for the R5900 cuts decimal float literals down to single precision (rounding towards zero, as the
   R5900's FPU does), where retail's compiler rounded them to the nearest: `0.2f` is 0x3E4CCCCC in the C++ and 0x3E4CCCCD in the
-  asm, and folding `1.0f / 255.0f` cuts down the same way. The difference is a bit of the last place, so it rarely shows: the box
-  a step's triangles are gathered in grew by one bit less and a few pixels of the beach moved. Write a constant single precision
+  retail code, and folding `1.0f / 255.0f` cuts down the same way. The difference is a bit of the last place, so it rarely shows:
+  the box a step's triangles are gathered in grew by one bit less and a few pixels of the beach moved. Write a constant single precision
   can't hold as `Rounded(0.2)` (`include/common.h`, the nearest float to a double literal) or as a hex float.
-- **Constants built by shifts**: work them out by running the asm's instructions (Python), never in your head: `ori 0x8000;
+- **Constants built by shifts**: work them out by running the retail instructions (Python), never in your head: `ori 0x8000;
   dsll 24` is 0x80 << 32 (TEXA's TA1), read as 0x80000000 it took the depth copy's alpha away and the far scenery came out hazy.
-  When the code reads right and a picture still differs, link the asm of one function at a time to find the function, then run
-  the asm and the C++ into the same place of the chain every frame (keep `chain.next`, `bucket.last` and the word it points with,
-  run one, copy what it wrote, put them back, run the other) and compare the words into debug globals `--dump` reads.
+  When the code reads right and a picture still differs, master (which has the split) can link the asm of one function at a time
+  to find the function, then run the asm and the C++ into the same place of the chain every frame (keep `chain.next`,
+  `bucket.last` and the word it points with, run one, copy what it wrote, put them back, run the other) and compare the words
+  into debug globals `--dump` reads.
 - **VU0 arithmetic in C++**: a C++ copy of a VU0 microprogram's steps doesn't give its results on the EE's FPU, even with the same
   operations in the same order: PCSX2 cuts the smaller operand of an FPU addition down to the bits the EE's adder keeps (no guard
   bits), VU0's additions keep them. The sine polynomial differed in the last bit now and then and moved a few pixels of the beach's
-  water; it runs on VU0 again (`Platform::Math::SinCos`, the retail `vcallms 0xF0` sequence). Keep what VU0 computes on VU0.
+  water; it runs on VU0 again (`Platform::Math::SinCos`, the retail `vcallms 0xF0` sequence). Keep what VU0 computes on VU0
+  (the desktop's C++ of it differs in the last bits, which nothing there compares with).
 - **Buffers the IOP writes**: SIF DMA ignores the low 4 bits of where it writes, and libmc's directory table has to be 64 byte
   aligned (`sceMcTblGetDir` is): `saves.cpp`'s table sat 8 bytes past a quadword, so every listing came in 8 bytes early and the
   game never found its saves (the references the render check had then were taken that way). Any new `.bss` moves such buffers.
@@ -323,7 +396,7 @@ files, the retail data or the retail code lay out has its `CHECK_OFFSET`s and `C
   designator reads the word at address 4, the head target's position reads a missing AgentRef1's place at address 8), which the
   PS2's low memory allows. `-fno-delete-null-pointer-checks` keeps GCC from taking a pointer it read through for one that isn't
   null and dropping the checks that follow; such reads go through an integer address in the C++ (`RetailPlaceOf`).
-- **Words the asm never writes**: some packets leave words of a quadword as the buffer had them (a shader's entry, a corner's
+- **Words the retail code never wrote**: some packets leave words of a quadword as the buffer had them (a shader's entry, a corner's
   fourth word taken from the stack): the C++ leaves them too, rather than writing zeros the retail game never sent.
 
 ## Sony's SDK
@@ -335,9 +408,9 @@ the waits for the vertical blank and the path to the GS, the vertical blank's ca
 system calls and register definitions; PS2SDK's own libgraph waits on the CSR and writes its other bits back) and libsdr's EE side
 (`src/platform/ps2/sdr.cpp`, SDRDRV's commands sent by RPC the way PS2SDK's libsdr does, which PS2SDKs installed before 2026
 don't have). GCC 2.9x's `__main` (the retail constructor list) is `src/gcc2.cpp`. Sony SDK code nothing reaches (libdev's VU
-waits, the C library's scanf family, the kernel set-up's payloads only the replaced set-up pointed at) is left out through
-`ps2sdk.txt`. libmpeg and libipu are the movie player's own C++ (`src/platform/ps2/movie/`: `mpeg.h` the decoder's state,
-`mpeg.cpp` the interface, `mpegdemux.cpp` the PSS demultiplexer, `mpegoutput.cpp` the pictures' colour conversion,
+waits, the C library's scanf family, the kernel set-up's payloads only the replaced set-up pointed at) isn't in the C++
+(master's `ps2sdk.txt` lists it). libmpeg and libipu are the movie player's own C++ (`src/platform/ps2/movie/`: `mpeg.h` the
+decoder's state, `mpeg.cpp` the interface, `mpegdemux.cpp` the PSS demultiplexer, `mpegoutput.cpp` the pictures' colour conversion,
 `mpegdecode.cpp`, `mpegheaders.cpp`, `mpegbits.cpp` and `mpegmotion.cpp` the decoding, its hand-written MMI motion
 compensation kept as its instructions, `ipu.cpp`), on PS2SDK's system calls and register definitions: PS2SDK's libmpeg has
 another interface (no PSS demultiplexing, stream or error callbacks, RAW8 pictures) the player can't use without changing

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Writes build.ninja and build/compile_commands.json. The retail executable is split into asm first (tools/split.py), then
-`ninja` assembles it, compiles src/ and links build/SLES_525.68.elf with PS2SDK in place of the Sony SDK functions ps2sdk.txt
-lists.
+"""Writes build.ninja and build/compile_commands.json: `ninja` compiles src/ and links build/SLES_525.68.elf with PS2SDK's
+libraries. With --platform desktop it writes build/desktop/build.ninja instead (`ninja -f build/desktop/build.ninja`), which
+builds build/desktop/twinsanity with the host's compiler (--cxx, else $CXX, else g++) and the desktop's platform side, its window
+SDL2's for 32 bit x86 (--sdl2's folder, else local_config's, else pkg-config's 32 bit sdl2; none without one).
 
-    python configure.py [--matching]
+    python configure.py [--platform ps2|desktop] [--cxx compiler] [--sdl2 folder]
 
---matching links the asm alone (no src/, no PS2SDK), for `ninja check`, which compares the load image with the retail one.
-PLATFORM (an environment variable, ps2 by default) picks the platform layer's side in src/platform/. Where the toolchain is comes
-from tools/local_config.py ($PS2DEV, local.json, else /usr/local/ps2dev or C:/ps2dev). The commands run the tools with the
-Python running this script, so the same works on Linux and Windows (where ninja runs commands without a shell).
+Where the PS2 toolchain is comes from tools/local_config.py ($PS2DEV, local.json, else /usr/local/ps2dev or C:/ps2dev). The
+commands run the tools with the Python running this script, so the same works on Linux and Windows (where ninja runs commands
+without a shell).
 """
 import json
 import os
@@ -25,9 +25,6 @@ import toolchain_dlls
 WINDOWS = os.name == "nt"
 PS2SDK = local_config.ps2sdk()
 
-# The asm keeps the game's own calling convention (the EABI with 64 bit registers, float arguments from $f12 on), but it's
-# assembled as n32, the ABI of the C++ and PS2SDK's libraries, since the linker takes one ABI. splat names registers the n32 way
-ASFLAGS = ["-EL", "-march=r5900", "-mabi=n32", "-msingle-float", "-G0", "-no-pad-sections", "-I", "include", "-I", "."]
 # C++ is PS2SDK's n32: EABI's stack is only kept 8 byte aligned by GCC, and the retail code (lq/sq) needs 16. The two agree on
 # integer and pointer arguments; calls mixing ints and floats go through thunks (see docs/DEVELOPMENT.md). The retail code
 # expects $f20-$f31 kept across calls, n32 only the even ones: GCC 15 accepts -fcall-saved-$f21... and still uses the odd
@@ -40,11 +37,45 @@ CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G
              "-fno-delete-null-pointer-checks", "-Wall", "-Wno-invalid-offsetof"] + CALL_SAVED_FPRS +
             ["-Iinclude", f"-I{PS2SDK}/ee/include", f"-I{PS2SDK}/common/include"])
 
-PLATFORM = os.environ.get("PLATFORM", "ps2")
+# The retail executable's data, in its order (include/retaildata.h): each file's objects in the order they're written, and
+# sections no longer than what's in them (the MIPS assembler pads a section to its alignment), so the next file's data starts
+# where the retail data ended
+RETAIL_DATA_FLAGS = ["-fno-toplevel-reorder", "-Wa,-no-pad-sections"]
 
-# PS2SDK's libraries, in place of the Sony SDK functions ps2sdk.txt lists, then the toolchain's C library (newlib's small
-# libc_nano: sprintf, snprintf and string functions that do what the game's did) and GCC's runtime (__muldi3, which libmpeg
-# calls). libkernel comes first: its memcpy, memset, strlen and strncpy are the game's own code, newlib's copy bytes
+# The executable keeps its relocations (--emit-relocs: sections the PS2 doesn't load), which tools/compare_builds.py reads
+
+# The desktop: the host's compiler for 32 bit x86, where the game's structs come out as on the PS2 (4 byte pointers, 64 bit values
+# aligned to 8 like the R5900's with -malign-double) and floats are SSE's single precision (x87 keeps them wider). The retail data
+# stays in its order there too
+DESKTOP_CXXFLAGS = ["-m32", "-fno-pie", "-malign-double", "-msse2", "-mfpmath=sse", "-O2", "-std=gnu++26", "-fno-exceptions",
+                    "-fno-rtti", "-fno-threadsafe-statics", "-fno-strict-aliasing", "-fno-delete-null-pointer-checks",
+                    "-ffp-contract=off", "-Wall", "-Wno-invalid-offsetof", "-Iinclude"]
+# GCC needs telling to keep a file's objects in their order, Clang keeps them so and doesn't take the option
+DESKTOP_RETAIL_DATA_FLAGS = ["-fno-toplevel-reorder"]
+# The retail data's files, linked first in the order the PS2's linker script puts their sections in (include/retaildata.h)
+DESKTOP_RETAIL_DATA_ORDER = ["src/data/data.cpp", "src/data/rodata.cpp", "src/data/sdata.cpp", "src/data/sbss.cpp",
+                             "src/data/bss.cpp"]
+# Debug information: GCC's whole, Clang's line tables (its whole debug information gives the explicit specialisations of a class
+# template's members after the first one defined their C++ names instead of their retail ones). Clang warns about the GCC 2.9x
+# destructors' checks of this for null, which -fno-delete-null-pointer-checks keeps
+DESKTOP_GCC_FLAGS = ["-g"]
+DESKTOP_CLANG_FLAGS = ["-gline-tables-only", "-Wno-tautological-undefined-compare"]
+# libgcc linked in: nothing throws, and Clang doesn't find the 32 bit shared one where GCC's 64 bit side keeps its link
+DESKTOP_LDFLAGS = ["-m32", "-no-pie", "-static-libgcc"]
+
+PLATFORM = os.environ.get("PLATFORM", "ps2")
+if "--platform" in sys.argv[1:]:
+    PLATFORM = sys.argv[sys.argv.index("--platform") + 1]
+
+
+def is_retail_data(path):
+    """src/data/ and the platform side's retail data (the PS2's VU microcode and its programs' sizes)"""
+    return path.startswith("src/data/") or path in ("src/platform/ps2/renderer/vumicrocode.cpp",
+                                                    "src/platform/ps2/renderer/vuprogramsizes.cpp")
+
+# PS2SDK's libraries, in place of Sony's SDK, then the toolchain's C library (newlib's small libc_nano: sprintf, snprintf and
+# string functions that do what the game's did) and GCC's runtime (__muldi3, which libmpeg calls). libkernel comes first: its
+# memcpy, memset, strlen and strncpy are the game's own code, newlib's copy bytes
 LIBRARIES = ["kernel", "xcdvd", "padx", "mc", "c_nano", "gcc"]
 
 
@@ -95,90 +126,215 @@ def toolchain_includes():
     return [Path(os.path.normpath(line.strip())).as_posix() for line in lines[start:end]]
 
 
-def main():
-    toolchain_dlls.check()
-    matching = "--matching" in sys.argv[1:]
-    asm = sorted((path.relative_to(HERE).as_posix() for path in (HERE / "asm").rglob("*.s")))
-    # The platform layer's side for the platform built for (src/platform/<platform>/), and none of the others
-    src = sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src").rglob("*.cpp")
-                 if path.relative_to(HERE / "src").parts[:1] != ("platform",)
-                 or path.relative_to(HERE / "src").parts[1] == PLATFORM)
-    if matching:
-        src = []
-    if not asm:
-        raise SystemExit("There's no asm yet: run tools/split.py first")
+def sources():
+    """src/'s C++ for the platform built for: its side of the platform layer (src/platform/<platform>/), none of the others"""
+    return sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src").rglob("*.cpp")
+                  if path.relative_to(HERE / "src").parts[:1] != ("platform",)
+                  or path.relative_to(HERE / "src").parts[1] == PLATFORM)
 
-    python = command([sys.executable, "-X", "utf8"])
-    libs = "" if matching else " ".join("-l" + lib for lib in LIBRARIES)
+
+def is_clang(cxx):
+    try:
+        result = subprocess.run([cxx, "--version"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    return "clang" in result.stdout
+
+
+# pkg-config's folders of 32 bit x86 packages (Arch's lib32, Debian's multiarch), unless PKG_CONFIG_LIBDIR says otherwise
+SDL2_PKG_CONFIG_LIBDIR = "/usr/lib32/pkgconfig:/usr/lib/i386-linux-gnu/pkgconfig"
+# The desktop's file using SDL2 (its window), built for the host's own layouts: without -malign-double, which lays SDL's structs
+# out otherwise than the SDL library has them (and Clang refuses libstdc++'s tables of long doubles with)
+SDL2_SOURCES = ["src/platform/desktop/window.cpp"]
+
+
+def sdl2_folder():
+    """A folder of the desktop's SDL2 (include/SDL2, lib): --sdl2's, else local_config's"""
+    if "--sdl2" in sys.argv[1:]:
+        return Path(sys.argv[sys.argv.index("--sdl2") + 1]).as_posix()
+
+    return local_config.sdl2()
+
+
+def find_sdl2(folder):
+    """The desktop's SDL2 for 32 bit x86, its compile flags and libraries: the folder's, else pkg-config's 32 bit package; None
+    without one"""
+    if folder:
+        rpath = [] if WINDOWS else [f"-Wl,-rpath,{folder}/lib"]
+        return [f"-I{folder}/include/SDL2"], [f"-L{folder}/lib", "-lSDL2"] + rpath
+
+    environment = dict(os.environ)
+    environment.setdefault("PKG_CONFIG_LIBDIR", SDL2_PKG_CONFIG_LIBDIR)
+    try:
+        flags = subprocess.run(["pkg-config", "--cflags", "sdl2"], env=environment, capture_output=True, text=True,
+                               check=True, timeout=60)
+        libs = subprocess.run(["pkg-config", "--libs", "sdl2"], env=environment, capture_output=True, text=True,
+                              check=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    return flags.stdout.split(), libs.stdout.split()
+
+
+class DesktopSetup:
+    """The desktop build's compiler (--cxx, else $CXX, else g++) and flags: every file's, the retail data's added ones, the SDL2
+    files' own (SDL2's when there's one), and the libraries"""
+
+    def __init__(self):
+        self.cxx = sys.argv[sys.argv.index("--cxx") + 1] if "--cxx" in sys.argv[1:] else os.environ.get("CXX", "g++")
+        clang = is_clang(self.cxx)
+        self.cxxflags = DESKTOP_CXXFLAGS + (DESKTOP_CLANG_FLAGS if clang else DESKTOP_GCC_FLAGS)
+        self.retail_data_flags = [] if clang else DESKTOP_RETAIL_DATA_FLAGS
+        self.sdl2_folder = sdl2_folder()
+        sdl2 = find_sdl2(self.sdl2_folder)
+        self.has_sdl2 = sdl2 is not None
+        self.sdl2_cxxflags = [flag for flag in self.cxxflags if flag != "-malign-double"]
+        self.sdl2_cxxflags += ["-DDESKTOP_SDL2"] + sdl2[0] if sdl2 else []
+        self.libs = sdl2[1] if sdl2 else []
+
+    def flags(self, path):
+        if is_retail_data(path):
+            return self.cxxflags + self.retail_data_flags
+
+        return self.sdl2_cxxflags if path in SDL2_SOURCES else self.cxxflags
+
+
+def desktop_platform_sources():
+    """The desktop's side of the platform layer, which the PS2's compile commands have too (for the editors, .clangd)"""
+    return sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "desktop").rglob("*.cpp"))
+
+
+def configure_desktop():
+    desktop = DesktopSetup()
+    src = sources()
+    retail = [path for path in DESKTOP_RETAIL_DATA_ORDER if path in src]
+    src = retail + [path for path in src if path not in retail]
+    out_dir = "build/desktop"
+    executable = f"{out_dir}/twinsanity" + (".exe" if WINDOWS else "")
+    configure = ["--platform", "desktop", "--cxx", desktop.cxx]
+    configure += ["--sdl2", desktop.sdl2_folder] if desktop.sdl2_folder else []
     lines = [
         f"# host: {os.name}",
         "ninja_required_version = 1.10",
-        f"as = {command([local_config.ee_tool('as')])}",
+        f"builddir = {out_dir}",
+        f"cxx = {command([desktop.cxx])}",
+        f"cxxflags = {command(desktop.cxxflags)}",
+        f"retaildataflags = {command(desktop.retail_data_flags)}",
+        f"sdl2flags = {command(desktop.sdl2_cxxflags)}",
+        f"ldflags = {command(DESKTOP_LDFLAGS)}",
+        f"libs = {command(desktop.libs)}",
+        "",
+        "rule cxx",
+        "  command = $cxx $cxxflags -MMD -MF $out.d -c -o $out $in",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CXX $in",
+        "rule link",
+        "  command = $cxx $ldflags -o $out $in $libs",
+        "  description = LINK $out",
+        "rule configure",
+        f"  command = $python configure.py {command(configure)}",
+        "  generator = 1",
+        f"python = {command([sys.executable, '-X', 'utf8'])}",
+        "",
+    ]
+    objects = []
+    for path in src:
+        obj = f"{out_dir}/{path}.o"
+        objects.append(obj)
+        lines.append(f"build {obj}: cxx {path}")
+        if is_retail_data(path):
+            lines.append("  cxxflags = $cxxflags $retaildataflags")
+        elif path in SDL2_SOURCES:
+            lines.append("  cxxflags = $sdl2flags")
+
+    lines += [
+        f"build {executable}: link {' '.join(objects)}",
+        f"build {out_dir}/build.ninja: configure | configure.py tools/local_config.py",
+        f"default {executable}",
+        "",
+    ]
+    (HERE / out_dir).mkdir(parents=True, exist_ok=True)
+    (HERE / out_dir / "build.ninja").write_text("\n".join(lines), newline="\n")
+    print(f"{out_dir}/build.ninja: {len(src)} C++ files")
+    if not desktop.has_sdl2:
+        print("No 32 bit x86 SDL2 (--sdl2, local.json's \"sdl2\" or $SDL2, else pkg-config's sdl2 in "
+              f"{SDL2_PKG_CONFIG_LIBDIR}): the desktop build opens no window")
+
+
+def main():
+    if PLATFORM == "desktop":
+        configure_desktop()
+        return
+
+    toolchain_dlls.check()
+    src = sources()
+
+    python = command([sys.executable, "-X", "utf8"])
+    libs = " ".join("-l" + lib for lib in LIBRARIES)
+    lines = [
+        f"# host: {os.name}",
+        "ninja_required_version = 1.10",
         f"cxx = {command([local_config.ee_tool('g++')])}",
         f"ld = {command([local_config.ee_tool('ld')])}",
         f"nm = {command([local_config.ee_tool('nm')])}",
         f"python = {python}",
-        f"asflags = {command(ASFLAGS)}",
         f"libdir = {command(['-L' + directory for directory in [PS2SDK + '/ee/lib'] + toolchain_library_dirs()])}",
         f"libs = {libs}",
         f"cxxflags = {command(CXXFLAGS)}",
+        f"retaildataflags = {command(RETAIL_DATA_FLAGS)}",
         "",
-        "rule as",
-        "  command = $as $asflags -o $out $in",
-        "  description = AS $in",
         "rule cxx",
         "  command = $cxx $cxxflags -MMD -MF $out.d -c -o $out $in",
         "  depfile = $out.d",
         "  deps = gcc",
         "  description = CXX $in",
         "rule ldscript",
-        f"  command = $python tools/make_ld.py $out --nm $nm {'--matching ' if matching else ''}$in",
+        "  command = $python tools/make_ld.py $out $in",
         "  description = LDSCRIPT $out",
         "rule link",
-        "  command = $ld -m elf32lr5900n32 -T build/link.ld -Map build/SLES_525.68.map -o $out $libdir --start-group $libs --end-group",
+        "  command = $ld -m elf32lr5900n32 -T build/link.ld -Map build/SLES_525.68.map --emit-relocs -o $out $libdir --start-group $libs --end-group",
         "  description = LINK $out",
-        "rule check",
-        "  command = $python tools/compare.py $in SLES_525.68 build/SLES_525.68.map --touch $out",
-        "  description = CHECK $in",
         "rule configure",
-        f"  command = $python configure.py{' --matching' if matching else ''}",
+        "  command = $python configure.py",
         "  generator = 1",
         "",
     ]
-    asm_objects = []
-    for path in asm:
-        obj = f"build/{path}.o"
-        asm_objects.append(obj)
-        lines.append(f"build {obj}: as {path} | include/macro.inc")
-
     src_objects = []
     compile_commands = []
-    system_includes = [argument for path in toolchain_includes() for argument in ("-isystem", path)] if src else []
+    system_includes = [argument for path in toolchain_includes() for argument in ("-isystem", path)]
     for path in src:
         obj = f"build/{path}.o"
         src_objects.append(obj)
         lines.append(f"build {obj}: cxx {path}")
+        flags = CXXFLAGS
+        if is_retail_data(path):
+            lines.append("  cxxflags = $cxxflags $retaildataflags")
+            flags = CXXFLAGS + RETAIL_DATA_FLAGS
         compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
-                                 "arguments": [local_config.ee_tool("g++")] + CXXFLAGS + system_includes +
+                                 "arguments": [local_config.ee_tool("g++")] + flags + system_includes +
                                               ["-c", "-o", obj, path]})
 
+    desktop = DesktopSetup()
+    for path in desktop_platform_sources():
+        obj = f"build/desktop/{path}.o"
+        compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
+                                 "arguments": [desktop.cxx] + desktop.flags(path) + ["-c", "-o", obj, path]})
+
     lines += [
-        f"build build/link.ld: ldscript {' '.join(src_objects)} | tools/make_ld.py ps2sdk.txt retired.txt fragments.txt build/splat.yaml build/undefined_syms_auto.txt",
-        f"build build/SLES_525.68.elf: link | build/link.ld {' '.join(asm_objects)} {' '.join(src_objects)}",
-        "build build/check.ok: check build/SLES_525.68.elf",
-        "build check: phony build/check.ok",
+        f"build build/link.ld: ldscript {' '.join(src_objects)} | tools/make_ld.py",
+        f"build build/SLES_525.68.elf: link | build/link.ld {' '.join(src_objects)}",
         "build build.ninja: configure | configure.py tools/local_config.py",
         "default build/SLES_525.68.elf",
         "",
     ]
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
-    # For the editors' code models (VS Code's C/C++ extension, clangd): the C++ as it's compiled. A matching configuration keeps
-    # the last one, which has every file
-    if src:
-        (HERE / "build").mkdir(exist_ok=True)
-        (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
+    # For the editors' code models (VS Code's C/C++ extension, clangd): the C++ as it's compiled
+    (HERE / "build").mkdir(exist_ok=True)
+    (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
 
-    print(f"build.ninja: {len(asm)} asm files, {len(src)} C++ files{', matching' if matching else ''}")
+    print(f"build.ninja: {len(src)} C++ files")
 
 
 main()

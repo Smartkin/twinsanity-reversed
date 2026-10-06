@@ -1,5 +1,6 @@
 #include "abi.h"
 
+#if defined(_EE)
 // Abi::CallEabi's call: $a0-$a7 from the first array, $f12-$f19 from the second, and the result left in $v0 and $f0
 asm(R"(
     .section .text.CallEabiTrampoline, "ax", @progbits
@@ -35,3 +36,4 @@ CallEabiTrampoline:
     .set pop
     .size CallEabiTrampoline, . - CallEabiTrampoline
 )");
+#endif

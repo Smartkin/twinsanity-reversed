@@ -1,11 +1,10 @@
 #include "common.h"
 #include "retail/libc.h"
 
-#include <kernel.h>
-
 // The C library's heap, Sony's newlib's: Doug Lea's malloc 2.6.4 aligned to 16 bytes, its sizes 32 bits and its longs 64 (the
 // remainders, the trim threshold, top_pad and two of the statistics). The pools come from it (Platform::Memory::AllocatePool),
-// and newlib's sprintf takes _malloc_r, _free_r and _realloc_r from here, so there's one heap and one break
+// and on the PS2 newlib's sprintf takes _malloc_r, _free_r and _realloc_r from here, so there's one heap and one break. The
+// break (RetailLibc::Sbrk) is the platform's
 namespace
 {
 // A chunk: its size has bit 0 set while the chunk before it is in use; a free one is in a bin's list
@@ -34,8 +33,6 @@ constexpr s32 LastSmallBin = 0x3F;
 // The bins' list heads are a next and a previous pointer each, a bin's chunk starting 8 bytes before its head
 constexpr u32 BinSize = 2 * sizeof(Chunk*);
 constexpr s32 BinBlockWidth = 4;
-// ENOMEM
-constexpr s32 OutOfMemory = 12;
 }
 
 extern "C"
@@ -53,8 +50,6 @@ extern "C"
     extern u32 g_MallocSbrked RETAIL(D_002EA840);
     // The global errno _sbrk_r takes sbrk's error from
     extern s32 g_Errno RETAIL(D_0030ACD4);
-    // sbrk's break, the program's end to start with
-    extern u8* g_HeapEnd RETAIL(D_002EABE4);
     // _impure_ptr: malloc and free work on the C library's reentrancy block (its first word is errno)
     extern s32* g_MallocReent RETAIL(D_002EA3CC);
 
@@ -599,32 +594,6 @@ void* SbrkReentrant(s32* reent, s32 increment)
     return end;
 }
 
-// The break moved past the kernel's end of the heap fails with ENOMEM
-void* RetailLibc::Sbrk(s32 increment)
-{
-    s32 enabled = DIntr();
-    u8* end = g_HeapEnd;
-    u8* moved = end + increment;
-    if (static_cast<u8*>(EndOfHeap()) < moved)
-    {
-        *ErrorNumber() = OutOfMemory;
-        if (enabled != 0)
-        {
-            EIntr();
-        }
-
-        return reinterpret_cast<void*>(-1);
-    }
-
-    g_HeapEnd = moved;
-    if (enabled != 0)
-    {
-        EIntr();
-    }
-
-    return end;
-}
-
 void* RetailLibc::Malloc(u32 size)
 {
     return MallocReentrant(g_MallocReent, size);
@@ -635,8 +604,9 @@ void RetailLibc::Free(void* memory)
     FreeReentrant(g_MallocReent, memory);
 }
 
+#if defined(_EE)
 // The C library's names for them: newlib's sprintf and PS2SDK's libraries use this heap (malloc and free took a semaphore,
-// for threads nothing has)
+// for threads nothing has). Elsewhere the C library keeps its own heap, and the game's is this one alone
 extern "C"
 {
     void* malloc(size_t size) __attribute__((alias("FUN_002c7a88")));
@@ -663,3 +633,4 @@ extern "C"
         return moved;
     }
 }
+#endif

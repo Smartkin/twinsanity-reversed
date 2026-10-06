@@ -85,8 +85,7 @@ void WriteSlot(SaveCode* code, u32 slot)
 }
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) SaveCode* SaveCode::Construct(SaveCode* code, const char* name,
-                                                                                            SaveDevice* device)
+KEEP_LOOPS SaveCode* SaveCode::Construct(SaveCode* code, const char* name, SaveDevice* device)
 {
     code->vtable = g_SaveCodeVTable;
     StringConstruct(&code->name, name);

@@ -428,7 +428,7 @@ CallWithScratchpadCopied:
     sw $sp, 4($17)
     move $4, $16
     lui $5, 0x7000
-    jal CopyBytesIntoMemory
+    jal memcpy
     li $6, 0x4000
     jal DIntr
     nop
@@ -448,7 +448,7 @@ CallWithScratchpadCopied:
     move $4, $0
     lui $4, 0x7000
     move $5, $16
-    jal CopyBytesIntoMemory
+    jal memcpy
     li $6, 0x4000
     jal DIntr
     nop

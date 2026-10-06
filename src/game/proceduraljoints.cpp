@@ -23,6 +23,7 @@ EABI_EXPORT(FUN_0015f2f8, &ProceduralJoints::SetSquash);
 
 // MakeDangling has more arguments than n32 passes in registers: the asm hands it this and six integers in $a0-$a6 and seven
 // floats in $f12-$f18, the C++ function takes this and the floats in $a0 and $f13-$f19 and the integers on the stack
+#if defined(_EE)
 asm(R"(
     .pushsection .text.FUN_0015f610, "ax", @progbits
     .globl FUN_0015f610
@@ -53,6 +54,7 @@ FUN_0015f610:
     .size FUN_0015f610, . - FUN_0015f610
     .popsection
 )");
+#endif
 
 namespace
 {

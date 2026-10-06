@@ -321,7 +321,7 @@ void FreeBlock(u8* block, s32 particles)
 }
 
 // The runtime's blocks after one moved down over it (without the loop made into a call of memmove, which the game doesn't have)
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void MoveBlocksDown(EmitterRuntime* runtime, s32 taken)
+KEEP_LOOPS void MoveBlocksDown(EmitterRuntime* runtime, s32 taken)
 {
     for (s32 block = taken; block < runtime->blockCount - 1; block++)
     {

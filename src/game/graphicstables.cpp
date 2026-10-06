@@ -587,8 +587,7 @@ s32 GraphicsTable<Kind>::Insert(Item* const* item, u32 id)
 
 // Without the loops made into calls of memmove, which the game doesn't have
 template <typename Kind>
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void GraphicsTable<Kind>::InsertAt(s32 index, Item* const* item,
-                                                                                               u32 id)
+KEEP_LOOPS void GraphicsTable<Kind>::InsertAt(s32 index, Item* const* item, u32 id)
 {
     if (count < capacity)
     {
@@ -699,7 +698,7 @@ bool GraphicsTable<Kind>::DropReference(Item* item)
 
 // Without the loop made into a call of memmove, which the game doesn't have
 template <typename Kind>
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void GraphicsTable<Kind>::Forget(Item* item, u32 id)
+KEEP_LOOPS void GraphicsTable<Kind>::Forget(Item* item, u32 id)
 {
     if (count != 0)
     {

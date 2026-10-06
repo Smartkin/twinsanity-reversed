@@ -584,9 +584,7 @@ extern "C"
         }
     }
 
-    __attribute__((optimize("no-tree-loop-distribute-patterns"))) FolderFile* ConstructFolderFile(void* memory, const char* name,
-                                                                                                   u32 files, u32 tag,
-                                                                                                   u32 fileSize, void* buffer)
+    KEEP_LOOPS FolderFile* ConstructFolderFile(void* memory, const char* name, u32 files, u32 tag, u32 fileSize, void* buffer)
     {
         auto* folder = static_cast<FolderFile*>(memory);
         ConstructBase(folder, name);
@@ -637,7 +635,7 @@ extern "C"
         RetailLibc::MemorySet(iconSys->reserved1C4, 0, sizeof(iconSys->reserved1C4));
     }
 
-    __attribute__((optimize("no-tree-loop-distribute-patterns"))) void IconTitleToSjis(u8* title, const char* text)
+    KEEP_LOOPS void IconTitleToSjis(u8* title, const char* text)
     {
         for (u32 i = 0; i < IconTitleBytes; i++)
         {

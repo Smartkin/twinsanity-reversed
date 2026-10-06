@@ -515,7 +515,7 @@ ObjectNode* PacketNodeOf(InstanceContext* instance)
     return CallVirtual<u32>(node, node->vtable, ObjectNode::TakesPacketsSlot) != 0 ? node : nullptr;
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void* ConstructHeadTrackingSettings(void* memory)
+KEEP_LOOPS void* ConstructHeadTrackingSettings(void* memory)
 {
     // A range of 10, a stiffness of a half, the joints and the exit point none, no steering (bits 28-31 as the memory had them)
     constexpr f32 Range = 10.0f;
@@ -890,7 +890,7 @@ void MakeCoverMotionBlock(MotionBlock* block)
     block->search.kind = 0;
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void ResetHeadTurns(HeadTracking* tracking)
+KEEP_LOOPS void ResetHeadTurns(HeadTracking* tracking)
 {
     tracking->pitch = 0.0f;
     tracking->yaw = 0.0f;
@@ -980,7 +980,7 @@ u32 AddSense(void* perception, const void* sense)
     return senses->bits.count;
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void ConstructPerception(void* memory)
+KEEP_LOOPS void ConstructPerception(void* memory)
 {
     Perception* senses = PerceptionOf(memory);
     for (u32 index = 0; index < Perception::MostSenses; index++)
@@ -1132,7 +1132,7 @@ void StepParticleTrails(ParticleTrails* trails, TimeClock* clock, ObjectNode* no
     }
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void ParticleTrails::Reset()
+KEEP_LOOPS void ParticleTrails::Reset()
 {
     for (u32 index = 0; index < MostTrails; index++)
     {

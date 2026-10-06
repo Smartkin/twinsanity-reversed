@@ -167,7 +167,7 @@ void SaveChoicesPage::Destroy(u32 destroyFlags)
     MenuPage::Destroy(destroyFlags);
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) void SaveChoicesPage::ShowItems(s32 mode, u32 saving)
+KEEP_LOOPS void SaveChoicesPage::ShowItems(s32 mode, u32 saving)
 {
     u8 shown[ChoiceItemCount] = {};
     u8 leave = saving != 0 ? EveryPlayer : 0;

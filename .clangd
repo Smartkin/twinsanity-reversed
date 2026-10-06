@@ -1,7 +1,12 @@
 # clangd (the clangd extension in VS Code, or any editor's) reads build/compile_commands.json, which configure.py writes with
 # the toolchain's own include folders. The C++ is built by PS2SDK's GCC: clang takes it as the n32 little endian MIPS it is,
-# without the options it doesn't know (the R5900, and GCC's -ffixed-$fN keeping the odd FPRs)
+# without the options it doesn't know (the R5900, GCC's -ffixed-$fN keeping the odd FPRs, the retail data's GCC and assembler
+# options). The desktop's own files (src/platform/desktop/) are in it with the desktop build's flags, for 32 bit x86
 CompileFlags:
   CompilationDatabase: build
+---
+If:
+  PathExclude: src/platform/desktop/.*
+CompileFlags:
   Add: [--target=mips64el-unknown-elf]
-  Remove: [-march=*, -ffixed-*]
+  Remove: [-march=*, -ffixed-*, -fno-toplevel-reorder, -Wa]

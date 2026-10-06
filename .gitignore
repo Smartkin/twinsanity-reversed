@@ -1,10 +1,9 @@
-# Made from the retail executable, which isn't ours to share: the executable itself (SLES_525.68 from the PAL disc), what
-# tools/split.py splits it into, and the Ghidra project's export symbol_addrs.txt is made from (tools/make_symbols.py)
+# The retail executable (SLES_525.68 from the PAL disc), and what master's split and Ghidra export make of it: this branch builds
+# without them, and they stay out of it
 /SLES_525.68
 /asm/
 /assets/
 /ghidra/
-# splat writes it with this machine's absolute paths (nothing includes it)
 /include/include_asm.h
 
 # Build output, test references and pictures (configure.py, tools/build.py, tools/render_check.py, tools/run_pcsx2.py)
