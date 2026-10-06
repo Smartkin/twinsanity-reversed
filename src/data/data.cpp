@@ -2332,9 +2332,13 @@ RETAIL_DATA(".data", 4) u32 D_002EABDC[1] RETAIL(D_002EABDC) = {
 RETAIL_DATA(".data", 32) u32 D_002EABE0[1] RETAIL(D_002EABE0) = {
     0x0,
 };
-// 0x2EABE4
+// 0x2EABE4: the heap's break, from the executable's end on the PS2 (the desktop's is in its arena)
 RETAIL_DATA(".data", 4) const void* D_002EABE4[1] RETAIL(D_002EABE4) = {
+#if defined(_EE)
     Ref__end,
+#else
+    nullptr,
+#endif
 };
 // 0x2EABE8: nothing uses it
 RETAIL_DATA(".data", 8) u32 G_UnkThreadId2[1] RETAIL(G_UnkThreadId2) = {

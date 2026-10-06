@@ -45,11 +45,18 @@ RETAIL_DATA_FLAGS = ["-fno-toplevel-reorder", "-Wa,-no-pad-sections"]
 # The executable keeps its relocations (--emit-relocs: sections the PS2 doesn't load), which tools/compare_builds.py reads
 
 # The desktop: the host's compiler for 32 bit x86, where the game's structs come out as on the PS2 (4 byte pointers, 64 bit values
-# aligned to 8 like the R5900's with -malign-double) and floats are SSE's single precision (x87 keeps them wider). The retail data
-# stays in its order there too
-DESKTOP_CXXFLAGS = ["-m32", "-fno-pie", "-malign-double", "-msse2", "-mfpmath=sse", "-O2", "-std=gnu++26", "-fno-exceptions",
-                    "-fno-rtti", "-fno-threadsafe-statics", "-fno-strict-aliasing", "-fno-delete-null-pointer-checks",
-                    "-ffp-contract=off", "-Wall", "-Wno-invalid-offsetof", "-Iinclude"]
+# aligned to 8 like the R5900's with -malign-double, DESKTOP_LAYOUT_FLAGS) and floats are SSE's single precision (x87 keeps them
+# wider). The retail data stays in its order there too
+DESKTOP_CXXFLAGS = ["-m32", "-fno-pie", "-msse2", "-mfpmath=sse", "-O2", "-std=gnu++26", "-fno-exceptions", "-fno-rtti",
+                    "-fno-threadsafe-statics", "-fno-strict-aliasing", "-fno-delete-null-pointer-checks", "-ffp-contract=off",
+                    "-Wall", "-Wno-invalid-offsetof", "-Iinclude"]
+# What lays the game's structs out and calls its functions as the PS2 build does, which the SDL2 files (SDL2_SOURCES) leave out:
+# theirs are laid out and called as the SDL library has them. 32 bit Windows lays bitfields out its own way and passes a member
+# function's this in ECX (thiscall), so the game takes System V's i386 conventions there as everywhere else (the retail vtables
+# are called as plain functions with this first); the desktop side only calls C there (the C library's, the system's), not
+# libstdc++'s compiled code, which has Windows' conventions
+DESKTOP_LAYOUT_FLAGS = ["-malign-double"]
+DESKTOP_WINDOWS_LAYOUT_FLAGS = ["-mabi=sysv", "-mno-ms-bitfields"]
 # GCC needs telling to keep a file's objects in their order, Clang keeps them so and doesn't take the option
 DESKTOP_RETAIL_DATA_FLAGS = ["-fno-toplevel-reorder"]
 # The retail data's files, linked first in the order the PS2's linker script puts their sections in (include/retaildata.h)
@@ -62,6 +69,9 @@ DESKTOP_GCC_FLAGS = ["-g"]
 DESKTOP_CLANG_FLAGS = ["-gline-tables-only", "-Wno-tautological-undefined-compare"]
 # libgcc linked in: nothing throws, and Clang doesn't find the 32 bit shared one where GCC's 64 bit side keeps its link
 DESKTOP_LDFLAGS = ["-m32", "-no-pie", "-static-libgcc"]
+# Windows: MinGW's runtime linked in, so only SDL2.dll goes next to the executable, and the system timer's steps (winmm)
+DESKTOP_WINDOWS_LDFLAGS = ["-m32", "-static"]
+DESKTOP_WINDOWS_LIBS = ["-lwinmm"]
 
 PLATFORM = os.environ.get("PLATFORM", "ps2")
 if "--platform" in sys.argv[1:]:
@@ -142,56 +152,105 @@ def is_clang(cxx):
     return "clang" in result.stdout
 
 
+def is_windows_target(cxx):
+    """Whether the compiler makes Windows programs (MinGW's), by its target: the host's system when it doesn't say"""
+    try:
+        machine = subprocess.run([cxx, "-dumpmachine"], capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        machine = ""
+
+    if not machine:
+        return WINDOWS
+
+    return any(name in machine for name in ("mingw", "windows", "cygwin"))
+
+
+def ninja_path(path):
+    """A path in a build statement, with ninja's escapes for its spaces, colons and dollars"""
+    return path.replace("$", "$$").replace(" ", "$ ").replace(":", "$:")
+
+
 # pkg-config's folders of 32 bit x86 packages (Arch's lib32, Debian's multiarch), unless PKG_CONFIG_LIBDIR says otherwise
 SDL2_PKG_CONFIG_LIBDIR = "/usr/lib32/pkgconfig:/usr/lib/i386-linux-gnu/pkgconfig"
-# The desktop's file using SDL2 (its window), built for the host's own layouts: without -malign-double, which lays SDL's structs
-# out otherwise than the SDL library has them (and Clang refuses libstdc++'s tables of long doubles with)
+# SDL2's MinGW development release has a folder for each target, this is the 32 bit one; tools/fetch_sdl2.py puts it in build/sdl2
+SDL2_MINGW_FOLDER = "i686-w64-mingw32"
+SDL2_FETCHED = HERE / "build" / "sdl2" / SDL2_MINGW_FOLDER
+# What SDL2's pkg-config file adds for programs whose main SDL2main wraps in Windows' GUI programs' WinMain: the desktop has its
+# own main (SDL_MAIN_HANDLED) and stays a console program
+SDL2_MAIN_FLAGS = ["-Dmain=SDL_main", "-lSDL2main", "-mwindows"]
+# The desktop's file using SDL2 (its window), built for the host's own layouts (DESKTOP_LAYOUT_FLAGS)
 SDL2_SOURCES = ["src/platform/desktop/window.cpp"]
 
 
-def sdl2_folder():
-    """A folder of the desktop's SDL2 (include/SDL2, lib): --sdl2's, else local_config's"""
+def sdl2_folder(windows):
+    """A folder of the desktop's SDL2 (include/SDL2, lib, and on Windows bin): --sdl2's, else local_config's, else for Windows
+    the one tools/fetch_sdl2.py fetched. SDL2's MinGW development release can be given whole"""
     if "--sdl2" in sys.argv[1:]:
-        return Path(sys.argv[sys.argv.index("--sdl2") + 1]).as_posix()
+        folder = Path(sys.argv[sys.argv.index("--sdl2") + 1])
+    elif local_config.sdl2():
+        folder = Path(local_config.sdl2())
+    elif windows and SDL2_FETCHED.exists():
+        folder = SDL2_FETCHED
+    else:
+        return None
 
-    return local_config.sdl2()
+    if (folder / SDL2_MINGW_FOLDER / "include" / "SDL2").exists():
+        folder = folder / SDL2_MINGW_FOLDER
+
+    return folder.as_posix()
 
 
-def find_sdl2(folder):
-    """The desktop's SDL2 for 32 bit x86, its compile flags and libraries: the folder's, else pkg-config's 32 bit package; None
-    without one"""
-    if folder:
-        rpath = [] if WINDOWS else [f"-Wl,-rpath,{folder}/lib"]
-        return [f"-I{folder}/include/SDL2"], [f"-L{folder}/lib", "-lSDL2"] + rpath
-
+def pkg_config(argument, windows):
+    """What pkg-config gives of SDL2 (the 32 bit x86 package elsewhere than Windows), split"""
     environment = dict(os.environ)
-    environment.setdefault("PKG_CONFIG_LIBDIR", SDL2_PKG_CONFIG_LIBDIR)
+    if not windows and not WINDOWS:
+        environment.setdefault("PKG_CONFIG_LIBDIR", SDL2_PKG_CONFIG_LIBDIR)
+
+    return subprocess.run(["pkg-config", argument, "sdl2"], env=environment, capture_output=True, text=True, check=True,
+                          timeout=60).stdout.split()
+
+
+def find_sdl2(folder, windows):
+    """The desktop's SDL2 for 32 bit x86, the folder's, else pkg-config's: its compile flags, its libraries and on Windows the
+    DLL that goes next to the executable (linked through its import library by name: -static would take libSDL2.a, which needs
+    Windows' libraries of its own). None without one"""
+    library = "-l:libSDL2.dll.a" if windows else "-lSDL2"
+    if folder:
+        libs = [f"-L{folder}/lib", library] + ([] if windows else [f"-Wl,-rpath,{folder}/lib"])
+        return [f"-I{folder}/include/SDL2"], libs, f"{folder}/bin/SDL2.dll" if windows else None
+
     try:
-        flags = subprocess.run(["pkg-config", "--cflags", "sdl2"], env=environment, capture_output=True, text=True,
-                               check=True, timeout=60)
-        libs = subprocess.run(["pkg-config", "--libs", "sdl2"], env=environment, capture_output=True, text=True,
-                              check=True, timeout=60)
+        flags = pkg_config("--cflags", windows)
+        libs = pkg_config("--libs", windows)
+        prefix = pkg_config("--variable=prefix", windows)
     except (OSError, subprocess.SubprocessError):
         return None
 
-    return flags.stdout.split(), libs.stdout.split()
+    flags = [flag for flag in flags if flag not in SDL2_MAIN_FLAGS]
+    libs = [library if lib == "-lSDL2" else lib for lib in libs if lib not in SDL2_MAIN_FLAGS]
+    return flags, libs, f"{prefix[0]}/bin/SDL2.dll" if windows and prefix else None
 
 
 class DesktopSetup:
-    """The desktop build's compiler (--cxx, else $CXX, else g++) and flags: every file's, the retail data's added ones, the SDL2
-    files' own (SDL2's when there's one), and the libraries"""
+    """The desktop build's compiler (--cxx, else $CXX, else g++), whether it makes Windows programs, and flags: every file's, the
+    retail data's added ones, the SDL2 files' own (SDL2's when there's one), the link's and the libraries"""
 
     def __init__(self):
         self.cxx = sys.argv[sys.argv.index("--cxx") + 1] if "--cxx" in sys.argv[1:] else os.environ.get("CXX", "g++")
         clang = is_clang(self.cxx)
-        self.cxxflags = DESKTOP_CXXFLAGS + (DESKTOP_CLANG_FLAGS if clang else DESKTOP_GCC_FLAGS)
+        self.windows = is_windows_target(self.cxx)
+        compiler = DESKTOP_CLANG_FLAGS if clang else DESKTOP_GCC_FLAGS
+        layout = DESKTOP_LAYOUT_FLAGS + (DESKTOP_WINDOWS_LAYOUT_FLAGS if self.windows else [])
+        self.cxxflags = DESKTOP_CXXFLAGS + layout + compiler
         self.retail_data_flags = [] if clang else DESKTOP_RETAIL_DATA_FLAGS
-        self.sdl2_folder = sdl2_folder()
-        sdl2 = find_sdl2(self.sdl2_folder)
+        self.sdl2_folder = sdl2_folder(self.windows)
+        sdl2 = find_sdl2(self.sdl2_folder, self.windows)
         self.has_sdl2 = sdl2 is not None
-        self.sdl2_cxxflags = [flag for flag in self.cxxflags if flag != "-malign-double"]
-        self.sdl2_cxxflags += ["-DDESKTOP_SDL2"] + sdl2[0] if sdl2 else []
-        self.libs = sdl2[1] if sdl2 else []
+        self.sdl2_cxxflags = DESKTOP_CXXFLAGS + compiler + (["-DDESKTOP_SDL2"] + sdl2[0] if sdl2 else [])
+        self.sdl2_dll = sdl2[2] if sdl2 else None
+        self.ldflags = DESKTOP_WINDOWS_LDFLAGS if self.windows else DESKTOP_LDFLAGS
+        self.libs = (sdl2[1] if sdl2 else []) + (DESKTOP_WINDOWS_LIBS if self.windows else [])
+        self.executable = "twinsanity" + (".exe" if self.windows else "")
 
     def flags(self, path):
         if is_retail_data(path):
@@ -211,7 +270,7 @@ def configure_desktop():
     retail = [path for path in DESKTOP_RETAIL_DATA_ORDER if path in src]
     src = retail + [path for path in src if path not in retail]
     out_dir = "build/desktop"
-    executable = f"{out_dir}/twinsanity" + (".exe" if WINDOWS else "")
+    executable = f"{out_dir}/{desktop.executable}"
     configure = ["--platform", "desktop", "--cxx", desktop.cxx]
     configure += ["--sdl2", desktop.sdl2_folder] if desktop.sdl2_folder else []
     lines = [
@@ -222,7 +281,7 @@ def configure_desktop():
         f"cxxflags = {command(desktop.cxxflags)}",
         f"retaildataflags = {command(desktop.retail_data_flags)}",
         f"sdl2flags = {command(desktop.sdl2_cxxflags)}",
-        f"ldflags = {command(DESKTOP_LDFLAGS)}",
+        f"ldflags = {command(desktop.ldflags)}",
         f"libs = {command(desktop.libs)}",
         "",
         "rule cxx",
@@ -233,6 +292,9 @@ def configure_desktop():
         "rule link",
         "  command = $cxx $ldflags -o $out $in $libs",
         "  description = LINK $out",
+        "rule copy",
+        f"  command = $python -c {quote('import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2])')} $in $out",
+        "  description = COPY $out",
         "rule configure",
         f"  command = $python configure.py {command(configure)}",
         "  generator = 1",
@@ -249,18 +311,24 @@ def configure_desktop():
         elif path in SDL2_SOURCES:
             lines.append("  cxxflags = $sdl2flags")
 
+    lines.append(f"build {executable}: link {' '.join(objects)}")
+    defaults = [executable]
+    if desktop.sdl2_dll:
+        lines.append(f"build {out_dir}/SDL2.dll: copy {ninja_path(desktop.sdl2_dll)}")
+        defaults.append(f"{out_dir}/SDL2.dll")
+
     lines += [
-        f"build {executable}: link {' '.join(objects)}",
         f"build {out_dir}/build.ninja: configure | configure.py tools/local_config.py",
-        f"default {executable}",
+        f"default {' '.join(defaults)}",
         "",
     ]
     (HERE / out_dir).mkdir(parents=True, exist_ok=True)
     (HERE / out_dir / "build.ninja").write_text("\n".join(lines), newline="\n")
     print(f"{out_dir}/build.ninja: {len(src)} C++ files")
     if not desktop.has_sdl2:
-        print("No 32 bit x86 SDL2 (--sdl2, local.json's \"sdl2\" or $SDL2, else pkg-config's sdl2 in "
-              f"{SDL2_PKG_CONFIG_LIBDIR}): the desktop build opens no window")
+        where = ("tools/fetch_sdl2.py fetches SDL2's MinGW development release" if desktop.windows
+                 else f"else pkg-config's sdl2 in {SDL2_PKG_CONFIG_LIBDIR}")
+        print(f"No 32 bit x86 SDL2 (--sdl2, local.json's \"sdl2\" or $SDL2; {where}): the desktop build opens no window")
 
 
 def main():

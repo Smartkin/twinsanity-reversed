@@ -38,7 +38,7 @@ extern "C"
     // the nearest's after: whether it converged)
     f32 PathSegmentDistanceSquared(f32 into, LayoutPath* path) RETAIL_N32(FUN_001891d8);
     f32 PathDistanceSquaredIn(f32 into, LayoutPath* path) RETAIL_N32(FUN_0018e818);
-    void PathDistanceSquaredEntry() asm("FUN_0018e818");
+    void PathDistanceSquaredEntry() RETAIL(FUN_0018e818);
     s32 RefinePathNearest(LayoutPath* path, f32* into, f32* distanceSquared) RETAIL(FUN_0018e7b8);
     // The length of a path's segment up to a share (its chords at steps of 0.01), and the share a distance into a segment reaches
     // walking its chords (at most 1) with its point (the one before when the distance ran out)

@@ -9,7 +9,7 @@
 extern "C"
 {
     // SplineDistanceSquaredIn's EABI entry, which the minimum search calls
-    void SplineDistanceSquaredEntry() asm("FUN_0018f2d8");
+    void SplineDistanceSquaredEntry() RETAIL(FUN_0018f2d8);
 }
 
 EABI_EXPORT(FUN_0018ea78, PathDirectionIn);

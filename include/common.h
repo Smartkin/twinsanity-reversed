@@ -62,8 +62,11 @@ consteval f32 Rounded(double value)
 inline constexpr u32 ShiftMask = 0x1F;
 
 // A function or variable under the name the retail executable's symbols give it (the Ghidra project's), as the retail data's
-// objects (src/data/) and the code naming them have it
-#define RETAIL(name) asm(#name)
+// objects (src/data/) and the code naming them have it. The assembler's name has the target's prefix of C names (none on the
+// PS2 and Linux, an underscore on 32 bit Windows)
+#define RETAIL_STRING2(text) #text
+#define RETAIL_STRING(text) RETAIL_STRING2(text)
+#define RETAIL(name) asm(RETAIL_STRING(__USER_LABEL_PREFIX__) #name)
 
 // GCC makes memset and memmove calls of some loops the retail compiler kept as loops: the functions with them keep them (another
 // compiler may make the calls, which do the same)

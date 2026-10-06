@@ -1,11 +1,9 @@
 #include "platform/files.h"
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
-#include <string>
 #include <strings.h>
 #include <unistd.h>
 
@@ -13,61 +11,90 @@
 // whatever their case (the disc's names are upper case, the game asks in any)
 namespace
 {
-std::string DiscFolder()
-{
-    const char* folder = std::getenv("TWINSANITY_DISC");
-    return folder != nullptr && *folder != '\0' ? folder : "disc";
-}
+// The longest host path and file name taken (the disc's are far shorter)
+constexpr size_t PathSize = 4096;
+constexpr size_t NameSize = 256;
 
-// The folder's entry of a name in any case, the name as it is when there's none
-std::string Entry(const std::string& folder, const std::string& name)
+// Appends a part of a disc path to a host folder's path: the folder's entry of that name in any case, the name as it is when
+// there's none. False when it doesn't fit
+bool AppendEntry(char* host, const char* part, size_t length)
 {
-    DIR* directory = opendir(folder.c_str());
-    if (directory == nullptr)
+    char name[NameSize];
+    if (length >= NameSize)
     {
-        return name;
+        return false;
     }
 
-    std::string found = name;
-    while (dirent* entry = readdir(directory))
+    std::memcpy(name, part, length);
+    name[length] = '\0';
+    const char* found = name;
+    DIR* directory = opendir(host);
+    if (directory != nullptr)
     {
-        if (strcasecmp(entry->d_name, name.c_str()) == 0)
+        while (dirent* entry = readdir(directory))
         {
-            found = entry->d_name;
-            break;
+            if (strcasecmp(entry->d_name, name) == 0)
+            {
+                found = entry->d_name;
+                break;
+            }
         }
     }
 
-    closedir(directory);
-    return found;
+    size_t hostLength = std::strlen(host);
+    size_t foundLength = std::strlen(found);
+    bool fits = hostLength + 1 + foundLength < PathSize;
+    if (fits)
+    {
+        host[hostLength] = '/';
+        std::memcpy(host + hostLength + 1, found, foundLength + 1);
+    }
+
+    if (directory != nullptr)
+    {
+        closedir(directory);
+    }
+
+    return fits;
 }
 
-std::string HostPath(const char* path)
+// The host's path of a disc path (either slash), false when it doesn't fit
+bool HostPath(const char* path, char* host)
 {
-    std::string host = DiscFolder();
-    std::string part;
+    const char* folder = std::getenv("TWINSANITY_DISC");
+    if (folder == nullptr || *folder == '\0')
+    {
+        folder = "disc";
+    }
+
+    size_t folderLength = std::strlen(folder);
+    if (folderLength >= PathSize)
+    {
+        return false;
+    }
+
+    std::memcpy(host, folder, folderLength + 1);
+    const char* part = path;
     for (const char* character = path;; character++)
     {
-        if (*character == '\\' || *character == '/' || *character == '\0')
+        if (*character != '\\' && *character != '/' && *character != '\0')
         {
-            if (!part.empty() && part != ".")
-            {
-                host = host + "/" + Entry(host, part);
-            }
-
-            part.clear();
-            if (*character == '\0')
-            {
-                break;
-            }
-
             continue;
         }
 
-        part += *character;
-    }
+        size_t length = static_cast<size_t>(character - part);
+        if (length != 0 && !(length == 1 && *part == '.') && !AppendEntry(host, part, length))
+        {
+            return false;
+        }
 
-    return host;
+        if (*character == '\0')
+        {
+            return true;
+        }
+
+        part = character + 1;
+    }
 }
 }
 
@@ -77,6 +104,12 @@ void Platform::Files::Reset()
 
 s32 Platform::Files::Open(const char* path, s32 flags)
 {
+    char host[PathSize];
+    if (!HostPath(path, host))
+    {
+        return -1;
+    }
+
     int mode = (flags & OpenReadWrite) == OpenReadWrite ? O_RDWR : (flags & OpenWrite) != 0 ? O_WRONLY : O_RDONLY;
     if ((flags & OpenAppend) != 0)
     {
@@ -93,7 +126,11 @@ s32 Platform::Files::Open(const char* path, s32 flags)
         mode |= O_TRUNC;
     }
 
-    return open(HostPath(path).c_str(), mode, 0644);
+#if defined(O_BINARY)
+    // Windows opens files as text otherwise
+    mode |= O_BINARY;
+#endif
+    return open(host, mode, 0644);
 }
 
 s32 Platform::Files::Close(s32 file)

@@ -13,17 +13,17 @@ void Free(void* memory) RETAIL(FUN_002c7ad8);
 void* Sbrk(s32 increment) RETAIL(sbrk);
 int AtExit(void (*function)()) RETAIL(FUN_002c79e8);
 
-void* MemoryCopy(void* destination, const void* source, u32 size) asm("memcpy");
-void* MemoryMove(void* destination, const void* source, u32 size) asm("memmove");
-void* MemorySet(void* memory, s32 value, u32 size) asm("memset");
-u32 StringLength(const char* text) asm("strlen");
-char* StringCopy(char* destination, const char* source) asm("strcpy");
+void* MemoryCopy(void* destination, const void* source, u32 size) RETAIL(memcpy);
+void* MemoryMove(void* destination, const void* source, u32 size) RETAIL(memmove);
+void* MemorySet(void* memory, s32 value, u32 size) RETAIL(memset);
+u32 StringLength(const char* text) RETAIL(strlen);
+char* StringCopy(char* destination, const char* source) RETAIL(strcpy);
 // strncpy
-char* StringCopyCount(char* destination, const char* source, u32 count) asm("strncpy");
-char* StringConcatenate(char* destination, const char* source) asm("strcat");
-s32 StringCompare(const char* first, const char* second) asm("strcmp");
+char* StringCopyCount(char* destination, const char* source, u32 count) RETAIL(strncpy);
+char* StringConcatenate(char* destination, const char* source) RETAIL(strcat);
+s32 StringCompare(const char* first, const char* second) RETAIL(strcmp);
 // sprintf
-s32 Format(char* buffer, const char* format, ...) asm("sprintf");
+s32 Format(char* buffer, const char* format, ...) RETAIL(sprintf);
 // toupper and tolower by the game's casing table (newlib's ctype table, which any int indexes: the bytes before it for
 // negative chars)
 s32 ToUpper(s32 character) RETAIL(FUN_002c7020);

@@ -1,5 +1,6 @@
 #include "platform/graphics.h"
 
+#include "clock.h"
 #include "window.h"
 
 #include "game/context.h"
@@ -9,8 +10,6 @@
 #include "game/resources.h"
 
 #include <algorithm>
-#include <chrono>
-#include <thread>
 
 // The desktop's side of Platform::Graphics: the window (window.cpp) showing every frame's clear color, nothing drawn yet, the
 // frames paced like the display's
@@ -33,11 +32,10 @@ void ResetPath()
 // window's events: closing it ends Main's loop after the frame
 void WaitVSync()
 {
-    using Clock = std::chrono::steady_clock;
-    constexpr auto Refresh = std::chrono::nanoseconds(1000000000 / 60);
-    static Clock::time_point next = Clock::now();
-    next = std::max(next + Refresh, Clock::now());
-    std::this_thread::sleep_until(next);
+    constexpr u64 Refresh = 1000000000 / 60;
+    static u64 next = DesktopClock::Now();
+    next = std::max(next + Refresh, DesktopClock::Now());
+    DesktopClock::SleepUntil(next);
     if (DesktopWindow::HandleEvents())
     {
         g_GameState = GameStateQuitting;

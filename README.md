@@ -98,7 +98,7 @@ An environment variable wins over it, and without either the default is used:
 | `ps2sdk` | `PS2SDK` | PS2SDK's folder | `ps2sdk` in the toolchain's folder |
 | `disc_image` | `TWINSANITY_ISO` | The PAL disc image to play the build with | none |
 | `pcsx2` | `PCSX2` | PCSX2's executable, or `flatpak` for PCSX2's Flatpak | the Flatpak, `pcsx2-qt` on the `PATH`, PCSX2's install folder on Windows |
-| `sdl2` | `SDL2` | A 32 bit x86 SDL2 for the desktop build's window (its `include/SDL2` and `lib`) | pkg-config's 32 bit `sdl2` |
+| `sdl2` | `SDL2` | A 32 bit x86 SDL2 for the desktop build's window (its `include/SDL2` and `lib`, or SDL2's MinGW development release) | pkg-config's 32 bit `sdl2`; on Windows the one `tools/fetch_sdl2.py` fetched |
 
 Write Windows paths in it with forward slashes (`C:/Games/Twinsanity.iso`) or with doubled backslashes.
 
@@ -112,6 +112,7 @@ repository's folder:
 | `tools/build.py` | Builds `build/SLES_525.68.elf`, writing `build.ninja` first when there's none for this system. Other arguments go to ninja (`-j8`, `-v`) |
 | `tools/build.py --clean` | Deletes what the build made |
 | `tools/build.py --platform desktop` | Builds the desktop's `build/desktop/twinsanity` (see [The desktop](#the-desktop)) |
+| `tools/fetch_sdl2.py` | Fetches SDL2's MinGW development release into `build/sdl2/` for the desktop build on Windows |
 | `tools/play.py` | Boots the build in PCSX2 with your disc image; stopping it (Ctrl+C) closes PCSX2. `--elf`, `--iso` and `--pcsx2` pick others |
 | `configure.py` | Writes `build.ninja` and `build/compile_commands.json` again (`--platform desktop`: `build/desktop/build.ninja`, `--cxx` and `--sdl2` pick the compiler and SDL2) |
 
@@ -131,6 +132,10 @@ compiler or SDL2 is picked once, before the first build:
 
     python configure.py --platform desktop --cxx clang++ --sdl2 /path/to/SDL2
 
+On Windows the compiler is MinGW's 32 bit GCC (MSYS2's MINGW32 environment, or `i686-w64-mingw32-g++`, which also builds it on
+Linux) and `python tools/fetch_sdl2.py` fetches the SDL2 it uses: the build links MinGW's runtime in and puts `SDL2.dll` next to
+`build/desktop/twinsanity.exe`, which needs nothing else.
+
 It runs with the PAL disc's files in a folder (`TWINSANITY_DISC=/path/to/disc build/desktop/twinsanity`, the folder with
 `Crash6`). The desktop side is stubs for now, the parts the game's results depend on aside: the maths the PS2 does on its vector
 unit 0 (its microprograms and macro mode: the sines and cosines, the joints' animations, the matrix and collision helpers, the ray
@@ -139,10 +144,11 @@ played or streamed yet: the game waits on its legal screen. See [the porting not
 
 ## Editor setup
 
-[clangd](https://clangd.llvm.org/) gives the C++ its completion and errors: `.clangd` points it at
-`build/compile_commands.json`, which `configure.py` writes, gives clang a MIPS target in place of the R5900, which it doesn't
-know, and leaves out the GCC options clang doesn't take (the retail data's `-fno-toplevel-reorder` among them). The structs come out the same, so the size checks hold in the editor too. In VS Code that's the clangd extension
-(`llvm-vs-code-extensions.vscode-clangd`, also on Open VSX).
+[clangd](https://clangd.llvm.org/) gives the C++ its completion and errors: `.clangd` points it at `build/compile_commands.json`,
+which `configure.py` writes, gives clang a MIPS target in place of the R5900, which it doesn't know, and leaves out the GCC
+options clang doesn't take (the retail data's `-fno-toplevel-reorder` among them). The structs come out the same, so the size
+checks hold in the editor too. The desktop's own files are in it with the desktop build's flags. In VS Code that's the clangd
+extension (`llvm-vs-code-extensions.vscode-clangd`, also on Open VSX).
 
 Microsoft's C/C++ extension works with the same file (`"compileCommands"` in `c_cpp_properties.json`) but lays structs out for
 x86, so `include/common.h` and `include/abi.h` leave the size checks and the EABI thunks out for it (`__INTELLISENSE__`). Use one

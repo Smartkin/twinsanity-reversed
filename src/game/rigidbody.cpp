@@ -3098,7 +3098,7 @@ void SphereBody::SetEllipsoid(f32 x, f32 y, f32 z)
 namespace
 {
 // The EABI entry of NegativeEllipsoidValue, which the minimum search calls
-extern "C" void NegativeEllipsoidValueEntry() asm("FUN_002924e0");
+extern "C" void NegativeEllipsoidValueEntry() RETAIL(FUN_002924e0);
 
 // A vector of rows of a matrix, each scaled by a value and how far a vector goes along it
 void AddAlongRows(Vector4* sum, const Vector4* vector, const Matrix4x4* matrix, const f32* scales)

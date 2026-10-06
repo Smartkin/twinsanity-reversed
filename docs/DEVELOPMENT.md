@@ -14,18 +14,18 @@ as it did when the split had it. Each object has its retail address in a comment
 retail functions' jump tables among them, which point at nothing now).
 
 The objects stay in the retail order, one after the other, because the game's code reads past an object it names into the next
-ones (`G_NullParticlePtr` is the start of 1200 bytes of particle slots under several labels, the fog tables are eight objects of
-1 KB read as one, the static constructors' count `G_UnkFunTableSize` is followed by the constructors): `include/retaildata.h`'s
+ones (`G_NullParticlePtr` is the start of 1200 bytes of particle slots under several labels, the fog tables are eight objects of 1
+KB read as one, the static constructors' count `G_UnkFunTableSize` is followed by the constructors): `include/retaildata.h`'s
 `RETAIL_DATA` gives each object its section and alignment and keeps it when nothing names it (`used`), the files are compiled with
 GCC's `-fno-toplevel-reorder` (their objects in the order they're written; Clang keeps that order without it) and the assembler's
 `-no-pad-sections`, and `tools/make_ld.py` puts them first in their output sections. Typed by their shape: vtables are
 `GccVTableEntry` arrays (a vtable's label that runs on past its last entry has what follows as an object of its own right after
 it), texts are `char` arrays, numbers `u32`, `s32`, `f32` (inexact values through `Rounded`, as everywhere), `u16` and `u8`
-arrays, and the rest structs of those and pointers (tables of rows where they repeat). The objects that point at the PS2 side's own
-functions (the renderer's shader classes' vtables, libmpeg's tables) are inside `#if defined(_EE)`: elsewhere they're left out.
-The static constructors' list names three of the PS2 renderer's modules too, which each platform's side defines under their retail
-names. The headers' namespace-scope constants are `inline constexpr`, because `-fno-toplevel-reorder` keeps unused ones and they'd
-go into `.rodata` ahead of the data.
+arrays, and the rest structs of those and pointers (tables of rows where they repeat). The objects that point at the PS2 side's
+own functions (the renderer's shader classes' vtables, libmpeg's tables) are inside `#if defined(_EE)`: elsewhere they're left
+out. The static constructors' list names three of the PS2 renderer's modules too, which each platform's side defines under their
+retail names. The headers' namespace-scope constants are `inline constexpr`, because `-fno-toplevel-reorder` keeps unused ones and
+they'd go into `.rodata` ahead of the data.
 
 On the desktop the retail data is one block in the host's `.data` (`RETAIL_DATA` names its sections `.data.retail.rodata` and so
 on, and `configure.py` links its files first in the PS2's order of the sections), because the game's code also reads across
@@ -248,8 +248,9 @@ the PS2's), its events handled at every vertical blank, closing it ending `Main`
 
 The window needs SDL2 for 32 bit x86: Arch's `lib32-sdl2-compat` (multilib), Debian's and Ubuntu's `libsdl2-dev:i386`, found
 through pkg-config's 32 bit folders, or a folder of one (`configure.py --sdl2`, `local.json`'s `"sdl2"` or `$SDL2`: its
-`include/SDL2` and `lib`, like the MinGW development release's `i686-w64-mingw32`; on Windows `SDL2.dll` goes next to the
-executable). Without one the build has no window. `window.cpp` is built for the host's own struct layouts, without
+`include/SDL2` and `lib`, or SDL2's MinGW development release, whose `i686-w64-mingw32` is taken); for Windows
+`tools/fetch_sdl2.py` fetches that release (checked against its SHA-256) into `build/sdl2/`, which `configure.py` takes when
+nothing else gives one. Without one the build has no window. `window.cpp` is built for the host's own struct layouts, without
 `-malign-double` (SDL's structs as the SDL library has them; Clang also refuses libstdc++'s tables of `long double`s with it), so
 it uses none of the game's headers. `build/desktop/build.ninja` runs `configure.py` again with the same `--cxx` and `--sdl2`. GCC
 builds with debug information, Clang with line tables only: its whole debug information gives the explicit specializations of a
@@ -257,6 +258,18 @@ class template's members after the first one defined their C++ names instead of 
 then don't link. libgcc is linked in (`-static-libgcc`: nothing throws, and Clang doesn't find the 32 bit shared one on Arch).
 Clang warns that `collision.cpp`'s `SegmentHitsAnything` passes its `distance` on unset when there's no collision, which the retail
 code does too (it's only read when the collision was hit).
+
+Windows (MinGW's 32 bit GCC: MSYS2's MINGW32 environment, or `i686-w64-mingw32-g++` elsewhere; `configure.py` goes by the
+compiler's target, `-dumpmachine`) differs in three ways besides `.exe`. 32 bit Windows puts an underscore before C names, which
+`RETAIL` puts in its assembler names too (`__USER_LABEL_PREFIX__`, nothing on the PS2 and Linux). Its linkers keep sections they
+don't know apart, so the retail data shares one `.data$retail` section, which they put into `.data` in the files' order
+(`include/retaildata.h`). And it lays bitfields out its own way and passes a member function's `this` in ECX (thiscall), while the
+retail vtables are called as plain functions with `this` first: the game's code is built with System V's i386 conventions there
+(`-mabi=sysv -mno-ms-bitfields`). So the desktop side calls only C (the C library's and the system's: `clock.h` in place of
+`<chrono>`, `files.cpp` with its own buffers and binary files), never libstdc++'s compiled code, whose calls keep Windows'
+conventions, and `window.cpp` keeps Windows' own, like SDL2. MinGW's runtime is linked in (`-static`, SDL2 through its import
+library by name), so `build/desktop/twinsanity.exe` only needs `SDL2.dll`, which the build copies next to it. A MinGW cross build
+on Linux runs under Wine.
 
 On the PAL disc's files (`TWINSANITY_DISC=<the disc's folder, with Crash6> build/desktop/twinsanity`) it runs the static
 constructors, the heap, the game's start-up and its loop, and stays on the legal screen, waiting for its picture: it comes through

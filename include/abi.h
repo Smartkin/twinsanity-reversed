@@ -28,7 +28,7 @@
 #define EABI_IMPORT(name, function) asm((Abi::Thunk<decltype(function)>(Abi::Direction::Import, #name)))
 #endif
 #else
-#define RETAIL_N32(name) asm(#name)
+#define RETAIL_N32(name) RETAIL(name)
 #define EABI_EXPORT(name, function)
 #define EABI_IMPORT(name, function)
 #endif
