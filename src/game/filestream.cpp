@@ -354,7 +354,17 @@ extern "C"
         // An archive's data file stays open
         if (stream->archiveState != FileStream::Archived)
         {
+#ifdef TT_LAB_DEV
+            // FileStreamOpen closed a file the folder doesn't have, and the readers that close their stream (FileCloseReader, a
+            // SubItemsReader that closes its file) close it again: told to close NoFile, the stream module would take it for its
+            // first free file, count one file fewer open, and once the count was 0 it would close none of the files still open
+            if (stream->file != Platform::Stream::NoFile)
+            {
+                Platform::Stream::CloseFile(stream->file);
+            }
+#else
             Platform::Stream::CloseFile(stream->file);
+#endif
             stream->file = Platform::Stream::NoFile;
         }
 

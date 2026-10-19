@@ -1036,7 +1036,8 @@ PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
     loadGame.vtable = g_LoadGamePageVTable;
     QuitPage::Construct(&page->quit, page);
 #ifdef TT_LAB_DEV
-    // The level select, at the top, left out without levels
+    // The level select, at the top, greyed out without levels (an item still drawn that isn't shown to the players, in dark grey,
+    // which the selection passes over)
     ActionItem* levelSelect = NamedActionItem(LevelSelectLabel, LevelSelectItem, ActionItem::ActionLevelSelect);
     levelSelect->shown = g_LevelSelect->page != nullptr ? EveryPlayer : 0;
     page->Add(levelSelect);

@@ -61,7 +61,11 @@ the order of their addresses (two objects' random numbers swapped when the heap 
 makes them, so the gameplay cases start playing past the intro movie.
 
 `run_pcsx2.py --host-fs` turns PCSX2's host file system on for the run, which TT Lab's development builds read their files from
-(below).
+(below). PCSX2 names save states after the executable's CRC and the slot, and every development build has the same CRC, which
+TT Lab's Play boots them with: their states are the user's, like the retail executable's, so `run_pcsx2.py` takes no snapshot
+or state of either (`--snapshot`, `--keep-state`, `--at-frame` freezes). A copy with another CRC next to the executable takes
+them (`tools/ps2_crc.py <folder>/SLES_525.68 <folder>/TEST.ELF 0x77AB01FF`, booted in its place; the folder keeps its
+`SLES_525.68`).
 
 ## TT Lab's development builds
 
@@ -79,7 +83,9 @@ layout and `CHECK_OFFSET` stays; what it keeps is in globals (`g_LevelSelect`, `
   its arguments when it's given none are `rb` without `batch=Crash6\Crash`, so it opens no archive and reads every file on its
   own. The I/O processor's modules (`cdrom0:\CRASH6\SYS\`) and the movies still come from the disc image PCSX2 plays. A file the
   folder doesn't have is closed again (`FileStreamOpen`): the retail code leaves it open and the reads after it fail
-  (RETAIL_BUGS.md).
+  (RETAIL_BUGS.md). The readers that close their stream themselves (`FileCloseReader` after a chunk's header, a `SubItemsReader`
+  that closes its file) then close nothing (`FileStreamClose`): told to close no file, the stream module would take it for its
+  first free file, count one file fewer open, and once it counted none it would close none of the files still open.
 - **The start chunk** (`src/game/gamecontroller.cpp`): once the game can read files (its start-up, state 1, before OLEG's) it
   reads `StartChunk.txt` next to the executable. Its first line, without the white space around it and with slashes made
   backslashes, becomes `G_StartChunk_Path`, the chunk loading the title loads (state 6). Without the file or a path in it the
@@ -92,7 +98,8 @@ layout and `CHECK_OFFSET` stays; what it keeps is in globals (`g_LevelSelect`, `
   Picking a level starts a new game in its chunk the way the title loads its own (`GameController::StartLevel`): the title
   restarted (state 20), the picked chunk loaded in place of the start chunk (6), the title (7) going straight to a new game (10)
   and the new game, without the intro movie, to starting to play (11) with a hundred lives. `G_StartChunk_Path` stays, so loading
-  the title again (state 6) loads the start chunk. Without levels in the file the item isn't shown.
+  the title again (state 6) loads the start chunk. Without levels in the file the item is greyed out, like `decomp-showcase`'s:
+  drawn in dark grey, the selection passing over it.
 
 ### What TT Lab's Play relies on
 
@@ -109,6 +116,10 @@ layout and `CHECK_OFFSET` stays; what it keeps is in globals (`g_LevelSelect`, `
   takes booting again.
 - **PCSX2**: `-elf <folder>/SLES_525.68` with the disc image after `--`, and the host file system on (`[EmuCore] HostFs = true`)
   in the game settings of the executable's CRC.
+- **No patches**: the level select is built in. The level select patch TT Lab writes for the PAL release
+  (`patches/77AB0001.pnach`, with `EnablePatches`) writes hooks and code into the retail executable at its addresses, where a
+  development build has other code (it's laid out like the C++ build, not like the retail executable): never write it for this
+  CRC, and `EnablePatches` isn't needed. The patch's save and load state (R2 + L2, L2 + Triangle) aren't in the development build.
 - **The CRC**: every development build's is 0x77AB0100, so its game settings are always `gamesettings/77AB0100.ini`. It's the XOR
   of the file's 32 bit words, which PCSX2 keeps an executable it boots by: `tools/ps2_crc.py` appends the word that makes it
   0x77AB0100 (`configure.py`'s `DEV_CRC`).
@@ -136,7 +147,9 @@ Checked in PCSX2 2.6.3 (2026-10-19), from a folder of the PAL disc's files: the 
 white space around it, slashes and a CRLF too) with the chunks it links, and without the file the beach, as the game's own start
 chunk. The level select was checked in test time (a `render_check.test_copy` of the build in the folder, `--manual` with
 `--at-frame` presses: start, down to the level select, cross, down to a world, cross, cross): the picked chunk loads and plays
-with a hundred lives, and state 6 asked for after it loads the start chunk again.
+with a hundred lives, and state 6 asked for after it loads the start chunk again. Without `STARTUP/LEVELSELECT.TXT` the pause menu
+shows the item greyed out. With the title's picture (`LANGUAGE/TITLES/ENGLISH/CRASH.PSM`) taken out of the folder, its reader's
+close after `FileStreamOpen`'s was passed over (counted in a build made for it) and the game played on.
 
 The editors' code models take the flags of the usual build (`build/compile_commands.json`), so the `TT_LAB_DEV` parts show as
 inactive there; `-DTT_LAB_DEV` added to the `Add` list in `.clangd` shows them the way the development build compiles them.

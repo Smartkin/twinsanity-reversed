@@ -16,7 +16,9 @@ its own, and whatever the run put into PCSX2's config goes again afterwards.
 --watch prints a word of the map's symbol whenever it changes (a breadcrumb the code under test writes, say; every >offset
 follows the pointer found so far: G_GameReadersStorages>0x18>0x4 is storage 0's current reader's vtable). --snapshot T saves
 a state T seconds after the start (PINE, slot 9) and keeps the screenshot PCSX2 puts in it (in --snapshots, default
-build/snapshots) and deletes the state, never for the retail executable's CRC, whose states are the user's. --keep-state T:FILE
+build/snapshots) and deletes the state, never for the retail executable's CRC or TT Lab's development builds' (every one has
+0x77AB0100, which TT Lab's Play boots them with), whose states are the user's: a copy with another CRC takes them
+(tools/ps2_crc.py, a development build's next to it in its folder). --keep-state T:FILE
 keeps a copy of such a state as FILE (the EE's registers are in its "PCSX2 Internal Structures.dat", 32 GPRs of 16 bytes found by
 $gp's value, then HI, LO and the COP0 registers). --pad prints pad 1's
 buttons whenever they change. The game gets a copy of the user's slot 1 memory card (slot 2 empty), deleted afterwards: what it
@@ -56,6 +58,10 @@ import kwin
 CONFIG = os.path.expanduser("~/.var/app/net.pcsx2.PCSX2/config/PCSX2")
 SLOT = 28112
 RETAIL_CRC = 0x1510E1D1
+# Every TT Lab development build's (configure.py's DEV_CRC)
+DEV_CRC = 0x77AB0100
+# The executables whose save states (PCSX2 names them after the CRC and the slot) are the user's
+USERS_STATES = {RETAIL_CRC: "the retail executable", DEV_CRC: "TT Lab's development builds"}
 SNAPSHOT_SLOT = 9
 RUN_CARD = "TwinsanityDecompRun.ps2"
 LOGOS, LOAD_START_CHUNK, TITLE, NEW_GAME, START_PLAYING, PLAYING, MOVIE = 4, 6, 7, 10, 11, 12, 14
@@ -91,9 +97,9 @@ def map_symbols(path, names):
 @contextlib.contextmanager
 def saved_state(pine, elf_crc, when):
     """Saves a state (PCSX2 names it after the CRC and the slot) and yields its path, deleting it afterwards (None when PCSX2
-    saved none). Never for the retail executable, whose states are the user's"""
-    if elf_crc == RETAIL_CRC:
-        raise SystemExit("No save states of the retail executable: its states are the user's")
+    saved none). Never for the retail executable or TT Lab's development builds, whose states are the user's"""
+    if elf_crc in USERS_STATES:
+        raise SystemExit(f"No save states of {USERS_STATES[elf_crc]}: their states are the user's")
     states = f"{CONFIG}/sstates"
     before = set(os.listdir(states)) if os.path.isdir(states) else set()
     pine.save_state(SNAPSHOT_SLOT)
@@ -360,8 +366,10 @@ def main():
                                      *(symbol for _, symbol, _, _ in dumps),
                                      *(part.split(":")[0].lstrip("*").split("+")[0] for part in args.freeze_dump)})
     snapshots = sorted(args.snapshot)
-    if snapshots and crc(args.elf) == RETAIL_CRC:
-        raise SystemExit("No snapshots of the retail executable: its save states are the user's")
+    owner = USERS_STATES.get(crc(args.elf))
+    if (snapshots or freeze_frame is not None or args.keep_state) and owner:
+        raise SystemExit(f"No snapshots or states of {owner}: their save states are the user's (boot a copy with another CRC, "
+                         "tools/ps2_crc.py)")
     watched = {}
     elf = os.path.abspath(args.elf)
     iso = os.path.abspath(args.iso)
