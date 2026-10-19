@@ -12,6 +12,10 @@
 #include "game/savemanager.h"
 #include "game/sound.h"
 #include "game/widgets.h"
+#ifdef TT_LAB_DEV
+#include "game/stream.h"
+#include "retail/libc.h"
+#endif
 
 extern "C"
 {
@@ -107,6 +111,17 @@ constexpr u32 DisableAutosaveText = 0x16;
 constexpr u32 DisableAutosaveItem = 0xA;
 constexpr u32 ResumeText = 0x1B;
 constexpr u32 ResumeItem = 0xC;
+#ifdef TT_LAB_DEV
+// TT Lab's development build's level select: its item above the options (its own label, in English whatever the language, the
+// worlds' page's title too), the worlds' items' IDs (their indexes on), its file and the folder its worlds are in, and the fields a
+// line has (the level's name, a note and the chunk's path)
+constexpr u32 LevelSelectItem = 0x20;
+const char LevelSelectLabel[] = "level select";
+constexpr u32 WorldItemIds = 0x100;
+constexpr const char* LevelSelectFile = "StartUp\\LevelSelect.txt";
+constexpr const char* LevelsFolder = "levels\\";
+constexpr u32 LevelFields = 3;
+#endif
 // The extras: their title, the gem extras' titles (the gem's after the first), links (IDs 0xE on) and items (16 each, their IDs
 // their indexes), the complete game's movie item and its texts before and once the game's done, and resume's ID
 constexpr u32 ExtrasTitle = 0x17;
@@ -232,6 +247,98 @@ void AddGalleries(GemExtrasPage* page, u32 text, const char* name, u32 pictures)
     }
 }
 
+#ifdef TT_LAB_DEV
+// An action item with a text of its own
+ActionItem* NamedActionItem(const char* text, u32 id, u32 action)
+{
+    ActionItem* item = ActionItem::Construct(Allocate<ActionItem>(), 0, id, action);
+    item->text = text;
+    return item;
+}
+
+// A level select's line read from its text: its fields (at most three), each ended in place at its closing quote (or at the
+// line's end). Returns where the next line starts
+char* ReadLevelLine(char* text, char** fields, u32* count)
+{
+    char* end = text;
+    while (*end != '\0' && *end != '\n')
+    {
+        end++;
+    }
+
+    char* next = *end == '\n' ? end + 1 : end;
+    *count = 0;
+    char* at = text;
+    while (at < end)
+    {
+        if (*at != '"')
+        {
+            at++;
+            continue;
+        }
+
+        char* field = ++at;
+        while (at < end && *at != '"')
+        {
+            at++;
+        }
+
+        if (*count < LevelFields)
+        {
+            fields[(*count)++] = field;
+        }
+
+        bool closed = at < end;
+        *at = '\0';
+        if (closed)
+        {
+            at++;
+        }
+    }
+
+    return next;
+}
+
+// The world of a level's chunk: the folder after levels\ (in any case), or the path's first folder, and its length
+const char* LevelWorld(const char* chunk, u32* length)
+{
+    const char* world = chunk;
+    u32 matched = 0;
+    while (LevelsFolder[matched] != '\0' && RetailLibc::ToLower(chunk[matched]) == LevelsFolder[matched])
+    {
+        matched++;
+    }
+
+    if (LevelsFolder[matched] == '\0')
+    {
+        world = chunk + matched;
+    }
+
+    u32 count = 0;
+    while (world[count] != '\0' && world[count] != '\\')
+    {
+        count++;
+    }
+
+    *length = count;
+    return world;
+}
+
+// Whether a world's name is the one of a length (in any case)
+bool IsWorld(const char* name, const char* world, u32 length)
+{
+    for (u32 i = 0; i < length; i++)
+    {
+        if (name[i] == '\0' || RetailLibc::ToLower(name[i]) != RetailLibc::ToLower(world[i]))
+        {
+            return false;
+        }
+    }
+
+    return name[length] == '\0';
+}
+#endif
+
 // A confirmation's yes and its no (back to the parent, selected first)
 void AddYesNo(OlegPage* page, u32 yesId, u32 action, MenuPage* parent)
 {
@@ -324,6 +431,10 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
         controller->ReturnToPauseMenu();
         break;
     case ActionOptions:
+#ifdef TT_LAB_DEV
+        // The options' menu shows the level select too
+        oleg.optionsMenu.home = oleg.optionsMenu.firstPage;
+#endif
         ShowScreen(oleg, OLEG::ScreenOptions);
         break;
     case ActionScreenPosition:
@@ -347,6 +458,19 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
     case ActionSave:
         controller->SaveFromPause();
         break;
+#ifdef TT_LAB_DEV
+    case ActionLevelSelect:
+        if (g_LevelSelect->page != nullptr)
+        {
+            oleg.optionsMenu.home = g_LevelSelect->page;
+            ShowScreen(oleg, OLEG::ScreenOptions);
+        }
+
+        break;
+    case ActionPickLevel:
+        controller->StartLevel(g_LevelSelect->chunks[Id() - LevelSelect::LevelItems]);
+        break;
+#endif
     default:
         break;
     }
@@ -784,6 +908,120 @@ void SaveGamePage::Entered(u32, u32)
     g_OlegGameController->SaveFromPause();
 }
 
+#ifdef TT_LAB_DEV
+LevelSelect* g_LevelSelect = nullptr;
+
+LevelSelect* LevelSelect::Make()
+{
+    auto* select = static_cast<LevelSelect*>(MemoryAllocate(sizeof(LevelSelect)));
+    select->count = 0;
+    select->page = nullptr;
+    select->file = MemoryStream::ConstructFromFile(static_cast<MemoryStream*>(MemoryAllocate(sizeof(MemoryStream))),
+                                                   LevelSelectFile, true);
+    char* text = reinterpret_cast<char*>(select->file->begin);
+    if (text == nullptr)
+    {
+        return select;
+    }
+
+    OlegPage* worlds[MaxWorlds];
+    u32 worldCount = 0;
+    OlegPage* page = nullptr;
+    while (*text != '\0' && select->count < MaxLevels)
+    {
+        char* fields[LevelFields];
+        u32 count;
+        text = ReadLevelLine(text, fields, &count);
+        if (count < 2 || fields[0][0] == '\0' || fields[count - 1][0] == '\0')
+        {
+            continue;
+        }
+
+        const char* chunk = fields[count - 1];
+        u32 length;
+        const char* world = LevelWorld(chunk, &length);
+        if (length == 0)
+        {
+            continue;
+        }
+
+        if (page == nullptr)
+        {
+            // The worlds' page: back shows the pause menu again, like the quit page's
+            page = OlegPage::Construct(Allocate<OlegPage>(), LevelSelectLabel, nullptr);
+            page->vtable = g_QuitPageVTable;
+        }
+
+        u32 index = 0;
+        while (index < worldCount && !IsWorld(worlds[index]->name, world, length))
+        {
+            index++;
+        }
+
+        if (index == worldCount)
+        {
+            if (worldCount == MaxWorlds)
+            {
+                continue;
+            }
+
+            char* name = static_cast<char*>(MemoryAllocate(length + 1));
+            RetailLibc::MemoryCopy(name, world, length);
+            name[length] = '\0';
+            worlds[worldCount] = OlegPage::Construct(Allocate<OlegPage>(), name, page);
+            LinkItem* link = LinkItem::ConstructNamed(Allocate<LinkItem>(), name, WorldItemIds + worldCount, worlds[worldCount],
+                                                      MenuPlayers);
+            page->Add(link);
+            worldCount++;
+        }
+
+        OlegPage* levels = worlds[index];
+        if (levels->items.count == MaxWorldLevels)
+        {
+            continue;
+        }
+
+        levels->Add(NamedActionItem(fields[0], LevelItems + select->count, ActionItem::ActionPickLevel));
+        select->chunks[select->count] = chunk;
+        select->count++;
+    }
+
+    if (page == nullptr)
+    {
+        return select;
+    }
+
+    for (u32 index = 0; index < worldCount; index++)
+    {
+        worlds[index]->Add(BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers));
+    }
+
+    page->Add(BackItem::Construct(Allocate<BackItem>(), BackText, ParentBackItem, nullptr, MenuPlayers));
+    select->page = page;
+    return select;
+}
+
+void LevelSelect::Destroy()
+{
+    if (page != nullptr)
+    {
+        for (u32 index = 0; index < page->items.count; index++)
+        {
+            MenuPage* world = page->items.data[index]->target;
+            if (world != nullptr)
+            {
+                CallVirtual<void>(world, world->vtable, MenuPage::DestroySlot, u32{DestroyAndFree});
+            }
+        }
+
+        CallVirtual<void>(page, page->vtable, MenuPage::DestroySlot, u32{DestroyAndFree});
+    }
+
+    file->Destroy(DestroyAndFree);
+    MemoryDeallocate2_(this);
+}
+#endif
+
 PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
 {
     OlegPage::ConstructTitled(page, PauseTitle, &g_ResumePage);
@@ -797,6 +1035,12 @@ PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
     loadGame.owner = page;
     loadGame.vtable = g_LoadGamePageVTable;
     QuitPage::Construct(&page->quit, page);
+#ifdef TT_LAB_DEV
+    // The level select, at the top, left out without levels
+    ActionItem* levelSelect = NamedActionItem(LevelSelectLabel, LevelSelectItem, ActionItem::ActionLevelSelect);
+    levelSelect->shown = g_LevelSelect->page != nullptr ? EveryPlayer : 0;
+    page->Add(levelSelect);
+#endif
     ActionItem* options = ActionItem::Construct(Allocate<ActionItem>(), OptionsText, OptionsItem, ActionItem::ActionOptions);
     LinkItem* save = LinkItem::Construct(Allocate<LinkItem>(), SaveGameText, SaveGameItem, &page->saveGame, MenuPlayers);
     LinkItem* load = LinkItem::Construct(Allocate<LinkItem>(), LoadGameText, LoadGameItem, &page->loadGame, MenuPlayers);

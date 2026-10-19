@@ -1279,6 +1279,14 @@ void OLEG::Destroy(u32 destroyFlags)
         }
     }
 
+#ifdef TT_LAB_DEV
+    if (g_LevelSelect != nullptr)
+    {
+        g_LevelSelect->Destroy();
+        g_LevelSelect = nullptr;
+    }
+#endif
+
     for (u32 picture = 0; picture < Pictures; picture++)
     {
         ReleasePicture(picture);
@@ -1423,6 +1431,10 @@ void OLEG::StartUp(PadButtons* pad, Font* font, Font* menuFont, SoundTable* fron
     pages[PageExtras] = ExtrasPage::Construct(Allocate<ExtrasPage>());
     pages[PageMainMenu] = MainMenuPage::Construct(Allocate<MainMenuPage>());
     pages[PageGameOver] = GameOverPage::Construct(Allocate<GameOverPage>());
+#ifdef TT_LAB_DEV
+    // TT Lab's development build's level select first: the pause menu offers it
+    g_LevelSelect = LevelSelect::Make();
+#endif
     pages[PagePause] = PausePage::Construct(Allocate<PausePage>(), pad, font);
     pages[PageDisableAutosave] = DisableAutosavePage::Construct(Allocate<DisableAutosavePage>(), nullptr);
     pages[PageQuit] = QuitPage::Construct(Allocate<QuitPage>(), nullptr);

@@ -10,8 +10,8 @@ its own, and whatever the run put into PCSX2's config goes again afterwards.
 
     tools/run_pcsx2.py <elf> <disc image> [--map build/SLES_525.68.map] [--timeout 240] [--quick] [--title-wait 16] [--stay]
                        [--watch symbol[+offset][>offset]...]... [--snapshot T]... [--pad] [--manual] [--press T:BUTTONS[:SECONDS]]...
-                       [--goto T:STATE]... [--card FILE] [--chunks] [--loaders] [--string SYMBOL>OFFSET]...
-                       [--keep-state T:FILE]... [--backtrace T]... [--monitor NAME]
+                       [--goto T:STATE]... [--card FILE] [--chunks] [--loaders] [--string SYMBOL[>OFFSET]]...
+                       [--keep-state T:FILE]... [--backtrace T]... [--monitor NAME] [--host-fs]
 
 --watch prints a word of the map's symbol whenever it changes (a breadcrumb the code under test writes, say; every >offset
 follows the pointer found so far: G_GameReadersStorages>0x18>0x4 is storage 0's current reader's vtable). --snapshot T saves
@@ -27,11 +27,13 @@ menus by itself (and --press, --goto: the game controller's next state at T) unt
 plays with that card image in slot 1 instead of a copy of the user's (copied in, and back once PCSX2 is gone, so the next run sees
 what this one saved; never one of the user's cards in PCSX2's folder). --chunks prints the chunk manager's chunks and --loaders
 the chunk loading manager's loaders (bits, the RM2 and SM2 loaders' states, the SM2's data's state and the parts it still has)
-whenever they change; --string prints a game String past a pointer. --backtrace T prints the code addresses on the main thread's
-stack in the scratchpad that follow a jal or jalr (live frames and stale ones alike). A hang that isn't a loop of the game's often
-shows in PCSX2's log (emulog.txt in its config's logs): TLB misses at low addresses are null pointers, "# Syscall: undefined"
-is a jump into nowhere that the BIOS stopped at. On KDE Plasma, PCSX2's window goes to one monitor (--monitor, $PCSX2_MONITOR,
-HDMI-A-1 by default; kscreen-doctor -o names them), below other windows and without taking the focus (tools/kwin.py).
+whenever they change; --string prints a game String past a pointer (or the symbol's own). --backtrace T prints the code
+addresses on the main thread's stack in the scratchpad that follow a jal or jalr (live frames and stale ones alike). A hang that
+isn't a loop of the game's often shows in PCSX2's log (emulog.txt in its config's logs): TLB misses at low addresses are null
+pointers, "# Syscall: undefined" is a jump into nowhere that the BIOS stopped at. On KDE Plasma, PCSX2's window goes to one
+monitor (--monitor, $PCSX2_MONITOR, HDMI-A-1 by default; kscreen-doctor -o names them), below other windows and without taking
+the focus (tools/kwin.py). --host-fs turns PCSX2's host file system on for the run: TT Lab's development builds read the game's
+files from the ELF's folder (tools/dev_folder.py makes one).
 """
 import zipfile
 import argparse
@@ -297,12 +299,15 @@ def main():
                         help="print the chunk loading manager's loaders (path, bits, RM2 and SM2 states) whenever they change")
     parser.add_argument("--goto", action="append", default=[], metavar="T:STATE",
                         help="ask the game controller for the state T seconds after the start (with --manual)")
-    parser.add_argument("--string", action="append", default=[], metavar="SYMBOL>OFFSET",
-                        help="print the game String at the offset past the pointer the symbol holds whenever it changes")
+    parser.add_argument("--string", action="append", default=[], metavar="SYMBOL[>OFFSET]",
+                        help="print the game String at the offset past the pointer the symbol holds (without one, the String "
+                             "at the symbol) whenever it changes")
     parser.add_argument("--press", action="append", default=[], metavar="T:BUTTONS[:SECONDS]",
                         help="hold pad 1's buttons T seconds after the start")
     parser.add_argument("--monitor", help="the monitor PCSX2's window goes to, below other windows and without the focus (KWin's "
                                           f"output name; default $PCSX2_MONITOR or {kwin.DEFAULT_MONITOR}, empty for anywhere)")
+    parser.add_argument("--host-fs", action="store_true",
+                        help="PCSX2's host file system on (host0:\\ is the ELF's folder), for TT Lab's development builds")
     args = parser.parse_args()
 
     # debug.h's DebugInput table: frame, kind (1 a state, 2 buttons), value, length
@@ -372,8 +377,9 @@ def main():
     if args.card and os.path.realpath(os.path.dirname(os.path.abspath(args.card))) == os.path.realpath(cards):
         raise SystemExit("--card has to be a copy outside PCSX2's memory card folder")
     shutil.copy2(args.card if args.card else f"{cards}/Mcd001.ps2", f"{cards}/{RUN_CARD}")
+    emu_core = f"EnablePINE = true\nPINESlot = {SLOT}\n" + ("HostFs = true\n" if args.host_fs else "")
     with open(settings, "w") as file:
-        file.write(f"[EmuCore]\nEnablePINE = true\nPINESlot = {SLOT}\n\n"
+        file.write(f"[EmuCore]\n{emu_core}\n"
                    f"[MemoryCards]\nSlot1_Enable = true\nSlot1_Filename = {RUN_CARD}\nSlot2_Enable = false\n")
 
     placement = kwin.windows_on(kwin.monitor_from(args.monitor))
@@ -492,9 +498,13 @@ def main():
                     print(f"{time.time() - start:6.1f}s loaders {loaders}", flush=True)
 
             for part in args.string:
-                symbol, _, offset = part.partition(">")
-                pointer = pine.read32(symbols[symbol])
-                value = pine.string(pointer + int(offset, 0)) if pointer else None
+                symbol, follows, offset = part.partition(">")
+                if follows:
+                    pointer = pine.read32(symbols[symbol])
+                    value = pine.string(pointer + int(offset, 0)) if pointer else None
+                else:
+                    # A String of its own (G_StartChunk_Path)
+                    value = pine.string(symbols[symbol])
                 if watched.get(part) != value:
                     watched[part] = value
                     print(f"{time.time() - start:6.1f}s {part} = {value!r}", flush=True)

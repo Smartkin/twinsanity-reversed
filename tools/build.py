@@ -5,6 +5,8 @@ written on another system, then ninja (the one on the path, else the virtual env
     python tools/build.py [ninja arguments...]     build (the default target, or the ones given)
     python tools/build.py --matching               the asm alone must give the retail load image back (ninja check), then the
                                                    usual configuration again
+    python tools/build.py --tt-lab-dev             TT Lab's development build (TT_LAB_DEV): build/tt-lab-dev/SLES_525.68.elf
+                                                   (docs/DEVELOPMENT.md, "TT Lab's development builds")
     python tools/build.py --clean                  ninja -t clean
 """
 import os
@@ -73,6 +75,9 @@ def main():
 
     if not configured_for(False):
         configure(False)
+
+    if arguments[:1] == ["--tt-lab-dev"]:
+        sys.exit(run_ninja(["tt-lab-dev"] + arguments[1:]))
 
     sys.exit(run_ninja(arguments))
 

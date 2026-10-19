@@ -60,6 +60,87 @@ went as far as the frame's time left let it, reads came in at another frame, and
 the order of their addresses (two objects' random numbers swapped when the heap moved). The movies stay as long as the disc
 makes them, so the gameplay cases start playing past the intro movie.
 
+`run_pcsx2.py --host-fs` turns PCSX2's host file system on for the run, which TT Lab's development builds read their files from
+(below).
+
+## TT Lab's development builds
+
+This branch, `tt-lab`, is the one [TT Lab](https://github.com/Smartkin/TT-Lab) builds the game's engine from. TT Lab's Play runs a
+project's chunk in PCSX2 from a folder of the game's files with the project's built over them, and the `TT_LAB_DEV` option builds
+the executable it boots there. `tools/build.py --tt-lab-dev` (ninja's `tt-lab-dev` target) compiles `src/` again with the option
+into `build/tt-lab-dev/` and links it with the same asm data into `build/tt-lab-dev/SLES_525.68.elf`, its map
+`build/tt-lab-dev/SLES_525.68.map`. The default target never builds it, and without the option nothing changes: the matching check
+passes and `build/SLES_525.68.elf` comes out byte for byte `master`'s. The option adds no members to the game's structs, so every
+layout and `CHECK_OFFSET` stays; what it keeps is in globals (`g_LevelSelect`, `g_PickedLevel`). What it changes, in
+`#ifdef TT_LAB_DEV` blocks:
+
+- **Loose files** (`src/platform/ps2/files.cpp`, `stream.cpp`, `src/main.cpp`): the game reads its files from PCSX2's host file
+  system, `host0:\`, the folder the executable is in, by the names it asks the disc for (upper case, backslashes, no `;1`), and
+  its arguments when it's given none are `rb` without `batch=Crash6\Crash`, so it opens no archive and reads every file on its
+  own. The I/O processor's modules (`cdrom0:\CRASH6\SYS\`) and the movies still come from the disc image PCSX2 plays. A file the
+  folder doesn't have is closed again (`FileStreamOpen`): the retail code leaves it open and the reads after it fail
+  (RETAIL_BUGS.md).
+- **The start chunk** (`src/game/gamecontroller.cpp`): once the game can read files (its start-up, state 1, before OLEG's) it
+  reads `StartChunk.txt` next to the executable. Its first line, without the white space around it and with slashes made
+  backslashes, becomes `G_StartChunk_Path`, the chunk loading the title loads (state 6). Without the file or a path in it the
+  game's own, `Levels\Earth\Hub\Beach`, stays.
+- **The level select** (`src/game/olegpages.cpp`, `oleg.cpp`, `gamecontroller.cpp`), `decomp-showcase`'s without its speedrun
+  timer and statistics: OLEG's start-up reads `StartUp\LevelSelect.txt` (a line per level, three fields in quotes with tabs
+  between them: the level's name, a note nothing reads and the chunk's path; blank lines are skipped) into a "level select" item
+  at the top of the pause menu. It shows a page of the worlds (the folder after `levels\`, the first folder of other paths, in the
+  file's order) in the options' menu, each a page of its levels, 63 worlds and 63 levels a world at most (a page draws 64 lines).
+  Picking a level starts a new game in its chunk the way the title loads its own (`GameController::StartLevel`): the title
+  restarted (state 20), the picked chunk loaded in place of the start chunk (6), the title (7) going straight to a new game (10)
+  and the new game, without the intro movie, to starting to play (11) with a hundred lives. `G_StartChunk_Path` stays, so loading
+  the title again (state 6) loads the start chunk. Without levels in the file the item isn't shown.
+
+### What TT Lab's Play relies on
+
+- **The build**: `tools/build.py --tt-lab-dev` makes `build/tt-lab-dev/SLES_525.68.elf`, which keeps its symbol table.
+  `g_TtLabDevVersion`, a word of the executable's, is the version of what this list promises, 1.
+- **The folder** PCSX2 boots it from: the executable copied in as `SLES_525.68` (the disc check after a disc error opens that
+  file), every file of the disc's archive (`Crash6\Crash.BH` and `.BD`) on its own at its path in upper case
+  (`LEVELS/EARTH/HUB/BEACH.RM2`, `STARTUP/LEVELSELECT.TXT`), the sound banks next to the archive (`CRASH6/MUSIC.MH` and `.MB`, the
+  languages'), which the game streams through the same loader, and the project's built files over them. PCSX2 on Linux keeps the
+  case of names, and the game asks for every name in upper case. `tools/dev_folder.py` makes one from the disc image or an
+  extracted disc.
+- **`STARTCHUNK.TXT`** in the folder: one line, the path of the chunk to start in as the archive names chunks
+  (`levels\earth\hub\beach`), in ASCII. It's read once, as the game starts, and so is `STARTUP/LEVELSELECT.TXT`: changing either
+  takes booting again.
+- **PCSX2**: `-elf <folder>/SLES_525.68` with the disc image after `--`, and the host file system on (`[EmuCore] HostFs = true`)
+  in the game settings of the executable's CRC.
+- **The CRC**: every development build's is 0x77AB0100, so its game settings are always `gamesettings/77AB0100.ini`. It's the XOR
+  of the file's 32 bit words, which PCSX2 keeps an executable it boots by: `tools/ps2_crc.py` appends the word that makes it
+  0x77AB0100 (`configure.py`'s `DEV_CRC`).
+- **The symbols** (the symbol table's, by their exact names), in place of the addresses TT Lab keeps for each retail release
+  (`GameRelease`: the game controller's pointer with its states' and timer's offsets, the chunk manager's pointer, and the start
+  chunk's gap `PlaysSession` reads; what its patches change, the loader's `cdrom0:\`, the launch arguments and the start chunk's
+  load, is built in). Renaming one, or changing what this list says, is a new version:
+  - `G_GameController`, a pointer to the game controller. Its 64 bit word of states is at +0x8, the state in bits 44-49 and the
+    next one in bits 50-55, which the game moves on to the frame after (`GameController::State`: 4 the logos, 6 loading the start
+    chunk, 7 the title, 10 a new game, 11 starting to play, 12 playing, 14 a movie). The HUD's delay is at +0x14 (clock units:
+    when it runs out after play starts, the level's title card and the autosave notice come up).
+  - `G_ChunkManager`, a pointer to the chunk manager: the number of chunks loaded in its first halfword, their entries' pointers
+    from +0x4, each entry starting with its chunk's path as a `String`.
+  - `G_StartChunk_Path`, the start chunk as a `String` (the text's pointer at +0x0, its length at +0x4): `StartChunk.txt`'s once
+    the game is past state 1.
+  - `g_TtLabDevVersion`, the version above.
+
+`tools/dev_folder.py <disc image> build/tt-lab-dev/folder --elf build/tt-lab-dev/SLES_525.68.elf --start-chunk
+'levels\earth\cavern\cavent'`, then `tools/run_pcsx2.py build/tt-lab-dev/folder/SLES_525.68 <disc image> --map
+build/tt-lab-dev/SLES_525.68.map --host-fs --quick --chunks` plays it the way TT Lab does: past the logos and the movie to the
+chunk and the ones it links. `tools/play.py --elf build/tt-lab-dev/folder/SLES_525.68` plays it with PCSX2's own settings, once
+`gamesettings/77AB0100.ini` turns the host file system on.
+
+Checked in PCSX2 2.6.3 (2026-10-19), from a folder of the PAL disc's files: the build plays the chunk `STARTCHUNK.TXT` names (with
+white space around it, slashes and a CRLF too) with the chunks it links, and without the file the beach, as the game's own start
+chunk. The level select was checked in test time (a `render_check.test_copy` of the build in the folder, `--manual` with
+`--at-frame` presses: start, down to the level select, cross, down to a world, cross, cross): the picked chunk loads and plays
+with a hundred lives, and state 6 asked for after it loads the start chunk again.
+
+The editors' code models take the flags of the usual build (`build/compile_commands.json`), so the `TT_LAB_DEV` parts show as
+inactive there; `-DTT_LAB_DEV` added to the `Add` list in `.clangd` shows them the way the development build compiles them.
+
 ## Layout
 
 | Path | What |

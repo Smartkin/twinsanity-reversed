@@ -12,11 +12,17 @@ void Platform::Files::Reset()
     fioExit();
 }
 
-// The disc's file system is ISO 9660's: names in upper case, backslashes, and the version after them
+// The disc's file system is ISO 9660's: names in upper case, backslashes, and the version after them. TT Lab's development builds
+// read the files from the folder the executable is in (PCSX2's host file system, host0:\) in the same names, without the version
 s32 Platform::Files::Open(const char* path, s32 flags)
 {
+#ifdef TT_LAB_DEV
+    constexpr const char* Device = "host0:\\";
+    static constexpr char Version[] = "";
+#else
     constexpr const char* Device = "cdrom0:\\";
     static constexpr char Version[] = ";1";
+#endif
     constexpr u32 MaxPath = 256;
     char devicePath[MaxPath];
     u32 length = 0;

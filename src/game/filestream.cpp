@@ -311,8 +311,17 @@ extern "C"
             stream->start = 0;
         }
 
+        // A file the disc doesn't have is left open (docs/RETAIL_BUGS.md): the stream takes it for every file asked for next, none
+        // of them found, until a reader closes it. Retail reads its files from the archive, where a missing one changes nothing;
+        // TT Lab's development builds read every file on its own, and close it
         if (stream->size == 0)
         {
+#ifdef TT_LAB_DEV
+            if (stream->archiveState == FileStream::NoArchive && stream->file != Platform::Stream::NoFile)
+            {
+                FileStreamClose(stream);
+            }
+#endif
             StringAssign(&stream->path, NoPath);
             return false;
         }

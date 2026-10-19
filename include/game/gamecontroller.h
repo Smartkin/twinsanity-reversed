@@ -231,6 +231,11 @@ struct GameController
     // operation, a load or a save from the pause menu (two seconds' wait each). Each returns whether it was asked for
     u32 ReturnToPauseMenu() RETAIL(FUN_0017b860);
     u32 QuitToTitle() RETAIL(FUN_0017b990);
+#ifdef TT_LAB_DEV
+    // TT Lab's development build's level select: a new game in a level's chunk, started the way the title's is (the chunk loaded
+    // as the title's and a new game at once) without the intro movie, with a hundred lives
+    u32 StartLevel(const char* chunk);
+#endif
     u32 StopSaving() RETAIL(FUN_0017be18);
     u32 LoadForNewGame() RETAIL(FUN_0017c018);
     u32 LoadSavedGame() RETAIL(FUN_0017bf38);

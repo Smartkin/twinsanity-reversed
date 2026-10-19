@@ -130,12 +130,18 @@ repository's folder:
 | `tools/build.py` | Builds `build/SLES_525.68.elf`, writing `build.ninja` first when there's none for this system. Other arguments go to ninja (`-j8`, `-v`) |
 | `tools/build.py --clean` | Deletes what the build made |
 | `tools/build.py --matching` | Builds the asm alone and checks that it gives the retail executable's load image back, byte for byte |
+| `tools/build.py --tt-lab-dev` | Builds TT Lab's development build, `build/tt-lab-dev/SLES_525.68.elf`: the game reading loose files, starting in the chunk a file names, with a level select in the pause menu |
+| `tools/dev_folder.py` | Makes the folder of loose files a development build plays from, out of your disc image or an extracted disc |
 | `tools/play.py` | Boots the build in PCSX2 with your disc image; stopping it (Ctrl+C) closes PCSX2. `--elf`, `--iso` and `--pcsx2` pick others |
 | `tools/split.py` | Splits `SLES_525.68` into `asm/` and `assets/` again |
 | `configure.py` | Writes `build.ninja` and `build/compile_commands.json` again |
 
 Run `configure.py` again when C++ files were added or removed (a pull can bring new ones), and `tools/split.py` when
 `symbol_addrs.txt` changed, since the asm takes its names from it.
+
+This branch (`tt-lab`) is the one [TT Lab](https://github.com/Smartkin/TT-Lab) builds the game's engine from. Its
+`TT_LAB_DEV` option makes the development build TT Lab's Play runs in PCSX2; without it the build is `master`'s. See
+[TT Lab's development builds](docs/DEVELOPMENT.md#tt-labs-development-builds).
 
 On Linux, `tools/run_pcsx2.py` and `tools/render_check.py` test builds in PCSX2's Flatpak: see
 [Testing in PCSX2](docs/DEVELOPMENT.md#testing-in-pcsx2).

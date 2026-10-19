@@ -34,6 +34,23 @@ extern "C"
     extern char* g_DefaultArguments RETAIL(D_00309884);
 }
 
+#ifdef TT_LAB_DEV
+extern "C"
+{
+    // TT Lab's development build (docs/DEVELOPMENT.md, "TT Lab's development builds"): the version of what TT Lab's Play can count
+    // on (the files it writes, the symbols it reads), which it finds in the executable's symbols
+    extern const u32 g_TtLabDevVersion;
+    const u32 g_TtLabDevVersion = 1;
+}
+
+namespace
+{
+// Its arguments when it's given none: the game's without the archive, so every file is read on its own (from the folder the
+// executable is in, Platform::Files and Platform::Stream)
+char g_DevArguments[] = "rb";
+}
+#endif
+
 extern "C" int Main(u32 argc, char** argv)
 {
     RunStaticConstructors();
@@ -93,7 +110,11 @@ extern "C" GameContext* ParseArguments(u32 argc, char** argv)
         // made around it is never opened: what's left of reading them from one
         File file;
         File::Construct(&file);
+#ifdef TT_LAB_DEV
+        char* text = g_DevArguments;
+#else
         char* text = g_DefaultArguments;
+#endif
         u32 length = RetailLibc::StringLength(text);
         u32 wordStart = 0;
         bool betweenWords = true;

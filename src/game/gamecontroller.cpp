@@ -64,6 +64,12 @@ constexpr const char* FrontEndFile = "StartUp\\Frontend.bin";
 constexpr const char* DefaultChunk = "StartUp\\Default";
 constexpr const char* TextFolders[TextFiles] = {"Code", "AgentLab"};
 constexpr const char* TextExtension = ".txt";
+#ifdef TT_LAB_DEV
+// TT Lab's development build: the file its Play names the start chunk in (in the folder the executable is in), and the lives the
+// level select's new game starts with
+constexpr const char* StartChunkFile = "StartChunk.txt";
+constexpr u32 LevelSelectLives = 100;
+#endif
 // The screens' fades (seconds): most, the longer ones (to and from black, the pictures, the logos' wait), the shortest (a movie's
 // black and the missing controller's screen), and how long the HUD stays when it's shown for a while
 constexpr f32 FadeSeconds = 0.25f;
@@ -176,6 +182,51 @@ InstanceContext* SecondCharacterInstance(GameProgress* progress)
 {
     return progress->Instance(progress->play.second);
 }
+
+#ifdef TT_LAB_DEV
+// The chunk of the level the level select's new game is starting in (its path is the level select's file's), none otherwise
+const char* g_PickedLevel = nullptr;
+
+// The start chunk TT Lab's Play asks for in place of the game's own: StartChunk.txt's first line, without the white space around
+// it, its slashes made backslashes. The game's own stays without the file or a path in it
+void ReadStartChunk()
+{
+    MemoryStream stream;
+    MemoryStream::ConstructFromFile(&stream, StartChunkFile, true);
+    char* text = reinterpret_cast<char*>(stream.begin);
+    if (text != nullptr)
+    {
+        while (*text == ' ' || *text == '\t')
+        {
+            text++;
+        }
+
+        u32 length = 0;
+        while (text[length] != '\0' && text[length] != '\r' && text[length] != '\n')
+        {
+            if (text[length] == '/')
+            {
+                text[length] = '\\';
+            }
+
+            length++;
+        }
+
+        while (length != 0 && (text[length - 1] == ' ' || text[length - 1] == '\t'))
+        {
+            length--;
+        }
+
+        text[length] = '\0';
+        if (length != 0)
+        {
+            StringAssign(&g_StartChunkPath, text);
+        }
+    }
+
+    stream.Destroy(DestroyOnly);
+}
+#endif
 }
 
 GameController* GameController::Construct(GameController* controller, GamePad* pad, s32 secondPad, Renderer* renderer,
@@ -455,6 +506,9 @@ u32 GameController::Starting(TimeClock*)
 
     stream.Destroy(DestroyOnly);
     StringDestroy(&icons);
+#ifdef TT_LAB_DEV
+    ReadStartChunk();
+#endif
     LoadGlobalResources();
     oleg.WantPicture(OLEG::PictureCrashTitle, CrashTitlePicture);
     oleg.LoadPicture(OLEG::PictureCrashTitle, 0);
@@ -956,6 +1010,15 @@ u32 GameController::QuitToTitle()
     return 1;
 }
 
+#ifdef TT_LAB_DEV
+u32 GameController::StartLevel(const char* chunk)
+{
+    g_PickedLevel = chunk;
+    SetNextState(StateRestartingTitle);
+    return 1;
+}
+#endif
+
 u32 GameController::ShowBottomText(s32 duration)
 {
     if (State() != StatePlaying)
@@ -1407,6 +1470,15 @@ u32 GameController::NewGame(TimeClock*)
 
     saveController.Restore(0, &progress, chunkManager);
     ResetGame(0);
+#ifdef TT_LAB_DEV
+    // The level select's new game plays without the intro movie
+    if (g_PickedLevel != nullptr)
+    {
+        g_PickedLevel = nullptr;
+        progress.counts.lives = LevelSelectLives;
+        return StateStartingPlay;
+    }
+#endif
     RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Intro);
     return NextState();
 }
@@ -1548,7 +1620,12 @@ u32 GameController::LoadingTitle(TimeClock*)
             return StateTitle;
         }
 
+#ifdef TT_LAB_DEV
+        // The level select's level loads as the title's chunk
+        StringAssign(&progress.startChunk, g_PickedLevel != nullptr ? g_PickedLevel : g_StartChunkPath.string);
+#else
         StringAssign(&progress.startChunk, g_StartChunkPath.string);
+#endif
         u32 loading = RandomLoadingScreen();
         oleg.WantPicture(OLEG::PictureTiles, loading);
         return NoState;
@@ -1597,6 +1674,14 @@ u32 GameController::Title(TimeClock* clock)
         StartChunks();
         return NoState;
     }
+
+#ifdef TT_LAB_DEV
+    // The level select's level: a new game in it at once
+    if (g_PickedLevel != nullptr)
+    {
+        return StateNewGame;
+    }
+#endif
 
     if (GetButtonState(pad, PadStart, true))
     {
@@ -1681,6 +1766,10 @@ u32 GameController::StartingPlay(TimeClock*)
             [[fallthrough]];
         case StateWatching:
         case StateMovie:
+#ifdef TT_LAB_DEV
+        // The level select's new game, which plays no movie
+        case StateNewGame:
+#endif
             EnableCharacters(1);
             flags.bottomText = 0;
             break;
@@ -1706,7 +1795,11 @@ u32 GameController::StartingPlay(TimeClock*)
         }
     }
 
+#ifdef TT_LAB_DEV
+    if (last != StateWatching && last != StateMovie && last != StateNewGame)
+#else
     if (last != StateWatching && last != StateMovie)
+#endif
     {
         switch (pairing)
         {

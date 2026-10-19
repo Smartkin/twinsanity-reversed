@@ -399,6 +399,11 @@ The C++ keeps every one of these as retail has it, with a comment where it happe
 - **C, latent:** ReadTextFile FUN_0017e088. It counts every line break but skips blank lines when collecting
   (0x17E150-0x17E1A0), so the last k entries point past the text. Retail code-text files have 23 blank lines each, but those
   entries are presumably never used.
+- **C, latent:** FileStreamOpen FUN_002ab3a8 without the archive.
+  - Bug: a file the disc doesn't have (its size 0) stays open: 0x2AB484 returns without closing it, its number at 0x28.
+  - Effect: the stream takes it for every file asked for next (their sizes 0, none of them found) until a reader closes it.
+  - Reached: no. The retail game reads its files from the archive, where a missing file changes nothing (0x2AB3F4). TT Lab's
+    development builds read every file on its own and close it.
 - **(conv.) latent:**
   - AddInstancePlace FUN_001988c0 has no cap at 8 places.
   - Object ID 0xFFFF reads through null in TakeObjects/ReleaseObjects FUN_00266180/FUN_00266260 and CreateInstanceFrom

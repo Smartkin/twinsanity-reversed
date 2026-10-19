@@ -9,6 +9,10 @@ lists.
 PLATFORM (an environment variable, ps2 by default) picks the platform layer's side in src/platform/. Where the toolchain is comes
 from tools/local_config.py ($PS2DEV, local.json, else /usr/local/ps2dev or C:/ps2dev). The commands run the tools with the
 Python running this script, so the same works on Linux and Windows (where ninja runs commands without a shell).
+
+`ninja tt-lab-dev` (tools/build.py --tt-lab-dev) builds TT Lab's development build: src/ compiled again with TT_LAB_DEV into
+build/tt-lab-dev/, linked with the same asm data into build/tt-lab-dev/SLES_525.68.elf and given its fixed CRC
+(docs/DEVELOPMENT.md, "TT Lab's development builds"). The default target never builds it.
 """
 import json
 import os
@@ -41,6 +45,13 @@ CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G
             ["-Iinclude", f"-I{PS2SDK}/ee/include", f"-I{PS2SDK}/common/include"])
 
 PLATFORM = os.environ.get("PLATFORM", "ps2")
+
+# TT Lab's development build: where its objects, linker script, map and executable go, the option it's compiled with and the PS2
+# CRC its executable is given (the XOR of the file's words, what PCSX2 keeps an executable's game settings by), the same for
+# every build
+DEV = "build/tt-lab-dev"
+DEV_FLAGS = ["-DTT_LAB_DEV"]
+DEV_CRC = 0x77AB0100
 
 # PS2SDK's libraries, in place of the Sony SDK functions ps2sdk.txt lists, then the toolchain's C library (newlib's small
 # libc_nano: sprintf, snprintf and string functions that do what the game's did) and GCC's runtime (__muldi3, which libmpeg
@@ -122,6 +133,10 @@ def main():
         f"libdir = {command(['-L' + directory for directory in [PS2SDK + '/ee/lib'] + toolchain_library_dirs()])}",
         f"libs = {libs}",
         f"cxxflags = {command(CXXFLAGS)}",
+        f"devflags = {command(DEV_FLAGS)}",
+        # The link's script and map, which the development build's link has its own of
+        "ldscript = build/link.ld",
+        "map = build/SLES_525.68.map",
         "",
         "rule as",
         "  command = $as $asflags -o $out $in",
@@ -131,12 +146,20 @@ def main():
         "  depfile = $out.d",
         "  deps = gcc",
         "  description = CXX $in",
+        "rule cxxdev",
+        "  command = $cxx $cxxflags $devflags -MMD -MF $out.d -c -o $out $in",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CXX (TT Lab dev) $in",
         "rule ldscript",
         f"  command = $python tools/make_ld.py $out --nm $nm {'--matching ' if matching else ''}$in",
         "  description = LDSCRIPT $out",
         "rule link",
-        "  command = $ld -m elf32lr5900n32 -T build/link.ld -Map build/SLES_525.68.map -o $out $libdir --start-group $libs --end-group",
+        "  command = $ld -m elf32lr5900n32 -T $ldscript -Map $map -o $out $libdir --start-group $libs --end-group",
         "  description = LINK $out",
+        "rule crc",
+        f"  command = $python tools/ps2_crc.py $in $out 0x{DEV_CRC:08X}",
+        "  description = CRC $out",
         "rule check",
         "  command = $python tools/compare.py $in SLES_525.68 build/SLES_525.68.map --touch $out",
         "  description = CHECK $in",
@@ -162,8 +185,9 @@ def main():
                                  "arguments": [local_config.ee_tool("g++")] + CXXFLAGS + system_includes +
                                               ["-c", "-o", obj, path]})
 
+    ldscript_inputs = "tools/make_ld.py ps2sdk.txt retired.txt fragments.txt build/splat.yaml build/undefined_syms_auto.txt"
     lines += [
-        f"build build/link.ld: ldscript {' '.join(src_objects)} | tools/make_ld.py ps2sdk.txt retired.txt fragments.txt build/splat.yaml build/undefined_syms_auto.txt",
+        f"build build/link.ld: ldscript {' '.join(src_objects)} | {ldscript_inputs}",
         f"build build/SLES_525.68.elf: link | build/link.ld {' '.join(asm_objects)} {' '.join(src_objects)}",
         "build build/check.ok: check build/SLES_525.68.elf",
         "build check: phony build/check.ok",
@@ -171,6 +195,23 @@ def main():
         "default build/SLES_525.68.elf",
         "",
     ]
+    # TT Lab's development build: the same C++ with TT_LAB_DEV, its own linker script and map, the CRC word appended last
+    if src:
+        dev_objects = []
+        for path in src:
+            obj = f"{DEV}/{path}.o"
+            dev_objects.append(obj)
+            lines.append(f"build {obj}: cxxdev {path}")
+
+        lines += [
+            f"build {DEV}/link.ld: ldscript {' '.join(dev_objects)} | {ldscript_inputs}",
+            f"build {DEV}/linked.elf: link | {DEV}/link.ld {' '.join(asm_objects)} {' '.join(dev_objects)}",
+            f"  ldscript = {DEV}/link.ld",
+            f"  map = {DEV}/SLES_525.68.map",
+            f"build {DEV}/SLES_525.68.elf: crc {DEV}/linked.elf | tools/ps2_crc.py",
+            f"build tt-lab-dev: phony {DEV}/SLES_525.68.elf",
+            "",
+        ]
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
     # For the editors' code models (VS Code's C/C++ extension, clangd): the C++ as it's compiled. A matching configuration keeps
     # the last one, which has every file

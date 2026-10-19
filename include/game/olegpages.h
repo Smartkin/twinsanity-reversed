@@ -63,6 +63,12 @@ struct ActionItem : LinkItem
         ActionStopSaving = 6,
         ActionLoad = 7,
         ActionSave = 8,
+#ifdef TT_LAB_DEV
+        // TT Lab's development build: the level select's worlds in the options' menu, and a new game in the level of the item's
+        // ID (LevelSelect::LevelItems on)
+        ActionLevelSelect = 9,
+        ActionPickLevel = 10,
+#endif
     };
 
     u32 action;
@@ -377,6 +383,38 @@ public:
     void Entered(u32 player, u32 mode) RETAIL(FUN_00165228);
 };
 CHECK_SIZE(ExtrasPage, 0x248);
+
+#ifdef TT_LAB_DEV
+class MemoryStream;
+
+// TT Lab's development build's level select, read at OLEG's start-up and offered at the top of the pause menu: the levels of
+// StartUp\LevelSelect.txt (a line each, in quotes and tabs apart: the level's name, a note nothing reads and its chunk's path) on a
+// page of their worlds (the folder after levels\ in the path, the first folder of other paths, in the order the file first has
+// them) with back, each world a page of its levels named after it with back. A page draws 64 lines at most, so the worlds past 63
+// and a world's levels past 63 are left out. Picking a level starts a new game in its chunk (GameController::StartLevel)
+struct LevelSelect
+{
+    static constexpr u32 MaxLevels = 0xFF;
+    static constexpr u32 MaxWorlds = 63;
+    static constexpr u32 MaxWorldLevels = 63;
+    // The levels' items' IDs, their indexes on
+    static constexpr u32 LevelItems = 0x200;
+
+    // The file's text, which the levels' names and paths are kept in
+    MemoryStream* file;
+    u32 count;
+    const char* chunks[MaxLevels];
+    // The worlds' page (none without levels): going back shows the pause menu again
+    OlegPage* page;
+
+    static LevelSelect* Make();
+    // Its pages and its file let go of (the pages' items left, like OLEG's other pages'), then itself
+    void Destroy();
+};
+
+// The level select OLEG's start-up made (none before)
+extern LevelSelect* g_LevelSelect;
+#endif
 
 class LevelWidget;
 class MenuWidget;

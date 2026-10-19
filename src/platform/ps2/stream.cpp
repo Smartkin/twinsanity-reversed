@@ -140,8 +140,13 @@ u32 Platform::Stream::FreeBufferMemory()
 
 s32 Platform::Stream::OpenFile(const char* path)
 {
-    // The module takes the disc's path: "cdrom0:\", upper case, backslashes
+    // The module takes the disc's path: "cdrom0:\", upper case, backslashes. TT Lab's development builds read the folder the
+    // executable is in (PCSX2's host file system) by the same names
+#ifdef TT_LAB_DEV
+    constexpr char Prefix[] = "host0:\\";
+#else
     constexpr char Prefix[] = "cdrom0:\\";
+#endif
     char discPath[0x100];
     u32 length = 0;
     for (; Prefix[length] != 0; length++)
